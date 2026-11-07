@@ -564,6 +564,14 @@ export interface SafelightAPI {
     /** Tint mask `maskId`'s coverage over the image (fading in and out), or with
      *  null none: the mask a mask panel is pointing at. Needs Safelight 3.2.0. */
     showMaskCoverage(maskId: string | null): void;
+    /** Values the live view draws over the photo's own for this extension's
+     *  stages, by qualified key ("{stageId}.{key}"), replacing the last set;
+     *  null clears them. View-only feedback such as a hovered layer's
+     *  highlight: never saved, undone or exported, and not in thumbnails.
+     *  Keys of other extensions' stages are ignored, and holding the panel's
+     *  preview off drops them with its stages' values. Cleared when the
+     *  extension stops. Needs Safelight 3.2.1. */
+    setViewValues(values: Record<string, unknown> | null): void;
     /** React hook: the panels that can be added to a mask, in their order.
      *  Needs Safelight 3.2.0. */
     useMaskPanels(): MaskPanelEntry[];

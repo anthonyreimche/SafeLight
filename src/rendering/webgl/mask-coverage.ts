@@ -11,7 +11,7 @@ import { MAX_BRUSH_MASKS } from "@/catalog/types";
 // one RGBA texture, so the shader can read every item's coverage with a single
 // sample. MAX_BRUSH_MASKS is that channel count, bounded by RGBA.
 
-const BAKE_SIZE = 768; // coverage resolution; soft shapes tolerate downscaling
+export const BAKE_SIZE = 768; // coverage resolution; soft shapes tolerate downscaling
 
 export interface CoverageItem {
   id: string;
@@ -80,32 +80,35 @@ export class CoverageInputs {
   }
 }
 
-interface StrokeRun {
+export interface StrokeRun<D extends BrushDab = BrushDab> {
   erase: boolean;
-  dabs: BrushDab[];
+  dabs: D[];
 }
 
 // Splits an item's dabs into the strokes that composite one over another. A
 // stroke starts at a strokeStart dab, and a marked stroke also splits where
 // the brush flips between paint and erase. Dabs ahead of the first marker were
 // painted before strokes were recorded, so they stay one paint run with any
-// erase dabs inside it, which is how they always baked.
-function strokeRuns(dabs: BrushDab[]): StrokeRun[] {
-  const runs: StrokeRun[] = [];
+// erase dabs inside it, which is how they always baked. `splits` starts a
+// stroke wherever else the item's kind of dab needs one.
+function strokeRuns<D extends BrushDab>(dabs: D[], splits?: (prev: D, next: D) => boolean): StrokeRun<D>[] {
+  const runs: StrokeRun<D>[] = [];
   let legacy = true;
   for (const dab of dabs) {
     const start = dab.strokeStart === true;
     if (start) legacy = false;
     const last = runs[runs.length - 1];
-    if (last && !start && (legacy || last.erase === dab.erase)) last.dabs.push(dab);
+    const continues =
+      last && !start && (legacy || last.erase === dab.erase) && !splits?.(last.dabs[last.dabs.length - 1], dab);
+    if (continues) last.dabs.push(dab);
     else runs.push({ erase: !legacy && dab.erase, dabs: [dab] });
   }
   return runs;
 }
 
-type BakeContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+export type BakeContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
-function createBakeContext(): BakeContext | null {
+export function createBakeContext(): BakeContext | null {
   // The renderer runs in a Web Worker (no `document`), so fall back to an
   // OffscreenCanvas there; the main thread can still use a DOM canvas.
   const canvas: HTMLCanvasElement | OffscreenCanvas =
@@ -127,14 +130,13 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 //   • opacity — the ceiling that build-up can reach within one stroke. Each
 //     dab raises a per-pixel ceiling (max of its own opacity); the stroke's
 //     coverage is its accumulated flow clamped to that ceiling.
-// Strokes then stack: a paint stroke lays its coverage over what is there
-// ("source-over", so two 50% strokes reach 75%), and an erase stroke removes
-// that share of it.
 // At the defaults (flow 1, opacity 1) a stroke fills solidly to full coverage.
+// `lay` receives the stroke's coverage `s` at each pixel `i` it reaches, to
+// stack it over the strokes before (StrokeAccumulator).
 //
 // A run reads back only the pixels it cleared first, so what earlier runs left
 // on the canvas never reaches it: each run's coverage depends on its own dabs.
-function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, total: Float32Array): void {
+function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, lay: (i: number, s: number) => void): void {
   // Stamp one dab's unit disc with the given composite op; addStops fills in the
   // radial gradient (the solid centre runs out to `core`, then falls off).
   const stamp = (
@@ -213,8 +215,7 @@ function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, total: Float32
   ctx.globalCompositeOperation = "source-over";
   const ceil = ctx.getImageData(box.x, box.y, box.w, box.h).data;
 
-  // The run's coverage = accumulated flow clamped to its opacity ceiling,
-  // laid over (or cut out of) the strokes before it.
+  // The run's coverage = accumulated flow clamped to its opacity ceiling.
   for (let y = 0; y < box.h; y++) {
     for (let x = 0; x < box.w; x++) {
       const j = (y * box.w + x) * 4;
@@ -222,13 +223,12 @@ function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, total: Float32
       const c = ceil[j]; // opacity ceiling (luminance)
       const s = (a < c ? a : c) / 255;
       if (s === 0) continue;
-      const i = (box.y + y) * BAKE_SIZE + box.x + x;
-      total[i] = run.erase ? total[i] * (1 - s) : total[i] + s * (1 - total[i]);
+      lay((box.y + y) * BAKE_SIZE + box.x + x, s);
     }
   }
 }
 
-function sameDab(a: BrushDab, b: BrushDab): boolean {
+export function sameDab(a: BrushDab, b: BrushDab): boolean {
   return (
     a.x === b.x &&
     a.y === b.y &&
@@ -241,14 +241,89 @@ function sameDab(a: BrushDab, b: BrushDab): boolean {
   );
 }
 
-/** One item's coverage as last baked: `before` holds every stroke run but the
- *  last, which more dabs of the same stroke replace. Never written once kept. */
-interface ItemBake {
-  dabs: BrushDab[];
-  runs: number;
-  before: Float32Array;
-  total: Float32Array;
+/** How one kind of item stacks its strokes: the planes it starts from, how a
+ *  stroke's coverage `s` lands on pixel `i` of them, which dabs are the same,
+ *  and where else a stroke starts (strokeRuns). */
+export interface StrokeAccumulator<D extends BrushDab, P> {
+  empty(): P;
+  copy(planes: P): P;
+  lay(planes: P, run: StrokeRun<D>): (i: number, s: number) => void;
+  same(a: D, b: D): boolean;
+  splits?(prev: D, next: D): boolean;
 }
+
+/** One item as last baked: `before` holds every stroke run but the last, which
+ *  more dabs of the same stroke replace. Never written once kept. */
+export interface StrokeBake<D extends BrushDab, P> {
+  dabs: D[];
+  runs: number;
+  before: P;
+  total: P;
+}
+
+/** An item's strokes laid into its accumulator's planes, from `prev` where its
+ *  dabs only grew since: dabs added after those baked rasterize only the stroke
+ *  they continue and the ones they start, and unchanged dabs not at all. Null
+ *  when there is no canvas to rasterize with. */
+export function bakeStrokes<D extends BrushDab, P>(
+  acc: StrokeAccumulator<D, P>,
+  dabs: D[],
+  prev: StrokeBake<D, P> | undefined,
+  aspect: number,
+  context: () => BakeContext | null,
+): StrokeBake<D, P> | null {
+  if (prev?.dabs === dabs) return prev;
+  const grows =
+    prev !== undefined &&
+    prev.dabs.length <= dabs.length &&
+    prev.dabs.every((d, i) => acc.same(d, dabs[i]));
+  if (grows && prev.dabs.length === dabs.length) return { ...prev, dabs };
+
+  const ctx = context();
+  if (!ctx) return null;
+  const runs = strokeRuns(dabs, acc.splits);
+  // Added dabs only extend the last baked run or start new ones, so the runs
+  // before it stand as baked, and so does that run when they took none of it.
+  let from = 0;
+  let total: P;
+  if (grows) {
+    const extended = runs.slice(0, prev.runs).reduce((n, run) => n + run.dabs.length, 0) > prev.dabs.length;
+    from = extended ? prev.runs - 1 : prev.runs;
+    total = acc.copy(extended ? prev.before : prev.total);
+  } else {
+    total = acc.empty();
+  }
+  let before = total;
+  for (let r = from; r < runs.length; r++) {
+    if (r === runs.length - 1) before = acc.copy(total);
+    layRun(ctx, runs[r], aspect, acc.lay(total, runs[r]));
+  }
+  return { dabs, runs: runs.length, before, total };
+}
+
+/** Lazily made, so a bake whose items all stand as baked makes no canvas. */
+export function lazyBakeContext(): () => BakeContext | null {
+  let ctx: BakeContext | null | undefined;
+  return () => (ctx === undefined ? (ctx = createBakeContext()) : ctx);
+}
+
+// A paint stroke lays its coverage over what is there ("source-over", so two
+// 50% strokes reach 75%), and an erase stroke removes that share of it.
+const COVERAGE: StrokeAccumulator<BrushDab, Float32Array> = {
+  empty: () => new Float32Array(BAKE_SIZE * BAKE_SIZE),
+  copy: (total) => total.slice(),
+  lay: (total, run) =>
+    run.erase
+      ? (i, s) => {
+          total[i] = total[i] * (1 - s);
+        }
+      : (i, s) => {
+          total[i] = total[i] + s * (1 - total[i]);
+        },
+  same: sameDab,
+};
+
+type ItemBake = StrokeBake<BrushDab, Float32Array>;
 
 /** Bakes coverage items like `bakeCoverage`, byte for byte, keeping each item's
  *  last bake: dabs added after those baked rasterize only the stroke they
@@ -265,13 +340,12 @@ export class CoverageBaker {
     const aspect = imageAspect > 0 ? imageAspect : 1;
     if (aspect !== this.aspect) this.baked.clear();
 
-    let ctx: BakeContext | null | undefined;
-    const context = () => (ctx === undefined ? (ctx = createBakeContext()) : ctx);
+    const context = lazyBakeContext();
     const kept = new Map<string, ItemBake>();
     const out = new Uint8Array(BAKE_SIZE * BAKE_SIZE * 4);
     const channelOf: Record<string, number> = {};
     for (const [ch, item] of list.entries()) {
-      const bake = this.bakeItem(item.dabs, this.baked.get(item.id), aspect, context);
+      const bake = bakeStrokes(COVERAGE, item.dabs, this.baked.get(item.id), aspect, context);
       if (!bake) return null;
       kept.set(item.id, bake);
       channelOf[item.id] = ch;
@@ -283,41 +357,6 @@ export class CoverageBaker {
     this.baked = kept;
     this.aspect = aspect;
     return { data: out, size: BAKE_SIZE, channelOf };
-  }
-
-  private bakeItem(
-    dabs: BrushDab[],
-    prev: ItemBake | undefined,
-    aspect: number,
-    context: () => BakeContext | null,
-  ): ItemBake | null {
-    if (prev?.dabs === dabs) return prev;
-    const grows =
-      prev !== undefined &&
-      prev.dabs.length <= dabs.length &&
-      prev.dabs.every((d, i) => sameDab(d, dabs[i]));
-    if (grows && prev.dabs.length === dabs.length) return { ...prev, dabs };
-
-    const ctx = context();
-    if (!ctx) return null;
-    const runs = strokeRuns(dabs);
-    // Added dabs only extend the last baked run or start new ones, so the runs
-    // before it stand as baked, and so does that run when they took none of it.
-    let from = 0;
-    let total: Float32Array;
-    if (grows) {
-      const extended = runs.slice(0, prev.runs).reduce((n, run) => n + run.dabs.length, 0) > prev.dabs.length;
-      from = extended ? prev.runs - 1 : prev.runs;
-      total = (extended ? prev.before : prev.total).slice();
-    } else {
-      total = new Float32Array(BAKE_SIZE * BAKE_SIZE);
-    }
-    let before = total;
-    for (let r = from; r < runs.length; r++) {
-      if (r === runs.length - 1) before = total.slice();
-      layRun(ctx, runs[r], aspect, total);
-    }
-    return { dabs, runs: runs.length, before, total };
   }
 }
 

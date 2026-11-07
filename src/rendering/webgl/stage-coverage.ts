@@ -12,6 +12,7 @@
 // canvas-free so they run in the node unit suite.
 
 import type { BrushDab } from "@/catalog/types";
+import { MAX_PAINT_LAYERS, type PaintDab, type PaintLayer } from "@/extensions/api/contributions";
 import type { CoverageItem } from "./mask-coverage";
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -35,6 +36,28 @@ function isBrushDab(value: unknown): value is BrushDab {
 
 export function isBrushDabList(value: unknown): value is BrushDab[] {
   return Array.isArray(value) && value.every(isBrushDab);
+}
+
+const isColour = (v: unknown): v is PaintDab["color"] =>
+  Array.isArray(v) && v.length === 3 && v.every(finite);
+
+function isPaintDab(value: unknown): value is PaintDab {
+  return isBrushDab(value) && "color" in value && isColour(value.color);
+}
+
+function paintLayer(item: unknown, index: number): PaintLayer {
+  if (typeof item !== "object" || item === null) return { id: String(index), dabs: [] };
+  const id = "id" in item && typeof item.id === "string" ? item.id : String(index);
+  const dabs: unknown = "dabs" in item ? item.dabs : undefined;
+  return { id, dabs: Array.isArray(dabs) && dabs.every(isPaintDab) ? dabs : [] };
+}
+
+/** A paint texture's bag value as the layers to bake: at most MAX_PAINT_LAYERS,
+ *  each its id and dabs. A malformed layer bakes empty in its own place, so the
+ *  layers after it keep the tiles (and the stage's per-layer settings) theirs. */
+export function paintLayersFromValue(value: unknown): PaintLayer[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_PAINT_LAYERS).map(paintLayer);
 }
 
 /** Atlas items for the coverage keys a bag actually paints, in key order.

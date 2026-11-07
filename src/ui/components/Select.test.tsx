@@ -11,7 +11,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
-import { updateSettings } from "@/state/settings-store";
+import { DEFAULT_SETTINGS, updateSettings } from "@/state/settings-store";
 import { Select, type SelectGroup, type SelectOption, type SelectProps } from "./Select.tsx";
 
 const OPTIONS: SelectOption[] = [
@@ -479,6 +479,44 @@ describe("Shift+wheel over the closed trigger", () => {
     unmount();
     render(<Harness onChange={onChange} disabled />);
     fireEvent.wheel(trigger(), { deltaY: 100, shiftKey: true });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("plain wheel with the dropdown-wheel preference on", () => {
+  afterEach(() => updateSettings({ dropdownWheelSelect: false }));
+
+  it("is off by default", () => {
+    expect(DEFAULT_SETTINGS.dropdownWheelSelect).toBe(false);
+  });
+
+  it("steps through the options without Shift, stopping at the ends", () => {
+    updateSettings({ dropdownWheelSelect: true });
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    expect(fireEvent.wheel(trigger(), { deltaY: 100 })).toBe(false);
+    expect(onChange).toHaveBeenLastCalledWith("gamma");
+    fireEvent.wheel(trigger(), { deltaY: 100 });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    fireEvent.wheel(trigger(), { deltaY: -100 });
+    expect(onChange).toHaveBeenLastCalledWith("alpha");
+  });
+
+  it("keeps Shift+wheel working", () => {
+    updateSettings({ dropdownWheelSelect: true });
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    fireEvent.wheel(trigger(), { deltaX: 100, deltaY: 0, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("gamma");
+  });
+
+  it("leaves the wheel to scroll an open menu", async () => {
+    updateSettings({ dropdownWheelSelect: true });
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    await user.click(trigger());
+    expect(fireEvent.wheel(trigger(), { deltaY: 100 })).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
   });
 });

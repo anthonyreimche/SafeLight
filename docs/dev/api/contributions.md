@@ -150,7 +150,7 @@ interface StagePass {
 ```typescript
 interface TextureRequirement {
   key: string;
-  kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas";
+  kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas" | "paint";
   width?: number; height?: number;
   format?: "rgba8" | "rgba16f" | "r8";
 }
@@ -160,6 +160,7 @@ interface TextureRequirement {
 - **`photo`** is for Safelight's own stages: their `derive` fills it per photo from the photo's params (the tone curve's table). Any other stage that declares one is refused.
 - **`atlas`** is for Safelight's own stages too (3.2.0): `derive` returns up to four `{ id, dabs }` brush strokes under the texture's key, and core bakes them into the texture's four channels in order (Heal's brush spots).
 - **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Not readable inside passes.
+- **`paint`** is painted in colour, on up to four layers (`MAX_PAINT_LAYERS`). The photo's bag value at `"{stageId}.{key}"` is a `PaintLayer[]`: `{ id, dabs }`, where each dab is a `BrushDab` plus `color: [r, g, b]`, display-encoded sRGB from 0 to 1. Other fields on a layer, such as a name, are left alone. A stroke lays its colour over the strokes before it by its coverage, an erase stroke takes coverage away, and a change of colour starts a new stroke. Your inline `glsl` reads layer *n* as `vec4 key(int layer, vec2 uv)`: its colour in `rgb` (not premultiplied) and its coverage in `a`, or `vec4(0.0)` where nothing is painted. A malformed layer reads as unpainted and keeps its place, so the layers after it keep their numbers. One paint texture per stage; it takes one of the four stage texture units `lut` and `dynamic` use. Replace the array when it changes, as for `coverage`. Not readable inside passes. Needs a Safelight build that has it: set `minAppVersion`.
 
 ### Values a stage sees: `space`
 

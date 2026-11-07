@@ -887,6 +887,30 @@ describe("pixel behaviour", () => {
     expect(pixelAt(frame, 0, 0)).toEqual([1, 0, 0]);
     expect(pixelAt(frame, 8, 8)[0]).toBeCloseTo(FLAT_GREY, 2);
   });
+
+  // Crop mode draws a margin past the photo. A geometry stage that zooms in (a
+  // lens correction's auto crop) maps that margin back inside the source, and
+  // the photo spilled into it, past the crop box's dim.
+  it("paints the surround colour outside the photo's frame under a stage that zooms in", () => {
+    const zoomIn: ProcessingStageContribution = {
+      id: "test.zoom-in",
+      name: "Zoom in",
+      phase: "geometry",
+      glsl: "srcUv = 0.5 + (srcUv - 0.5) * 0.5;",
+      uniforms: [],
+    };
+    const frame = withRenderer(
+      { stages: [...basicStagesFor(), ...cropStages(), zoomIn], pipeline: LINEAR_PROBE_PIPELINE },
+      (renderer) => {
+        renderer.setImage(flatSource());
+        renderer.setOutsideColor([1, 0, 0]);
+        renderer.setParams(identityParams({ crop: { x: -0.25, y: -0.25, width: 1.5, height: 1.5 } }));
+        return capture(renderer);
+      },
+    );
+    expect(pixelAt(frame, 0, 0)).toEqual([1, 0, 0]);
+    expect(pixelAt(frame, 8, 8)[0]).toBeCloseTo(FLAT_GREY, 2);
+  });
 });
 
 // A display transform with its own highlight roll-off opts out of the core
@@ -2112,6 +2136,48 @@ describe("coverage-kind stage textures", () => {
       renderer.setStages([other]);
       expect(pixelAt(capture(renderer), 4, 16)[1]).toBeCloseTo(FLAT_GREY * 2, 2);
     });
+  });
+});
+
+describe("paint-kind stage textures", () => {
+  const PAINT_GAIN: ProcessingStageContribution = {
+    id: "acme.paint",
+    name: "Paint gain",
+    phase: "scene-linear",
+    glsl: "vec4 p = layers(1, srcUv); lin *= 1.0 + p.a * p.r;",
+    uniforms: [],
+    textures: [{ key: "layers", kind: "paint" }],
+  };
+
+  function paintFrame(bag: Record<string, unknown>): Frame {
+    return withRenderer({ stages: [PAINT_GAIN], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(flatSource(SIZE));
+      renderer.setParams(identityParams());
+      renderer.setContributedParams(bag);
+      return capture(renderer);
+    });
+  }
+
+  it("reads the painted layer's colour and coverage where it was painted", () => {
+    const frame = paintFrame({
+      "acme.paint.layers": [
+        { id: "under", dabs: [{ ...RIGHT, color: [1, 1, 1] }] },
+        { id: "over", dabs: [{ ...LEFT, color: [0.5, 0, 0] }] },
+      ],
+    });
+    expect(pixelAt(frame, 4, 16)[1]).toBeCloseTo(FLAT_GREY * 1.5, 2);
+    expect(pixelAt(frame, 28, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+  });
+
+  it("reads an absent or malformed value as unpainted", () => {
+    const bags: Record<string, unknown>[] = [
+      {},
+      { "acme.paint.layers": [] },
+      { "acme.paint.layers": [{ id: "a", dabs: [] }, { id: "b", dabs: [LEFT] }] },
+    ];
+    for (const bag of bags) {
+      expect(pixelAt(paintFrame(bag), 4, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+    }
   });
 });
 

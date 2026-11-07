@@ -33,6 +33,12 @@ describe("the official extensions list", () => {
     }
   });
 
+  it("installs Crop and Basic from the repositories they live in", () => {
+    const repo = (id: string) => OFFICIAL_EXTENSIONS.find((e) => e.id === id)?.repo;
+    expect(repo("safelight.crop")).toBe("anthonyreimche/crop");
+    expect(repo("safelight.basic")).toBe("anthonyreimche/basic");
+  });
+
   it("replaces built-in ids, each once, and Library and Develop replace none", () => {
     for (const e of OFFICIAL_EXTENSIONS)
       if (e.replaces !== null) expect(e.replaces, e.id).toMatch(/^core\.[a-z-]+$/);
@@ -104,6 +110,15 @@ describe("manifestIdRefusal", () => {
     expect(
       manifestIdRefusal({ id: "safelight.basic", repository: "AnthonyReimche/Basic-Adjustments" }),
     ).toBeNull();
+  });
+
+  it.each([
+    ["safelight.crop", "anthonyreimche/crop"],
+    ["safelight.crop", "anthonyreimche/crop-and-straighten"],
+    ["safelight.basic", "anthonyreimche/basic"],
+    ["safelight.basic", "anthonyreimche/basic-adjustments"],
+  ])("accepts %s from %s, its repository or the name its releases give", (id, repository) => {
+    expect(manifestIdRefusal({ id, repository })).toBeNull();
   });
 
   it("accepts any other id", () => {

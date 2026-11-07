@@ -108,6 +108,10 @@ export interface AppSettings {
    *  as a drag from there. Off (the default) keeps the relative drag-to-adjust
    *  model: a click grabs the current value and only movement changes it. */
   sliderJumpToCursor: boolean;
+  /** The plain wheel over a closed dropdown picks the previous or next option.
+   *  Off (the default) leaves the wheel to scroll the panel, and only
+   *  Shift+wheel changes the dropdown. */
+  dropdownWheelSelect: boolean;
   /** Collapsing or expanding a dock panel while a saved layout is picked writes
    *  the change into that layout. Off = the edit turns the layout into Custom,
    *  like any other dock edit, until it is saved with ↻. */
@@ -330,6 +334,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   assessBorderPct: 4.5,
   windowDim: 0.6,
   sliderJumpToCursor: false,
+  dropdownWheelSelect: false,
   autoSaveCollapsedPanels: true,
   highContrast: false,
   strongFocus: false,

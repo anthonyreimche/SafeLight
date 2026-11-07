@@ -10,6 +10,7 @@
 // `repository`, which only answers for extensions we never installed ourselves —
 // dev folders, branch pins, and imports that predate this record.
 
+import { isOfficialManifest, officialExtension } from "./official-extensions";
 import type { ExtensionManifest } from "./types";
 
 const SOURCES_KEY = "sl_ext_sources";
@@ -64,12 +65,14 @@ function declaredRepo(manifest: ExtensionManifest): string | null {
     : null;
 }
 
-/** The "owner/repo" auto-update may install `manifest` from: the `repository`
- *  its installed safelight.json declares, or the remembered source when it
- *  declares none. The remembered source lives in localStorage, which any
- *  extension can write, so one that names another repo than the declared one
- *  means no auto-update rather than an install from it. */
+/** The "owner/repo" auto-update may install `manifest` from. An official
+ *  extension updates from the repository core lists for it. Any other updates
+ *  from the `repository` its installed safelight.json declares, or the
+ *  remembered source when it declares none. The remembered source lives in
+ *  localStorage, which any extension can write, so one that names another repo
+ *  than the declared one means no auto-update rather than an install from it. */
 export const updateRepoFor = (manifest: ExtensionManifest): string | null => {
+  if (isOfficialManifest(manifest)) return officialExtension(manifest.id)?.repo ?? null;
   const declared = declaredRepo(manifest);
   const source = readSources()[manifest.id];
   if (!declared) return source || null;

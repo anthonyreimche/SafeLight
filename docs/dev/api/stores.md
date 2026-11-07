@@ -108,7 +108,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 
 | Group | Keys |
 |---|---|
-| Interface | `uiScale`, `reduceMotion`, `uiFont`, `sliderJumpToCursor`, `editingHighlights`, `colorOverrides` |
+| Interface | `uiScale`, `reduceMotion`, `uiFont`, `sliderJumpToCursor`, `dropdownWheelSelect`, `editingHighlights`, `colorOverrides` |
 | Canvas | `canvasSurroundOverride`, `canvasSurround`, `assessBorderPct`, `windowDim` |
 | Accessibility | `highContrast`, `strongFocus`, `largerText`, `largerControls`, `lowercaseHeadings`, `reduceTransparency`, `keyboardCanvasEditing`, `colorVisionFilter`, `syncOSAccessibility` |
 | Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos` |
@@ -167,6 +167,7 @@ sourcePixels(): { data: Uint8ClampedArray; width; height } | null; // 3.2.0
 onSourcePixels(listener): () => void;              // 3.2.0
 probeMaskColour(u, v): Promise<[r, g, b] | null>;  // 3.2.0
 showMaskCoverage(maskId: string | null): void;     // 3.2.0
+setViewValues(values: Record<string, unknown> | null): void; // 3.2.1
 useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
 useOlderProcessing(): boolean;                     // 3.2.0
 autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a Promise<void>
@@ -183,6 +184,7 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 - `sourcePixels` is a small 8-bit sRGB copy of the open photo's source (RGBA8 rows from the top, about 1024 px on its long edge), for searches of the image itself (Heal's source pick). It is `null` before the first frame. `onSourcePixels` calls you with each new one: another photo, or a new decode.
 - `probeMaskColour` reads the colour a mask's colour range compares at a point of the live frame buffer (0 to 1 across `useDevelopOverlay` `rect`): scene-linear, before the display transform.
 - `showMaskCoverage` tints a mask's coverage over the image, fading in and out, or with `null` none: the mask a masking panel points at.
+- `setViewValues` gives the live view values for your own stages' params and textures, by qualified key (`"{stageId}.{key}"`), drawn over the photo's own: feedback that is not part of the edit, such as Paint Layers tinting the layer you hover. They are never saved, undone, exported or drawn in thumbnails. Each call replaces your last set, `null` clears it, keys of other extensions' stages are ignored, and holding your panel's preview off drops them. They are cleared when your extension stops.
 - `useMaskPanels` lists the panels that can be added to a mask (`PanelContribution.mask`), in their `order` then by title. `extensionParams` is true for one that owns an extension's params, which run inside the mask only at the current processing. Draw one inside `components.MaskScope`; the develop store's `seedMaskPanelValues` and `clearMaskPanelValues` set or clear its values when it is added or removed.
 - `probe` reads the colour the canvas shows at a point in its pixels (sRGB, 0 to 1) from the live frame, or `null` with no frame.
 - `autoAdjust` runs core's Auto White Balance, the white-balance eyedropper at a canvas point, or Auto Tone to convergence, then commits one undo step. Each needs the frame's histogram (`useDevelopStore` `histogram`) and does nothing without one, and only one runs at a time. Pair `whiteBalanceAt` with `setPickDrag`: call it from `onPress` with the point.

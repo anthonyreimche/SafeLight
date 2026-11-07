@@ -13,6 +13,7 @@ import type { ImageWindow } from "@/ui/viewport-view";
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
 const VIZ_STRENGTH = 0.5;
 import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
+import { useStageViewValues } from "@/modules/develop/stage-view-values";
 import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
@@ -37,9 +38,12 @@ export type { DevelopTier };
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
 // background. Reading the DOM rather than re-deriving from settings keeps the
-// crop-mode margin matching every case at once — theme surface, the fixed
-// surround override, and colour-assessment grey. Falls back to the legacy dark.
-function surroundRGB(): [number, number, number] {
+// crop-mode margin matching every case at once — theme surface and the fixed
+// surround override. Falls back to the legacy dark. While assessing, the
+// buffer sits inside Assess's white mat (ViewportImage), so the margin is the
+// mat's white rather than the grey around it.
+function surroundRGB(assessing: boolean): [number, number, number] {
+  if (assessing) return [1, 1, 1];
   if (typeof document !== "undefined") {
     const el = document.querySelector("[data-canvas-surround]");
     if (el) {
@@ -53,13 +57,16 @@ function surroundRGB(): [number, number, number] {
 }
 
 /** The stage bag the worker draws with: the photo's own and the built-in stages'
- *  entries (frameStageBag), with what bypassed panels own taken out. */
+ *  entries (frameStageBag) under the extensions' view values, with what
+ *  bypassed panels own taken out. */
 function stageBag(
   params: DevelopParams,
   paramBag: Record<string, unknown>,
   bypassed: Record<string, boolean>,
+  viewValues: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
-  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(paramBag, bypassed));
+  const shown = Object.keys(viewValues).length > 0 ? { ...paramBag, ...viewValues } : paramBag;
+  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed));
 }
 
 // The canvas corner says "Preview" once a preview has shown for LABEL_DELAY_MS, and
@@ -232,6 +239,7 @@ export function useDevelopRenderer(
   const canvasSurround = useSettings((s) => s.canvasSurround);
   const canvasSurroundOverride = useSettings((s) => s.canvasSurroundOverride);
   const shownMaskId = useMaskCoverageView((s) => s.maskId);
+  const viewValues = useStageViewValues((s) => s.merged);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
@@ -267,7 +275,9 @@ export function useDevelopRenderer(
     setCantShow(null);
     bridge.setAsShotTemperature(opened.exif.colorTemperature ?? 6500);
     const st = useDevelopStore.getState();
-    bridge.setContributedParams(stageBag(st.params, st.paramBag, st.bypassedPanels));
+    bridge.setContributedParams(
+      stageBag(st.params, st.paramBag, st.bypassedPanels, useStageViewValues.getState().merged),
+    );
     bridge.setParams(forRender(st.params, canvasToolView(useCanvasToolStore.getState().held)));
     histogram.clearDirty();
     bridge.render(true, true);
@@ -425,7 +435,7 @@ export function useDevelopRenderer(
     const bridge = bridgeRef.current;
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
-    bridge.setContributedParams(stageBag(params, paramBag, bypassedPanels));
+    bridge.setContributedParams(stageBag(params, paramBag, bypassedPanels, viewValues));
     bridge.setParams(drawn);
     histogram.markDirty();
     if (rafIdRef.current == null) {
@@ -436,7 +446,7 @@ export function useDevelopRenderer(
     }
     // `params` feeds only the stage bag here, which changes with `drawn`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawn, paramBag, view, pipelineId, asShotTemperature, viewAspect, bypassedPanels]);
+  }, [drawn, paramBag, view, pipelineId, asShotTemperature, viewAspect, bypassedPanels, viewValues]);
 
   // An edited stored preview standing in for the photo holds only while it shows the edit.
   useEffect(() => {
@@ -470,7 +480,7 @@ export function useDevelopRenderer(
   useEffect(() => {
     const bridge = bridgeRef.current;
     if (!bridge) return;
-    bridge.setOutsideColor(surroundRGB());
+    bridge.setOutsideColor(surroundRGB(colorAssessment));
     bridge.render(false);
   }, [colorAssessment, canvasSurround, canvasSurroundOverride]);
 

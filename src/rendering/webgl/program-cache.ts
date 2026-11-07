@@ -429,7 +429,8 @@ function uniformLocations(
   // Extension stage-texture samplers / coverage channel uniforms, keyed by
   // qualified key.
   for (const tb of built.textureBindings) {
-    const name = tb.kind === "coverage" ? `${tb.glslName}_ch` : tb.glslName;
+    const name =
+      tb.kind === "coverage" ? `${tb.glslName}_ch` : tb.kind === "paint" ? `${tb.glslName}_tex` : tb.glslName;
     u[tb.qualifiedKey] = gl.getUniformLocation(program, name);
   }
   return u;

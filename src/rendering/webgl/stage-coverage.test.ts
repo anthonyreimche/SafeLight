@@ -8,7 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { BrushDab } from "@/catalog/types";
-import { coverageItemsFromBag, isBrushDabList, paramIsActive } from "./stage-coverage";
+import { MAX_PAINT_LAYERS, type PaintDab } from "@/extensions/api/contributions";
+import { coverageItemsFromBag, isBrushDabList, paintLayersFromValue, paramIsActive } from "./stage-coverage";
 
 const dab = (patch: Partial<BrushDab> = {}): BrushDab => ({
   x: 0.5,
@@ -74,5 +75,43 @@ describe("paramIsActive", () => {
 
   it("never lets a dab list engage a prepass", () => {
     expect(paramIsActive([dab(), dab()])).toBe(false);
+  });
+});
+
+describe("paintLayersFromValue", () => {
+  const red: [number, number, number] = [1, 0, 0];
+  const paint = (patch: Partial<PaintDab> = {}): PaintDab => ({ ...dab(), color: red, ...patch });
+
+  it("reads each layer's id and dabs, ignoring extra fields", () => {
+    const layers = paintLayersFromValue([{ id: "a", name: "Dodge", dabs: [paint()] }]);
+    expect(layers).toEqual([{ id: "a", dabs: [paint()] }]);
+  });
+
+  it("keeps at most MAX_PAINT_LAYERS layers", () => {
+    const many = Array.from({ length: MAX_PAINT_LAYERS + 2 }, (_, i) => ({ id: `l${i}`, dabs: [] }));
+    expect(paintLayersFromValue(many).map((l) => l.id)).toEqual(["l0", "l1", "l2", "l3"]);
+  });
+
+  it("bakes a malformed layer empty in its own place, so the layers after it keep theirs", () => {
+    const layers = paintLayersFromValue([
+      { id: "a", dabs: [{ ...dab(), color: [1, 0] }] },
+      { id: "b", dabs: [dab()] },
+      7,
+      { id: "d", dabs: [paint({ color: [0, 0, 1] })] },
+    ]);
+    expect(layers.map((l) => l.dabs.length)).toEqual([0, 0, 0, 1]);
+    expect(layers[3]).toEqual({ id: "d", dabs: [paint({ color: [0, 0, 1] })] });
+  });
+
+  it("refuses colours that aren't three finite numbers", () => {
+    for (const color of [[1, 0, Number.NaN], ["1", 0, 0], [1, 0, 0, 1], undefined]) {
+      expect(paintLayersFromValue([{ id: "a", dabs: [{ ...dab(), color }] }])[0].dabs).toEqual([]);
+    }
+  });
+
+  it("reads anything that isn't a list as no layers", () => {
+    for (const value of [undefined, null, 1, "a", { id: "a", dabs: [] }]) {
+      expect(paintLayersFromValue(value)).toEqual([]);
+    }
   });
 });

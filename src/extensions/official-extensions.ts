@@ -15,8 +15,12 @@ import { isReservedExtensionId, reservedIdReason } from "./core-extension";
 
 export interface OfficialExtension {
   id: string;
-  /** "owner/repo" the extension must name as its manifest `repository`. */
+  /** "owner/repo" it installs and updates from, and the manifest `repository`
+   *  it names. */
   repo: string;
+  /** Other names its manifest may give as `repository`: the ones its
+   *  releases were published under before `repo` was corrected. */
+  aliases?: readonly string[];
   /** The built-in extension it takes over from, or null when it has none (the
    *  Library and Develop modules are not extensions). */
   replaces: string | null;
@@ -54,14 +58,13 @@ export const officialExtension = (id: string): OfficialExtension | undefined =>
 
 type ManifestIds = Pick<ExtensionManifest, "id" | "repository">;
 
-/** Whether the list has `m`'s id and `m` names that row's repository. */
-function isOfficialManifest(m: ManifestIds): boolean {
+/** Whether the list has `m`'s id and `m` names that row's repository or one
+ *  of its aliases. */
+export function isOfficialManifest(m: ManifestIds): boolean {
   const row = officialExtension(m.id);
-  return (
-    !!row &&
-    typeof m.repository === "string" &&
-    m.repository.toLowerCase() === row.repo.toLowerCase()
-  );
+  if (!row || typeof m.repository !== "string") return false;
+  const named = m.repository.toLowerCase();
+  return [row.repo, ...(row.aliases ?? [])].some((r) => r.toLowerCase() === named);
 }
 
 const officialIdReason = (id: string): string =>

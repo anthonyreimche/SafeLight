@@ -578,3 +578,18 @@ describe("ids that belong to Safelight's own stages", () => {
     expect(() => checkStageContract(withFields({ id }), "acme")).not.toThrow();
   });
 });
+
+describe("paint textures", () => {
+  it("lets any extension's stage declare one", () => {
+    const check = checkStageContract(withFields({ textures: [{ key: "layers", kind: "paint" }] }), "acme");
+    expect(check.error).toBeNull();
+  });
+
+  it("refuses a second paint texture on one stage", () => {
+    const check = checkStageContract(
+      withFields({ textures: [{ key: "a", kind: "paint" }, { key: "b", kind: "paint" }] }),
+      "acme",
+    );
+    expect(check.error).toMatch(/^stage "acme\.stage": .*paint texture/);
+  });
+});
