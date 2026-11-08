@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storedPhoto, type StoredPhoto } from "@/catalog/types";
+import { stackCoverId } from "@/catalog/stacks";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import {
   ChangeClock,
@@ -13,6 +14,7 @@ import {
   newer,
   readChangeStamps,
   type ChangeStamp,
+  type PhotoStamps,
 } from "./change-stamps";
 
 const record = (changes: Partial<StoredPhoto> = {}): StoredPhoto => ({
@@ -116,5 +118,41 @@ describe("stamps as a catalogue keeps them", () => {
     });
     expect(stamps).toEqual({ photos: { a: { rating: [5, "w"] } }, edits: { a: [6, "w"] } });
     expect(readChangeStamps("junk")).toEqual({ photos: {}, edits: {} });
+  });
+});
+
+describe("stacks", () => {
+  it("puts stackId and stackCover in one group, apart from every other", () => {
+    expect(changedGroups(record(), record({ stackId: "S" }))).toEqual(["stack"]);
+    expect(changedGroups(record(), record({ stackCover: true }))).toEqual(["stack"]);
+    expect(changedGroups(record(), record({ stackId: "S", stackCover: true }))).toEqual(["stack"]);
+  });
+
+  it("takes a stack change without touching the group of a rating changed meanwhile", () => {
+    const held = record({ rating: 4 });
+    const merged = mergePhoto(held, { rating: [9, "b"] }, record({ rating: 1, stackId: "S" }), {
+      rating: [2, "a"],
+      stack: [3, "a"],
+    });
+    expect(merged.record).toMatchObject({ rating: 4, stackId: "S" });
+  });
+
+  it("leaves exactly one cover when two windows each marked another member", () => {
+    const stackOne = { stack: [1, "a"] } satisfies PhotoStamps;
+    const stackTwo = { stack: [2, "b"] } satisfies PhotoStamps;
+    const inA = [record({ id: "p1", stackId: "S", stackCover: true }), record({ id: "p2", stackId: "S" })];
+    const inB = [record({ id: "p1", stackId: "S" }), record({ id: "p2", stackId: "S", stackCover: true })];
+    const stampsA = [stackOne, undefined];
+    const stampsB = [undefined, stackTwo];
+
+    const merge = (held: StoredPhoto[], heldStamps: (PhotoStamps | undefined)[], incoming: StoredPhoto[], incomingStamps: (PhotoStamps | undefined)[]) =>
+      held.map((h, i) => mergePhoto(h, heldStamps[i], incoming[i], incomingStamps[i]).record);
+
+    const inWindowA = merge(inA, stampsA, inB, stampsB);
+    const inWindowB = merge(inB, stampsB, inA, stampsA);
+
+    expect(inWindowA.filter((r) => r.stackCover)).toHaveLength(2);
+    expect(stackCoverId(inWindowA)).toBe("p1");
+    expect(stackCoverId(inWindowB)).toBe("p1");
   });
 });

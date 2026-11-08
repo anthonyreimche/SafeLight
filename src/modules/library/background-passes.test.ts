@@ -44,6 +44,8 @@ const h = vi.hoisted(() => ({
   cacheDeletes: [] as string[],
   /** Ids of the photos handed to catalogStorage().putPhoto. */
   saved: [] as string[],
+  /** The `lazy` option each of those puts carried. */
+  savedLazy: [] as (boolean | undefined)[],
   /** Grid thumbnails built, and decoded bitmaps let go of. */
   thumbnails: 0,
   bitmapsClosed: 0,
@@ -130,8 +132,9 @@ vi.mock("@/state/settings-store", () => ({
 
 vi.mock("@/catalog/storage", () => ({
   catalogStorage: () => ({
-    putPhoto: async (photo: CatalogPhoto) => {
+    putPhoto: async (photo: CatalogPhoto, options?: { lazy?: boolean }) => {
       h.saved.push(photo.id);
+      h.savedLazy.push(options?.lazy);
       h.whileSaving();
     },
   }),
@@ -261,6 +264,14 @@ describe("the Cache all pre-decode of a project the user has left", () => {
 });
 
 describe("the repair of missing previews of a project the user has left", () => {
+  it("stores what it derives lazily, since a later open derives it again", async () => {
+    h.savedLazy.length = 0;
+
+    await repairMissingPreviews(unrepaired(2));
+
+    expect(h.savedLazy).toEqual([true, true]);
+  });
+
   it("reads nothing when the project was left before it began", async () => {
     await repairMissingPreviews(unrepaired(2), undefined, left());
 
@@ -300,17 +311,27 @@ describe("the repair of missing previews of a project the user has left", () => 
 
     await repairMissingPreviews(unrepaired(1), undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true, signal: project.signal }]);
     expect(h.saved).toEqual(["id:DSC_0000.NEF"]);
   });
 });
 
 describe("rebuilding every preview", () => {
+  it("saves what the user asked for on the normal cadence, not lazily", async () => {
+    h.savedLazy.length = 0;
+
+    await rebuildThumbnails(raws(1));
+    await reimportPhotos(raws(1));
+
+    expect(h.savedLazy.length).toBeGreaterThan(0);
+    expect(h.savedLazy.every((lazy) => !lazy)).toBe(true);
+  });
+
   it("decodes and reads metadata as background work", async () => {
     await rebuildThumbnails(raws(1));
 
-    expect(h.floatDecodes).toEqual([{ background: true }]);
+    expect(h.floatDecodes).toEqual([{ background: true, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true }]);
   });
 
@@ -319,7 +340,7 @@ describe("rebuilding every preview", () => {
 
     await rebuildThumbnails(raws(1), undefined, undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true, signal: project.signal }]);
   });
 
@@ -491,7 +512,7 @@ describe("importing photos again for a project the user has left", () => {
 
     await reimportPhotos(raws(1), undefined, undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ signal: project.signal }]);
   });
 });

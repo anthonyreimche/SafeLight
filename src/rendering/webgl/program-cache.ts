@@ -38,9 +38,29 @@ export interface PipelineProgram {
 // (a film stock picked) is a new program each time, and each holds driver memory.
 export const MAX_PROGRAMS = 32;
 
-// A build is synchronous, and the render worker says nothing while one runs, so one
-// that takes longer than this is logged: otherwise it reads as a worker that stopped.
+// A frame waits for its program's build, and the render worker says nothing while
+// it does, so a wait longer than this is logged: otherwise it reads as a worker that
+// stopped.
 const SLOW_BUILD_MS = 1_000;
+
+// How many builds submit may leave unfinished: each holds a program the driver is
+// compiling, and a hint the user never followed up leaves one nobody asks for.
+const MAX_SUBMITTED = 4;
+
+// How often whenBuilt asks the driver whether its build is done. A develop
+// program takes hundreds of milliseconds, so a few more past it go unnoticed.
+const SETTLE_POLL_MS = 8;
+
+/** A develop program submitted ahead of a frame (ProgramCache.submit), and what
+ *  entryFor needs to finish it into an entry. */
+interface Submitted {
+  build: SubmittedProgram;
+  p: ResolvedPipeline;
+  built: BuiltStageInjection;
+  variant: ShaderVariant;
+  stageIds: ReadonlySet<string>;
+  exit: ProgramExit | undefined;
+}
 
 // More signatures than this for one stage id inside the window is a stage
 // re-registering itself with new GLSL, compiling a program every time.
@@ -61,10 +81,85 @@ export class ProgramCache {
   private current: PipelineProgram | null = null;
   // When each stage id was last built under each of its signatures.
   private stageBuilds = new Map<string, Map<string, number>>();
+  // Builds submitted and not finished yet, oldest first, by program cache key.
+  private submitted = new Map<string, Submitted>();
+  // KHR_parallel_shader_compile, which says when a build is done without waiting for it.
+  private readonly parallel: KHR_parallel_shader_compile | null;
 
   constructor(gl: WebGL2RenderingContext, maxPrograms = MAX_PROGRAMS) {
     this.gl = gl;
     this.maxPrograms = maxPrograms;
+    this.parallel = gl.getExtension("KHR_parallel_shader_compile");
+  }
+
+  /** Start building the entry entryFor would build for these, without waiting for
+   *  the driver: the frame that asks for it later finishes it, waiting only for
+   *  what is left, and builds nothing again. True when a build was started; false
+   *  for an entry built, failed or submitted already, or on a lost context. Past
+   *  MAX_SUBMITTED, the oldest submission is let go. */
+  submit(
+    p: ResolvedPipeline,
+    built: BuiltStageInjection,
+    variant: ShaderVariant,
+    stageIds: ReadonlySet<string>,
+    exit?: ProgramExit,
+  ): boolean {
+    const key = cacheKeyOf(p, built, variant, exit);
+    if (this.programs.has(key) || this.failedBuilds.has(key) || this.submitted.has(key)) return false;
+    if (this.gl.isContextLost()) return false;
+    for (const [oldest, s] of this.submitted) {
+      if (this.submitted.size < MAX_SUBMITTED) break;
+      this.letGo(oldest, s);
+    }
+    const build = submitProgram(this.gl, VERTEX_SHADER, developSource(p, built, variant, exit), developName(p, stageIds));
+    this.submitted.set(key, { build, p, built, variant, stageIds, exit });
+    return true;
+  }
+
+  /** Finish the submitted builds the driver says are done (KHR_parallel_shader_compile),
+   *  so no frame waits on them. Without the extension a build can't be asked about
+   *  without waiting, and is finished by the frame that needs it. */
+  settle(): void {
+    const parallel = this.parallel;
+    if (!parallel || this.submitted.size === 0) return;
+    for (const s of [...this.submitted.values()]) {
+      if (!this.gl.getProgramParameter(s.build.program, parallel.COMPLETION_STATUS_KHR)) continue;
+      try {
+        this.entryFor(s.p, s.built, s.variant, s.stageIds, s.exit);
+      } catch {
+        // Remembered under its key, and thrown to the frame that asks for it.
+      }
+    }
+  }
+
+  /** Build the entry entryFor would build for these without blocking the
+   *  thread on the driver: submitted, then finished by settle() once the
+   *  driver says it is done, asked every SETTLE_POLL_MS. Resolves once it is
+   *  built or has failed, never rejecting: a failure is remembered for
+   *  entryFor to throw. Without KHR_parallel_shader_compile a build can't be
+   *  asked about, so it resolves at once and leaves the build to entryFor. */
+  async whenBuilt(
+    p: ResolvedPipeline,
+    built: BuiltStageInjection,
+    variant: ShaderVariant,
+    stageIds: ReadonlySet<string>,
+    exit?: ProgramExit,
+  ): Promise<void> {
+    if (!this.parallel) return;
+    const key = cacheKeyOf(p, built, variant, exit);
+    this.submit(p, built, variant, stageIds, exit);
+    while (this.submitted.has(key) && !this.gl.isContextLost()) {
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+      this.settle();
+    }
+  }
+
+  private letGo(key: string, s: Submitted): void {
+    this.submitted.delete(key);
+    const gl = this.gl;
+    gl.deleteShader(s.build.vs);
+    gl.deleteShader(s.build.fs);
+    gl.deleteProgram(s.build.program);
   }
 
   /** The entry the renderer has switched to drawing with: never evicted while it is. */
@@ -88,7 +183,7 @@ export class ProgramCache {
     stageIds: ReadonlySet<string>,
     exit?: ProgramExit,
   ): PipelineProgram {
-    const cacheKey = `${p.sig}|${built.sig}|${variantKey(variant)}${exit ? `|${exit}` : ""}`;
+    const cacheKey = cacheKeyOf(p, built, variant, exit);
     const cached = this.programs.get(cacheKey);
     if (cached) {
       this.programs.delete(cacheKey);
@@ -99,7 +194,7 @@ export class ProgramCache {
     this.programStages.set(cacheKey, stageIds);
     this.noteStageSignatures(built.sig);
     try {
-      const entry = this.buildEntry(p, built, variant, stageIds, exit);
+      const entry = this.buildEntry(p, built, variant, stageIds, exit, this.takeSubmitted(cacheKey));
       this.programs.set(cacheKey, entry);
       this.evictBeyondCap(entry);
       return entry;
@@ -150,20 +245,26 @@ export class ProgramCache {
     }
   }
 
+  // The submission under `key`, handed over to be finished.
+  private takeSubmitted(key: string): SubmittedProgram | undefined {
+    const s = this.submitted.get(key);
+    this.submitted.delete(key);
+    return s?.build;
+  }
+
+  // Finishes `submitted` when there is one, else builds the entry here and now.
   private buildEntry(
     p: ResolvedPipeline,
     built: BuiltStageInjection,
     variant: ShaderVariant,
     stageIds: ReadonlySet<string>,
     exit: ProgramExit | undefined,
+    submitted?: SubmittedProgram,
   ): PipelineProgram {
     try {
-      const program = createProgram(
-        this.gl,
-        VERTEX_SHADER,
-        withProcessVersion(buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls), variant.version),
-        `the develop program for "${p.id}" with ${stageIds.size} stages`,
-      );
+      const program = submitted
+        ? finishProgram(this.gl, submitted)
+        : createProgram(this.gl, VERTEX_SHADER, developSource(p, built, variant, exit), developName(p, stageIds));
       return {
         program,
         uniforms: uniformLocations(this.gl, program, built, p.bindings ?? []),
@@ -185,6 +286,9 @@ export class ProgramCache {
   // stage set compiles again like any new one.
   releaseWithout(current: ReadonlySet<string>): void {
     const released = new Set<WebGLProgram>();
+    for (const [key, s] of this.submitted) {
+      if (![...s.stageIds].every((id) => current.has(id))) this.letGo(key, s);
+    }
     for (const [key, ids] of this.programStages) {
       if ([...ids].every((id) => current.has(id))) continue;
       const entry = this.programs.get(key);
@@ -199,12 +303,33 @@ export class ProgramCache {
   }
 
   dispose(): void {
+    for (const [key, s] of this.submitted) this.letGo(key, s);
     // Fallback entries can share a program under several sigs — dedupe.
     const programs = new Set<WebGLProgram>();
     for (const e of this.programs.values()) programs.add(e.program);
     for (const prog of programs) this.gl.deleteProgram(prog);
   }
 }
+
+// The key a develop program is cached under: pipeline, stage set, process version
+// and a probe's or scene measurement's exit.
+const cacheKeyOf = (
+  p: ResolvedPipeline,
+  built: BuiltStageInjection,
+  variant: ShaderVariant,
+  exit: ProgramExit | undefined,
+): string => `${p.sig}|${built.sig}|${variantKey(variant)}${exit ? `|${exit}` : ""}`;
+
+const developSource = (
+  p: ResolvedPipeline,
+  built: BuiltStageInjection,
+  variant: ShaderVariant,
+  exit: ProgramExit | undefined,
+): string =>
+  withProcessVersion(buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls), variant.version);
+
+const developName = (p: ResolvedPipeline, stageIds: ReadonlySet<string>): string =>
+  `the develop program for "${p.id}" with ${stageIds.size} stages`;
 
 // The most builds one failure may spend finding the stages it comes from: each is
 // a whole develop program's compile.
@@ -271,6 +396,72 @@ export function isolateFailingStages<T>(
   }
 }
 
+/** A program whose compile and link were asked of the driver and not yet waited
+ *  on: the driver works on it while the caller goes on (finishProgram). */
+export interface SubmittedProgram {
+  program: WebGLProgram;
+  vs: WebGLShader;
+  fs: WebGLShader;
+  /** Which program it is, for the slow-build warning. */
+  name: string;
+  /** The fragment source's length, for the same. */
+  fsLength: number;
+}
+
+/** Ask the driver to build a program from `vsSrc` and `fsSrc` without waiting for
+ *  it: nothing reads a status until finishProgram. `name` says which program it
+ *  is in the slow-build warning. */
+export function submitProgram(
+  gl: WebGL2RenderingContext,
+  vsSrc: string,
+  fsSrc: string,
+  name = "a program",
+): SubmittedProgram {
+  const vs = submitShader(gl, gl.VERTEX_SHADER, vsSrc);
+  const fs = submitShader(gl, gl.FRAGMENT_SHADER, withHighpSamplers(fsSrc));
+  const program = created(gl.createProgram());
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  // Pin attribute locations so the shared quad VAO is valid for every
+  // pipeline variant of the program.
+  gl.bindAttribLocation(program, ATTR_POS, "aPos");
+  gl.bindAttribLocation(program, ATTR_UV, "aUv");
+  gl.linkProgram(program);
+  return { program, vs, fs, name, fsLength: fsSrc.length };
+}
+
+/** The built program, waiting for the driver where it isn't done, or the error
+ *  it failed with: a shader's compile log, else the link log. Warns when the
+ *  wait from `since` takes longer than SLOW_BUILD_MS. Either way the shaders
+ *  are let go, and a failed program with them. */
+export function finishProgram(
+  gl: WebGL2RenderingContext,
+  submitted: SubmittedProgram,
+  since = performance.now(),
+): WebGLProgram {
+  const { program, vs, fs } = submitted;
+  try {
+    const shaderLog = compileLog(gl, vs) ?? compileLog(gl, fs);
+    const linked = shaderLog === null && gl.getProgramParameter(program, gl.LINK_STATUS);
+    if (linked) return program;
+    const error =
+      shaderLog === null
+        ? `Program link failed: ${gl.getProgramInfoLog(program)}`
+        : `Shader compile failed: ${shaderLog}`;
+    gl.deleteProgram(program);
+    throw new Error(error);
+  } finally {
+    // Attached shaders are freed with the program once flagged.
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    const ms = performance.now() - since;
+    if (ms > SLOW_BUILD_MS) {
+      const kb = (submitted.fsLength / 1024).toFixed(1);
+      console.warn(`[renderer] ${submitted.name} took ${Math.round(ms)} ms to build (${kb} KB of fragment GLSL)`);
+    }
+  }
+}
+
 /** Build a program from `vsSrc` and `fsSrc`, warning when the driver takes longer
  *  than SLOW_BUILD_MS over it. `name` says which program it is in that warning. */
 export function createProgram(
@@ -280,47 +471,7 @@ export function createProgram(
   name = "a program",
 ): WebGLProgram {
   const start = performance.now();
-  try {
-    return buildProgram(gl, vsSrc, fsSrc);
-  } finally {
-    const ms = performance.now() - start;
-    if (ms > SLOW_BUILD_MS) {
-      const kb = (fsSrc.length / 1024).toFixed(1);
-      console.warn(`[renderer] ${name} took ${Math.round(ms)} ms to build (${kb} KB of fragment GLSL)`);
-    }
-  }
-}
-
-function buildProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLProgram {
-  const vs = compileShader(gl, gl.VERTEX_SHADER, vsSrc);
-  let fs: WebGLShader;
-  try {
-    fs = compileShader(gl, gl.FRAGMENT_SHADER, withHighpSamplers(fsSrc));
-  } catch (err) {
-    // A contributed stage with bad GLSL fails here on every attempt (each
-    // pipeline switch, each dev-folder reload), so the already-compiled
-    // vertex shader must not be stranded on the way out.
-    gl.deleteShader(vs);
-    throw err;
-  }
-  const program = created(gl.createProgram());
-  gl.attachShader(program, vs);
-  gl.attachShader(program, fs);
-  // Pin attribute locations so the shared quad VAO is valid for every
-  // pipeline variant of the program.
-  gl.bindAttribLocation(program, ATTR_POS, "aPos");
-  gl.bindAttribLocation(program, ATTR_UV, "aUv");
-  gl.linkProgram(program);
-  // Attached shaders are freed with the program once flagged, so release them
-  // before the link check — otherwise a link failure strands both.
-  gl.deleteShader(vs);
-  gl.deleteShader(fs);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(program);
-    gl.deleteProgram(program);
-    throw new Error(`Program link failed: ${log}`);
-  }
-  return program;
+  return finishProgram(gl, submitProgram(gl, vsSrc, fsSrc, name), start);
 }
 
 // A fragment sampler2D is lowp by default, which drivers that lower lowp to fp16
@@ -339,16 +490,16 @@ export function withProcessVersion(src: string, version: ProcessVersion): string
   return src.replace(/^(#version[^\n]*\n)/, `$1#define SL_PROCESS_VERSION ${version}\n`);
 }
 
-function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
+function submitShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const shader = created(gl.createShader(type));
   gl.shaderSource(shader, src);
   gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const log = gl.getShaderInfoLog(shader);
-    gl.deleteShader(shader);
-    throw new Error(`Shader compile failed: ${log}`);
-  }
   return shader;
+}
+
+// A shader's compile log once it failed, or null when it compiled.
+function compileLog(gl: WebGL2RenderingContext, shader: WebGLShader): string | null {
+  return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? null : gl.getShaderInfoLog(shader);
 }
 
 function uniformLocations(

@@ -4,10 +4,10 @@
 // be preserved in derived versions.
 
 // A batch shares one renderer, which builds its develop program on the first
-// frame it draws. The batch builds the first photo's program before decoding
-// anything. A stock program the driver can't build fails the whole batch up front,
-// as a renderer that couldn't be created does, instead of decoding every photo
-// only to fail each at its frame. Stages or a display transform that can't be built
+// frame it draws. The batch has the driver build the first photo's program while
+// that photo decodes, before drawing anything. A stock program the driver can't
+// build fails the whole batch up front, as a renderer that couldn't be created
+// does, instead of decoding every photo only to fail each at its frame. Stages or a display transform that can't be built
 // are logged and the photos fail one by one, as they always did. The renderer is
 // faked: what it does with a program is covered on a real GL context by
 // renderer.webgl.test.ts.
@@ -22,7 +22,8 @@ import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 import type { ExportPixels, ExportPixelsOptions, ExportTarget, Sharpen } from "@/rendering/webgl/export-draw";
 
 const h = vi.hoisted(() => {
-  /** What happened, in order: "prepare:<version>", "stock:<version>", "decode:<photo id>". */
+  /** What happened, in order: "submit:<version>" and "built:<version>" (the driver's
+   *  build), "prepare:<version>", "stock:<version>", "decode:<photo id>". */
   const events: string[] = [];
   /** The codes every version 3 16-bit export draws: 2×1, RGBA. */
   const exportCodes = new Uint16Array([1, 2, 3, 65535, 40000, 50000, 65535, 65535]);
@@ -70,6 +71,14 @@ const h = vi.hoisted(() => {
 
     setActivePipeline(pipeline: unknown) {
       this.pipeline = pipeline;
+    }
+
+    /** How long, in ms, the driver takes over a prepareProgramAsync build; 0 is done at once. */
+    static driverBuildMs = 0;
+    async prepareProgramAsync(version: number): Promise<void> {
+      events.push(`submit:${version}`);
+      if (FakeRenderer.driverBuildMs) await new Promise((resolve) => setTimeout(resolve, FakeRenderer.driverBuildMs));
+      events.push(`built:${version}`);
     }
 
     prepareProgram(version: number) {
@@ -307,6 +316,7 @@ beforeEach(() => {
   h.FakeRenderer.gpuSharpens = true;
   h.FakeRenderer.floatCapture = { data: new Float32Array(8).fill(0.5), width: 2, height: 1 };
   h.FakeRenderer.quarantineAtImage = null;
+  h.FakeRenderer.driverBuildMs = 0;
   h.nativeFs = null;
   h.catalog = [];
   h.cpuSharpened.length = 0;
@@ -334,21 +344,28 @@ function driverFails(error: Error) {
   h.FakeRenderer.stockError = error;
 }
 
+/** The builds on the window's thread, in order. */
+const builds = () => h.events.filter((e) => /^(prepare|stock):/.test(e));
+
 describe("a batch's develop program", () => {
-  it("is built for the first photo's version and transform before any decode", async () => {
+  // Built on the window's thread, it held the window still for up to a second
+  // when Export was clicked, and only then did the first photo start decoding.
+  it("is built by the driver for the first photo's version and transform while that photo decodes", async () => {
     h.edits.set("a", OLD_PICK);
     h.edits.set("b", CURRENT);
+    h.FakeRenderer.driverBuildMs = 20;
     await renderPhotosToBlobs([photo("a"), photo("b")], SETTINGS);
 
     const [renderer] = h.FakeRenderer.instances;
     expect(renderer.prepared).toEqual([
       { version: LEGACY_PROCESS_VERSION, pipeline: "pipeline:pick" },
     ]);
-    expect(h.events).toEqual([`prepare:${LEGACY_PROCESS_VERSION}`, "decode:a", "decode:b"]);
+    const v = LEGACY_PROCESS_VERSION;
+    expect(h.events).toEqual([`submit:${v}`, "decode:a", `built:${v}`, `prepare:${v}`, "decode:b"]);
     expect(renderer.disposed).toBe(true);
   });
 
-  it("fails a rendered batch up front, undecoded, when the stock program can't build", async () => {
+  it("fails a rendered batch up front, drawing nothing, when the stock program can't build", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     h.edits.set("a", CURRENT);
     h.edits.set("b", CURRENT);
@@ -357,17 +374,19 @@ describe("a batch's develop program", () => {
     const out = await renderPhotosToBlobs([photo("a"), photo("b")], SETTINGS, progress);
 
     expect(out.map((r) => r.blob)).toEqual([null, null]);
-    expect(h.events).toEqual([
+    expect(builds()).toEqual([
       `prepare:${CURRENT_PROCESS_VERSION}`,
       `stock:${CURRENT_PROCESS_VERSION}`,
     ]);
+    expect(h.events).not.toContain("decode:b");
+    expect(h.events).not.toContain("setImage");
     expect(progress).not.toHaveBeenCalled();
     expect(h.FakeRenderer.instances[0].disposed).toBe(true);
     expect(logged).toHaveBeenCalledTimes(1);
     expect(logged.mock.calls[0].join(" ")).toContain("Shader compile failed: boom");
   });
 
-  it("fails an exported batch up front, undecoded, when the stock program can't", async () => {
+  it("fails an exported batch up front, drawing nothing, when the stock program can't", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     h.edits.set("a", CURRENT);
     h.edits.set("b", CURRENT);
@@ -385,10 +404,12 @@ describe("a batch's develop program", () => {
       degradedTo8Bit: 0,
       reducedPrecision: 0,
     });
-    expect(h.events).toEqual([
+    expect(builds()).toEqual([
       `prepare:${CURRENT_PROCESS_VERSION}`,
       `stock:${CURRENT_PROCESS_VERSION}`,
     ]);
+    expect(h.events).not.toContain("decode:b");
+    expect(h.events).not.toContain("setImage");
     expect(progress).not.toHaveBeenCalled();
     expect(h.FakeRenderer.instances[0].disposed).toBe(true);
   });
@@ -434,12 +455,11 @@ describe("a batch's develop program", () => {
     const progress = vi.fn();
     await renderPhotosToBlobs([photo("a"), photo("b")], SETTINGS, progress);
 
-    expect(h.events).toEqual([
+    expect(builds()).toEqual([
       `prepare:${CURRENT_PROCESS_VERSION}`,
       `stock:${CURRENT_PROCESS_VERSION}`,
-      "decode:a",
-      "decode:b",
     ]);
+    expect(h.events.filter((e) => e.startsWith("decode:"))).toEqual(["decode:a", "decode:b"]);
     expect(progress).toHaveBeenCalledTimes(2);
     expect(h.FakeRenderer.instances[0].disposed).toBe(true);
     expect(logged).toHaveBeenCalledTimes(1);

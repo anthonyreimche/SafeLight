@@ -7,9 +7,15 @@
 // browser suite. Its strokes are shaped by the coverage bake's own maths, which
 // the alpha-matches-coverage case pins.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BrushDab } from "@/catalog/types";
-import { MAX_PAINT_LAYERS, type PaintDab, type PaintLayer } from "@/extensions/api/contributions";
+import {
+  MAX_PAINT_LAYERS,
+  type BrushTipContribution,
+  type PaintDab,
+  type PaintLayer,
+} from "@/extensions/api/contributions";
+import { setActiveBrushTips } from "./brush-tips";
 import { bakeCoverage } from "./mask-coverage";
 import { PaintBaker, bakePaint, type PaintBakeResult } from "./paint-bake";
 
@@ -146,5 +152,31 @@ describe("PaintBaker", () => {
       const layers = [layer("a", dabs), layer("b", stroke(3, { color: BLUE }, 0.3))];
       expectSameAsFullBake(baker.bake(layers, 1), layers);
     }
+  });
+});
+
+describe("paint brush tips", () => {
+  const halfTip: BrushTipContribution = {
+    id: "half",
+    label: "Half",
+    alpha: { width: 8, height: 8, data: Uint8Array.from({ length: 64 }, (_, i) => (i % 8 < 4 ? 255 : 0)) },
+  };
+
+  beforeEach(() => setActiveBrushTips({ half: halfTip }));
+  afterEach(() => setActiveBrushTips({}));
+
+  it("stamps a registered tip in place of the disc, in the stroke's colour", () => {
+    const baked = bake([layer("a", [dab({ strokeStart: true, tip: "half", color: BLUE })])]);
+    expect(paintAt(baked, 0, 0.4, 0.5)).toEqual([0, 0, 255, 255]);
+    expect(paintAt(baked, 0, 0.6, 0.5)[3]).toBeLessThan(15);
+  });
+
+  it("keeps the tip across a change of colour within one stroke, and bakes an unknown tip as a disc", () => {
+    const baked = bake([layer("a", [dab({ strokeStart: true, tip: "half" }), dab({ color: BLUE, x: 0.5 })])]);
+    expect(paintAt(baked, 0, 0.4, 0.5)).toEqual([0, 0, 255, 255]);
+    expect(paintAt(baked, 0, 0.6, 0.5)[3]).toBeLessThan(15);
+
+    const unknown = bake([layer("a", [dab({ strokeStart: true, tip: "missing" })])]);
+    expect(unknown.data).toEqual(bake([layer("a", [dab({ strokeStart: true })])]).data);
   });
 });

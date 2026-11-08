@@ -52,6 +52,7 @@ import { clearExtensionCursors } from "@/state/cursor-store";
 import { setPickDrag } from "@/modules/develop/pick-drag";
 import { setCanvasTool } from "@/modules/develop/canvas-tool";
 import { setStageViewValues } from "@/modules/develop/stage-view-values";
+import { dropBrushTips } from "@/rendering/brush-tip-registry";
 import { dropExtensionVariables } from "./variables-host";
 import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardCallback, guardExtension } from "./guard";
 import { forgetStartFailure } from "./start-failures";
@@ -870,6 +871,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => setPickDrag(id, null),
   (id) => setCanvasTool(id, null),
   (id) => setStageViewValues(id, null),
+  (id) => dropBrushTips(id),
   (id) => dropExtensionVariables(id),
   (id) => forgetCallbackFailures(id),
   (id) => dropSubscriptions(id),

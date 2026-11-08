@@ -10,6 +10,8 @@
 // (api.develop.sourcePixels). No renderer writes here itself: the export,
 // histogram and thumbnail renderers draw other photos than the one open.
 
+import { halfToFloatTable } from "@/raw/half-float";
+
 /** RGBA8 rows from the top. */
 export interface SourcePixels {
   data: Uint8ClampedArray;
@@ -83,9 +85,10 @@ export function encodeSrgb8(v: number): number {
 // The search image for a scene-linear RGBA source: box-averaged to a long edge
 // of maxEdge in linear light, then encoded to 8-bit sRGB (headroom clips to
 // white, negatives to black). Encoding after the downscale keeps the encode to
-// the small image, which matters on a main-thread renderer.
+// the small image, which matters on a main-thread renderer. A cached preview's
+// half floats are read in place, as the values they hold.
 export function sourcePixelsFromLinear(
-  src: Float32Array,
+  src: Float32Array | Uint16Array,
   W: number,
   H: number,
   maxEdge: number,
@@ -94,6 +97,7 @@ export function sourcePixelsFromLinear(
   const w = Math.max(1, Math.round(W * scale));
   const h = Math.max(1, Math.round(H * scale));
   const out = new Uint8ClampedArray(w * h * 4);
+  const halves = src instanceof Uint16Array ? halfToFloatTable() : null;
   for (let y = 0; y < h; y++) {
     const sy0 = Math.floor((y * H) / h);
     const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
@@ -104,7 +108,12 @@ export function sourcePixelsFromLinear(
       for (let sy = sy0; sy < sy1; sy++) {
         for (let sx = sx0; sx < sx1; sx++) {
           const si = (sy * W + sx) * 4;
-          r += src[si]; g += src[si + 1]; b += src[si + 2]; n++;
+          if (halves) {
+            r += halves[src[si]]; g += halves[src[si + 1]]; b += halves[src[si + 2]];
+          } else {
+            r += src[si]; g += src[si + 1]; b += src[si + 2];
+          }
+          n++;
         }
       }
       const di = (y * w + x) * 4;

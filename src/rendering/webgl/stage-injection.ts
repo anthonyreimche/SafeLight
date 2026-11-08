@@ -13,8 +13,9 @@ import type {
   StageSpace,
   TextureRequirement,
   UniformDeclaration,
+  UniformValue,
 } from "@/extensions/types";
-import { MAX_PASS_DRAWS } from "@/extensions/stage-validation";
+import { MAX_PASS_DRAWS, declaredUniforms, dormancyIgnored } from "@/extensions/stage-validation";
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
 import {
   STAGE_SPACE_GLSL,
@@ -37,6 +38,7 @@ import {
   replaceIdentifiers,
 } from "./shader-compiler";
 import { simpleHash } from "./hash";
+import type { DormantRule } from "./stage-coverage";
 import { V1_VARIANT, type ShaderVariant, type StageInjection } from "./shaders";
 import { sortStages } from "./stage-order";
 import { STAGE_ANCHORS, anchorOf } from "./stage-anchors";
@@ -409,6 +411,8 @@ export interface PrepassStage {
   /** A mask copy's: the stage whose pass programs it draws with. Its passes
    *  compile to the same programs, bound with the copy's values. */
   passesOf?: string;
+  /** The stage's dormantWhen (dormantRule): its passes don't run while it holds. */
+  dormant?: DormantRule;
 }
 
 /** The uniform holding a mask copy's coverage slot (its mask's index, or -1
@@ -483,20 +487,30 @@ function buildPassFragment(
     ? `\nuniform sampler2D ${SOURCE_IMAGE_UNIFORM}; // the decoded source, whatever the stage reads\n` +
       `vec3 readSource(vec2 uv) { return ${sourceRead(space, `texture(${SOURCE_IMAGE_UNIFORM}, uv).rgb`)}; }`
     : "";
+  // Every draw after the first starts from its own texel fetched exactly: a
+  // filtered read at vUv can mix in a trace of the neighbours (SwiftShader
+  // does), which a long chain compounds. The stage's input may be the source
+  // at another size, so the first draw still samples it. A four-channel pass
+  // also stores its alpha (StagePass.channels).
+  const four = pass.channels === 4;
+  const readPrev4 = four
+    ? `\nvec4 readPrev4(vec2 uv) {\n  vec4 s = texture(uPrevPass, uv);\n  return uPrevRaw ? vec4(${sourceRead(space, "s.rgb")}, 1.0) : s;\n}` +
+      `\nvec4 fetchPrev4(ivec2 texel) {\n  return uPrevRaw ? readPrev4((vec2(texel) + 0.5) * uTexel) : texelFetch(uPrevPass, texel, 0);\n}`
+    : "";
   const fragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
 ${uniformDecls}
 ${passSharedGlsl(space)}
-${/\buSourceSize\b/.test(named) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}${readSource}
+${/\buSourceSize\b/.test(named) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}${readSource}${readPrev4}
 ${helpers}
 void main() {
-  vec3 c = readPrev(vUv);
+  ${four ? "vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));" : "vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;"}
   {
 ${body}
   }
-  fragColor = vec4(c, 1.0);
+  fragColor = ${four ? "c" : "vec4(c, 1.0)"};
 }
 `;
   return { fragmentSource, bindings };
@@ -538,8 +552,32 @@ export function stageSignature(s: ProcessingStageContribution): string {
       s.reads ?? "source",
       ...handoff,
       ...(s.readsCurrentFrom === undefined ? [] : [{ readsCurrentFrom: s.readsCurrentFrom }]),
+      ...(s.dormantWhen === undefined ? [] : [{ dormantWhen: s.dormantWhen }]),
     ]),
   );
+}
+
+const dormantRules = new WeakMap<ProcessingStageContribution, DormantRule | null>();
+
+/** The stage's dormantWhen as the bindings its values are read through, under
+ *  the stage's own id, so a mask copy's rule reads its mask's values. Null for
+ *  a stage that declares none, or one whose absence would change the frame
+ *  anyway (dormancyIgnored), or whose rule names a uniform it doesn't hold. */
+export function dormantRule(s: ProcessingStageContribution): DormantRule | null {
+  if (!s.dormantWhen) return null;
+  const known = dormantRules.get(s);
+  if (known !== undefined) return known;
+  const declared = declaredUniforms(s);
+  const rule: { binding: ContributedBinding; value: UniformValue }[] = [];
+  for (const [key, value] of Object.entries(s.dormantWhen)) {
+    const u = declared.find((d) => d.key === key && d.length === undefined);
+    if (!u) break;
+    rule.push({ binding: bindingOf(s, u, ""), value });
+  }
+  const whole = rule.length > 0 && rule.length === Object.keys(s.dormantWhen).length;
+  const resolved = whole && dormancyIgnored(s) === null ? rule : null;
+  dormantRules.set(s, resolved);
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------
@@ -987,6 +1025,7 @@ function declarePrepass(
     }
     return { fragmentSource: built.fragmentSource, bindings: built.bindings, ...passCount(s, p) };
   });
+  const dormant = dormantRule(s);
   declared.prepass.push({
     stageId: s.id,
     resultUniform,
@@ -994,6 +1033,7 @@ function declarePrepass(
     split,
     ...(layerUniform ? { layerUniform } : {}),
     ...(passesOf ? { passesOf } : {}),
+    ...(dormant ? { dormant } : {}),
   });
   if (!layerUniform) return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
   return (

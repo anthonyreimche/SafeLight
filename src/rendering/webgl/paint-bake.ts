@@ -10,6 +10,7 @@
 // colour, and that a change of colour starts a new stroke.
 
 import { MAX_PAINT_LAYERS, type PaintDab, type PaintLayer } from "@/extensions/api/contributions";
+import { brushTipsGeneration } from "./brush-tips";
 import {
   BAKE_SIZE,
   bakeStrokes,
@@ -102,6 +103,7 @@ function writeTile(out: Uint8Array, size: number, index: number, { a, r, g, b }:
  *  return the last result itself, so the caller can tell nothing changed. */
 export class PaintBaker {
   private aspect = Number.NaN;
+  private tips = -1;
   private baked = new Map<string, LayerBake>();
   private last: { result: PaintBakeResult; planes: PaintPlanes[] } | null = null;
 
@@ -109,10 +111,13 @@ export class PaintBaker {
     const list = layers.slice(0, MAX_PAINT_LAYERS);
     if (list.length === 0) return null;
     const aspect = imageAspect > 0 ? imageAspect : 1;
-    if (aspect !== this.aspect) {
+    // A stroke baked before its tip arrived, or with one since replaced, is stale.
+    const tips = brushTipsGeneration();
+    if (aspect !== this.aspect || tips !== this.tips) {
       this.baked.clear();
       this.last = null;
     }
+    this.tips = tips;
 
     const context = lazyBakeContext();
     const kept = new Map<string, LayerBake>();

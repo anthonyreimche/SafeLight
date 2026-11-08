@@ -10,6 +10,7 @@
 // pinned. Also the source upload's own helpers: the caps that bound a texture
 // to the develop edge, the hand-built float mip chain and the search image.
 
+import { halfToFloat32, halfToFloatTable } from "@/raw/half-float";
 import type { StoredSample } from "@/rendering/source-sample";
 import { created, setSampling } from "./gl-resources";
 
@@ -62,6 +63,9 @@ export interface SourceEntry {
   lastUsed: number;
 }
 
+/** A source as an upload leaves it, before the cache sizes and stamps it. */
+export type UploadedSource = Omit<SourceEntry, "bytes" | "lastUsed">;
+
 export class SourceCache {
   private readonly gl: WebGL2RenderingContext;
   private readonly entries = new Map<string, SourceEntry>();
@@ -89,9 +93,9 @@ export class SourceCache {
     this.evict();
   }
 
-  /** Takes `entry`'s texture and holds it under `key` as the bound source.
+  /** Takes `entry`'s texture and holds it under `key`; bind() draws it.
    *  Nothing is evicted until evict(). */
-  add(key: string, entry: Omit<SourceEntry, "bytes" | "lastUsed">): void {
+  add(key: string, entry: UploadedSource): void {
     // RGBA16F (float RAW, fresh or cached) = 8 bytes/px; 8-bit bitmap = 4 — the
     // format the upload actually took. ×4/3 accounts for the mip chain. The
     // sample sits in memory beside the texture (up to 8 MB), so the budget counts it.
@@ -101,7 +105,6 @@ export class SourceCache {
       bytes: texture + (entry.sample?.data.byteLength ?? 0),
       lastUsed: ++this.tick,
     });
-    this.boundKey = key;
   }
 
   /** The entry under `key`, now the bound source, or undefined when none is resident. */
@@ -206,16 +209,74 @@ function halveRGBAF(src: Float32Array, w: number, h: number) {
   return { data: out, w: nw, h: nh };
 }
 
-/** Uploads a linear float image into the bound texture as RGBA16F, with its
- *  float mip chain built by hand (trilinear taps for Texture/Clarity/Dehaze/Sharpen). */
-export function uploadFloatMips(gl: WebGL2RenderingContext, data: Float32Array, w: number, h: number): void {
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
-  let lw = w, lh = h, lvl = 0, cur = data;
-  while (lw > 1 || lh > 1) {
-    const ds = halveRGBAF(cur, lw, lh);
-    lvl++; cur = ds.data; lw = ds.w; lh = ds.h;
-    gl.texImage2D(gl.TEXTURE_2D, lvl, gl.RGBA16F, lw, lh, 0, gl.RGBA, gl.FLOAT, cur);
+// halveRGBAF over half floats, each read as the float it holds, with the same
+// arithmetic: the level is the one halving their floats gives, bit for bit.
+function halveRGBA16(src: Uint16Array, w: number, h: number) {
+  const t = halfToFloatTable();
+  const nw = Math.max(1, w >> 1);
+  const nh = Math.max(1, h >> 1);
+  const out = new Float32Array(nw * nh * 4);
+  for (let y = 0; y < nh; y++) {
+    const y0 = Math.min(h - 1, y * 2), y1 = Math.min(h - 1, y * 2 + 1);
+    for (let x = 0; x < nw; x++) {
+      const x0 = Math.min(w - 1, x * 2), x1 = Math.min(w - 1, x * 2 + 1);
+      const i00 = (y0 * w + x0) * 4, i01 = (y0 * w + x1) * 4;
+      const i10 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+      const o = (y * nw + x) * 4;
+      for (let k = 0; k < 4; k++) {
+        out[o + k] = (t[src[i00 + k]] + t[src[i01 + k]] + t[src[i10 + k]] + t[src[i11 + k]]) * 0.25;
+      }
+    }
   }
+  return { data: out, w: nw, h: nh };
+}
+
+/** One level of a source's mip chain: RGBA floats, or half floats as a cache
+ *  stores them. */
+export interface MipLevel {
+  data: Float32Array | Uint16Array;
+  w: number;
+  h: number;
+}
+
+/** A linear source's mip levels, level 0 first: the image as given, then each
+ *  box-halved from the one before, down to 1×1, as Float32. Level 1 reads a
+ *  cached preview's halves as the floats they hold, so its chain is the one
+ *  those floats give. */
+export function* mipChain(data: Float32Array | Uint16Array, w: number, h: number): Generator<MipLevel> {
+  yield { data, w, h };
+  if (w <= 1 && h <= 1) return;
+  let level = data instanceof Uint16Array ? halveRGBA16(data, w, h) : halveRGBAF(data, w, h);
+  yield level;
+  while (level.w > 1 || level.h > 1) {
+    level = halveRGBAF(level.data, level.w, level.h);
+    yield level;
+  }
+}
+
+/** Uploads a linear image into the bound texture as RGBA16F, with its mip
+ *  chain built by hand (trilinear taps for Texture/Clarity/Dehaze/Sharpen).
+ *  Half floats go up as HALF_FLOAT: RGBA16F holds the very halves FLOAT of
+ *  their floats would round to, without a whole-image conversion first. */
+export function uploadFloatMips(gl: WebGL2RenderingContext, data: Float32Array | Uint16Array, w: number, h: number): void {
+  let level = 0;
+  for (const m of mipChain(data, w, h)) {
+    const type = m.data instanceof Uint16Array ? gl.HALF_FLOAT : gl.FLOAT;
+    gl.texImage2D(gl.TEXTURE_2D, level++, gl.RGBA16F, m.w, m.h, 0, gl.RGBA, type, m.data);
+  }
+}
+
+/** capFloatToEdge for a cached preview's halves: kept as they are when they
+ *  fit, so neither the upload nor the search image converts them; otherwise
+ *  their floats, averaged down as a decode's are. */
+export function capHalfToEdge(
+  data: Uint16Array,
+  W: number,
+  H: number,
+  maxEdge: number,
+): { data: Float32Array | Uint16Array; width: number; height: number } {
+  if (Math.min(1, maxEdge / Math.max(W, H)) >= 1) return { data, width: W, height: H };
+  return capFloatToEdge(halfToFloat32(data), W, H, maxEdge);
 }
 
 // Box-average a linear Float32 RGBA image down so its long edge ≤ maxEdge.

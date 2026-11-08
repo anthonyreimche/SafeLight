@@ -79,7 +79,7 @@ function prepare(ctx: Ctx, processVersion: number): boolean {
   }
 }
 
-function getHistCtx(processVersion: number): Ctx | null {
+async function getHistCtx(params: DevelopParams): Promise<Ctx | null> {
   if (histDead) return null;
   let ctx = histCtx;
   if (!ctx) {
@@ -106,8 +106,13 @@ function getHistCtx(processVersion: number): Ctx | null {
     }
   }
   // Building the program here, not on the first frame, fails a photo before it is
-  // decoded.
-  return prepare(ctx, processVersion) ? ctx : null;
+  // decoded. The photo's transform and masks pick it, and the driver builds it
+  // while the window goes on; prepare then finds it built, or meets the failure.
+  setPhotoParams(ctx.renderer, params);
+  await ctx.renderer.prepareProgramAsync(params.processVersion);
+  // Another call may have set its photo meanwhile.
+  setPhotoParams(ctx.renderer, params);
+  return prepare(ctx, params.processVersion) ? ctx : null;
 }
 
 const MAX_HIST_EDGE = 256;
@@ -130,7 +135,7 @@ export async function renderPhotoHistogram(
   paramBag: Record<string, unknown> = {},
   maxEdge: number = MAX_HIST_EDGE,
 ): Promise<HistogramData | null> {
-  const ctx = getHistCtx(params.processVersion);
+  const ctx = await getHistCtx(params);
   if (!ctx) return null;
 
   let image: DecodedImage | null = null;

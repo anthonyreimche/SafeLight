@@ -19,7 +19,7 @@ import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { setSourcePixels } from "@/rendering/source-pixels";
-import { useDevelopStore } from "@/state/develop-store";
+import { useDevelopStore, type DevelopState } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
@@ -67,6 +67,43 @@ function stageBag(
 ): Record<string, unknown> {
   const shown = Object.keys(viewValues).length > 0 ? { ...paramBag, ...viewValues } : paramBag;
   return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed));
+}
+
+// The edit the view draws: a hover preview (e.g. from the Presets panel) stands in
+// for the committed params and bag, for rendering only, without touching history.
+// The bag holds the params of extension-contributed stages (e.g. denoise), so a
+// preset's extension adjustments preview too.
+const drawnParams = (s: DevelopState): DevelopParams => s.previewParams ?? s.params;
+const drawnBag = (s: DevelopState): Record<string, unknown> => s.previewParamBag ?? s.paramBag;
+
+/** What a push handed the worker (the edit drawn and the bag), and what each was
+ *  made from. */
+interface Pushed {
+  params: DevelopParams;
+  paramBag: Record<string, unknown>;
+  drawn: DevelopParams;
+  view: ViewParams | null;
+  viewAspect: number;
+  bypassed: Record<string, boolean>;
+  viewValues: Readonly<Record<string, unknown>>;
+  pipelineId: string;
+  asShotTemperature: number;
+}
+
+/** Whether `b` draws what `a` did. The params a push was made from count only through
+ *  what is drawn of them: a drag of the crop box in crop mode changes nothing drawn,
+ *  and the stage bag doesn't read the crop either. */
+function drawsSame(a: Pushed, b: Pushed): boolean {
+  return (
+    a.drawn === b.drawn &&
+    a.paramBag === b.paramBag &&
+    a.view === b.view &&
+    a.viewAspect === b.viewAspect &&
+    a.bypassed === b.bypassed &&
+    a.viewValues === b.viewValues &&
+    a.pipelineId === b.pipelineId &&
+    a.asShotTemperature === b.asShotTemperature
+  );
 }
 
 // The canvas corner says "Preview" once a preview has shown for LABEL_DELAY_MS, and
@@ -190,13 +227,30 @@ export function useDevelopRenderer(
   useEffect(() => {
     openPhotoIdRef.current = photo?.id;
   }, [photo?.id]);
-  const rafIdRef = useRef<number | null>(null);
+  // The push of the edit to the worker (below), for the store's subscription, and
+  // what it last handed the worker.
+  const pushRef = useRef<() => void>(() => {});
+  const pushedRef = useRef<Pushed | null>(null);
+  // Whether an edit's render waits for its microtask (queueRender).
+  const renderQueuedRef = useRef(false);
+  // Renders once the task's store writes are done, so a tick that sets a param and a
+  // stage param renders once. Not on an animation frame: a slider writes once a frame
+  // already, and the bridge holds back all but the newest render while the worker draws.
+  const [queueRender] = useState(() => () => {
+    if (renderQueuedRef.current) return;
+    renderQueuedRef.current = true;
+    queueMicrotask(() => {
+      if (!renderQueuedRef.current) return;
+      renderQueuedRef.current = false;
+      bridgeRef.current?.render(false);
+    });
+  });
   const awaitingSourceRef = useRef(true);
   const finalGenRef = useRef<number | null>(null);
   const sentGenRef = useRef<number | null>(null);
   const [histogram] = useState(() =>
     createHistogramScheduler({
-      renderQueued: () => rafIdRef.current != null,
+      renderQueued: () => renderQueuedRef.current,
       compute: () => bridgeRef.current?.computeHistogram(true),
       publish: (data) => useDevelopStore.getState().setHistogram(data),
     }),
@@ -217,28 +271,28 @@ export function useDevelopRenderer(
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
   // The stages the last frame of the photo was drawn without (FrameResult).
   const [overflowedStages, setOverflowedStages] = useState<readonly string[]>(NO_STAGES);
-  // Effective params: a hover preview (e.g. from the Presets panel) overrides
-  // the committed params for rendering only, without touching history.
-  const params = useDevelopStore((s) => s.previewParams ?? s.params);
-  // Generic param bag for extension-contributed processing stages (e.g. denoise).
-  // A hover preview overrides it (paired with previewParams) so a preset's
-  // extension adjustments preview too, without touching the committed bag.
-  const paramBag = useDevelopStore((s) => s.previewParamBag ?? s.paramBag);
+  // The edit itself isn't read here: it goes to the worker from the store (push below),
+  // so a slider tick renders nothing of the view. What the view needs of it is read
+  // narrowly, through the edit drawn (drawnParams).
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   // The held canvas tool's view of the edit (crop mode widens the crop).
   const view = useCanvasToolStore((s) => canvasToolView(s.held));
   const showClipping = useDevelopStore((s) => s.showClipping);
   // The space the soft proof previews, the export default, or none: the proof is
   // version 3's (usesSignedOutput), and says so rather than leave it to the worker.
-  const proof = useDevelopStore((s) => s.proof);
+  const signedProof = useDevelopStore((s) => s.proof && usesSignedOutput(drawnParams(s)));
   const exportColorSpace = useSettings((s) => s.exportColorSpace);
-  const proofSpace = proof && usesSignedOutput(params) ? exportColorSpace : null;
+  const proofSpace = signedProof ? exportColorSpace : null;
   // Drives the crop-mode margin colour (canvas surround). Read reactively so the
   // margin tracks the assessment toggle and the surround override/shade live.
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const canvasSurround = useSettings((s) => s.canvasSurround);
   const canvasSurroundOverride = useSettings((s) => s.canvasSurroundOverride);
   const shownMaskId = useMaskCoverageView((s) => s.maskId);
+  // Where the mask whose coverage shows sits among the drawn edit's masks; -1, none.
+  const shownMaskIndex = useDevelopStore((s) =>
+    shownMaskId ? drawnParams(s).masks.findIndex((m) => m.id === shownMaskId) : -1,
+  );
   const viewValues = useStageViewValues((s) => s.merged);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
@@ -259,12 +313,12 @@ export function useDevelopRenderer(
       : photo && photo.height > 0
         ? photo.width / photo.height
         : 1;
-  // The three places below that hand the bridge params all ask through this one memo,
-  // so a run that changed none of its inputs gets back the object the bridge already
-  // posted, instead of a rebuilt copy it would clone to the worker again.
+  // Both places below that hand the bridge params ask through this one memo, so a run
+  // that changed none of its inputs gets back the object the bridge already posted,
+  // instead of a rebuilt copy it would clone to the worker again.
   const [renderParams] = useState(createRenderParams);
   const forRender = (p: DevelopParams, v: ViewParams | null): DevelopParams =>
-    renderParams(p, v, aspect, bypassedPanels);
+    renderParams(p, v, aspect, useDevelopStore.getState().bypassedPanels);
 
   // Draws the source just handed over (sent, or bound from the GPU cache) with the
   // photo's edit. The frame carries its own histogram, extended for the clipping
@@ -347,11 +401,14 @@ export function useDevelopRenderer(
           .getState()
           .setSourceSize(sourceWidth, sourceHeight, { width: sourceFullWidth, height: sourceFullHeight, native: sourceNative });
       }
-      histogram.onFrame(frame.histogram);
+      histogram.onFrame(frame.histogram, frame.histogramFollows);
     });
     bridge.setOnHistogram((data) => {
-      if (!awaitingSourceRef.current) useDevelopStore.getState().setHistogram(data);
+      if (!awaitingSourceRef.current) histogram.onHistogram(data);
     });
+    // Not recomputed at once, so a failure that keeps failing can't loop: the next
+    // frame or edit asks again.
+    bridge.setOnHistogramError(() => histogram.markDirty());
 
     bridge.setOnError((msg) => {
       console.error("[render-worker]", msg);
@@ -376,10 +433,17 @@ export function useDevelopRenderer(
       setSourcePixels(data, width, height);
     });
 
-    // The bridge repaints stage and pipeline swaps itself, past the params effect.
+    // The bridge repaints stage and pipeline swaps itself, past the push.
     const stopWatchingStages = useRegistry.subscribe((s, prev) => {
       if (s.processingStages !== prev.processingStages || s.pipelines !== prev.pipelines) {
         histogram.markDirty();
+      }
+    });
+
+    // The edit goes to the worker from the store, with no render of the view between.
+    const stopWatchingEdit = useDevelopStore.subscribe((s, prev) => {
+      if (drawnParams(s) !== drawnParams(prev) || drawnBag(s) !== drawnBag(prev)) {
+        pushRef.current();
       }
     });
 
@@ -387,11 +451,14 @@ export function useDevelopRenderer(
     return () => {
       offFilled();
       stopWatchingStages();
+      stopWatchingEdit();
+      renderQueuedRef.current = false;
+      // A view set up again (StrictMode) pushes the edit again, and renders it.
+      pushedRef.current = null;
       histogram.dispose();
-      if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = null;
       bridge.setOnFrame(null);
       bridge.setOnHistogram(null);
+      bridge.setOnHistogramError(null);
       bridge.setOnError(null);
       bridge.setOnSourceError(null);
       bridge.setOnAvailability(null);
@@ -424,34 +491,47 @@ export function useDevelopRenderer(
   // measure that frame a second time.
   const viewAspect = view ? aspect : 0;
 
-  // What the view draws of the edit. It stays the same object while an edit changes
-  // nothing drawn, as a drag of the crop box in crop mode does, so that edit renders
-  // nothing. The stage bag doesn't read the crop either.
-  const drawn = forRender(params, view);
-
-  // Re-render on parameter changes. The frame that answers asks for the
-  // histogram (setOnFrame above), throttled or settled per Preferences.
-  useEffect(() => {
+  // Hands the worker the edit as the stores hold it now, and renders it, unless it
+  // draws what was pushed last. The frame that answers asks for the histogram
+  // (setOnFrame above), throttled or settled per Preferences.
+  const push = () => {
     const bridge = bridgeRef.current;
     if (!bridge) return;
-    bridge.setAsShotTemperature(asShotTemperature);
-    bridge.setContributedParams(stageBag(params, paramBag, bypassedPanels, viewValues));
-    bridge.setParams(drawn);
-    histogram.markDirty();
-    if (rafIdRef.current == null) {
-      rafIdRef.current = requestAnimationFrame(() => {
-        rafIdRef.current = null;
-        bridgeRef.current?.render(false);
-      });
+    const st = useDevelopStore.getState();
+    const params = drawnParams(st);
+    const paramBag = drawnBag(st);
+    const toolView = canvasToolView(useCanvasToolStore.getState().held);
+    const next: Pushed = {
+      params,
+      paramBag,
+      // The same object while an edit changes nothing drawn.
+      drawn: forRender(params, toolView),
+      view: toolView,
+      viewAspect: toolView ? aspect : 0,
+      bypassed: st.bypassedPanels,
+      viewValues: useStageViewValues.getState().merged,
+      pipelineId: usePipelineStore.getState().activeId,
+      asShotTemperature: st.asShotTemperature,
+    };
+    const last = pushedRef.current;
+    pushedRef.current = next;
+    if (!last || !drawsSame(last, next)) {
+      bridge.setAsShotTemperature(next.asShotTemperature);
+      bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues));
+      bridge.setParams(next.drawn);
+      histogram.markDirty();
+      queueRender();
     }
-    // `params` feeds only the stage bag here, which changes with `drawn`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawn, paramBag, view, pipelineId, asShotTemperature, viewAspect, bypassedPanels, viewValues]);
+    // An edited stored preview standing in for the photo holds only while it shows the edit.
+    if (!last || last.params !== params || last.paramBag !== paramBag) holdEditedPreview(null);
+  };
+  pushRef.current = push;
 
-  // An edited stored preview standing in for the photo holds only while it shows the edit.
+  // The edit itself comes through the store's subscription (setup above); these are
+  // what it doesn't watch.
   useEffect(() => {
-    holdEditedPreview(null);
-  }, [params, paramBag, holdEditedPreview]);
+    pushRef.current();
+  }, [view, pipelineId, asShotTemperature, viewAspect, bypassedPanels, viewValues]);
 
   // A new photo starts from metadata aspect until a frame of its source is drawn,
   // so a failed/slow decode never leaves the previous photo's aspect in place.
@@ -489,8 +569,8 @@ export function useDevelopRenderer(
   // sliders aren't dragged over a tinted preview, and (crucially) the worker
   // isn't rendering the coverage pass on every frame while you adjust.
   // Always red; the strength fades in/out.
-  // `posted` is what the worker last drew. A mask edit renders through the params
-  // effect, so the overlay re-renders only when its own index or strength moves.
+  // `posted` is what the worker last drew. A mask edit renders through the push, so
+  // the overlay re-renders only when its own index or strength moves.
   // Unknown when the view opens: the worker may still hold one the last view
   // left showing.
   const vizAnim = useRef({
@@ -501,7 +581,7 @@ export function useDevelopRenderer(
     posted: null as { idx: number; strength: number } | null,
   });
   useEffect(() => {
-    const idx = shownMaskId ? params.masks.findIndex((m) => m.id === shownMaskId) : -1;
+    const idx = shownMaskIndex;
     const a = vizAnim.current;
     if (idx >= 0) a.idx = idx; // keep last index while fading out
     a.target = idx >= 0 ? VIZ_STRENGTH : 0;
@@ -523,7 +603,7 @@ export function useDevelopRenderer(
     return () => {
       if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
     };
-  }, [shownMaskId, params.masks]);
+  }, [shownMaskIndex]);
 
   // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
   // the shader renders a greyscale visualization of that sub-signal. Push the mode
@@ -544,14 +624,12 @@ export function useDevelopRenderer(
       const bridge = bridgeRef.current;
       if (!bridge) return;
       bridge.setViewport(roi, outW, outH);
-      if (rafIdRef.current == null) {
-        rafIdRef.current = requestAnimationFrame(() => {
-          rafIdRef.current = null;
-          bridgeRef.current?.render(false);
-        });
-      }
+      // On the edit's microtask, so a window and an edit of one task draw once; not on
+      // the next animation frame: the bridge holds back all but the newest render
+      // while the worker draws.
+      queueRender();
     },
-    [],
+    [queueRender],
   );
 
   const label = useTierLabel(tier, loading, photo && `${photo.id}:${fileAccessNonce}`);

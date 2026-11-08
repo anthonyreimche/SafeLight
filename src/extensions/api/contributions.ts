@@ -181,6 +181,12 @@ export interface ThemeContribution {
   colorScheme?: "light" | "dark";
   /** CSS custom properties applied to :root, e.g. { "--color-surface-0": "#fff" }. */
   vars: Record<string, string>;
+  /** Ask the window for a system-drawn backdrop (Windows 11 22H2+ and macOS;
+   *  elsewhere, and in software rendering, the window stays opaque). The
+   *  theme's surface colours should then be translucent (rgba) to show it.
+   *  Ignored while Reduce transparency is on. The Develop canvas surround
+   *  stays opaque either way. */
+  window?: { material: "acrylic" | "mica" };
 }
 
 /** A render pipeline (scene-linear → display transform). Users pick one per
@@ -639,8 +645,9 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
  *  blurs) that a single inline fragment can't express become possible.
  *
- *  Contract: the body mutates `vec3 c`, initialized to `readPrev(vUv)` — the
- *  previous pass's output, or on the first pass the stage's input: the decoded
+ *  Contract: the body mutates `vec3 c`, initialized to the pixel's own texel —
+ *  fetched exactly from the previous draw's output, or on the first draw
+ *  `readPrev(vUv)` of the stage's input: the decoded
  *  source linearized for `reads: "source"`, the image as edited up to the stage
  *  for `reads: "current"`, in the stage's declared `space` either way. With no
  *  `space`, the source reads as linear Rec.709 and the current image as the
@@ -687,6 +694,15 @@ export interface StagePass {
    *  3.1.0; earlier builds only used the bag test). */
   iterations?: number | PassDrawCount;
   uniforms?: UniformDeclaration[];
+  /** 3 (default): `glsl` mutates `vec3 c` and the draw stores alpha 1. 4: it
+   *  mutates `vec4 c`, which starts as the previous draw's texel fetched
+   *  exactly and is stored whole, so alpha carries a fourth value to the next
+   *  draw (1 on the stage's input). `vec4 fetchPrev4(ivec2 texel)` fetches any
+   *  texel of the previous draw exactly, `vec4 readPrev4(vec2 uv)` samples it
+   *  filtered. Without float render targets alpha is clipped to [0, 1] at 8
+   *  bits, like the rgb. The inline's `stageResult` is the last draw's rgb
+   *  either way. */
+  channels?: 3 | 4;
 }
 
 /** The values a processing stage receives and hands back (see
@@ -736,6 +752,22 @@ export interface StageDeriveContext {
  *  (column-major) or array uniform, or an image-space matrix (UniformDeclaration
  *  `space`). */
 export type StageValue = number | boolean | number[] | ImageSpaceMatrix;
+
+/** The longest edge, in pixels, of a brush tip's alpha image. */
+export const MAX_BRUSH_TIP_EDGE = 128;
+
+/** A brush tip (api.develop.registerBrushTip): the shape a brush stamps in
+ *  place of its round, feathered disc. A dab names one with `tip` on the dab
+ *  that starts its stroke, and the stroke keeps it. `alpha` is the shape's
+ *  coverage, 0 to 255, row by row from the top, `width * height` bytes with
+ *  no edge over MAX_BRUSH_TIP_EDGE. The longest edge is stamped across the
+ *  dab's diameter, turned by the dab's `angle`. */
+export interface BrushTipContribution {
+  /** Unique across extensions; a dab stores it, so keep it stable. */
+  id: string;
+  label: string;
+  alpha: { width: number; height: number; data: Uint8Array };
+}
 
 /** The most layers a paint texture (TextureRequirement "paint") bakes. */
 export const MAX_PAINT_LAYERS = 4;
@@ -835,6 +867,27 @@ export interface ProcessingStageContribution {
    *  others), and only on photos at process version 2 or later. A copy hands
    *  on none of the stage's `produces`. */
   mask?: { maskable: true };
+
+  /** When the stage changes nothing: uniform key → value. While every listed
+   *  uniform's value, as the uniform binds it (the bag's under "{id}.{key}",
+   *  or the default where the bag has none), equals the one given, vectors
+   *  element by element, the stage is dormant. The live Develop view leaves
+   *  it out of a process version 2 or later photo's program, and its passes
+   *  don't run in any view. The first photo that needs it brings it in, and it stays in
+   *  until Safelight restarts, so a slider moved back to its rest value
+   *  compiles nothing. A mask copy is judged by the mask's values. Each key
+   *  must name a uniform the stage or one of its passes declares, not an array
+   *  uniform, and each value must fit its type, or the stage is refused.
+   *
+   *  The stage must render exactly as without it while dormant. The rule is
+   *  ignored, with a warning, where leaving the stage out changes the frame
+   *  anyway: geometry stages, noise-reduction stages (one keeps the built-in
+   *  denoiser out), display stages without `space` (version 2 clips their
+   *  input), stages that `produce` values others consume, and stages that
+   *  `patch` the source. Basic's tone block (the default shoulder and the
+   *  camera-match lift) must never declare it either. Needs Safelight 3.2.1;
+   *  older builds ignore it. */
+  dormantWhen?: Readonly<Record<string, UniformValue>>;
 
   /** How this stage's params behave in presets. "global" (the default) is a
    *  look that applies to any photo — e.g. a film sim or a curve — so it is

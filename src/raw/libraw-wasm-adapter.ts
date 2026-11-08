@@ -17,6 +17,11 @@
 // float, where those colours keep their negative channels. A camera matrix can
 // still produce colours outside AP0, and libraw clips those at 0.
 //
+// libraw's samples are transferred to this page, and from here on to the frame
+// worker (frame-bridge.ts), which does every per-pixel step: that conversion, the
+// colour sanity check, the turn upright and the cache entry (frame-job.ts). This
+// page loops over no pixels and copies no frame.
+//
 // Requires the page to be cross-origin isolated (COOP/COEP) for libraw's shared
 // memory — see vite.config.ts. Without an image it answers why (DecodeFailure)
 // and the caller falls back to the in-house decoder / embedded preview. It logs
@@ -26,6 +31,8 @@
 
 import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
 import type { DecodeFailure, RawFloatImage } from "./decode-result";
+import { normalizeRotation } from "@/catalog/orient";
+import { finishFrame, isAbandoned } from "./frame-bridge";
 import {
   acquireInstance,
   decodePoolFailure,
@@ -130,54 +137,6 @@ function highlightModeScale(colorData: unknown): number {
   return mul ? Math.max(...mul) / Math.min(...mul) : 1;
 }
 
-// dcraw's gamma_curve() for its default transfer (power 0.45, toe slope 4.5:
-// Rec.709), inverted and tabulated per 16-bit code. libraw-wasm ignores the
-// `gamm` setting — probed 2026-09-20 against native LibRaw: every spelling,
-// and none, returned the same Rec.709-encoded samples — so this is the transfer
-// its output always carries, and asking it for linear would only invite a
-// double decode from a build that starts honouring the setting.
-function dcrawInverseTransfer(power: number, toeSlope: number): Float32Array {
-  let lo = 0;
-  let hi = 1;
-  let knee = 0;
-  for (let i = 0; i < 48; i++) {
-    knee = (lo + hi) / 2;
-    if ((Math.pow(knee / toeSlope, -power) - 1) / power - 1 / knee > -1) hi = knee;
-    else lo = knee;
-  }
-  const offset = knee * (1 / power - 1);
-  const table = new Float32Array(65536);
-  for (let code = 0; code < 65536; code++) {
-    const y = code / 65536;
-    table[code] = y < knee ? y / toeSlope : Math.pow((y + offset) / (1 + offset), 1 / power);
-  }
-  return table;
-}
-
-const LINEAR_OF_CODE = dcrawInverseTransfer(0.45, 4.5);
-
-// Row-major 3×3 inverse by cofactors.
-function invert3(m: readonly number[]): number[] {
-  const [a, b, c, d, e, f, g, h, i] = m;
-  const c0 = e * i - f * h;
-  const c1 = f * g - d * i;
-  const c2 = d * h - e * g;
-  const s = 1 / (a * c0 + b * c1 + c * c2);
-  return [
-    c0 * s, (c * h - b * i) * s, (b * f - c * e) * s,
-    c1 * s, (a * i - c * g) * s, (c * d - a * f) * s,
-    c2 * s, (b * g - a * h) * s, (a * e - b * d) * s,
-  ];
-}
-
-// Linear sRGB -> ACES AP0 (D65): aces_rgb, LibRaw 0.22 tables/colorconst.cpp.
-const ACES_FROM_SRGB = [
-  0.43968015, 0.38295299, 0.17736686,
-  0.08978964, 0.81343316, 0.09677734,
-  0.01754827, 0.11156156, 0.87089017,
-];
-const SRGB_FROM_ACES = invert3(ACES_FROM_SRGB);
-
 // EV by which the sensor was exposed under the tagged ISO, or 0. Fujifilm's DR
 // modes buy highlight room that way and let the camera JPEG push it back; the
 // RAF records the amount as RawExposureBias (tag 0x9650: -0.72 at DR100, -1.72
@@ -249,6 +208,12 @@ const FULL_SIZE_BYTES_PER_PIXEL = 16;
 
 function pastHeapBudget(frame: RawMetadata["frame"], byteLength: number): boolean {
   return !!frame && frame.width * frame.height * FULL_SIZE_BYTES_PER_PIXEL + byteLength > HEAP_BUDGET;
+}
+
+/** Whether half the frame's long edge, rounded down, still reaches the edge the
+ *  caller renders from (DecodeRequest.targetEdge). */
+function halfReachesTarget(frame: RawMetadata["frame"], targetEdge: number | undefined): boolean {
+  return !!frame && !!targetEdge && Math.floor(Math.max(frame.width, frame.height) / 2) >= targetEdge;
 }
 
 // How running out of memory surfaces: a RangeError on this page (the copy or
@@ -340,21 +305,29 @@ export async function decodeRawFloatViaLibRaw(
 
   const fileBytes = buffer.byteLength;
   const watched = watch(raw, decodeTimeLimit(fileBytes));
-  // A transferred buffer is gone after the first open; a frame past the budget
-  // needs the file's bytes again for its half-size reopen, so it asks `reread`.
+  // A transferred buffer is gone after the first open; a frame that goes to
+  // half size needs the file's bytes again for the reopen, so it asks `reread`.
   const reopenable = !transfer || !!reread;
   let frame: RawMetadata["frame"];
   let halfSize = false;
+  // The instance goes back to the pool as soon as its samples are ours, so the
+  // next decode runs while the frame worker converts these.
+  let handedBack = false;
+  const handBack = (): void => {
+    if (handedBack) return;
+    handedBack = true;
+    watched.done();
+  };
   try {
     const settings = {
       outputBps: 16,
       useCameraWb: true,
       // ACES (LibRaw -o 6), not sRGB: libraw clips its output at 0, and the
       // ACES primaries enclose every visible colour (see the header).
-      // SRGB_FROM_ACES rotates the samples to linear sRGB below.
+      // SRGB_FROM_ACES (frame-job.ts) rotates the samples to linear sRGB.
       outputColor: 6,
       // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
-      // LINEAR_OF_CODE), which is linearized below.
+      // LINEAR_OF_CODE in frame-job.ts), which is linearized there.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
       // clipped to white, destroying exactly the data Highlights recovery needs
       // (and made baseline brightness vary per image). LR uses a fixed baseline.
@@ -372,12 +345,24 @@ export async function decodeRawFloatViaLibRaw(
     frame = frameOf(meta);
     if (frame) watched.extendTo(decodeTimeLimitForFrame(frame.width, frame.height));
     // open() reads only the header, so the frame is known before the unpack.
-    if (reopenable && pastHeapBudget(frame, fileBytes)) {
-      const again = transfer && reread ? await reread() : buffer;
-      halfSize = true;
-      await watched.call(raw.open(forLibRaw(again, transfer), { ...settings, halfSize }));
+    // Half size is a must past the heap budget; short of it, it is taken when
+    // the caller needs no more, and a file that can't be read again just stays
+    // at full size.
+    const mustHalve = reopenable && pastHeapBudget(frame, fileBytes);
+    if (mustHalve || (reopenable && halfReachesTarget(frame, request?.targetEdge))) {
+      const again = transfer && reread
+        ? await reread().catch((e: unknown) => {
+            if (mustHalve) throw e;
+            return undefined;
+          })
+        : buffer;
+      if (again) {
+        halfSize = true;
+        await watched.call(raw.open(forLibRaw(again, transfer), { ...settings, halfSize }));
+      }
     }
     const px: unknown = await watched.call(raw.imageData());
+    handBack();
 
     // imageData() may return undefined on WASM errors even if metadata succeeded
     if (!px) {
@@ -451,75 +436,57 @@ export async function decodeRawFloatViaLibRaw(
       return { failure: "unsupported", reason };
     }
 
-    const n = width * height;
     const scale = highlightModeScale(meta.color_data);
     const bias = rawExposureBias(meta);
-    const gain = scale * 2 ** -bias;
-    // 8-bit codes index the 16-bit table at its matching level (255 -> 65535).
-    const step = pixels instanceof Uint16Array ? 1 : 257;
-    const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = SRGB_FROM_ACES;
-    const data = new Float32Array(n * 4);
-    for (let i = 0, o = 0, s = 0; i < n; i++, o += 4, s += stride) {
-      const r = LINEAR_OF_CODE[pixels[s] * step];
-      if (stride >= 3) {
-        const g = LINEAR_OF_CODE[pixels[s + 1] * step];
-        const b = LINEAR_OF_CODE[pixels[s + 2] * step];
-        data[o] = (m0 * r + m1 * g + m2 * b) * gain;
-        data[o + 1] = (m3 * r + m4 * g + m5 * b) * gain;
-        data[o + 2] = (m6 * r + m7 * g + m8 * b) * gain;
-      } else {
-        data[o] = data[o + 1] = data[o + 2] = r * gain;
-      }
-      data[o + 3] = 1;
+    const bits = pixels instanceof Uint16Array ? 16 : 8;
+    const turn = request?.turn ? normalizeRotation(request.turn) : 0;
+    if (request?.signal?.aborted) return { failure: "aborted" };
+    // Sigma Foveon (X3F) stacks three photodiodes per pixel, so its linear
+    // pre-matrix output is legitimately channel-imbalanced — the frame worker's
+    // Bayer-tuned colour check would false-reject valid X3F decodes.
+    const built = await finishFrame(
+      {
+        pixels,
+        width,
+        height,
+        stride,
+        gain: scale * 2 ** -bias,
+        turn,
+        foveon: num((meta as Record<string, unknown>).is_foveon) > 0,
+        cacheEdge: request?.cacheEdge,
+      },
+      request,
+    );
+    if ("rejected" in built) {
+      console.warn("[libraw]", built.rejected);
+      return { failure: "unsupported", reason: built.rejected };
     }
 
-    // Sanity-check: reject a decode where all channels are simultaneously
-    // near-clipped AND strongly colour-imbalanced — the hallmark of a bad
-    // WB/colour-matrix for an unrecognized camera, not a legitimately bright
-    // scene (which would have balanced channels near 1.0).
-    {
-      let sumR = 0, sumG = 0, sumB = 0;
-      const step = Math.max(1, Math.floor(n / 10000));
-      let samples = 0;
-      for (let i = 0; i < n * 4; i += 4 * step) {
-        sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2];
-        samples++;
-      }
-      const mR = sumR / samples, mG = sumG / samples, mB = sumB / samples;
-      const meanLum = (mR + mG + mB) / 3;
-      const maxCh = Math.max(mR, mG, mB);
-      const minCh = Math.min(mR, mG, mB);
-      // Sigma Foveon (X3F) stacks three photodiodes per pixel, so its linear
-      // pre-matrix output is legitimately channel-imbalanced — this Bayer-tuned
-      // WB heuristic would false-reject valid X3F decodes, so skip it for Foveon.
-      const isFoveon = num((meta as Record<string, unknown>).is_foveon) > 0;
-      // Blown + colour imbalance > 0.3 across channels = bad decode.
-      if (!isFoveon && meanLum > 0.80 && (maxCh - minCh) > 0.30) {
-        const reason = `rejected: blown+imbalanced R=${mR.toFixed(2)} G=${mG.toFixed(2)} B=${mB.toFixed(2)}`;
-        console.warn("[libraw]", reason);
-        return { failure: "unsupported", reason };
-      }
-    }
-
+    // Libraw ignores half_size for a sensor with no mosaic to bin (Foveon), and
+    // hands back the whole frame.
+    const reduced = halfSize && !!frame && 2 * width <= frame.width + 2;
     const colorTemperature = kelvinFromCamMul(meta.color_data);
 
     const status =
-      `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}` +
+      `libraw ${bits}-bit ${stride}ch ${width}×${height}` +
       ` ×${scale.toFixed(2)} white point` +
       (bias ? `, ${(-bias).toFixed(2)} EV exposure bias` : "") +
-      (halfSize ? ", half size to fit the decoder's memory" : "");
+      (reduced ? ", half size" : "");
     const seconds = (watched.elapsed() / 1000).toFixed(1);
     console.log("[libraw] decoded", status, `in ${seconds} s`);
     return {
-      data,
-      width,
-      height,
+      data: built.data,
+      width: built.width,
+      height: built.height,
       suspicious: inferredDims,
       colorTemperature,
       rawExposureBias: bias || undefined,
-      halfSize: halfSize || undefined,
+      ...(reduced ? { halfSize: true, sourceWidth: frame?.width, sourceHeight: frame?.height } : {}),
+      ...(turn ? { turned: turn } : {}),
+      ...(built.entry ? { entry: built.entry } : {}),
     };
   } catch (e) {
+    if (isAbandoned(e)) return { failure: "aborted" };
     const message = e instanceof Error ? e.message : String(e);
     console.warn("[libraw] decode failed", e);
     // A frame past the heap budget that runs out of memory at half size would
@@ -537,6 +504,6 @@ export async function decodeRawFloatViaLibRaw(
     if (e instanceof NoAnswer) failure.timedOut = true;
     return failure;
   } finally {
-    watched.done();
+    handBack();
   }
 }

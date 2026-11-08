@@ -260,10 +260,12 @@ function installCanvasStubs(): void {
     data: Uint8ClampedArray;
     width: number;
     height: number;
-    constructor(width: number, height: number) {
-      this.width = width;
-      this.height = height;
-      this.data = new Uint8ClampedArray(width * height * 4);
+    constructor(width: number, height: number);
+    constructor(data: Uint8ClampedArray, width: number, height: number);
+    constructor(first: number | Uint8ClampedArray, second: number, third?: number) {
+      this.width = typeof first === "number" ? first : second;
+      this.height = typeof first === "number" ? second : (third ?? 0);
+      this.data = typeof first === "number" ? new Uint8ClampedArray(first * second * 4) : first;
     }
   }
   vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);

@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NativeFsBridge } from "@/extensions/types";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
+import { encodeCacheEntry } from "./cache-encode";
 import type { CacheRequest, CacheResponse } from "./cache-worker";
 
 const h = vi.hoisted(() => ({ fs: null as NativeFsBridge | null }));
@@ -23,6 +24,7 @@ class FakeWorker {
   onerror: ((e: ErrorEvent) => void) | null = null;
   onmessageerror: (() => void) | null = null;
   readonly delivered: CacheRequest[] = [];
+  readonly transfers: Transferable[][] = [];
 
   constructor() {
     FakeWorker.last = this;
@@ -31,10 +33,11 @@ class FakeWorker {
     );
   }
 
-  postMessage(msg: CacheRequest): void {
+  postMessage(msg: CacheRequest, transfer: Transferable[] = []): void {
     if (msg.cmd === "setCacheDir" && msg.dir && !browserHandles.has(msg.dir))
       throw new DOMException("The handle could not be cloned.", "DataCloneError");
     this.delivered.push(msg);
+    this.transfers.push(transfer);
   }
 }
 
@@ -134,6 +137,22 @@ describe("workerWriteCachedPreview", () => {
     if (msg.cmd !== "write") throw new Error("not a write");
     answer({ type: "write", id: msg.id, ok: false });
     expect(await writing).toBe(false);
+  });
+
+  it("sends an entry built off the main thread as it is, without copying the frame", async () => {
+    const { workerWriteCachedPreview } = await load();
+    const frame = new Float32Array(32 * 32 * 4);
+    const entry = encodeCacheEntry(frame, 32, 32, 16);
+
+    const writing = workerWriteCachedPreview("k", frame, 32, 32, 3072, entry);
+
+    const [msg] = await delivered();
+    expect(msg).toEqual({ cmd: "store", id: expect.any(Number), key: "k", entry });
+    expect(FakeWorker.last?.transfers[0]).toEqual([entry.preview.data.buffer, entry.sample.data.buffer]);
+    expect(frame.buffer.byteLength).toBeGreaterThan(0);
+    if (msg.cmd !== "store") throw new Error("not a store");
+    answer({ type: "write", id: msg.id, ok: true });
+    expect(await writing).toBe(true);
   });
 });
 

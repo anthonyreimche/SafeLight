@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.2.1. GPL-3.0-only.
+// Safelight 3.2.2. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -65,6 +65,14 @@ export interface CatalogPhoto {
      *  displayed/exported name folds them together as `base_<copyName>.ext` (see
      *  catalog/copy-name.ts). Undefined on a master. */
     copyName?: string;
+    /** The stack this photo belongs to: photos sharing a stackId are one stack (a
+     *  burst, a bracket), shown as the cover alone until it is expanded. A stack
+     *  with fewer than two members shown is no stack (see catalog/stacks). */
+    stackId?: string;
+    /** Marks this photo as its stack's cover. Two windows can mark different
+     *  members, so the cover is resolved, not read: the lowest id of the marked
+     *  members, else the first member in order (stackCoverId). */
+    stackCover?: true;
 }
 
 /** A photo record as catalog.json stores it. The live file handles, the preview
@@ -319,6 +327,14 @@ export interface ThemeContribution {
     colorScheme?: "light" | "dark";
     /** CSS custom properties applied to :root, e.g. { "--color-surface-0": "#fff" }. */
     vars: Record<string, string>;
+    /** Ask the window for a system-drawn backdrop (Windows 11 22H2+ and macOS;
+     *  elsewhere, and in software rendering, the window stays opaque). The
+     *  theme's surface colours should then be translucent (rgba) to show it.
+     *  Ignored while Reduce transparency is on. The Develop canvas surround
+     *  stays opaque either way. */
+    window?: {
+        material: "acrylic" | "mica";
+    };
 }
 
 /** A render pipeline (scene-linear → display transform). Users pick one per
@@ -736,8 +752,9 @@ declare const MASKABLE_PHASES: readonly ProcessingPhase[];
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
  *  blurs) that a single inline fragment can't express become possible.
  *
- *  Contract: the body mutates `vec3 c`, initialized to `readPrev(vUv)` — the
- *  previous pass's output, or on the first pass the stage's input: the decoded
+ *  Contract: the body mutates `vec3 c`, initialized to the pixel's own texel —
+ *  fetched exactly from the previous draw's output, or on the first draw
+ *  `readPrev(vUv)` of the stage's input: the decoded
  *  source linearized for `reads: "source"`, the image as edited up to the stage
  *  for `reads: "current"`, in the stage's declared `space` either way. With no
  *  `space`, the source reads as linear Rec.709 and the current image as the
@@ -784,6 +801,15 @@ export interface StagePass {
      *  3.1.0; earlier builds only used the bag test). */
     iterations?: number | PassDrawCount;
     uniforms?: UniformDeclaration[];
+    /** 3 (default): `glsl` mutates `vec3 c` and the draw stores alpha 1. 4: it
+     *  mutates `vec4 c`, which starts as the previous draw's texel fetched
+     *  exactly and is stored whole, so alpha carries a fourth value to the next
+     *  draw (1 on the stage's input). `vec4 fetchPrev4(ivec2 texel)` fetches any
+     *  texel of the previous draw exactly, `vec4 readPrev4(vec2 uv)` samples it
+     *  filtered. Without float render targets alpha is clipped to [0, 1] at 8
+     *  bits, like the rgb. The inline's `stageResult` is the last draw's rgb
+     *  either way. */
+    channels?: 3 | 4;
 }
 
 /** The values a processing stage receives and hands back (see
@@ -820,6 +846,26 @@ export interface StageDeriveContext {
  *  (column-major) or array uniform, or an image-space matrix (UniformDeclaration
  *  `space`). */
 export type StageValue = number | boolean | number[] | ImageSpaceMatrix;
+
+/** The longest edge, in pixels, of a brush tip's alpha image. */
+declare const MAX_BRUSH_TIP_EDGE = 128;
+
+/** A brush tip (api.develop.registerBrushTip): the shape a brush stamps in
+ *  place of its round, feathered disc. A dab names one with `tip` on the dab
+ *  that starts its stroke, and the stroke keeps it. `alpha` is the shape's
+ *  coverage, 0 to 255, row by row from the top, `width * height` bytes with
+ *  no edge over MAX_BRUSH_TIP_EDGE. The longest edge is stamped across the
+ *  dab's diameter, turned by the dab's `angle`. */
+export interface BrushTipContribution {
+    /** Unique across extensions; a dab stores it, so keep it stable. */
+    id: string;
+    label: string;
+    alpha: {
+        width: number;
+        height: number;
+        data: Uint8Array;
+    };
+}
 
 /** The most layers a paint texture (TextureRequirement "paint") bakes. */
 declare const MAX_PAINT_LAYERS = 4;
@@ -917,6 +963,26 @@ export interface ProcessingStageContribution {
     mask?: {
         maskable: true;
     };
+    /** When the stage changes nothing: uniform key → value. While every listed
+     *  uniform's value, as the uniform binds it (the bag's under "{id}.{key}",
+     *  or the default where the bag has none), equals the one given, vectors
+     *  element by element, the stage is dormant. The live Develop view leaves
+     *  it out of a process version 2 or later photo's program, and its passes
+     *  don't run in any view. The first photo that needs it brings it in, and it stays in
+     *  until Safelight restarts, so a slider moved back to its rest value
+     *  compiles nothing. A mask copy is judged by the mask's values. Each key
+     *  must name a uniform the stage or one of its passes declares, not an array
+     *  uniform, and each value must fit its type, or the stage is refused.
+     *
+     *  The stage must render exactly as without it while dormant. The rule is
+     *  ignored, with a warning, where leaving the stage out changes the frame
+     *  anyway: geometry stages, noise-reduction stages (one keeps the built-in
+     *  denoiser out), display stages without `space` (version 2 clips their
+     *  input), stages that `produce` values others consume, and stages that
+     *  `patch` the source. Basic's tone block (the default shoulder and the
+     *  camera-match lift) must never declare it either. Needs Safelight 3.2.1;
+     *  older builds ignore it. */
+    dormantWhen?: Readonly<Record<string, UniformValue>>;
     /** How this stage's params behave in presets. "global" (the default) is a
      *  look that applies to any photo — e.g. a film sim or a curve — so it is
      *  offered when saving a preset and pre-selected when changed. "per-image" is
@@ -1639,6 +1705,14 @@ export interface SafelightAPI {
          *  preview off drops them with its stages' values. Cleared when the
          *  extension stops. Needs Safelight 3.2.1. */
         setViewValues(values: Record<string, unknown> | null): void;
+        /** Offer a brush tip: a shape (an alpha image, at most 128 px an edge) a
+         *  brush can stamp in place of its round disc. Name it by `id` in the `tip`
+         *  of the dab that starts a stroke, with an optional `angle`; an id nothing
+         *  holds bakes as the disc, so strokes saved with a tip keep drawing when
+         *  its extension is off. Feather doesn't apply to a tip. Registering an id
+         *  you hold replaces it; another extension's id is refused. Dropped when
+         *  the extension stops. Needs Safelight 3.2.1. */
+        registerBrushTip(tip: BrushTipContribution): void;
         /** React hook: the panels that can be added to a mask, in their order.
          *  Needs Safelight 3.2.0. */
         useMaskPanels(): MaskPanelEntry[];
@@ -1789,6 +1863,25 @@ export interface SafelightAPI {
         /** The photo open in Develop (the active photo), or undefined. React hook;
          *  a write to any other photo leaves it alone. */
         useActivePhoto(): CatalogPhoto | undefined;
+        /** Put the photos in one new stack (a burst, a bracket), `opts.cover` (one
+         *  of them) as its cover; a photo in another stack leaves it. The grid shows
+         *  a collapsed stack as its cover alone, and ←/→ culling, select all and
+         *  `useVisiblePhotos` follow what is shown. Written like a rating: no undo
+         *  entry. Does nothing for fewer than two photos in the catalogue. */
+        setStack(ids: string[], opts?: {
+            cover?: string;
+        }): Promise<void>;
+        /** Take the photos out of their stacks. A stack left with one photo is no
+         *  stack. */
+        clearStack(ids: string[]): Promise<void>;
+        /** The stack photo `id` belongs to among all the catalogue's photos: its
+         *  id, its members in catalogue order and its cover (the marked member with
+         *  the lowest id, else the first member). Null for a photo in no stack. */
+        stackOf(id: string): {
+            stackId: string;
+            ids: string[];
+            cover: string;
+        } | null;
         /** The name a photo is shown by: its filename, with a virtual copy's
          *  name added ("IMG_0001_copy.NEF"). */
         photoDisplayName: typeof photoDisplayName;
@@ -1828,6 +1921,21 @@ export interface SafelightAPI {
         pathOf(handle: unknown): string | null;
         /** Show a path in the OS file manager; false outside the desktop app. */
         reveal(path: string): Promise<boolean>;
+    };
+    /** Bring files into the open project from outside it (a tether, a watch
+     *  folder, a download). */
+    library: {
+        /** Write each file into `folder` of the open project (relative to its root,
+         *  "/" between names; created if missing; the root when omitted) and import
+         *  it as a photo, as the project scan imports a new file: previews, EXIF,
+         *  then the grid and the Folders panel. `keywords` are added to the ones the
+         *  file carries. One result per file, in order: `{ name, id }`, or
+         *  `{ name, error }` when it was not taken. A name that is not one plain
+         *  entry name (separators, `..`, a drive letter), a folder that leaves the
+         *  project, a name already in use, an unsupported type, a file over 512 MiB
+         *  and a read-only folder are all refused with a message; nothing is
+         *  overwritten. Calls run one at a time. */
+        importFiles: typeof importFiles;
     };
     /** Presets: the file formats and the descriptions the Presets panel and
      *  Copy Settings share. */
@@ -2293,6 +2401,12 @@ export interface CatalogState {
     relocatePhotos: (updated: CatalogPhoto[]) => Promise<void>;
     /** Set a virtual copy's display name. Display-only. */
     setCopyName: (id: string, copyName: string) => Promise<void>;
+    /** Put the photos in one new stack, `opts.cover` as its cover. */
+    setStack: (ids: string[], opts?: {
+        cover?: string;
+    }) => Promise<void>;
+    /** Take the photos out of their stacks. */
+    clearStack: (ids: string[]) => Promise<void>;
     setRating: (id: string, rating: number) => Promise<void>;
     setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
     setFlag: (id: string, flag: FlagStatus) => Promise<void>;
@@ -2346,6 +2460,9 @@ export interface UIState {
     /** Project folder filter: relative path ("" = whole project), null = all. */
     activeFolder: string | null;
     setActiveFolder: (path: string | null) => void;
+    /** The stacks shown expanded, by stackId; per session, a stack opens collapsed. */
+    expandedStacks: ReadonlySet<string>;
+    toggleStack: (stackId: string) => void;
     gridSize: number;
     setGridSize: (size: number) => void;
     stepGridSize: (direction: 1 | -1) => void;
@@ -2704,6 +2821,14 @@ export interface NativeGpuBridge {
     rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
 }
 
+/** The window's system-drawn backdrop. Privileged so extensions can't change
+ *  how the window paints; a theme asks for it through the core. */
+export interface NativeWindowBridge {
+    /** Resolves true when the window now draws the material; null clears it.
+     *  False on a system or backend that can't draw it. */
+    setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+}
+
 /** Opening what the OS hands the app. Privileged so extensions can't point the
  *  project at a folder of their choosing. */
 export interface NativeOsOpenBridge {
@@ -2739,6 +2864,8 @@ export interface PrivilegedBridge {
     gpu?: NativeGpuBridge;
     /** Optional: absent in older Electron builds. */
     osOpen?: NativeOsOpenBridge;
+    /** Optional: absent in older Electron builds. */
+    window?: NativeWindowBridge;
 }
 
 declare global {
@@ -3077,6 +3204,8 @@ export interface BrushDab {
     opacity?: number;
     flow?: number;
     strokeStart?: boolean;
+    tip?: string;
+    angle?: number;
 }
 
 export interface LinearMaskGeo {
@@ -4325,6 +4454,36 @@ export type BroadcastMessage = {
 
 declare function onBroadcast(handler: (message: BroadcastMessage) => void): () => void;
 
+// src/modules/library/import-files.ts
+
+export interface IngestFile {
+    name: string;
+    data: Blob;
+}
+
+export interface IngestOptions {
+    /** A folder of the project, relative to its root with "/" between names; created
+     *  if it isn't there. The project root when omitted. */
+    folder?: string;
+    /** Added to the keywords the file itself carries. */
+    keywords?: string[];
+}
+
+export type IngestResult = {
+    name: string;
+    id: string;
+} | {
+    name: string;
+    error: string;
+};
+
+/** Write each file into the open project and import it as a photo. Results come
+ *  back in the order given; a file that can't be taken, whatever the reason, is
+ *  reported and leaves the rest unaffected. Nothing is overwritten and nothing
+ *  lands outside the project folder. Calls run one after another, since imports
+ *  share the decode pool. */
+declare function importFiles(files: readonly IngestFile[], options?: IngestOptions): Promise<IngestResult[]>;
+
 // src/extensions/api/devtools.ts
 
 export type ProcessVersion = 1 | 2 | 3;
@@ -4483,7 +4642,7 @@ export interface FolderNode {
  *  storage's origin, which orders two changes stamped at the same time. */
 export type ChangeStamp = [at: number, by: string];
 
-export type PhotoGroup = "location" | "shape" | "file" | "rating" | "colorLabel" | "flag" | "keywords" | "decodeError" | "copyName" | "created";
+export type PhotoGroup = "location" | "shape" | "file" | "rating" | "colorLabel" | "flag" | "keywords" | "decodeError" | "copyName" | "stack" | "created";
 
 /** A photo record's stamps, by group. */
 export type PhotoStamps = Partial<Record<PhotoGroup, ChangeStamp>>;

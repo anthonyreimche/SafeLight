@@ -35,7 +35,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:setMaterial|plugins:(?:install|uninstall|settle-update))$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];

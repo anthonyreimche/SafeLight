@@ -168,6 +168,7 @@ onSourcePixels(listener): () => void;              // 3.2.0
 probeMaskColour(u, v): Promise<[r, g, b] | null>;  // 3.2.0
 showMaskCoverage(maskId: string | null): void;     // 3.2.0
 setViewValues(values: Record<string, unknown> | null): void; // 3.2.1
+registerBrushTip(tip: BrushTipContribution): void; // 3.2.1: { id, label, alpha: { width, height, data: Uint8Array } }
 useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
 useOlderProcessing(): boolean;                     // 3.2.0
 autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a Promise<void>
@@ -179,12 +180,13 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 - `useParamScope` lets one component serve as a panel's `component` and its `mask.component` (`maskId` is null outside a mask). Call `commit(label)` at the end of a gesture.
 - `setCanvasCursor` takes a cursor id, a [`CursorContribution`](contributions.md#cursorcontribution) or raw CSS. The highest `priority` wins (default 10). Call the returned release function when your tool deactivates.
 - `setPickDrag` holds the canvas's pick-drag tool, an on-image drag that starts from a colour (HSL's target tool). While you hold it, a press on the image calls `onPress(point)` at once, with the point in the canvas's pixels. If your tool has `onDown`, it then gets `onDown(rgb, point)` with the colour the view shows there (sRGB, 0 to 1) once that is read, then `onMove(point)` and `onUp()`; a press released before the colour is read starts no drag. Every handler is optional. Holding Ctrl, Cmd or Space pans instead, and Escape lets go of the tool. The last extension to set a tool holds it; `setPickDrag(null)` lets go of yours only, and stopping your extension lets go too. `usePickDragHeld` re-renders when yours is taken or dropped, for a pressed button.
-- `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held (`"brush.larger"` and so on) and returns whether it took one; core acts on those it didn't. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped.
+- `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). The overlay re-renders when the view moves or what it subscribes to changes, not on every edit, so select what it draws with `useDevelopStore((s) => …)` rather than reading `getState()` while rendering. Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held (`"brush.larger"` and so on) and returns whether it took one; core acts on those it didn't. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped.
 - `readDevelopedPixels` reads the open photo's developed frame of the whole image, before the crop and transform, as RGBA8 rows from the top with its long edge at `edge` px (Upright detects lines in it).
 - `sourcePixels` is a small 8-bit sRGB copy of the open photo's source (RGBA8 rows from the top, about 1024 px on its long edge), for searches of the image itself (Heal's source pick). It is `null` before the first frame. `onSourcePixels` calls you with each new one: another photo, or a new decode.
 - `probeMaskColour` reads the colour a mask's colour range compares at a point of the live frame buffer (0 to 1 across `useDevelopOverlay` `rect`): scene-linear, before the display transform.
 - `showMaskCoverage` tints a mask's coverage over the image, fading in and out, or with `null` none: the mask a masking panel points at.
 - `setViewValues` gives the live view values for your own stages' params and textures, by qualified key (`"{stageId}.{key}"`), drawn over the photo's own: feedback that is not part of the edit, such as Paint Layers tinting the layer you hover. They are never saved, undone, exported or drawn in thumbnails. Each call replaces your last set, `null` clears it, keys of other extensions' stages are ignored, and holding your panel's preview off drops them. They are cleared when your extension stops.
+- `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back.
 - `useMaskPanels` lists the panels that can be added to a mask (`PanelContribution.mask`), in their `order` then by title. `extensionParams` is true for one that owns an extension's params, which run inside the mask only at the current processing. Draw one inside `components.MaskScope`; the develop store's `seedMaskPanelValues` and `clearMaskPanelValues` set or clear its values when it is added or removed.
 - `probe` reads the colour the canvas shows at a point in its pixels (sRGB, 0 to 1) from the live frame, or `null` with no frame.
 - `autoAdjust` runs core's Auto White Balance, the white-balance eyedropper at a canvas point, or Auto Tone to convergence, then commits one undo step. Each needs the frame's histogram (`useDevelopStore` `histogram`) and does nothing without one, and only one runs at a time. Pair `whiteBalanceAt` with `setPickDrag`: call it from `onPress` with the point.
@@ -284,6 +286,9 @@ usePhotoActions(): { onContextMenu; overlays };    // Library menu
 useCullingShortcuts(opts?: { sizeSteps?: boolean }): void;
 requestThumbnail(photoId): void;                   // queue a grid preview
 readPreview(photoId): Promise<Blob | null>;        // read a grid preview, keep nothing
+setStack(ids, opts?: { cover?: string }): Promise<void>; // 3.2.1: group as one stack
+clearStack(ids): Promise<void>;                    // 3.2.1: take out of their stacks
+stackOf(id): { stackId; ids; cover } | null;       // 3.2.1
 ```
 
 **Notes**
@@ -294,6 +299,38 @@ readPreview(photoId): Promise<Blob | null>;        // read a grid preview, keep 
 - A photo's `thumbnailBlob` and `thumbnailUrl` are a cache, not a promise. In a big project core keeps the previews it loaded last (a few thousand) and releases the rest, so a photo far from view has both set to `null` until its cell scrolls back. A surface that draws a photo calls `requestThumbnail`. Code that walks the whole catalogue (a duplicate scan, a contact sheet) should not read the record at all.
 - `readPreview` reads the preview from the project for one photo and hands you the blob. Nothing else changes: the record, the memory core holds and the grid are as they were, so a loop over every photo does not fill memory, and the blob is yours to drop. It resolves to `null` for a photo with no preview, or when no project is open. Photos far from view are slower to read than loaded ones, so read a few at a time.
 - Hook examples: [UI Components: Photo surfaces](components.md#photo-surfaces-menu-and-shortcuts).
+
+**Stacks (3.2.1).** A stack is photos that share a `stackId` (a burst, a bracket) and show as one tile, their cover, until someone expands it. People stack and unstack from the Library menu; a burst detector calls `setStack`.
+
+- `setStack` puts the photos in one new stack, taking them out of any they were in. The cover is `cover`, or the first of `ids`. Fewer than two known photos do nothing.
+- A stack with fewer than two photos is no stack: removing or filtering out members leaves the rest stacked, and a single one shows as an ordinary photo.
+- Filters apply to members first. A cover that is filtered out hands over to the next member shown.
+- Navigation follows what is shown: `useVisiblePhotos`, the arrow keys and Select all reach a collapsed stack's cover only. Expanding a stack shows its members in grid order.
+- Stacking is catalogue data, like a rating: it syncs between windows and has no undo step.
+- `stackOf` gives a photo's stack among all photos, filters ignored, or `null`.
+- `api.ui.Thumbnail` and `PhotoListRow` draw the stack badge, so a surface built from them needs no change.
+
+## `api.library`
+
+```ts
+importFiles(                                       // 3.2.1
+  files: { name: string; data: Blob }[],
+  opts?: { folder?: string; keywords?: string[] },
+): Promise<({ name; id } | { name; error })[]>;
+```
+
+`importFiles` writes files an extension receives (from a tethered camera, a network share, a download) into the open project and imports them as photos, with the given keywords added to their own. Use it for a tether, a camera on Wi-Fi, or an online library you mirror.
+
+- `folder` is a folder of the project, with `/` between names, created if it isn't there. It defaults to the project's root.
+- Each `name` must be a plain file name of a supported type. Safelight refuses:
+  - path separators, `..`, a leading `.`, Windows device names (`CON`, `COM1`…) and names over 200 characters;
+  - folders the project scan skips;
+  - a name already in the folder: nothing is overwritten;
+  - files over 512 MB.
+- Each file comes back with the new photo's `id`, or an `error` saying why it wasn't taken; one refusal leaves the rest unaffected. Nothing throws.
+- A file is written whole or not at all, and removed again if its import fails.
+- Calls run one after another, because imports share the decoders.
+- A folder that is read-only refuses with the reason.
 
 ## `api.variables` (shared variables)
 

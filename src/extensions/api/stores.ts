@@ -217,6 +217,11 @@ export interface CatalogState {
   /** Set a virtual copy's display name. Display-only. */
   setCopyName: (id: string, copyName: string) => Promise<void>;
 
+  /** Put the photos in one new stack, `opts.cover` as its cover. */
+  setStack: (ids: string[], opts?: { cover?: string }) => Promise<void>;
+  /** Take the photos out of their stacks. */
+  clearStack: (ids: string[]) => Promise<void>;
+
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
   setFlag: (id: string, flag: FlagStatus) => Promise<void>;
@@ -275,6 +280,10 @@ export interface UIState {
   /** Project folder filter: relative path ("" = whole project), null = all. */
   activeFolder: string | null;
   setActiveFolder: (path: string | null) => void;
+
+  /** The stacks shown expanded, by stackId; per session, a stack opens collapsed. */
+  expandedStacks: ReadonlySet<string>;
+  toggleStack: (stackId: string) => void;
 
   gridSize: number;
   setGridSize: (size: number) => void;

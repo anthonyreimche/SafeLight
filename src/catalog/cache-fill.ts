@@ -12,12 +12,13 @@
 // photo from the entry as it was takes the decoded size and the sample at once.
 
 import type { CatalogPhoto } from "./types";
-import { bakeRotation, rotateFloatRGBA } from "./orient";
+import { bakeRotation, manualRotation, normalizeRotation, rotateFloatRGBA } from "./orient";
 import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/raw/raw-preview";
 import { markDecode, rawCacheGeneration, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { cutSourceSample } from "@/rendering/source-sample";
+import { getSettings } from "@/state/settings-store";
 import { rememberLearned, hasCameraMatch, learnedMatch } from "./decode-learned";
 import { emitCacheEntryFilled } from "./cache-events";
 
@@ -46,7 +47,16 @@ export async function fillCacheEntry(
   let bytes: ArrayBuffer | undefined;
   const read = async () => (bytes = await file.arrayBuffer());
   // Background: a photo opened in Develop meanwhile goes ahead of the queue.
-  const f = await decodeRawToFloat(file, { background: true, signal }, photo.relPath, read);
+  // Full size, not half: the entry's centre sample is read as native
+  // resolution. The turn and the entry are made off this thread.
+  const { rawCacheMaxEdge } = getSettings();
+  const turn = manualRotation(photo.rotation ?? 0, photo.exif?.orientation);
+  const f = await decodeRawToFloat(
+    file,
+    { background: true, signal, cacheEdge: rawCacheMaxEdge, ...(turn ? { turn } : {}) },
+    photo.relPath,
+    read,
+  );
   if (signal?.aborted) return "nothing";
   if ("failure" in f) {
     // Only a failure that would recur is remembered; any other is retried on
@@ -55,7 +65,9 @@ export async function fillCacheEntry(
     return "nothing";
   }
 
-  const rotateDeg = bakeRotation(photo.rotation ?? 0, photo.exif?.orientation, f.oriented ?? false);
+  const rotateDeg = normalizeRotation(
+    bakeRotation(photo.rotation ?? 0, photo.exif?.orientation, f.oriented ?? false) - (f.turned ?? 0),
+  );
   const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
   // Same ruling as Develop's open. A cached decode is served without a second
@@ -74,7 +86,7 @@ export async function fillCacheEntry(
     await markDecode(key, use ? "suspicious" : "unsupported", generation);
     return "nothing";
   }
-  if (!(await writeCachedPreview(key, r.data, r.width, r.height, generation))) return "refused";
+  if (!(await writeCachedPreview(key, r.data, r.width, r.height, generation, f.entry))) return "refused";
   // A write dropped because the project changed meanwhile also answers true;
   // its photo is no longer any view's to update.
   if (rawCacheGeneration() === generation) {

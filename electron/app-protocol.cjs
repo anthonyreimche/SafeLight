@@ -77,11 +77,12 @@ function galleryOriginsFrom(env) {
   return env.SAFELIGHT_GALLERY_ORIGINS || "https://*.workers.dev";
 }
 
-// connect-src is 'self' + the gallery origins + the HTTPS origins that
-// extensions DECLARE in their manifest's permissions.network (main.cjs reads
-// them through extension-origins.cjs). Only declared (and therefore
-// user-visible) origins widen the policy, so an extension can't silently fetch
-// an arbitrary host — anything not declared is blocked by the CSP.
+// connect-src is 'self' + the gallery origins + the HTTPS and wss: (secure
+// WebSocket) origins that extensions DECLARE in their manifest's
+// permissions.network (main.cjs reads them through extension-origins.cjs).
+// Only declared (and therefore user-visible) origins widen the policy, so an
+// extension can't silently fetch an arbitrary host — anything not declared is
+// blocked by the CSP.
 function buildCSP(galleryOrigins, connectHosts) {
   const connect = ["'self'", "data:", "blob:", galleryOrigins, ...connectHosts];
   return [...CSP_STATIC, `connect-src ${connect.join(" ")}`].join("; ");

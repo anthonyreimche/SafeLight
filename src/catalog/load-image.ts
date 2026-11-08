@@ -12,6 +12,7 @@ import {
 import { decodeNetpbm, isNetpbmName } from "@/raw/netpbm";
 import { decodeTiff, isTiffName } from "@/raw/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
+import type { DecodeRequest } from "@/raw/decode-pool";
 import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
 import { halfLumaSamples } from "@/raw/camera-match";
 import { baselineExposureFor } from "@/rendering/baseline-tone";
@@ -21,6 +22,7 @@ import { completeCachedEntry } from "./cache-fill";
 import {
   bakeRotation,
   manualRotation,
+  normalizeRotation,
   previewUprightRotation,
   rotateBitmap,
   rotateFloatRGBA,
@@ -113,6 +115,33 @@ export interface LoadImageOptions {
   // api.develop.readSourceSample. Develop's opens set it; thumbnails, headless
   // renders and exports leave it off.
   sample?: boolean;
+  // The long edge, in pixels, the caller renders from. A RAW whose half size
+  // still reaches it is decoded at half size (see DecodeRequest.targetEdge).
+  // Default: full size. A load that writes the RAW cache must stay full size:
+  // the entry's centre sample is read as native resolution.
+  targetEdge?: number;
+}
+
+/** What to ask of the decode of `photo`'s RAW: the manual turns baked in, the
+ *  cache entry built if this load will write one, and the edge it may stop at.
+ *  `cached`: the entry this load found for the photo, if any. */
+function decodeRequestFor(
+  photo: CatalogPhoto,
+  cached: CachedPreview | null,
+  opts: LoadImageOptions | undefined,
+): DecodeRequest {
+  const { rawCacheEnabled, rawCacheMaxEdge } = getSettings();
+  const cachedEdge = cached ? Math.max(cached.width, cached.height) : 0;
+  const fills = rawCacheEnabled && (cached === null || cached.full === null || cachedEdge < rawCacheMaxEdge);
+  const targetEdge = opts?.targetEdge;
+  const turn = manualRotation(photo.rotation ?? 0, photo.exif?.orientation);
+  return {
+    background: opts?.background,
+    signal: opts?.signal,
+    ...(turn ? { turn } : {}),
+    ...(fills ? { cacheEdge: rawCacheMaxEdge } : {}),
+    ...(targetEdge ? { targetEdge } : {}),
+  };
 }
 
 // Paint the embedded preview (camera-rendered, decodes in ~1s) so the user sees
@@ -266,7 +295,7 @@ export async function loadPhotoImage(
           }),
           unsupported
             ? null
-            : decodeRawToFloat(file, { background: opts?.background, signal }, photo.relPath),
+            : decodeRawToFloat(file, decodeRequestFor(photo, cached, opts), photo.relPath),
         ]);
         // Kept for later opens and the background pass; an abandoned open
         // settles nothing about the file.
@@ -298,10 +327,11 @@ export async function loadPhotoImage(
           // photo.rotation = EXIF orientation + manual user rotation (from import).
           // When the decoder already oriented the pixels, subtract the EXIF portion
           // so only manual rotation remains — otherwise we'd double-rotate.
-          const rotateDeg = bakeRotation(
-            photo.rotation ?? 0,
-            photo.exif?.orientation,
-            f.oriented ?? false,
+          // The decode turned the frame as it was asked to (DecodeRequest.turn),
+          // off this thread; only what it left undone is turned here.
+          const rotateDeg = normalizeRotation(
+            bakeRotation(photo.rotation ?? 0, photo.exif?.orientation, f.oriented ?? false) -
+              (f.turned ?? 0),
           );
           const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
@@ -326,7 +356,7 @@ export async function loadPhotoImage(
             const bestEdge = Math.min(getSettings().rawCacheMaxEdge, Math.max(r.width, r.height));
             const incomplete = cached !== null && cached.full === null;
             if (cache && (cachedEdge < bestEdge || incomplete)) {
-              writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration);
+              writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration, f.entry);
             }
             if (!cache) remember("suspicious");
             return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo) };

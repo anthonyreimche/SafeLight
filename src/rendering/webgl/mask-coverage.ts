@@ -4,7 +4,9 @@
 // be preserved in derived versions.
 
 import type { BrushDab } from "@/catalog/types";
+import type { BrushTipContribution } from "@/extensions/api/contributions";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
+import { brushTip, brushTipVersion, brushTipsGeneration, tipCoverageShape, tipLevelShape } from "./brush-tips";
 
 // Freehand coverage (brush masks, and an official stage's atlas texture such
 // as Heal's brush strokes) is rasterized into the four channels (R,G,B,A) of
@@ -36,7 +38,7 @@ export function coverageSignature(items: CoverageItem[], imageAspect: number): s
         it.dabs
           .map(
             (d) =>
-              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${(d.opacity ?? 1).toFixed(3)},${(d.flow ?? 1).toFixed(3)},${d.erase ? 1 : 0},${d.strokeStart === true ? 1 : 0}`,
+              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${(d.opacity ?? 1).toFixed(3)},${(d.flow ?? 1).toFixed(3)},${d.erase ? 1 : 0},${d.strokeStart === true ? 1 : 0},${d.tip ?? ""}@${brushTipVersion(d.tip)},${(d.angle ?? 0).toFixed(3)}`,
           )
           .join("|"),
     )
@@ -83,6 +85,10 @@ export class CoverageInputs {
 export interface StrokeRun<D extends BrushDab = BrushDab> {
   erase: boolean;
   dabs: D[];
+  /** The tip and angle of the stroke's start dab, which every run of the stroke
+   *  inherits, including the one that begins where the brush flips to erase. */
+  tip?: string;
+  angle?: number;
 }
 
 // Splits an item's dabs into the strokes that composite one over another. A
@@ -94,14 +100,20 @@ export interface StrokeRun<D extends BrushDab = BrushDab> {
 function strokeRuns<D extends BrushDab>(dabs: D[], splits?: (prev: D, next: D) => boolean): StrokeRun<D>[] {
   const runs: StrokeRun<D>[] = [];
   let legacy = true;
+  let tip: string | undefined;
+  let angle: number | undefined;
   for (const dab of dabs) {
     const start = dab.strokeStart === true;
-    if (start) legacy = false;
+    if (start) {
+      legacy = false;
+      tip = dab.tip;
+      angle = dab.angle;
+    }
     const last = runs[runs.length - 1];
     const continues =
       last && !start && (legacy || last.erase === dab.erase) && !splits?.(last.dabs[last.dabs.length - 1], dab);
     if (continues) last.dabs.push(dab);
-    else runs.push({ erase: !legacy && dab.erase, dabs: [dab] });
+    else runs.push({ erase: !legacy && dab.erase, dabs: [dab], tip, angle });
   }
   return runs;
 }
@@ -161,14 +173,43 @@ function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, lay: (i: numbe
     ctx.restore();
   };
 
+  // A registered tip is stamped in place of the disc: its longest edge across the
+  // dab's diameter, turned by the stroke's angle in the picture's own proportions
+  // (the turn comes before the stretch to the image's aspect), at `alpha`.
+  const tip = brushTip(run.tip);
+  const coverShape = tip ? tipCoverageShape(tip) : null;
+  const stampTip = (
+    { alpha: { width, height } }: BrushTipContribution,
+    dab: BrushDab,
+    op: GlobalCompositeOperation,
+    shape: CanvasImageSource,
+    alpha: number,
+  ) => {
+    const ry = dab.radius * BAKE_SIZE;
+    const rx = (dab.radius / aspect) * BAKE_SIZE;
+    if (rx < 0.3 || ry < 0.3) return;
+    const halfWidth = width >= height ? 1 : width / height;
+    const halfHeight = height >= width ? 1 : height / width;
+    ctx.save();
+    ctx.translate(dab.x * BAKE_SIZE, dab.y * BAKE_SIZE);
+    ctx.scale(rx, ry);
+    ctx.rotate(run.angle ?? 0);
+    ctx.globalAlpha = alpha;
+    ctx.globalCompositeOperation = op;
+    ctx.drawImage(shape, -halfWidth, -halfHeight, halfWidth * 2, halfHeight * 2);
+    ctx.restore();
+  };
+  // A tip's corners reach past the disc it replaces.
+  const reach = tip && coverShape ? Math.SQRT2 : 1;
+
   // The pixel box the run's dabs can reach.
   let x0 = BAKE_SIZE;
   let y0 = BAKE_SIZE;
   let x1 = 0;
   let y1 = 0;
   for (const dab of run.dabs) {
-    const ry = dab.radius * BAKE_SIZE;
-    const rx = (dab.radius / aspect) * BAKE_SIZE;
+    const ry = dab.radius * BAKE_SIZE * reach;
+    const rx = (dab.radius / aspect) * BAKE_SIZE * reach;
     x0 = Math.min(x0, Math.floor(dab.x * BAKE_SIZE - rx) - 1);
     y0 = Math.min(y0, Math.floor(dab.y * BAKE_SIZE - ry) - 1);
     x1 = Math.max(x1, Math.ceil(dab.x * BAKE_SIZE + rx) + 1);
@@ -187,8 +228,14 @@ function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, lay: (i: numbe
   ctx.globalCompositeOperation = "source-over";
   ctx.clearRect(box.x, box.y, box.w, box.h);
   for (const dab of run.dabs) {
-    const a = clamp01(dab.flow ?? 1).toFixed(4);
-    stamp(dab, dab.erase && !run.erase ? "destination-out" : "source-over", (g, core) => {
+    const flow = clamp01(dab.flow ?? 1);
+    const a = flow.toFixed(4);
+    const op = dab.erase && !run.erase ? "destination-out" : "source-over";
+    if (tip && coverShape) {
+      stampTip(tip, dab, op, coverShape, flow);
+      continue;
+    }
+    stamp(dab, op, (g, core) => {
       g.addColorStop(0, `rgba(255,255,255,${a})`);
       g.addColorStop(core, `rgba(255,255,255,${a})`);
       g.addColorStop(1, "rgba(255,255,255,0)");
@@ -205,6 +252,11 @@ function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, lay: (i: numbe
   for (const dab of run.dabs) {
     if (dab.erase !== run.erase) continue;
     const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
+    const levelShape = tip && coverShape ? tipLevelShape(tip, lvl) : null;
+    if (tip && levelShape) {
+      stampTip(tip, dab, "lighten", levelShape, 1);
+      continue;
+    }
     const fill = `rgb(${lvl},${lvl},${lvl})`;
     stamp(dab, "lighten", (g, core) => {
       g.addColorStop(0, fill);
@@ -237,7 +289,9 @@ export function sameDab(a: BrushDab, b: BrushDab): boolean {
     a.erase === b.erase &&
     a.opacity === b.opacity &&
     a.flow === b.flow &&
-    a.strokeStart === b.strokeStart
+    a.strokeStart === b.strokeStart &&
+    a.tip === b.tip &&
+    a.angle === b.angle
   );
 }
 
@@ -332,13 +386,17 @@ type ItemBake = StrokeBake<BrushDab, Float32Array>;
  *  same history still counts as unchanged. */
 export class CoverageBaker {
   private aspect = Number.NaN;
+  private tips = -1;
   private baked = new Map<string, ItemBake>();
 
   bake(items: CoverageItem[], imageAspect: number): CoverageResult | null {
     const list = items.slice(0, MAX_BRUSH_MASKS);
     if (list.length === 0) return null;
     const aspect = imageAspect > 0 ? imageAspect : 1;
-    if (aspect !== this.aspect) this.baked.clear();
+    // A stroke baked before its tip arrived, or with one since replaced, is stale.
+    const tips = brushTipsGeneration();
+    if (aspect !== this.aspect || tips !== this.tips) this.baked.clear();
+    this.tips = tips;
 
     const context = lazyBakeContext();
     const kept = new Map<string, ItemBake>();

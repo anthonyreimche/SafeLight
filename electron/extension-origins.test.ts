@@ -240,6 +240,11 @@ describe("declaredConnectHosts", () => {
     expect(hosts).toEqual(["https://spaced.example.com"]);
   });
 
+  it("accepts a wss origin and refuses ws", () => {
+    const hosts = declaredConnectHosts([manifest("a", network("wss://live.example.com", "wss://*.example.com:8443", "ws://insecure.example.com"))]);
+    expect(hosts).toEqual(["wss://live.example.com", "wss://*.example.com:8443"]);
+  });
+
   it("accepts a leading-label wildcard and a port", () => {
     expect(declaredConnectHosts([manifest("a", network("https://*.workers.dev", "https://localhost:8787"))])).toEqual([
       "https://*.workers.dev",

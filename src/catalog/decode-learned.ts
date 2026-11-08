@@ -45,5 +45,11 @@ export function rememberLearned(photo: CatalogPhoto, learned: DecodeLearned): vo
   if (Object.keys(learned).length === 0) return;
   Object.assign(photo.exif, learned);
   const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
-  if (current) void catalogStorage().putPhoto({ ...current, exif: { ...current.exif, ...learned } });
+  // Lazy: a decode learns it again if the save is lost.
+  if (current) {
+    void catalogStorage().putPhoto(
+      { ...current, exif: { ...current.exif, ...learned } },
+      { lazy: true },
+    );
+  }
 }

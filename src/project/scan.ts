@@ -15,7 +15,7 @@ import { SIDECAR_SUFFIX } from "./sidecar";
  *  word, so a drive-root project doesn't report them as unreadable on every open.
  *  Lower-case; the dot-folders macOS keeps (.Trashes, .fseventsd) are already
  *  skipped. */
-const SYSTEM_FOLDERS = new Set([
+export const SYSTEM_FOLDERS: ReadonlySet<string> = new Set([
   "$recycle.bin",
   "recycler",
   "system volume information",

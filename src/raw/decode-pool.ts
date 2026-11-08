@@ -66,6 +66,17 @@ interface DecodePriority {
 // an instance early; see discardInstance.)
 export interface DecodeRequest extends DecodePriority {
   signal?: AbortSignal;
+  /** The long edge, in pixels, the caller renders from. A frame whose half
+   *  size still reaches it is decoded at half size (libraw's half_size): about
+   *  a quarter of the pixels to demosaic and convert. Unset: full size. */
+  targetEdge?: number;
+  /** Clockwise degrees to bake into a libraw frame, which arrives EXIF-upright:
+   *  the photo's manual turns (catalog/orient.ts manualRotation). The turn is
+   *  made off the main thread, as the frame is converted. */
+  turn?: number;
+  /** Also build the develop-preview cache entry for the frame, its preview
+   *  downscaled to this long edge, off the main thread (raw-cache.ts). */
+  cacheEdge?: number;
 }
 
 // null: the pool was disposed while this request waited.

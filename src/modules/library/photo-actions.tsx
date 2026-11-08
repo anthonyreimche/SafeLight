@@ -22,6 +22,7 @@ import { guardCallback } from "@/extensions/guard";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
 import { removeFromCatalog } from "./use-culling-shortcuts";
+import { visibleStack, visibleStackMembers } from "./photo-navigation";
 import { alertDialog } from "@/ui/components/ConfirmDialog";
 import { isNativeFS } from "@/project/native-fs";
 import { projectPassSignal } from "@/project/project-store";
@@ -44,6 +45,17 @@ export interface PhotoActions {
 // raises one dialogue, not two.
 const renameOwners: symbol[] = [];
 
+/** `ids` with the members a collapsed stack hides: its cover stands for the whole
+ *  stack on the grid. A member of an expanded stack stands for itself. */
+function withHiddenMembers(ids: readonly string[]): string[] {
+  const all = new Set<string>();
+  for (const id of ids) {
+    const collapsed = visibleStack(id)?.expanded === false;
+    for (const member of collapsed ? visibleStackMembers(id) : [id]) all.add(member);
+  }
+  return [...all];
+}
+
 export function usePhotoActions(): PhotoActions {
   const select = useCatalogStore((s) => s.select);
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
@@ -62,6 +74,11 @@ export function usePhotoActions(): PhotoActions {
     ids: string[];
     target: string;
   } | null>(null);
+  const inStack = useCatalogStore((s) => {
+    if (!menu) return false;
+    const targeted = new Set(menu.ids);
+    return s.photos.some((p) => targeted.has(p.id) && p.stackId !== undefined);
+  });
   const onContextMenu = useCallback(
     (id: string, e: React.MouseEvent) => {
       e.preventDefault();
@@ -237,6 +254,7 @@ export function usePhotoActions(): PhotoActions {
   const menuItems = useMemo<ContextMenuEntry[]>(() => {
     if (!menu) return [];
     const { ids, target } = menu;
+    const { setStack, clearStack, selectAll } = useCatalogStore.getState();
     const n = ids.length;
     const suffix = n > 1 ? ` (${n})` : "";
     return [
@@ -278,6 +296,22 @@ export function usePhotoActions(): PhotoActions {
       {
         label: `Rotate counter-clockwise${suffix}`,
         onClick: () => rotatePhotos(ids, -90),
+      },
+      "separator",
+      {
+        label: `Stack${suffix}`,
+        disabled: n < 2,
+        onClick: () => void setStack(ids, { cover: target }),
+      },
+      {
+        label: `Unstack${suffix}`,
+        disabled: !inStack,
+        onClick: () => void clearStack(withHiddenMembers(ids)),
+      },
+      {
+        label: "Select stack",
+        disabled: !visibleStack(target),
+        onClick: () => selectAll(visibleStackMembers(target)),
       },
       "separator",
       { label: `Re-import${suffix}`, onClick: () => void handleReimport(ids) },
@@ -330,6 +364,7 @@ export function usePhotoActions(): PhotoActions {
     handleRemove,
     setActivePhoto,
     setActiveModule,
+    inStack,
   ]);
 
   const overlays = (

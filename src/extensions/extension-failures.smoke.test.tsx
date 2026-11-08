@@ -109,8 +109,14 @@ const bundles: Record<string, Partial<ExtensionModule>> = {
 /** Boot the installed extensions, the hanging one given its full time. */
 async function boot(): Promise<void> {
   vi.useFakeTimers();
-  const loading = loadExternalPlugins();
-  await vi.advanceTimersByTimeAsync(EXTENSION_TIMEOUT_MS);
+  let done = false;
+  const loading = loadExternalPlugins().finally(() => {
+    done = true;
+  });
+  // The loader yields between extensions, so a later one's time starts after an earlier one's.
+  for (let round = 0; !done && round < 10; round++) {
+    await vi.advanceTimersByTimeAsync(EXTENSION_TIMEOUT_MS);
+  }
   await loading;
   vi.useRealTimers();
 }

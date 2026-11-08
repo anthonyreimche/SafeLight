@@ -9,8 +9,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProcessingStageContribution } from "@/extensions/types";
+import { BUILTIN_RESOLVED } from "./builtin-pipeline";
 import { PASS_PRELUDE } from "./export-draw";
-import { createProgram, isolateFailingStages } from "./program-cache";
+import { ProgramCache, buildOutcome, createProgram, isolateFailingStages } from "./program-cache";
 import { FRAGMENT_SHADER, V2_VARIANT, VERTEX_SHADER } from "./shaders";
 import { buildStageInjection, PASS_VERTEX_SHADER } from "./stage-injection";
 
@@ -79,14 +80,26 @@ describe("isolateFailingStages", () => {
   });
 });
 
+const COMPLETION_STATUS_KHR = 0x91b1;
+
 /** A context whose shaders always build, holding each one's type and source.
- *  `link` runs as the driver links. */
-function fakeGl(link: () => void = () => {}) {
+ *  `link` runs as the driver links. Given `busyPolls`, it has
+ *  KHR_parallel_shader_compile and reports each program unfinished that many
+ *  times before it is done. `statusReads` lists each COMPILE_STATUS and
+ *  LINK_STATUS read, which waits for the driver. */
+function fakeGl(link: () => void = () => {}, busyPolls?: number) {
   const sources = new Map<object, string>();
   const types = new Map<object, number>();
+  const statusReads: string[] = [];
+  const polls = new Map<object, number>();
   const gl = {
     VERTEX_SHADER: 0x8b31,
     FRAGMENT_SHADER: 0x8b30,
+    COMPILE_STATUS: 0x8b81,
+    LINK_STATUS: 0x8b82,
+    getExtension: (name: string) =>
+      busyPolls !== undefined && name === "KHR_parallel_shader_compile" ? { COMPLETION_STATUS_KHR } : null,
+    isContextLost: () => false,
     createShader: (type: number) => {
       const shader = {};
       types.set(shader, type);
@@ -94,15 +107,27 @@ function fakeGl(link: () => void = () => {}) {
     },
     shaderSource: (shader: object, src: string) => sources.set(shader, src),
     compileShader: () => {},
-    getShaderParameter: () => true,
+    getShaderParameter: (_shader: object, pname: number) => {
+      if (pname === gl.COMPILE_STATUS) statusReads.push("COMPILE_STATUS");
+      return true;
+    },
     createProgram: () => ({}),
     attachShader: () => {},
     bindAttribLocation: () => {},
     linkProgram: link,
     deleteShader: () => {},
-    getProgramParameter: () => true,
+    getProgramParameter: (program: object, pname: number) => {
+      if (pname === COMPLETION_STATUS_KHR) {
+        const n = (polls.get(program) ?? 0) + 1;
+        polls.set(program, n);
+        return n > (busyPolls ?? 0);
+      }
+      if (pname === gl.LINK_STATUS) statusReads.push("LINK_STATUS");
+      return true;
+    },
+    getUniformLocation: () => null,
   } as unknown as WebGL2RenderingContext;
-  return { gl, sources, types };
+  return { gl, sources, types, statusReads };
 }
 
 /** The fragment source createProgram hands the driver for `fsSrc`. */
@@ -146,6 +171,26 @@ describe("createProgram's fragment precision", () => {
   });
 });
 
+// A compile error comes with the driver's log. A build that fails with none is
+// the driver failing (Direct3D 11 losing the context over a shader it can't
+// take), which the window's crash guard treats as a suspect.
+describe("buildOutcome", () => {
+  it.each([
+    ["Shader compile failed: ERROR: 0:12: 'lin' : undeclared identifier", "failed"],
+    ["Program link failed: too many uniforms", "failed"],
+    ["Program link failed: ", "suspect"],
+    ["Shader compile failed: \n", "suspect"],
+    ["Program link failed:", "suspect"],
+  ])("reads %j as %s", (message, outcome) => {
+    expect(buildOutcome(new Error(message))).toBe(outcome);
+  });
+
+  it("reads anything else thrown as failed", () => {
+    expect(buildOutcome(new Error("WebGLRenderer: out of texture units"))).toBe("failed");
+    expect(buildOutcome("boom")).toBe("failed");
+  });
+});
+
 // The worker builds programs on its one thread and says nothing until a frame is
 // drawn, so a build the driver takes seconds over reads as a worker that stopped.
 describe("createProgram's build time", () => {
@@ -171,5 +216,51 @@ describe("createProgram's build time", () => {
     const { gl } = fakeGl(() => (clock += 200));
     createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER, "a pass");
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+// The Library histogram and export build on the window's thread, where a status
+// read blocks until the driver is done: a whole develop compile, up to a second.
+describe("ProgramCache.whenBuilt", () => {
+  const BUILT = buildStageInjection([], V2_VARIANT);
+  const NONE = new Set<string>();
+  afterEach(() => vi.useRealTimers());
+
+  it("reads no compile or link status until the driver says the build is done", async () => {
+    vi.useFakeTimers();
+    const { gl, statusReads } = fakeGl(undefined, 3);
+    const cache = new ProgramCache(gl);
+    let done = false;
+    const finished = cache.whenBuilt(BUILTIN_RESOLVED, BUILT, V2_VARIANT, NONE).then(() => {
+      done = true;
+    });
+    for (let poll = 0; poll < 3; poll++) {
+      await vi.advanceTimersToNextTimerAsync();
+      expect(statusReads).toEqual([]);
+      expect(done).toBe(false);
+    }
+    await vi.runAllTimersAsync();
+    await finished;
+    expect(statusReads).toEqual(["COMPILE_STATUS", "COMPILE_STATUS", "LINK_STATUS"]);
+  });
+
+  it("leaves the program built for the frame that asks for it", async () => {
+    vi.useFakeTimers();
+    const { gl, sources, statusReads } = fakeGl(undefined, 1);
+    const cache = new ProgramCache(gl);
+    const finished = cache.whenBuilt(BUILTIN_RESOLVED, BUILT, V2_VARIANT, NONE);
+    await vi.runAllTimersAsync();
+    await finished;
+    const compiled = sources.size;
+    const reads = statusReads.length;
+    cache.entryFor(BUILTIN_RESOLVED, BUILT, V2_VARIANT, NONE);
+    expect(sources.size).toBe(compiled);
+    expect(statusReads).toHaveLength(reads);
+  });
+
+  it("builds nothing, and is done at once, where the driver can't say when a build is", async () => {
+    const { gl, sources } = fakeGl();
+    await new ProgramCache(gl).whenBuilt(BUILTIN_RESOLVED, BUILT, V2_VARIANT, NONE);
+    expect(sources.size).toBe(0);
   });
 });

@@ -7,11 +7,14 @@ import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { isBuiltInStage, writesRawNames } from "@/rendering/webgl/builtin-stage";
 import { STAGE_ANCHORS, isStageAnchor } from "@/rendering/webgl/stage-anchors";
 import { CORE_EXTENSION_ID } from "./core-extension";
+import { isUniformValue } from "./pipeline-validation";
 import {
   MASKABLE_PHASES,
   PROCESSING_PHASE_ORDER,
   type InterStageVariable,
+  type ProcessingPhase,
   type ProcessingStageContribution,
+  type StagePass,
   type StageSpace,
   type TextureRequirement,
   type UniformDeclaration,
@@ -167,6 +170,18 @@ function passCountError(c: ProcessingStageContribution): string | null {
   return null;
 }
 
+/** Why a pass's `channels` can't be built, or null. */
+function passChannelsError(c: ProcessingStageContribution): string | null {
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return null;
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    const { channels } = pass as Record<string, unknown>;
+    if (channels !== undefined && channels !== 3 && channels !== 4) return `passes[${index}].channels must be 3 or 4, got ${formatValue(channels)}`;
+  }
+  return null;
+}
+
 /** Notes on the fixed draw counts the renderer clamps to 1…MAX_PASS_DRAWS (a
  *  count that isn't finite becomes 1). They stay registrable: refusing them
  *  would stop an extension written before the bound from loading. */
@@ -227,6 +242,66 @@ function paintTextureError(c: ProcessingStageContribution): string | null {
   const paint = (textures as TextureRequirement[]).filter((t) => t?.kind === "paint");
   if (paint.length < 2) return null;
   return `declares ${paint.length} paint textures; a stage has at most one paint texture, whose layers hold every stroke`;
+}
+
+/** The uniforms a stage declares, inline and in its passes, as plain JS hands them over. */
+export function declaredUniforms(c: ProcessingStageContribution): UniformDeclaration[] {
+  const inline: unknown = c.uniforms;
+  const passes: unknown = c.passes;
+  const own = Array.isArray(inline) ? (inline as UniformDeclaration[]) : [];
+  const passUniforms = Array.isArray(passes)
+    ? (passes as unknown[]).flatMap((p) => {
+        const uniforms: unknown = typeof p === "object" && p !== null ? (p as StagePass).uniforms : undefined;
+        return Array.isArray(uniforms) ? (uniforms as UniformDeclaration[]) : [];
+      })
+    : [];
+  return [...own, ...passUniforms].filter((u) => typeof u === "object" && u !== null);
+}
+
+/** Why `dormantWhen` can't be read, or null. */
+function dormantWhenError(c: ProcessingStageContribution): string | null {
+  const rule: unknown = c.dormantWhen;
+  if (rule === undefined) return null;
+  if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
+    return "dormantWhen must be an object of uniform keys and values";
+  }
+  const entries = Object.entries(rule);
+  if (entries.length === 0) return "dormantWhen must name at least one uniform";
+  const uniforms = declaredUniforms(c);
+  for (const [key, value] of entries) {
+    const u = uniforms.find((d) => d.key === key);
+    if (!u) return `dormantWhen names "${key}", which isn't a uniform the stage declares`;
+    if (u.length !== undefined) return `dormantWhen names "${key}", an array uniform`;
+    if (!isUniformValue(value, u.glslType)) {
+      return `dormantWhen "${key}": ${formatValue(value)} doesn't fit ${describeValue(u.glslType)}`;
+    }
+  }
+  return null;
+}
+
+const DISPLAY_PHASES: readonly ProcessingPhase[] = ["display-adjust", "effects", "output-encode"];
+
+/** Why the renderer can't leave the stage out while `dormantWhen` holds,
+ *  because the frame would change without it all the same, or null when it
+ *  can. The renderer reads its rule only when this is null. `extensionId`: who
+ *  registered it; a stage that writes raw names (core's, an official
+ *  extension's) never has its input clipped, so its absence clips nothing. */
+export function dormancyIgnored(
+  c: ProcessingStageContribution & { extensionId?: unknown },
+  extensionId: unknown = c.extensionId,
+): string | null {
+  if (c.phase === "geometry" || c.geometry !== undefined) {
+    return "geometry stages decide where every pixel is read from";
+  }
+  if (c.phase === "noise-reduction") {
+    return "noise-reduction stages decide whether the built-in denoiser runs";
+  }
+  if (DISPLAY_PHASES.includes(c.phase) && !c.space && !writesRawNames({ id: c.id, extensionId })) {
+    return "a display stage without space has its input clipped on version 2 photos";
+  }
+  if ((c.produces?.length ?? 0) > 0) return "stages after it read what it produces";
+  if (c.patch !== undefined) return "a stage that patches the source decides what every pass reads";
+  return null;
 }
 
 /** Runtime check of the stage's contract, and of who may register it: ids under
@@ -306,6 +381,8 @@ export function checkStageContract(
   if (isvReference) return fail(isvReference);
   const passCount = passCountError(c);
   if (passCount) return fail(passCount);
+  const passChannels = passChannelsError(c);
+  if (passChannels) return fail(passChannels);
   warnings.push(...fixedCountWarnings(c, stagePrefix));
 
   let readsIgnored: string | null = null;
@@ -326,6 +403,10 @@ export function checkStageContract(
       );
     }
   }
+  const dormant = dormantWhenError(c);
+  if (dormant) return fail(dormant);
+  const dormancy = c.dormantWhen === undefined ? null : dormancyIgnored(c, extensionId);
+  if (dormancy) warnings.push(`${stagePrefix}: ${dormancy}, so dormantWhen is ignored`);
   // The ordering reads `after` as a list of ids; whatever else is there is skipped.
   const after: unknown = c.after;
   if (after !== undefined && !Array.isArray(after)) {

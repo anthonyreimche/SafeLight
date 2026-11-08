@@ -30,6 +30,8 @@ interface RawDab {
   opacity?: number;
   flow?: number;
   strokeStart?: unknown;
+  tip?: unknown;
+  angle?: unknown;
 }
 
 interface RawBrush {
@@ -290,6 +292,27 @@ describe("brush dabs", () => {
       },
     ]);
     expect(m.components[0].brush?.dabs.map((d) => d.strokeStart)).toEqual([true, undefined, undefined]);
+  });
+
+  it("keeps a brush tip and angle on a stroke-start dab only", () => {
+    const [m] = masksOf([
+      {
+        id: "b",
+        type: "brush",
+        brush: {
+          dabs: [
+            { x: 0.1, y: 0.1, radius: 0.1, strokeStart: true, tip: "chalk", angle: 0.5 },
+            { x: 0.2, y: 0.1, radius: 0.1, tip: "chalk", angle: 0.5 },
+            { x: 0.3, y: 0.1, radius: 0.1, strokeStart: true, tip: 7, angle: "up" },
+            { x: 0.4, y: 0.1, radius: 0.1, strokeStart: true },
+          ],
+        },
+      },
+    ]);
+    const dabs = m.components[0].brush?.dabs ?? [];
+    expect(dabs.map((d) => d.tip)).toEqual(["chalk", undefined, undefined, undefined]);
+    expect(dabs.map((d) => d.angle)).toEqual([0.5, undefined, undefined, undefined]);
+    expect(Object.keys(dabs[3])).not.toContain("tip");
   });
 });
 

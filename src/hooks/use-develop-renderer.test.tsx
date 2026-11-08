@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/react";
-import { StrictMode, useLayoutEffect, useRef, useState } from "react";
+import { Profiler, StrictMode, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams, EditSnapshot, Mask } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS, defaultMaskAdjustments } from "@/catalog/types";
 import { emitCacheEntryFilled } from "@/catalog/cache-events";
@@ -28,6 +28,12 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
 import { registerGridFilter, useRegistry, type RegisteredProcessingStage } from "@/extensions/registry";
+import {
+  useDisabledExtensions,
+  useExternalPluginsSettled,
+  useInstalledPlugins,
+  useRunningPlugins,
+} from "@/extensions/loader";
 import { setExtensionName } from "@/extensions/param-registry";
 import { forgetCallbackFailures } from "@/extensions/guard";
 import { NO_FILTER } from "@/modules/library/visible-photos";
@@ -546,6 +552,7 @@ beforeEach(() => {
       };
     },
   });
+  useExternalPluginsSettled.setState({ settled: true });
   useDevelopStore.setState({
     ...loaded("next", edit(0.5)),
     histogram: null,
@@ -581,6 +588,82 @@ describe("useDevelopRenderer opening a photo", () => {
     const { worker } = await open(photo());
     expect(drawn[0]).toBe(decoded[0]);
     expect(worker.posted.filter((m) => m.cmd === "setImage")).toEqual([]);
+  });
+
+  describe("while the essentials its edit needs are still loading", () => {
+    beforeEach(() => {
+      useExternalPluginsSettled.setState({ settled: false });
+      useRunningPlugins.setState({ ids: [] });
+    });
+    afterEach(() => {
+      useRunningPlugins.setState({ ids: [] });
+      useDisabledExtensions.setState({ ids: [] });
+      useInstalledPlugins.setState({ ids: null });
+    });
+
+    it("does not wait for an essential that is turned off", async () => {
+      useDisabledExtensions.setState({ ids: ["safelight.basic", "safelight.detail"] });
+      const { worker } = await open(photo());
+      expect(sourceMessages(worker)).toHaveLength(1);
+    });
+
+    it("does not wait for an essential that isn't installed", async () => {
+      useInstalledPlugins.setState({ ids: ["safelight.basic"] });
+      useRunningPlugins.setState({ ids: ["safelight.basic"] });
+      const { worker } = await open(photo());
+      expect(sourceMessages(worker)).toHaveLength(1);
+    });
+
+    it("draws after waiting 3 s for an essential that is slow to start", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        const { worker, progress } = await open(photo());
+        expect(sourceMessages(worker)).toEqual([]);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+        await progress();
+        expect(sourceMessages(worker)).toEqual([]);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        await progress();
+        expect(sourceMessages(worker)).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the stored preview and hands the worker no source until they settle", async () => {
+      const { worker, progress } = await open(photo());
+      expect(drawn[0]).toBe(decoded[0]);
+      expect(sourceMessages(worker)).toEqual([]);
+
+      useExternalPluginsSettled.setState({ settled: true });
+      await progress();
+      expect(sourceMessages(worker)).toHaveLength(1);
+    });
+
+    it("goes ahead once the stage the edit needs is running, settled or not", async () => {
+      const { worker, progress } = await open(photo());
+      expect(sourceMessages(worker)).toEqual([]);
+
+      useRunningPlugins.setState({ ids: ["safelight.basic"] });
+      await progress();
+      expect(sourceMessages(worker)).toEqual([]);
+
+      useRunningPlugins.setState({ ids: ["safelight.basic", "safelight.detail"] });
+      await progress();
+      expect(sourceMessages(worker)).toHaveLength(1);
+    });
+
+    it("does not wait for a photo whose edit needs no essential", async () => {
+      useDevelopStore.setState(loaded("next", { ...DEFAULT_DEVELOP_PARAMS, sharpening: 0 }));
+      const { worker } = await open(photo());
+      expect(sourceMessages(worker)).toHaveLength(1);
+    });
   });
 
   // The size is the one the frame reports: the renderer's own, which caps what it is sent,
@@ -1890,7 +1973,17 @@ describe("useDevelopRenderer during an edit", () => {
         let histograms = 0;
 
         try {
-          await act(async () => useRegistry.setState({ processingStages: { ...stages } }));
+          const added: RegisteredProcessingStage = {
+            id: "acme.added",
+            name: "Added",
+            phase: "scene-linear",
+            glsl: "",
+            uniforms: [],
+            extensionId: "acme",
+          };
+          await act(async () =>
+            useRegistry.setState({ processingStages: { ...stages, [added.id]: added } }),
+          );
           await nextFrame();
           await act(async () => {
             worker.reply(frame());
@@ -1961,6 +2054,8 @@ describe("useDevelopRenderer during an edit", () => {
       }
     });
 
+    // The next edit's render goes as the frame before it is answered, so the histogram
+    // that frame schedules comes due behind it, and the worker measures it.
     it("with live histogram on, measures the last render of a drag", async () => {
       const worker = await opened();
       const from = worker.posted.length;
@@ -1968,9 +2063,6 @@ describe("useDevelopRenderer during an edit", () => {
       await act(async () => {
         useDevelopStore.setState({ params: edit(1) });
       });
-      await nextFrame();
-      // The histogram this frame schedules is posted while the next edit's
-      // render still waits for its animation frame.
       await act(async () => {
         worker.reply(frame());
         useDevelopStore.setState({ params: edit(2) });
@@ -1978,25 +2070,19 @@ describe("useDevelopRenderer during an edit", () => {
       await act(async () => {
         await wait(40);
       });
+      const sent = posts(worker, "render", from);
+      expect(sent).toHaveLength(2);
+      expect(paramsAt(worker, worker.posted.indexOf(sent[1]))?.exposure).toBe(2);
       expect(posts(worker, "computeHistogram", from)).toHaveLength(1);
-      expect(posts(worker, "render", from)).toHaveLength(1);
-      const secondEdit = worker.posted.findIndex(
-        (m, i) =>
-          (m.cmd === "setParams" || m.cmd === "patchParams") &&
-          paramsAt(worker, i + 1)?.exposure === 2,
-      );
-      expect(secondEdit).toBeGreaterThanOrEqual(from);
-      expect(secondEdit).toBeLessThan(lastIndexOf(worker, "computeHistogram"));
+      expect(lastIndexOf(worker, "computeHistogram")).toBeGreaterThan(lastIndexOf(worker, "render"));
 
-      await nextFrame();
       await act(async () => {
         worker.reply(frame());
         await wait(400);
       });
 
       expect(posts(worker, "render", from)).toHaveLength(2);
-      expect(posts(worker, "computeHistogram", from)).toHaveLength(2);
-      expect(lastIndexOf(worker, "computeHistogram")).toBeGreaterThan(lastIndexOf(worker, "render"));
+      expect(posts(worker, "computeHistogram", from)).toHaveLength(1);
     });
 
     // The histogram a frame schedules can come due while the render of the drag's last
@@ -2179,6 +2265,231 @@ describe("useDevelopRenderer during an edit", () => {
       const after = worker.inFlight();
       if (!after) throw new Error("no render for the edit");
       expect(bagAt(worker, worker.posted.indexOf(after))).toEqual(expected(more));
+    });
+  });
+
+  // A slider tick goes from the store to the worker: no render of the view, and no
+  // animation frame after it, stands between them. No frame runs in these once the
+  // photo is open.
+  describe("pushing an edit to the worker", () => {
+    const rendersFrom = (worker: FakeWorker, from: number) =>
+      worker.posted.slice(from).filter((m): m is Render => m.cmd === "render");
+    const exposureAt = (worker: FakeWorker, request: Render) =>
+      paramsAt(worker, worker.posted.indexOf(request))?.exposure;
+
+    afterEach(() => {
+      useDevelopStore.setState({ previewParams: null, previewParamBag: null });
+    });
+
+    it("renders a param change at once", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+
+      await act(async () => useDevelopStore.getState().setParam("exposure", 1));
+
+      const sent = rendersFrom(worker, from);
+      expect(sent).toHaveLength(1);
+      expect(exposureAt(worker, sent[0])).toBe(1);
+    });
+
+    it("renders a param and a stage param set in the same tick once, with both", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+
+      await act(async () => {
+        useDevelopStore.getState().setParam("exposure", 1);
+        useDevelopStore.getState().setDynParams({ "ext.grain.amount": 0.3 });
+      });
+
+      const sent = rendersFrom(worker, from);
+      expect(sent).toHaveLength(1);
+      const at = worker.posted.indexOf(sent[0]);
+      expect(paramsAt(worker, at)?.exposure).toBe(1);
+      expect(bagAt(worker, at)?.["ext.grain.amount"]).toBe(0.3);
+    });
+
+    it("renders a hover preview, and the edit again once it ends", async () => {
+      const worker = await opened();
+      let from = worker.posted.length;
+
+      await act(async () => useDevelopStore.setState({ previewParams: edit(2) }));
+      let sent = rendersFrom(worker, from);
+      expect(sent).toHaveLength(1);
+      expect(exposureAt(worker, sent[0])).toBe(2);
+
+      await answerRenders(worker);
+      from = worker.posted.length;
+      await act(async () => useDevelopStore.setState({ previewParams: null }));
+      sent = rendersFrom(worker, from);
+      expect(sent).toHaveLength(1);
+      expect(exposureAt(worker, sent[0])).toBe(0.5);
+    });
+
+    it("renders a held tool's view of the edit at once", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+      try {
+        await act(async () =>
+          setCanvasTool("acme.view", {
+            overlay: () => null,
+            viewParams: (p) => ({ ...p, exposure: 3 }),
+          }),
+        );
+        const sent = rendersFrom(worker, from);
+        expect(sent).toHaveLength(1);
+        expect(exposureAt(worker, sent[0])).toBe(3);
+      } finally {
+        act(() => setCanvasTool("acme.view", null));
+      }
+    });
+
+    it("draws a drag of a param the view doesn't show without drawing the view again", async () => {
+      vi.stubGlobal("ResizeObserver", FixedFrameObserver);
+      let commits = 0;
+      const keepZoom = () => {};
+      function Canvas({ subject }: { subject: CatalogPhoto }) {
+        return (
+          <Profiler id="develop-canvas" onRender={() => commits++}>
+            <DevelopCanvas photo={subject} zoom={null} onZoomChange={keepZoom} />
+          </Profiler>
+        );
+      }
+      const { worker } = await open(photo(), false, Canvas);
+      await nextFrame();
+      await answerRenders(worker);
+      await act(async () => {
+        await wait(400);
+      });
+      const before = commits;
+
+      for (let i = 1; i <= 10; i++) {
+        await act(async () => useDevelopStore.getState().setParam("exposure", 0.5 + i / 10));
+      }
+
+      expect(commits - before).toBeLessThanOrEqual(1);
+      expect(paramsAt(worker, worker.posted.length)?.exposure).toBe(1.5);
+    });
+
+    it("renders the window a zoom settles on at once", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+
+      await act(async () => status?.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 100, 100));
+
+      const sent = rendersFrom(worker, from);
+      expect(sent).toHaveLength(1);
+      const window = worker.posted.findIndex((m, i) => i >= from && m.cmd === "setViewport");
+      expect(window).toBeGreaterThanOrEqual(from);
+      expect(window).toBeLessThan(worker.posted.indexOf(sent[0]));
+    });
+
+    it("sends nothing for an edit made as the view goes", async () => {
+      const { worker, unmount } = await open(photo());
+      await nextFrame();
+      await answerRenders(worker);
+      const from = worker.posted.length;
+
+      act(() => {
+        useDevelopStore.getState().setParam("exposure", 1);
+        unmount();
+      });
+      await act(async () => {
+        await settle();
+      });
+
+      expect(rendersFrom(worker, from)).toEqual([]);
+    });
+
+    // The worker posts the histogram a render asked for after its frame (histogramFollows).
+    it("asks for no histogram after a frame whose own histogram follows it", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+
+      await act(async () => useDevelopStore.getState().setParam("exposure", 1));
+      const seq = worker.inFlight()?.seq ?? 0;
+      await act(async () => {
+        worker.reply({
+          type: "frame",
+          seq,
+          bitmap: new FakeBitmap(10, 10),
+          width: 10,
+          height: 10,
+          ...worker.sourceOf(seq),
+          histogramFollows: true,
+        });
+        await wait(400);
+      });
+
+      expect(posts(worker, "computeHistogram", from)).toEqual([]);
+    });
+
+    function followingFrame(worker: FakeWorker): WorkerResponse {
+      const seq = worker.inFlight()?.seq ?? 0;
+      return {
+        type: "frame",
+        seq,
+        bitmap: new FakeBitmap(10, 10),
+        width: 10,
+        height: 10,
+        ...worker.sourceOf(seq),
+        histogramFollows: true,
+      };
+    }
+
+    it("asks for none after the histogram that followed a frame has arrived", async () => {
+      const worker = await opened();
+      await act(async () => useDevelopStore.getState().setParam("exposure", 1));
+      await act(async () => {
+        worker.reply(followingFrame(worker));
+        worker.reply({ type: "histogram", histogram: histogram() });
+        await wait(400);
+      });
+      const from = worker.posted.length;
+
+      await act(async () => status?.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 100, 100));
+      await act(async () => {
+        worker.reply(frame());
+        await wait(400);
+      });
+
+      expect(posts(worker, "render", from)).toHaveLength(1);
+      expect(posts(worker, "computeHistogram", from)).toEqual([]);
+    });
+
+    it("asks again at the next frame when the histogram that followed one failed", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const worker = await opened();
+      await act(async () => useDevelopStore.getState().setParam("exposure", 1));
+      await act(async () => {
+        worker.reply(followingFrame(worker));
+        worker.reply({ type: "histogramError", message: "histogram failed: readPixels" });
+        await wait(400);
+      });
+      const from = worker.posted.length;
+      expect(posts(worker, "computeHistogram", from)).toEqual([]);
+
+      await act(async () => status?.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 100, 100));
+      await act(async () => {
+        worker.reply(frame());
+        await wait(400);
+      });
+
+      expect(posts(worker, "computeHistogram", from)).toHaveLength(1);
+      expect(error).toHaveBeenCalledWith("[render-worker]", expect.stringContaining("readPixels"));
+      error.mockRestore();
+    });
+
+    it("renders a viewport change and an edit of the same task once", async () => {
+      const worker = await opened();
+      const from = worker.posted.length;
+
+      await act(async () => {
+        status?.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 100, 100);
+        useDevelopStore.getState().setParam("exposure", 1);
+      });
+      await answerRenders(worker);
+
+      expect(posts(worker, "render", from)).toHaveLength(1);
     });
   });
 });

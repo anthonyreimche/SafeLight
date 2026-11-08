@@ -175,6 +175,14 @@ export interface NativeGpuBridge {
   rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
 }
 
+/** The window's system-drawn backdrop. Privileged so extensions can't change
+ *  how the window paints; a theme asks for it through the core. */
+export interface NativeWindowBridge {
+  /** Resolves true when the window now draws the material; null clears it.
+   *  False on a system or backend that can't draw it. */
+  setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+}
+
 /** Opening what the OS hands the app. Privileged so extensions can't point the
  *  project at a folder of their choosing. */
 export interface NativeOsOpenBridge {
@@ -213,6 +221,8 @@ export interface PrivilegedBridge {
   gpu?: NativeGpuBridge;
   /** Optional: absent in older Electron builds. */
   osOpen?: NativeOsOpenBridge;
+  /** Optional: absent in older Electron builds. */
+  window?: NativeWindowBridge;
 }
 
 declare global {

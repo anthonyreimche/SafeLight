@@ -27,6 +27,7 @@ vi.mock("./catalog-store", () => ({
 }));
 
 import {
+  cancelThumbnail,
   reloadThumbnail,
   requestThumbnail,
   setThumbnailLoader,
@@ -101,6 +102,42 @@ afterEach(() => {
   // test, so the queue would fill but never drain.
   flushFrames();
   vi.unstubAllGlobals();
+});
+
+describe("requestThumbnail holds", () => {
+  it("reports no hold for an id already in flight, so a cancel can't drop another's", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ["a", "b", "c"]) requestThumbnail(id);
+    requestThumbnail("d", { visible: true }); // held, waiting for a slot
+    expect(requestThumbnail("d", { visible: true })).toBe(true);
+    expect(requestThumbnail("a", { visible: true })).toBe(false); // in flight
+    expect(requestThumbnail("d")).toBe(false);
+    cancelThumbnail("d"); // one of d's two holds
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("leaves a cancelled visible id to the idle prefill that held it", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ["a", "b", "c"]) requestThumbnail(id); // fill the window
+    requestThumbnail("p"); // the prefill holds it
+    requestThumbnail("p", { visible: true });
+    cancelThumbnail("p");
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a", "b", "c", "p"]);
+  });
 });
 
 describe("requestThumbnail", () => {

@@ -15,7 +15,21 @@ const h = vi.hoisted(() => ({
   /** Whether the pool has any instance to hand out at all. */
   available: true,
   opened: 0,
+  /** Runs as the instance hands back the decoded samples. */
+  onImageData: () => {},
+  framesAsked: 0,
 }));
+
+vi.mock("./frame-bridge", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./frame-bridge")>();
+  return {
+    ...real,
+    finishFrame: (...args: Parameters<typeof real.finishFrame>) => {
+      h.framesAsked++;
+      return real.finishFrame(...args);
+    },
+  };
+});
 
 vi.mock("./decode-pool", () => {
   const instance = {
@@ -26,6 +40,7 @@ vi.mock("./decode-pool", () => {
       return { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
     },
     async imageData() {
+      h.onImageData();
       return new Uint16Array(2 * 2 * 3).fill(12000);
     },
   };
@@ -47,6 +62,8 @@ beforeEach(() => {
   h.requests = [];
   h.available = true;
   h.opened = 0;
+  h.onImageData = () => {};
+  h.framesAsked = 0;
   // libraw runs in a Worker on shared memory; Node has the latter, not the former.
   vi.stubGlobal("Worker", class {});
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -76,6 +93,16 @@ describe("decodeRawFloatViaLibRaw for a request the user abandoned", () => {
 
     expect(image).toEqual({ failure: "aborted" });
     expect(h.opened).toBe(1);
+  });
+
+  it("builds no frame for a decode abandoned while libraw ran", async () => {
+    const opened = new AbortController();
+    h.onImageData = () => opened.abort();
+
+    const image = await decodeRawFloatViaLibRaw(rawBytes(), { signal: opened.signal });
+
+    expect(image).toEqual({ failure: "aborted" });
+    expect(h.framesAsked).toBe(0);
   });
 
   it("still reports a pool with no instances when nothing was abandoned", async () => {

@@ -3,6 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import type { EncodedEntry } from "./cache-encode";
+
 export interface RawFloatImage {
   data: Float32Array; // linear RGBA, row-major, top-left origin
   width: number;
@@ -12,8 +14,13 @@ export interface RawFloatImage {
                         // — do not write to cache, let the next open re-decode
   colorTemperature?: number; // as-shot WB in Kelvin, derived from camera multipliers
   rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes), compensated in `data`
-  halfSize?: boolean;        // decoded at half the frame's width and height: at full size it
-                             // needs more memory than libraw's heap holds
+  halfSize?: boolean;        // decoded at half the frame's width and height: the caller's target
+                             // edge didn't need more, or at full size it needs more memory
+                             // than libraw's heap holds
+  sourceWidth?: number;      // with halfSize: the frame's size at full resolution
+  sourceHeight?: number;
+  turned?: number;           // clockwise degrees DecodeRequest.turn baked into `data` and its size
+  entry?: EncodedEntry;      // with DecodeRequest.cacheEdge: the develop-preview cache entry for `data`
 }
 
 /**

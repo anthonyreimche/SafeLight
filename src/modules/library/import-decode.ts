@@ -9,6 +9,7 @@
 import { decodeRawToFloat, decodeRawToBitmap, type DecodeFailure } from "@/raw/decode";
 import { extractRawMetadata, type RawMetadata } from "@/raw/libraw-wasm-adapter";
 import type { DecodeRequest } from "@/raw/decode-pool";
+import { encodeSrgb8 } from "@/raw/frame-bridge";
 import {
   distrustsEmbeddedPreview,
   extractRawPreviewDecoded,
@@ -27,25 +28,15 @@ import { processThumb } from "./import-thumb-pool";
 // thumbnail fallback when a RAW has no embedded preview AND decodeRawToBitmap
 // can't handle its compression (no registered getLibRaw hook): the float path
 // (libraw-wasm) still decodes it, so we sRGB-encode that here rather than drop
-// the file. HDR values above 1.0 are clamped.
+// the file. HDR values above 1.0 are clamped. The encode runs in the frame
+// worker, which takes the buffer.
 async function floatToBitmap(
   data: Float32Array,
   width: number,
   height: number,
+  request?: DecodeRequest,
 ): Promise<ImageBitmap> {
-  const out = new ImageData(width, height);
-  const px = out.data;
-  for (let i = 0, o = 0; i < width * height; i++, o += 4) {
-    for (let c = 0; c < 3; c++) {
-      let v = data[o + c];
-      v = v <= 0 ? 0 : v >= 1 ? 1 : v;
-      // Linear → sRGB (IEC 61966-2-1).
-      v = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-      px[o + c] = Math.round(v * 255);
-    }
-    px[o + 3] = 255;
-  }
-  return createImageBitmap(out);
+  return createImageBitmap(new ImageData(await encodeSrgb8(data, request), width, height));
 }
 
 // Heuristic: does a decoded LINEAR float image look like a broken decode —
@@ -286,11 +277,21 @@ export async function decodeImportBitmap(
     // (libraw-wasm) handles every compression, so generate the thumbnail from it —
     // unless the render looks degenerate (near-black/flat) and we still hold a
     // camera preview, in which case that trustworthy preview wins.
-    const f = await decodeRawToFloat(file, request, relPath, whole);
+    // The thumbnail needs no more than its own edge, so the decode may stop at
+    // half size.
+    const f = await decodeRawToFloat(file, { ...request, targetEdge: getSettings().thumbMaxEdge }, relPath, whole);
     if (!("failure" in f) && !(embedded && looksDegenerate(f.data, f.width, f.height))) {
       embedded?.bitmap.close();
-      const bm = await floatToBitmap(f.data, f.width, f.height);
-      return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
+      const bm = await floatToBitmap(f.data, f.width, f.height, request);
+      return {
+        bitmap: bm,
+        oriented: f.oriented ?? false,
+        colorTemperature: f.colorTemperature,
+        // The catalogue records the frame the bitmap stands for, not its half.
+        ...(f.halfSize && f.sourceWidth && f.sourceHeight
+          ? { sourceWidth: f.sourceWidth, sourceHeight: f.sourceHeight }
+          : {}),
+      };
     }
 
     // Every decode failed. Fall back to the embedded JPEG (the one we set aside in

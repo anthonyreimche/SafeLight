@@ -14,6 +14,7 @@ import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { disposeRenderBridge, getRenderBridge, type RenderBridge } from "./render-bridge";
 import type { WorkerRequest, WorkerResponse } from "./render-protocol";
 import { DevelopCanvas } from "@/modules/develop/DevelopCanvas";
+import { useExternalPluginsSettled } from "@/extensions/loader";
 import { useDevelopStore } from "@/state/develop-store";
 import { useGraphics } from "@/state/graphics-store";
 
@@ -119,6 +120,7 @@ beforeEach(() => {
     value: () => ({ drawImage() {}, clearRect() {}, getExtension: () => null }),
   });
   useGraphics.setState({ webgl2: "unknown", reason: null });
+  useExternalPluginsSettled.setState({ settled: true });
   useDevelopStore.setState({ photoId: PHOTO.id, params: DEFAULT_DEVELOP_PARAMS, paramBag: {} });
 });
 

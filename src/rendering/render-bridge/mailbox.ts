@@ -43,10 +43,15 @@ export class RenderMailbox {
   private since: number | null = null;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private waiting: WaitingRender | null = null;
+  /** performance.now() of the last render requested, however it was queued. */
+  lastRequestedAt = -Infinity;
   // The render last given up on while its answer may still come. The worker draws renders
   // in order, so until it answers that one or the one sent after it, another render sent
   // would only queue behind them.
-  private overdue: { seq: number; since: number } | null = null;
+  private overdue: { seq: number; since: number; wants: WaitingRender | null } | null = null;
+  // The histogram a frame that put off prepasses asked for, when its render had been
+  // given up on and no follow-up carried the want: the next render takes it on.
+  private owed: WaitingRender | null = null;
   // How long, in ms, the worker took over each of its last answers.
   private times: number[] = [];
   private backstop: ReturnType<typeof setTimeout> | null = null;
@@ -71,6 +76,7 @@ export class RenderMailbox {
    *  newest request waits, asking for every histogram the requests it replaced asked
    *  for, and goes once the worker answers. */
   render(wantHistogram: boolean, wantExtended: boolean) {
+    this.lastRequestedAt = performance.now();
     // Without its context the worker has nothing to draw with, nor a source once it is
     // restored: the view renders again when it hands the photo over.
     if (this.link.disposed || this.link.availability === "lost") return;
@@ -102,17 +108,39 @@ export class RenderMailbox {
 
   /** The worker answered render `seq`. A frame that put off mask copies' prepasses
    *  is followed by a render of the same state, asking what it asked, unless a render
-   *  already waits to be that one: what that render asks for is returned. */
+   *  already waits to be that one: what that render asks for is returned. The worker
+   *  measures no histogram for the frame, so a waiting render takes over the one it
+   *  asked for. */
   answered(seq: number, prepassPending = false): WaitingRender | null {
-    const again =
-      prepassPending && seq === this.inFlight && !this.waiting
-        ? this.inFlightWants
-        : null;
+    const pending = prepassPending && seq === this.inFlight;
+    const late = prepassPending && this.overdue?.seq === seq ? this.overdue.wants : null;
+    if (late?.wantHistogram) this.owe(late);
+    let again = pending && !this.waiting ? this.inFlightWants : null;
+    const asked = this.inFlightWants;
+    if (pending && this.waiting && asked?.wantHistogram) {
+      this.waiting = {
+        wantHistogram: true,
+        wantExtended: this.waiting.wantExtended || asked.wantExtended,
+      };
+    }
     this.renderAnswered(seq);
+    if (!again && this.owed && this.inFlight === null) again = this.owed;
     return again;
   }
 
-  private post(request: WaitingRender) {
+  private owe(wants: WaitingRender) {
+    this.owed = {
+      wantHistogram: true,
+      wantExtended: wants.wantExtended || (this.owed?.wantExtended ?? false),
+    };
+  }
+
+  private post(asked: WaitingRender) {
+    const owed = this.owed;
+    this.owed = null;
+    const request = owed
+      ? { wantHistogram: true, wantExtended: asked.wantExtended || owed.wantExtended }
+      : asked;
     const seq = ++this.seq;
     this.inFlight = seq;
     this.inFlightWants = request;
@@ -139,7 +167,7 @@ export class RenderMailbox {
     this.watchdog = setTimeout(() => {
       this.watchdog = null;
       console.warn(`[render-bridge] render ${seq} not answered in ${Math.round(giveUpMs)} ms`);
-      this.overdue = { seq, since };
+      this.overdue = { seq, since, wants: this.inFlightWants };
       this.sendWaiting();
     }, Math.max(0, since + giveUpMs - now));
   }
@@ -161,7 +189,7 @@ export class RenderMailbox {
       if (this.mayBeQuiet()) this.silentBackstops = 0;
       else this.silentBackstops = this.link.heardAt > this.backstopSentAt ? 1 : this.silentBackstops + 1;
       this.backstopSentAt = performance.now();
-      this.overdue = { seq, since: this.since ?? this.backstopSentAt };
+      this.overdue = { seq, since: this.since ?? this.backstopSentAt, wants: this.inFlightWants };
       // Before the newest request goes, so it isn't timed while the worker is unresponsive.
       if (this.silentBackstops >= SILENT_BACKSTOPS) this.onSilent();
       this.sendWaiting();
@@ -227,6 +255,7 @@ export class RenderMailbox {
   clear() {
     this.clearSlot();
     this.overdue = null;
+    this.owed = null;
     this.silentBackstops = 0;
   }
 }

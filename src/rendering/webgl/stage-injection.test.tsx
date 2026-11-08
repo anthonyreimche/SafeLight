@@ -390,6 +390,30 @@ describe("readSource in a pass", () => {
   });
 });
 
+// A four-channel pass mutates a vec4 c that starts as readPrev4(vUv) and is
+// written whole, so its alpha carries state to the next draw. Every other pass
+// keeps the vec3 program text the version 1 freeze pins.
+describe("a four-channel pass", () => {
+  const passesOf = (channels?: 3 | 4) =>
+    buildStageInjection([flagged({ passes: [{ glsl: "c.a = 0.5;", ...(channels ? { channels } : {}) }] })]).prepass[0]
+      .passes[0].fragmentSource;
+
+  it("mutates a vec4 and writes it whole", () => {
+    const source = passesOf(4);
+    expect(source).toContain("vec4 readPrev4(vec2 uv) {");
+    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));");
+    expect(source).toContain("fragColor = c;");
+    expect(source).not.toContain("fragColor = vec4(c, 1.0);");
+  });
+
+  it("leaves a three-channel pass as it was", () => {
+    expect(passesOf(3)).toBe(passesOf());
+    expect(passesOf()).not.toContain("readPrev4");
+    expect(passesOf()).toContain("fragColor = vec4(c, 1.0);");
+  });
+});
+
 // A stage that reads the current image from a later process version reads the
 // source on older ones: no exit, no split, and a prepass keyed on the source.
 describe("readsCurrentFrom", () => {
@@ -1196,6 +1220,13 @@ describe("inter-stage variables", () => {
     expect(sig({ ...STAGE, consumes: ["acmeMade"], produces: [{ name: "acmeMade", glslType: "float" }] })).not.toBe(
       sig({ ...STAGE, produces: [{ name: "acmeMade", glslType: "float" }] }),
     );
+  });
+
+  // The renderer derives which prepasses run from the rule, so a stage
+  // registered again with another rule must not sign as the same stage.
+  it("changes the signature of a stage only when it declares dormantWhen", () => {
+    expect(stageSignature({ ...STAGE, dormantWhen: undefined })).toBe(stageSignature(STAGE));
+    expect(stageSignature({ ...STAGE, dormantWhen: { amount: 0 } })).not.toBe(stageSignature(STAGE));
   });
 });
 

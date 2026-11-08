@@ -11,6 +11,7 @@ import {
   ENTRY_HEADER_BYTES,
   ENTRY_LAYOUT,
   ENTRY_MAGIC,
+  encodeCacheEntry,
   encodeCachedPreview,
   encodeEntryHeader,
 } from "./cache-encode";
@@ -80,6 +81,26 @@ describe("cache worker, project folder", () => {
       full: { width: 3, height: 2 },
       sample: cutSourceSample(pixels(3, 2), 3, 2),
     });
+  });
+
+  it("stores an entry built elsewhere exactly as it stores the one it builds from the frame", async () => {
+    const { send } = await withFolder();
+
+    await send({ cmd: "write", id: 1, key: "built", data: pixels(1026, 1028), width: 1026, height: 1028, maxEdge: 64 });
+    const stored = await send({
+      cmd: "store",
+      id: 2,
+      key: "given",
+      entry: encodeCacheEntry(pixels(1026, 1028), 1026, 1028, 64),
+    });
+
+    expect(stored).toEqual({ type: "write", id: 2, ok: true });
+    const built = await send({ cmd: "read", id: 3, key: "built", sample: true });
+    const given = await send({ cmd: "read", id: 4, key: "given", sample: true });
+    if (built?.type !== "read" || given?.type !== "read") throw new Error("not reads");
+    expect(given.data).toEqual(built.data);
+    expect([given.width, given.height, given.full]).toEqual([built.width, built.height, built.full]);
+    expectSample(given.sample, built.sample as StoredSample);
   });
 
   it("reads the frame's size without the sample when not asked, leaving the sample's bytes alone", async () => {

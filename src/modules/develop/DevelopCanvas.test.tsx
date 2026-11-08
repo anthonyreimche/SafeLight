@@ -6,8 +6,8 @@
 // What an extension draws over the Develop canvas: an overlay in the
 // develop-canvas-overlay slot draws again only when what it reads changes, not
 // on every slider tick, and a canvas tool's overlay that throws is contained
-// to its own notice. The renderer is a stand-in that, like the real one,
-// re-renders the canvas on every params change.
+// to its own notice. The renderer is a stand-in that re-renders the canvas on
+// every params change, as a parent drawing it again for its own reasons does.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -17,13 +17,25 @@ import { useDevelopOverlay } from "@/extensions/develop-host";
 import { registerProcessingStage, registerSlot, unregisterExtension } from "@/extensions/registry";
 import { essentialStages } from "@/rendering/webgl/essential-stages.fixtures";
 import { useDevelopStore } from "@/state/develop-store";
+import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 import { setCanvasTool, useCanvasToolStore } from "./canvas-tool";
 import { DevelopCanvas } from "./DevelopCanvas";
+import { setPickDrag } from "./pick-drag";
 
 vi.mock("libraw-wasm", () => ({ default: class {} }));
 
+// The viewport reads the pixel ratio once a render, and nothing else on the canvas
+// does: its calls count the viewport's renders.
+vi.mock("@/ui/use-device-pixel-ratio", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/ui/use-device-pixel-ratio")>();
+  return { ...real, useDevicePixelRatio: vi.fn(real.useDevicePixelRatio) };
+});
+
 vi.mock("@/hooks/use-develop-renderer", async () => {
   const { useDevelopStore: store } = await import("@/state/develop-store");
+  // The same functions on every render, as the real renderer's are.
+  const setViewport = () => {};
+  const pictureCanvas = () => null;
   return {
     useDevelopRenderer: () => {
       store((s) => s.params);
@@ -42,8 +54,8 @@ vi.mock("@/hooks/use-develop-renderer", async () => {
         sourceWidth: 4000,
         sourceHeight: 3000,
         tier: "full",
-        setViewport: () => {},
-        pictureCanvas: () => null,
+        setViewport,
+        pictureCanvas,
       };
     },
   };
@@ -131,5 +143,38 @@ describe("DevelopCanvas overlays", () => {
     act(() => setCanvasTool("acme.tool", { overlay: Broken }));
     expect(screen.getByText('Canvas tool "acme.tool" crashed: tool overlay blew up')).toBeTruthy();
     error.mockRestore();
+  });
+});
+
+// The viewport draws again only when what it is handed changes, not each time the
+// canvas around it does.
+describe("DevelopCanvas's viewport", () => {
+  const viewportRenders = () => vi.mocked(useDevicePixelRatio).mock.calls.length;
+
+  afterEach(() => {
+    setPickDrag("acme.pick", null);
+  });
+
+  it("doesn't draw a canvas tool's overlay again on an Exposure drag", () => {
+    let toolRenders = 0;
+    const Tool = (): null => {
+      toolRenders++;
+      return null;
+    };
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => setCanvasTool("acme.tool", { overlay: Tool, zoomable: true }));
+    const before = toolRenders;
+    expect(before).toBeGreaterThan(0);
+    drag();
+    expect(toolRenders - before).toBe(0);
+  });
+
+  it("isn't drawn again on an Exposure drag while a pick-drag tool is held", () => {
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => setPickDrag("acme.pick", { onPress: () => {} }));
+    const before = viewportRenders();
+    expect(before).toBeGreaterThan(0);
+    drag();
+    expect(viewportRenders() - before).toBe(0);
   });
 });

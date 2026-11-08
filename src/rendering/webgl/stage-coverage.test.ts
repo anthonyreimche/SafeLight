@@ -9,7 +9,9 @@
 import { describe, expect, it } from "vitest";
 import type { BrushDab } from "@/catalog/types";
 import { MAX_PAINT_LAYERS, type PaintDab } from "@/extensions/api/contributions";
-import { coverageItemsFromBag, isBrushDabList, paintLayersFromValue, paramIsActive } from "./stage-coverage";
+import type { ProcessingStageContribution } from "@/extensions/types";
+import { coverageItemsFromBag, isBrushDabList, isDormant, paintLayersFromValue, paramIsActive } from "./stage-coverage";
+import { dormantRule } from "./stage-injection";
 
 const dab = (patch: Partial<BrushDab> = {}): BrushDab => ({
   x: 0.5,
@@ -113,5 +115,52 @@ describe("paintLayersFromValue", () => {
     for (const value of [undefined, null, 1, "a", { id: "a", dabs: [] }]) {
       expect(paintLayersFromValue(value)).toEqual([]);
     }
+  });
+});
+
+// The rule a stage's dormantWhen declares, read from the frame's bag the way
+// its bindings are: a key the bag lacks reads as the uniform's default.
+describe("isDormant", () => {
+  const stage: ProcessingStageContribution = {
+    id: "acme.tint",
+    name: "Tint",
+    phase: "scene-linear",
+    glsl: "lin += tint * amount;",
+    uniforms: [
+      { key: "amount", glslType: "float", default: 0 },
+      { key: "tint", glslType: "vec3", default: [0, 0, 0] },
+    ],
+    dormantWhen: { amount: 0, tint: [0, 0, 0] },
+  };
+  const rule = dormantRule(stage);
+
+  it("is dormant on the defaults", () => {
+    expect(rule).not.toBeNull();
+    expect(isDormant(rule!, {})).toBe(true);
+  });
+
+  it("compares vectors by value", () => {
+    expect(isDormant(rule!, { "acme.tint.tint": [0, 0, 0] })).toBe(true);
+    expect(isDormant(rule!, { "acme.tint.tint": [0, 0.1, 0] })).toBe(false);
+  });
+
+  it("is awake once any listed value differs", () => {
+    expect(isDormant(rule!, { "acme.tint.amount": 0.5 })).toBe(false);
+  });
+
+  it("is awake on a malformed value, which the uniform would bind as it is", () => {
+    expect(isDormant(rule!, { "acme.tint.tint": [0, 0] })).toBe(false);
+  });
+
+  it("reads a mask copy's own keys", () => {
+    const copy = dormantRule({ ...stage, id: "acme.tint@0" });
+    expect(isDormant(copy!, { "acme.tint.amount": 1 })).toBe(true);
+    expect(isDormant(copy!, { "acme.tint@0.amount": 1 })).toBe(false);
+  });
+
+  it("has no rule for a stage that declares none, or one that may not sleep", () => {
+    expect(dormantRule({ ...stage, dormantWhen: undefined })).toBeNull();
+    expect(dormantRule({ ...stage, phase: "noise-reduction" })).toBeNull();
+    expect(dormantRule({ ...stage, dormantWhen: { strength: 0 } })).toBeNull();
   });
 });

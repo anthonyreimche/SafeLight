@@ -1153,9 +1153,37 @@ describe("RenderBridge startup messages", () => {
     const atStart = startup(worker).length;
     registerProcessingStage("test", stage("test.second"));
     registerPipeline("test", { ...AGX, id: "test.agx2" });
+    expect(startup(worker)).toHaveLength(atStart);
+    vi.advanceTimersByTime(20);
     const later = startup(worker).slice(atStart);
     expect(later.map((m) => m.cmd)).toEqual(["setStages", "setPipeline"]);
     expect(stageIds(later[0])).toEqual(["test.first", "test.second"]);
+  });
+
+  it.each([
+    ["a render", (bridge: RenderBridge) => bridge.render()],
+    ["a histogram", (bridge: RenderBridge) => bridge.computeHistogram()],
+    [
+      "a thumbnail",
+      (bridge: RenderBridge) =>
+        bridge.renderThumbnailFromSource({
+          requestId: "t",
+          key: "k",
+          params: normalizeParams({}),
+          asShotTemperature: 6500,
+          maxEdge: 64,
+        }).catch(() => undefined),
+    ],
+    ["a capture", (bridge: RenderBridge) => bridge.capture(normalizeParams({})).catch(() => undefined)],
+  ])("posts a stage registered this task ahead of %s", (_label, ask) => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    const from = worker.posted.length;
+    registerProcessingStage("test", stage("test.second"));
+    void ask(bridge);
+    const cmds = worker.posted.slice(from).map((m) => m.cmd);
+    expect(cmds[0]).toBe("setStages");
+    expect(cmds.length).toBeGreaterThan(1);
   });
 });
 
@@ -2712,6 +2740,51 @@ describe("RenderBridge render mailbox", () => {
     expect(renders(worker)[3]).toMatchObject({ wantHistogram: false, wantExtended: false });
   });
 
+  it("hands onFrame the histogramFollows flag of a frame", () => {
+    const onFrame = vi.fn<(frame: FrameResult) => void>();
+    bridge.setOnFrame(onFrame);
+    bridge.render(true);
+    worker.reply({ ...frameFor(inFlight(worker)), histogramFollows: true } as WorkerResponse);
+    expect(onFrame.mock.calls[0][0].histogramFollows).toBe(true);
+    bridge.render();
+    worker.reply(frameFor(inFlight(worker)));
+    expect(onFrame.mock.calls[1][0].histogramFollows).toBeUndefined();
+  });
+
+  describe("whenRenderQuiet", () => {
+    it("resolves at once when no render was ever requested", async () => {
+      const quiet = vi.fn();
+      void bridge.whenRenderQuiet().then(quiet);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(quiet).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits until no render has been requested for the given time", async () => {
+      const quiet = vi.fn();
+      bridge.render();
+      void bridge.whenRenderQuiet().then(quiet);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(quiet).not.toHaveBeenCalled();
+      bridge.render();
+      await vi.advanceTimersByTimeAsync(299);
+      expect(quiet).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(quiet).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts a render that waits behind the one in flight", async () => {
+      const quiet = vi.fn();
+      bridge.render();
+      void bridge.whenRenderQuiet(100).then(quiet);
+      await vi.advanceTimersByTimeAsync(90);
+      bridge.render();
+      await vi.advanceTimersByTimeAsync(90);
+      expect(quiet).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(quiet).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // A frame can put off mask copies' prepasses to the frames after it; those
   // come with no new edit to ask for them.
   describe("a frame that leaves prepasses pending", () => {
@@ -2724,12 +2797,46 @@ describe("RenderBridge render mailbox", () => {
       expect(renders(worker)[1]).toMatchObject({ wantHistogram: true, wantExtended: true });
     });
 
+    it("hands the histogram it asked for to the render that waits, which didn't ask", () => {
+      bridge.render(true, true);
+      bridge.render(false);
+      worker.reply(pending(inFlight(worker)));
+      expect(renders(worker)[1]).toMatchObject({ wantHistogram: true, wantExtended: true });
+    });
+
     it("lets the render that waits be that render", () => {
       bridge.render();
       bridge.render(true);
       worker.reply(pending(inFlight(worker)));
       expect(renders(worker)).toHaveLength(2);
       expect(renders(worker)[1]).toMatchObject({ wantHistogram: true });
+    });
+
+    describe("after the watchdog gave up on the render that asked for a histogram", () => {
+      beforeEach(() => ready(worker));
+
+      it("asks again for the histogram when nothing else is in flight", () => {
+        bridge.render(true, true);
+        const late = inFlight(worker);
+        vi.advanceTimersByTime(2_000);
+        expect(renders(worker)).toHaveLength(1);
+        worker.reply(pending(late));
+        expect(renders(worker)).toHaveLength(2);
+        expect(renders(worker)[1]).toMatchObject({ wantHistogram: true, wantExtended: true });
+      });
+
+      it("adds it to the next render, and to its follow-up when that one is pending", () => {
+        bridge.render(true);
+        const late = inFlight(worker);
+        vi.advanceTimersByTime(2_000);
+        bridge.render(false);
+        expect(renders(worker)).toHaveLength(2);
+        worker.reply(pending(late));
+        expect(renders(worker)).toHaveLength(2);
+        worker.reply(frameFor(inFlight(worker)));
+        expect(renders(worker)).toHaveLength(3);
+        expect(renders(worker)[2]).toMatchObject({ wantHistogram: true });
+      });
     });
 
     it("isn't followed by one when nothing is pending", () => {
@@ -3831,5 +3938,67 @@ describe("RenderBridge stage quarantine", () => {
 
     expect(failuresOfAcme()).toEqual([]);
     bridge.dispose();
+  });
+
+  // A stage whose shader takes the graphics driver down loses the context with no
+  // compile log to quarantine it by, and every restore built it again until
+  // Chromium blocked WebGL. The window pins the crash on it instead.
+  describe("when the context is lost while a stage builds", () => {
+    const setStagesPosted = (worker: FakeWorker) =>
+      worker.posted.filter((m): m is Extract<WorkerRequest, { cmd: "setStages" }> => m.cmd === "setStages");
+
+    beforeEach(() => localStorage.clear());
+    afterEach(() => localStorage.clear());
+
+    it("names the extension, records the failure, and sends the stage no more", () => {
+      const bridge = new RenderBridge();
+      const errors: string[] = [];
+      bridge.setOnError((message) => errors.push(message));
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      worker.reply({ type: "ready", pipelineFloat: true });
+      const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
+      worker.reply({ type: "stageBuild", phase: "start", stages: [key] });
+      worker.reply({ type: "contextLost" });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("Acme Film");
+      expect(errors[0]).toContain("graphics driver");
+      expect(failuresOfAcme().map((f) => f.stageId)).toEqual(["acme.film"]);
+
+      bridge.syncStages();
+      expect(setStagesPosted(worker).at(-1)?.stages.map((s) => s.id)).not.toContain("acme.film");
+      bridge.dispose();
+    });
+
+    it("keeps naming the stage once the worker's renderer is made again", () => {
+      const bridge = new RenderBridge();
+      bridge.setOnError(() => undefined);
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      worker.reply({ type: "stageBuild", phase: "start", stages: [`${BROKEN.id}:${stageSignature(BROKEN)}`] });
+      worker.reply({ type: "contextLost" });
+      bridge.init(16, 16);
+
+      expect(failuresOfAcme().map((f) => f.stageId)).toEqual(["acme.film"]);
+      expect(setStagesPosted(worker).at(-1)?.stages.map((s) => s.id)).not.toContain("acme.film");
+      bridge.dispose();
+    });
+
+    it("blames nothing for a stage whose build ended", () => {
+      const bridge = new RenderBridge();
+      const errors: string[] = [];
+      bridge.setOnError((message) => errors.push(message));
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
+      worker.reply({ type: "stageBuild", phase: "start", stages: [key] });
+      worker.reply({ type: "stageBuild", phase: "end", stages: [key], outcome: "built" });
+      worker.reply({ type: "contextLost" });
+
+      expect(errors).toEqual([]);
+      expect(failuresOfAcme()).toEqual([]);
+      bridge.dispose();
+    });
   });
 });

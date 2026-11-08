@@ -33,10 +33,48 @@ export const dragBarStyle: AppRegionStyle = {
 
 export const noDragStyle: AppRegionStyle = { WebkitAppRegion: "no-drag" };
 
+const channelHex = (n: number) => Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, "0");
+
+/** A CSS colour as hex for the native overlay, which reads a translucent one
+ *  as #AARRGGBB (alpha first), unlike CSS. A theme's surfaces may be rgba()
+ *  now; null when the text isn't a colour this understands. */
+export function toHexColor(css: string): string | null {
+  const text = css.trim();
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(text)) return text;
+  const rgba = /^#([0-9a-f]{6})([0-9a-f]{2})$/i.exec(text);
+  if (rgba) return alphaFirst(rgba[1].toLowerCase(), rgba[2].toLowerCase());
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(text);
+  if (short) {
+    const [r, g, b, a] = short.slice(1);
+    return alphaFirst(`${r}${r}${g}${g}${b}${b}`.toLowerCase(), `${a}${a}`.toLowerCase());
+  }
+  const fn = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)$/i.exec(text);
+  if (!fn) return null;
+  const rgb = [fn[1], fn[2], fn[3]].map((c) => channelHex(Number(c))).join("");
+  if (fn[4] === undefined) return `#${rgb}`;
+  const alpha = Number(fn[4]) / (fn[5] ? 100 : 1);
+  return alphaFirst(rgb, channelHex(alpha * 255));
+}
+
+const alphaFirst = (rgb: string, alpha: string) => (alpha === "ff" ? `#${rgb}` : `#${alpha}${rgb}`);
+
+/** Any CSS colour the browser understands, resolved to hex through a probe. */
+function resolveHex(css: string): string | null {
+  const direct = toHexColor(css);
+  if (direct || !css) return direct;
+  const probe = document.createElement("span");
+  probe.style.color = css;
+  if (!probe.style.color) return null;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+  return toHexColor(resolved);
+}
+
 function applyOverlay(bgVar: string, uiScale: number): void {
   const cs = getComputedStyle(document.documentElement);
-  const bg = cs.getPropertyValue(bgVar).trim();
-  const fg = cs.getPropertyValue("--color-text-secondary").trim();
+  const bg = resolveHex(cs.getPropertyValue(bgVar).trim());
+  const fg = resolveHex(cs.getPropertyValue("--color-text-secondary").trim());
   if (bg && fg) void window.safelightNative?.titlebar?.setOverlay(bg, fg, uiScale);
 }
 

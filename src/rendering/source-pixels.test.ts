@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { encodeHalf, halfToFloat32 } from "@/raw/half-float";
 import {
   encodeSrgb8,
   onSourcePixels,
@@ -76,6 +77,26 @@ describe("sourcePixelsFromLinear", () => {
     expect(data).toBeInstanceOf(Uint8ClampedArray);
     expect(data).toHaveLength(384 * 192 * 4);
     expect([...data.subarray(0, 4)]).toEqual([188, 188, 188, 255]);
+  });
+
+  // A cached preview is half floats; it must search like the floats it holds.
+  it.each([
+    [1, 1, 384],
+    [7, 5, 384],
+    [37, 23, 16],
+    [64, 9, 5],
+    [5, 64, 7],
+  ])("reads a %i × %i half-float source as its floats (long edge %i)", (w, h, edge) => {
+    let seed = w * 7919 + h;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    const floats = new Float32Array(w * h * 4).map(() => (random() - 0.1) * 2 ** (random() * 8 - 4));
+    const halves = encodeHalf(floats);
+    expect(sourcePixelsFromLinear(halves, w, h, edge)).toEqual(
+      sourcePixelsFromLinear(halfToFloat32(halves), w, h, edge),
+    );
   });
 });
 

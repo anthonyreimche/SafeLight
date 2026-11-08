@@ -67,6 +67,10 @@ export function VirtualGrid<T>({
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // Read the size now so the first paint is already laid out; the observer
+    // only reports once a frame later.
+    setContainerWidth(el.clientWidth);
+    setViewportHeight(el.clientHeight);
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -86,9 +90,10 @@ export function VirtualGrid<T>({
   const effectiveCellWidth = isSingleColumn ? containerWidth : cellWidth;
 
   // Publish the column count so row-wise keyboard nav (↑/↓) knows the stride.
+  const unmeasured = fixedColumns == null && containerWidth === 0;
   useEffect(() => {
-    onColumnsChange?.(columns);
-  }, [columns, onColumnsChange]);
+    if (!unmeasured) onColumnsChange?.(columns);
+  }, [columns, onColumnsChange, unmeasured]);
 
   const totalRows = Math.ceil(items.length / columns);
   const rowHeight = cellHeight + gap;

@@ -9,6 +9,7 @@
 import { CURRENT_PROCESS_VERSION, type DevelopParams, type Mask } from "@/catalog/types";
 import type { StageTextureData } from "@/extensions/types";
 import type { MaskPatch, WorkerRequest, WorkerResponse } from "../render-protocol";
+import { setActiveBrushTips } from "../webgl/brush-tips";
 import { LIVE_MASK_COPY_PREPASSES } from "../webgl/mask-stage-instances";
 import { WebGLRenderer } from "../webgl/renderer";
 import {
@@ -89,7 +90,9 @@ type LiveCmd =
   | "patchContributedParams"
   | "setStageTextures"
   | "patchStageTextures"
+  | "setBrushTips"
   | "setStages"
+  | "prewarmStages"
   | "setPipeline"
   | "setAsShotTemperature"
   | "render"
@@ -141,6 +144,9 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           // The live view spreads many masks' prepasses over a few frames; the
           // thumbnail renderer draws each frame complete.
           maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES,
+          // Only the live view leaves dormant stages out; the thumbnail renderer
+          // draws every photo with one program.
+          skipDormantStages: true,
           // A retry (after an earlier initError) may land after setPipeline /
           // setStages messages already updated the latest* state — seed from
           // them, the same as ensureThumbRenderer, so recovery doesn't silently
@@ -222,10 +228,19 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
       applyStageTextures(ctx, merged);
     },
 
+    setBrushTips(msg) {
+      setActiveBrushTips(msg.tips);
+    },
+
     setStages(msg) {
       state.latestStages = msg.stages;
       state.renderer?.setStages(msg.stages);
       state.thumbRenderer?.setStages(msg.stages);
+    },
+
+    // A hint only: before there is a renderer, its first frame builds what it needs.
+    prewarmStages(msg) {
+      state.renderer?.prewarmStages(msg.stageIds);
     },
 
     setPipeline(msg) {
@@ -247,6 +262,7 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
         return;
       }
       let bitmap: ImageBitmap | null = null;
+      let framePosted = false;
       try {
         renderer.render();
         state.liveStateStale = false;
@@ -269,17 +285,26 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           wholeHeight: renderer.wholeHeight,
           crop: renderer.drawnCrop,
         };
-        if (msg.wantHistogram) {
-          resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
-        }
+        if (msg.wantHistogram) resp.histogramFollows = true;
         if (renderer.overflowedStages.length > 0) {
           resp.overflowedStages = [...renderer.overflowedStages];
         }
-        if (renderer.prepassPending) resp.prepassPending = true;
+        const prepassPending = renderer.prepassPending;
+        if (prepassPending) resp.prepassPending = true;
         respond(resp, [bitmap]);
+        framePosted = true;
+        // The readback stalls until the GPU drains the frame, so the frame goes first.
+        // A frame with prepasses pending is followed by one that asks again.
+        if (msg.wantHistogram && !prepassPending) {
+          respond({ type: "histogram", histogram: renderer.computeHistogram(!!msg.wantExtended) });
+        }
       } catch (err) {
-        bitmap?.close();
-        respond({ type: "renderError", seq: msg.seq, message: messageOf(err) });
+        if (framePosted) {
+          respond({ type: "histogramError", message: `histogram failed: ${messageOf(err)}` });
+        } else {
+          bitmap?.close();
+          respond({ type: "renderError", seq: msg.seq, message: messageOf(err) });
+        }
       }
     },
 

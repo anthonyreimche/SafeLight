@@ -26,6 +26,7 @@ import {
   type Mask,
   type RetouchSpot,
 } from "@/catalog/types";
+import type { BrushTipContribution } from "@/extensions/api/contributions";
 import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { MaskPatch, WorkerRequest, WorkerResponse } from "./render-protocol";
@@ -175,6 +176,13 @@ const { FakeRenderer } = vi.hoisted(() => {
     }
 
     setStages(_stages: ProcessingStageContribution[]) {}
+
+    /** The ids of each prewarmStages call. */
+    prewarmed: string[][] = [];
+
+    prewarmStages(stageIds: readonly string[]) {
+      this.prewarmed.push([...stageIds]);
+    }
 
     /** The size of the source it draws from: the image last set, uploaded and bound, or bound. */
     sourceWidth = 0;
@@ -717,6 +725,28 @@ describe("render-worker develop program warm-up", () => {
     expect(posted.at(-1)).toEqual({ type: "stageQuarantined", stageId: "ext.film", signature: "abc", log: "syntax error" });
   });
 
+  // So the window can pin a build that takes the graphics driver down on its stages.
+  it("tells the window of each stage build the develop renderer starts and ends", () => {
+    send(INIT);
+    const { onStageBuild } = FakeRenderer.instances[0].opts as WebGLRendererOpts;
+    onStageBuild?.({ phase: "start", stages: ["ext.film:abc"] });
+    expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "start", stages: ["ext.film:abc"] });
+    onStageBuild?.({ phase: "end", stages: ["ext.film:abc"], outcome: "built" });
+    expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "end", stages: ["ext.film:abc"], outcome: "built" });
+  });
+
+  it("tells the window of each stage build the thumbnail renderer starts", () => {
+    send({
+      cmd: "uploadSource",
+      target: "thumb",
+      key: "t",
+      image: { kind: "float", data: new Float32Array(4), width: 1, height: 1 },
+    });
+    const { onStageBuild } = FakeRenderer.instances[0].opts as WebGLRendererOpts;
+    onStageBuild?.({ phase: "start", stages: ["ext.film:abc"] });
+    expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "start", stages: ["ext.film:abc"] });
+  });
+
   it("tells the window of each stage the thumbnail renderer quarantines", () => {
     send({
       cmd: "uploadSource",
@@ -905,13 +935,46 @@ describe("render-worker frames", () => {
     });
   });
 
-  it("carries the histogram the render asked for", () => {
+  it("posts the frame before it measures the histogram the render asked for", () => {
     send(INIT);
     posted = [];
+    const renderer = FakeRenderer.instances[0];
+    const measure = renderer.computeHistogram.bind(renderer);
+    let framePostedFirst: boolean | null = null;
+    renderer.computeHistogram = (extended?: boolean) => {
+      framePostedFirst = posted.some((m) => m.type === "frame");
+      return measure(extended);
+    };
     send({ cmd: "render", seq: 8, wantHistogram: true, wantExtended: true });
-    expect(posted).toEqual([
-      expect.objectContaining({ type: "frame", seq: 8, histogram: expect.any(Object) }),
-    ]);
+    expect(framePostedFirst).toBe(true);
+    expect(posted.map((m) => m.type)).toEqual(["frame", "histogram"]);
+    expect(posted[0]).toMatchObject({ seq: 8, histogramFollows: true });
+    expect(posted[0]).not.toHaveProperty("histogram");
+    expect(posted[1]).toMatchObject({ histogram: expect.any(Object) });
+  });
+
+  it("measures the histogram once across the follow-up frames of a pending prepass", () => {
+    send(INIT);
+    posted = [];
+    const renderer = FakeRenderer.instances[0];
+    renderer.prepassPending = true;
+    send({ cmd: "render", seq: 1, wantHistogram: true });
+    send({ cmd: "render", seq: 2, wantHistogram: true });
+    renderer.prepassPending = false;
+    send({ cmd: "render", seq: 3, wantHistogram: true });
+    expect(renderer.calls.filter((c) => c === "computeHistogram")).toHaveLength(1);
+    const frames = posted.filter((m) => m.type === "frame");
+    expect(frames.map((m) => "histogramFollows" in m)).toEqual([true, true, true]);
+    expect(posted.filter((m) => m.type === "histogram")).toHaveLength(1);
+    expect(posted.at(-1)).toMatchObject({ type: "histogram" });
+  });
+
+  it("sets no histogramFollows on a frame that asked for no histogram", () => {
+    send(INIT);
+    posted = [];
+    FakeRenderer.instances[0].prepassPending = true;
+    send({ cmd: "render", seq: 1 });
+    expect(posted).toEqual([expect.not.objectContaining({ histogramFollows: true })]);
   });
 
   it("answers frameSkipped to a render that arrives before init", () => {
@@ -950,14 +1013,15 @@ describe("render-worker frames", () => {
     ]);
   });
 
-  it("answers renderError when the histogram it asked for throws, and frees the frame", () => {
+  it("answers the frame, then a histogramError, when the histogram it asked for throws", () => {
     send(INIT);
     posted = [];
     FakeRenderer.histogramError = new Error("readPixels failed");
     send({ cmd: "render", seq: 10, wantHistogram: true });
-    expect(posted).toEqual([{ type: "renderError", seq: 10, message: "readPixels failed" }]);
+    expect(posted.map((m) => m.type)).toEqual(["frame", "histogramError"]);
+    expect(posted[1]).toMatchObject({ message: expect.stringContaining("readPixels failed") });
     expect(handedOut).toHaveLength(1);
-    expect(handedOut[0].closed).toBe(true);
+    expect(handedOut[0].closed).toBe(false);
   });
 
   it("answers each render of a run once, by its seq, in order", () => {
@@ -1020,8 +1084,8 @@ describe("render-worker between photos", () => {
     send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
     send({ cmd: "render", seq: 2, wantHistogram: true });
     send({ cmd: "computeHistogram" });
-    expect(answers().map((msg) => msg.type)).toEqual(["frame", "histogram"]);
-    expect(answers()[0]).toMatchObject({ histogram: { luma: expect.any(Uint32Array) } });
+    expect(answers().map((msg) => msg.type)).toEqual(["frame", "histogram", "histogram"]);
+    expect(answers()[1]).toMatchObject({ histogram: { luma: expect.any(Uint32Array) } });
   });
 
   it("stays quiet when the next photo's image can't be set", () => {
@@ -1274,6 +1338,32 @@ function thumbnail(over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnail"
   };
   return request;
 }
+
+// Only the live view leaves dormant stages out (dormantWhen), and only it hears
+// which stages the window expects to need soon.
+describe("render-worker dormant stages", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+
+  it("skips dormant stages on the develop renderer, not the thumbnail one", async () => {
+    send(INIT);
+    send(thumbnail());
+    await Promise.resolve();
+    const [develop, thumbs] = FakeRenderer.instances;
+    expect(develop.opts).toMatchObject({ skipDormantStages: true });
+    expect(thumbs.opts).not.toMatchObject({ skipDormantStages: true });
+  });
+
+  it("hands a prewarm hint to the develop renderer", () => {
+    send(INIT);
+    send({ cmd: "prewarmStages", stageIds: ["acme.grain"] });
+    expect(FakeRenderer.instances[0].prewarmed).toEqual([["acme.grain"]]);
+  });
+
+  it("drops a hint that arrives before there is a renderer", () => {
+    expect(() => send({ cmd: "prewarmStages", stageIds: ["acme.grain"] })).not.toThrow();
+    expect(posted).toEqual([]);
+  });
+});
 
 // The bridge posts the extension param bag whole once, then only what changed. A patch
 // is merged into the bag the worker holds as a new object, and what it doesn't name
@@ -2705,6 +2795,26 @@ describe("render-worker source sample", () => {
     expect(() =>
       send({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample: COMPLETED }),
     ).not.toThrow();
+    expect(posted).toEqual([]);
+  });
+});
+
+// Brush tips are one set for every renderer in the worker, develop and thumbnail alike, so
+// the worker keeps them where the bake reads them rather than handing each renderer a copy.
+describe("render-worker brush tips", () => {
+  const tip = (id: string): BrushTipContribution => ({
+    id,
+    label: id,
+    alpha: { width: 1, height: 1, data: new Uint8Array([255]) },
+  });
+
+  it("takes the whole set, replacing the last, before any renderer exists", async () => {
+    const { brushTip } = await import("./webgl/brush-tips");
+    send({ cmd: "setBrushTips", tips: { chalk: tip("chalk"), sponge: tip("sponge") } });
+    expect(brushTip("chalk")?.id).toBe("chalk");
+    send({ cmd: "setBrushTips", tips: { sponge: tip("sponge") } });
+    expect(brushTip("chalk")).toBeUndefined();
+    expect(brushTip("sponge")).toBeDefined();
     expect(posted).toEqual([]);
   });
 });

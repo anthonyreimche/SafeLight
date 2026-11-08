@@ -34,7 +34,8 @@ import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
-import { regenerateEditedThumbnail } from "./edited-thumbnail";
+import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
+import { getRenderBridge } from "@/rendering/render-bridge";
 
 export interface DevelopState extends ViewSlice, MaskSlice {
   photoId: string | null;
@@ -162,6 +163,7 @@ function moveHistory(
     const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
     if (photo) void emitEditCommit({ photo, editState });
     const look = lookOf(editState.stack[editState.currentIndex]);
+    dropWaitingThumbnail(photoId);
     void regenerateEditedThumbnail(photoId, look.params, asShotTemperature, look.paramBag);
   };
 
@@ -268,6 +270,19 @@ export function openingAnotherPhoto(): boolean {
   return loadTarget !== null && loadTarget !== useDevelopStore.getState().photoId;
 }
 
+/** Whether Develop already holds this photo's edit as a fresh load would set it:
+ *  no read under way, none failed, and the same as-shot white balance. Opening
+ *  such a photo again would only replace the objects every panel reads. */
+export function holdsEdit(photoId: string, asShotTemperature?: number): boolean {
+  const s = useDevelopStore.getState();
+  return (
+    loadTarget === null &&
+    s.photoId === photoId &&
+    s.editError === null &&
+    s.asShotTemperature === (asShotTemperature ?? NEUTRAL_TEMPERATURE_K)
+  );
+}
+
 /** Run `handler` as Develop leaves the open photo, before the change still
  *  uncommitted there is committed to it, so a run that mustn't be saved half
  *  done can put its values back first. Returns the unsubscribe. */
@@ -276,8 +291,116 @@ export function beforePhotoLeave(handler: () => void): () => void {
   return () => leaveHandlers.delete(handler);
 }
 
+// How long the live view must go without a render request before a photo's grid
+// thumbnail is drawn: that render shares the worker with the live view, so it
+// must not land mid-drag. Under continuous rendering it is drawn anyway at the cap.
+const THUMBNAIL_QUIET_MS = 300;
+const THUMBNAIL_MAX_WAIT_MS = 3000;
+
+// The commit's own re-render is requested after it returns, so the bridge's last
+// request can predate the commit: the wait starts with a quiet period of its own.
+function whenViewQuiet(signal: AbortSignal): Promise<void> {
+  const settled = new Promise<void>((resolve) => setTimeout(resolve, THUMBNAIL_QUIET_MS));
+  return settled.then(() => {
+    if (signal.aborted) return undefined;
+    try {
+      return getRenderBridge().whenRenderQuiet(THUMBNAIL_QUIET_MS, signal);
+    } catch {
+      return undefined;
+    }
+  });
+}
+
+interface QuietThumbnail {
+  cancel: () => void;
+  params: DevelopParams;
+  asShotTemperature: number;
+  paramBag: Record<string, unknown>;
+}
+
+// The commits whose thumbnail waits, by photo: a photo left or a project closed
+// draws its own at once, and one photo's wait never takes another's.
+const quietThumbnails = new Map<string, QuietThumbnail>();
+
+function refreshThumbnailWhenQuiet(
+  photoId: string,
+  params: DevelopParams,
+  asShotTemperature: number,
+  paramBag: Record<string, unknown>,
+): void {
+  quietThumbnails.get(photoId)?.cancel();
+  let over = false;
+  const polling = new AbortController();
+  const cap = setTimeout(() => draw(), THUMBNAIL_MAX_WAIT_MS);
+  const cancel = () => {
+    over = true;
+    clearTimeout(cap);
+    polling.abort();
+  };
+  const draw = () => {
+    if (over) return;
+    cancel();
+    void flushThumbnail(photoId);
+  };
+  quietThumbnails.set(photoId, { cancel, params, asShotTemperature, paramBag });
+  void whenViewQuiet(polling.signal).then(draw);
+}
+
+/** A photo's stored look changed under its waiting thumbnail (another window,
+ *  an extension, a bulk update): the wait goes on, and draws the newer look. */
+function renewWaitingThumbnail(
+  photoId: string,
+  params: DevelopParams,
+  asShotTemperature: number,
+  paramBag: Record<string, unknown>,
+): void {
+  const waiting = quietThumbnails.get(photoId);
+  if (waiting) Object.assign(waiting, { params, asShotTemperature, paramBag });
+}
+
+/** Draw the thumbnail a photo's last commit left waiting. Resolves with nothing
+ *  waiting. */
+function flushThumbnail(photoId: string, leaving?: LeftPhoto): Promise<void> {
+  const waiting = quietThumbnails.get(photoId);
+  if (!waiting) return Promise.resolve();
+  waiting.cancel();
+  quietThumbnails.delete(photoId);
+  return regenerateEditedThumbnail(
+    photoId,
+    waiting.params,
+    waiting.asShotTemperature,
+    waiting.paramBag,
+    leaving,
+  );
+}
+
+/** Stop a photo's wait: a thumbnail drawn from a newer look takes its place. */
+function dropWaitingThumbnail(photoId: string): void {
+  const waiting = quietThumbnails.get(photoId);
+  if (!waiting) return;
+  waiting.cancel();
+  quietThumbnails.delete(photoId);
+}
+
+/** Draw every thumbnail still waiting for its photo's edits to go quiet, as
+ *  Develop or the window is left. */
+export function flushPendingThumbnails(): void {
+  for (const photoId of [...quietThumbnails.keys()]) void flushThumbnail(photoId);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushPendingThumbnails);
+}
+
 // Longest a project's close waits for its last photo's preview.
 const LEAVING_THUMBNAIL_MS = 5000;
+
+async function within(ms: number, work: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+  await Promise.race([work, bound]);
+  clearTimeout(timer);
+}
 
 /** Commit the live params as a history step and store them in `target`, or in the
  *  catalogue open now, when that is still the one open as the write lands. */
@@ -328,6 +451,9 @@ async function commitStoredEdit(
     const editState: EditState = { photoId, stack, currentIndex: stack.length - 1 };
     const saved = storage.putEditState(editState);
     showStored(stack, stack.length - 1);
+    // Registered in turn, not after the hooks below: an undo or a later commit
+    // that lands while they run then replaces this wait instead of being undone by it.
+    if (!target) refreshThumbnailWhenQuiet(photoId, params, asShotTemperature, paramBag);
     return { editState, saved };
   });
   if (!committed) return;
@@ -344,14 +470,13 @@ async function commitStoredEdit(
   if (target && leaving) {
     // The catalogue is saved once this commit ends, so the preview is stored first,
     // within a bound a hung render can't outlast.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const bound = new Promise<void>((resolve) => (timer = setTimeout(resolve, LEAVING_THUMBNAIL_MS)));
-    await Promise.race([
+    dropWaitingThumbnail(photoId);
+    await within(
+      LEAVING_THUMBNAIL_MS,
       regenerateEditedThumbnail(photoId, params, asShotTemperature, paramBag, { photo: leaving, storage: target }),
-      bound,
-    ]);
-    clearTimeout(timer);
-  } else {
+    );
+  } else if (target) {
+    dropWaitingThumbnail(photoId);
     void regenerateEditedThumbnail(photoId, params, asShotTemperature, paramBag);
   }
 
@@ -372,7 +497,17 @@ export function closeOpenPhoto(storage: CatalogStorage): Promise<void> | null {
   // The commit takes the photo's values as this call starts; the reset below
   // follows at once, so a run still going finds no photo to commit to.
   const { getState, setState } = useDevelopStore;
+  const left = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  const rendersOnCommit = !getState().editError && hasUncommittedEdit(getState());
   const committing = commitStoredEdit(getState, setState, "Edit", storage);
+  // A thumbnail still waiting for quiet is drawn now, into the catalogue being
+  // left, unless the commit draws a newer one.
+  let waiting: Promise<void> | undefined;
+  if (left && !rendersOnCommit) {
+    waiting = within(LEAVING_THUMBNAIL_MS, flushThumbnail(photoId, { photo: left, storage }));
+  } else {
+    dropWaitingThumbnail(photoId);
+  }
   loadGen++;
   loadTarget = null;
   setState({
@@ -385,7 +520,7 @@ export function closeOpenPhoto(storage: CatalogStorage): Promise<void> | null {
     historyIndex: -1,
     editError: null,
   });
-  return committing;
+  return waiting ? Promise.all([committing, waiting]).then(() => {}) : committing;
 }
 
 export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
@@ -431,7 +566,15 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     // The commit takes the leaving photo's values now, before the set below.
     const leaving = get().photoId !== photoId;
     if (leaving) for (const handler of [...leaveHandlers]) handler();
-    const outgoing = leaving ? get().commitEdit("Edit") : undefined;
+    const outgoingId = get().photoId;
+    // The photo left draws its thumbnail now, not once its edits go quiet.
+    const outgoing = leaving
+      ? get()
+          .commitEdit("Edit")
+          .finally(() => {
+            if (outgoingId) void flushThumbnail(outgoingId);
+          })
+      : undefined;
     const gen = ++loadGen;
     loadTarget = photoId;
     let opened: OpenedHistory | null;
@@ -463,6 +606,8 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     loadTarget = null;
     if (opened) {
       const { stack, index } = opened;
+      const look = lookOf(stack[index]);
+      renewWaitingThumbnail(photoId, look.params, asShot, look.paramBag);
       set({
         photoId,
         asShotTemperature: asShot,
@@ -477,6 +622,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       // Seed history with the untouched state so undo can return to it.
       // Use the camera's as-shot WB as the default temperature.
       const initial = freshParams(asShot);
+      renewWaitingThumbnail(photoId, initial, asShot, {});
       set({
         photoId,
         asShotTemperature: asShot,
@@ -511,6 +657,8 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     const gen = loadGen;
     const opened = await storedHistory(photoId, asShotTemperature).catch(() => null);
     if (opened && gen === loadGen && get().photoId === photoId) {
+      const look = lookOf(opened.stack[opened.index]);
+      renewWaitingThumbnail(photoId, look.params, asShotTemperature, look.paramBag);
       set({ history: opened.stack, historyIndex: opened.index });
     }
   },

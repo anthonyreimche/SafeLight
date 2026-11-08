@@ -40,6 +40,7 @@ import {
   registerTheme,
 } from "./registry";
 import { initStylesheets } from "./stylesheets";
+import { initStagePrewarm } from "./dock/prewarm";
 import {
   applyPipeline,
   effectivePipelineId,
@@ -89,6 +90,7 @@ import {
 import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
 import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
+import { registerBrushTip } from "@/rendering/brush-tip-registry";
 import { useMaskPanels } from "@/modules/develop/mask-panels";
 import {
   exportPhotos,
@@ -111,6 +113,7 @@ import { nativePathOf, pickDirectoryHandle, revealNativePath } from "@/project/n
 import { useProjectStore } from "@/project/project-store";
 import { isEditState } from "@/project/edit-files";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
+import { importFiles } from "@/modules/library/import-files";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
 import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -190,6 +193,7 @@ import { AutoButton } from "@/ui/components/AutoButton";
 import { Slot } from "./Slot";
 import { useActivePhoto } from "@/state/use-active-photo";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { stackOf } from "@/catalog/stacks";
 import { openExtensions } from "@/ui/components/extensions-dialog-store";
 import { openingAnotherPhoto, useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -383,6 +387,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       probe: probeCanvas,
       probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
       showMaskCoverage,
+      registerBrushTip: (tip) => registerBrushTip(extensionId, tip),
       setViewValues: (values) =>
         setStageViewValues(
           extensionId,
@@ -452,6 +457,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         return renderPhotoHistogram(photo, params, paramBag);
       },
       useActivePhoto,
+      setStack: (ids, opts) => useCatalogStore.getState().setStack(ids, opts),
+      clearStack: (ids) => useCatalogStore.getState().clearStack(ids),
+      stackOf: (id) => stackOf(useCatalogStore.getState().photos, id),
       photoDisplayName,
       exportPhotoData,
       gridSize: { min: GRID_SIZE_MIN, max: GRID_SIZE_MAX, step: GRID_SIZE_STEP },
@@ -467,6 +475,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       pathOf: nativePathOf,
       reveal: revealNativePath,
     },
+    library: { importFiles },
     presets: {
       useImporters: usePresetImporters,
       describeBag: describePresetBag,
@@ -521,6 +530,7 @@ export function initExtensionHost(): void {
   initStylesheets();
   initPipelines();
   initDockLayouts();
+  initStagePrewarm();
   // Load external plugins, then quietly check them for updates (and auto-update
   // if the user opted in). The check is gated on a setting and rate-limited.
   void loadExternalPlugins().then(() => {

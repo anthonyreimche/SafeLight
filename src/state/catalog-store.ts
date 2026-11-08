@@ -255,6 +255,14 @@ interface CatalogState {
    *  shown/exported name). Display-only — it never touches the file on disk. */
   setCopyName: (id: string, copyName: string) => Promise<void>;
 
+  /** Put the photos in one new stack, `opts.cover` (one of them) as its cover, or
+   *  the first of `ids` when none is named. A
+   *  photo that was in another stack leaves it. Nothing happens for fewer than two
+   *  photos in the catalogue. Catalogue metadata like a rating: no undo entry. */
+  setStack: (ids: string[], opts?: { cover?: string }) => Promise<void>;
+  /** Take the photos out of their stacks. */
+  clearStack: (ids: string[]) => Promise<void>;
+
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
   setFlag: (id: string, flag: FlagStatus) => Promise<void>;
@@ -697,6 +705,23 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       // can reload them now; this one already holds them and ignores its echo.
       for (const id of updates.keys()) announce("update", id);
     },
+
+    async setStack(ids, opts) {
+      const members = [...new Set(ids)].filter((id) => get().photos.some((p) => p.id === id));
+      if (members.length < 2) return;
+      const stackId = crypto.randomUUID();
+      const cover = opts?.cover !== undefined && members.includes(opts.cover) ? opts.cover : members[0];
+      await commit(members, (p) => {
+        const { stackCover: _cover, ...rest } = p;
+        return cover === p.id ? { ...rest, stackId, stackCover: true } : { ...rest, stackId };
+      });
+    },
+    clearStack: (ids) =>
+      commit(ids, (p) => {
+        if (p.stackId === undefined && p.stackCover === undefined) return p;
+        const { stackId: _id, stackCover: _cover, ...rest } = p;
+        return rest;
+      }),
 
     setRating: (id, rating) => commit([id], (p) => ({ ...p, rating })),
     setColorLabel: (id, colorLabel) =>

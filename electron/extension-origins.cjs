@@ -17,10 +17,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const OFFICIAL_EXTENSIONS = require("./official-extensions.json").extensions;
 
-// A well-formed HTTPS origin, optionally with a single leading-label wildcard
+// A well-formed HTTPS or secure WebSocket origin, optionally with a single leading-label wildcard
 // and a port. Nothing else may reach the policy, so a manifest can't inject
 // 'unsafe-eval', a data: source, or a bare * into it.
-const VALID_CONNECT_ORIGIN = /^https:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
+const VALID_CONNECT_ORIGIN = /^(?:https|wss):\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
 const VALID_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
 const CORE_EXTENSION_ID = "core";
@@ -119,7 +119,8 @@ function listDevManifests(folder) {
   return out;
 }
 
-/** Every well-formed HTTPS origin the manifests declare, once each, in order. */
+/** Every well-formed HTTPS or wss origin the manifests declare, once each, in
+ *  order. */
 function declaredConnectHosts(manifests) {
   const hosts = new Set();
   for (const m of manifests) {

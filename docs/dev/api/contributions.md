@@ -15,10 +15,13 @@ interface ThemeContribution {
   id: string; name: string;
   colorScheme?: "light" | "dark";
   vars: Record<string, string>; // CSS custom properties applied to :root
+  window?: { material: "acrylic" | "mica" }; // 3.2.1: a glass window
 }
 ```
 
 The variables you can set are listed in [UI Components → Theming tokens](components.md#theming-tokens).
+
+**Glass themes (3.2.1).** With `window.material`, the system draws the window's backdrop and your translucent `--color-surface-*` values show it: acrylic or mica on Windows 11 22H2 and later, vibrancy on macOS. Elsewhere, on the software graphics backend, and while Reduce transparency is on, the window stays opaque, and so do your surfaces: Safelight writes each `--color-surface-*` at full opacity until the window confirms it draws the material. Your other colours keep their alpha. The Develop canvas surround is always opaque. The choice is remembered, so the next launch opens with it.
 
 ## `SliderIconContribution`
 
@@ -86,6 +89,7 @@ interface ProcessingStageContribution {
   presetScope?: "global" | "per-image"; // in presets or not ("global")
   produces?: InterStageVariable[]; // values for later stages
   consumes?: string[];        // values from earlier stages
+  dormantWhen?: Record<string, number | number[] | boolean>; // 3.2.1, see below
 }
 
 interface UniformDeclaration {
@@ -101,7 +105,7 @@ interface UniformDeclaration {
 Notes:
 
 - **Uniform values** live in the photo's param bag under `"{stageId}.{key}"`. Write the bag from your panel; the renderer binds the value every frame. With no bag value, `default` is used.
-- **Be a no-op at your defaults.** Every registered stage runs on every photo.
+- **Be a no-op at your defaults.** Every registered stage runs on every photo, unless it declares `dormantWhen`.
 - **Negative channels.** `lin` can hold negative values (colours outside sRGB). Guard before `log`, `pow` or `sqrt`.
 - **`geometry`** stages change `srcUv`, the source position, so everything downstream samples the warped spot.
 - **`decode`** stages see the image after the RAW baseline, before noise reduction. Use `decode`, not `noise-reduction`, for anything that isn't a denoiser.
@@ -118,12 +122,15 @@ Notes:
 
 ```typescript
 interface StagePass {
-  glsl: string;      // mutates vec3 c, starts as readPrev(vUv)
+  glsl: string;      // mutates vec3 c, starts as its own texel of the previous draw
   helpers?: string;
   uniforms?: UniformDeclaration[]; // share the stage's bag keys
   iterations?: number | { key: string; max: number }; // draws (1)
+  channels?: 3 | 4;  // 4: glsl mutates vec4 c, alpha included
 }
 ```
+
+- `channels: 4` keeps a fourth value per pixel between draws. Your `glsl` mutates `vec4 c`, which starts as the previous draw's texel, and the draw stores all four channels. `vec4 fetchPrev4(ivec2 texel)` fetches any texel of the previous draw exactly, alpha included, and `vec4 readPrev4(vec2 uv)` samples it with linear filtering. Use `fetchPrev4` for state you carry through many draws: a filtered read mixes in a trace of the neighbours, about 3·10⁻⁵ of them, and over a long chain that adds up. On the stage's input the alpha is 1, and the first draw's `fetchPrev4` samples the input, which can be the source at another size. Without float render targets the alpha is clipped to [0, 1] at 8 bits, like the rgb. The inline still gets the last draw's rgb as `stageResult`. Needs Safelight 3.2.2.
 
 - Each pass gets `uTexel` (1 / pass size), `uPassIndex`, `uPassCount`, `readPrev(uv)` (the previous pass, or the stage's input on the first), `uSrcLinear` (true for RAW float decodes) and `uSourceSize` (the decoded source's pixel size, 3.1.0).
 - Passes run at a capped resolution. Scale a radius given in source pixels by `max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y)`.
@@ -137,7 +144,7 @@ interface StagePass {
 
 - **Size.** Passes draw at the size the frame develops from, not the screen. In Develop that's the source scaled so its long edge fits the user's render cap (**Preferences ▸ Performance ▸ Develop render resolution**, 2560 to 8192 pixels, 4096 by default). An export draws large enough for the requested size, up to the source's full size, and thumbnails draw smaller. `uTexel` gives the pass size and `uSourceSize` the decoded source's.
 - **Radii.** Because the pass size changes between preview and export, a radius counted in pass texels covers a different part of the photo in each. Give radii in source pixels and scale them with the formula above, and the result matches between preview and export to within resampling.
-- **Format.** The two ping-pong targets are RGBA16F (half float: about three significant digits, values up to 65504) when the GPU can render to float. Otherwise they're RGBA8 and every pass result is clipped to [0, 1]. A pass carries three channels, the `vec3 c`.
+- **Format.** The two ping-pong targets are RGBA16F (half float: about three significant digits, values up to 65504) when the GPU can render to float. Otherwise they're RGBA8 and every pass result is clipped to [0, 1]. A pass carries three channels, the `vec3 c`, or four with `channels: 4`.
 - **Sampling.** Linear filtering, clamped to the edge, so a tap outside 0..1 reads the nearest edge pixel.
 - **When passes rerun.** The result is cached, and passes draw again only when the source, the stage's own params, the size or, for `reads: "current"`, the image upstream of the stage changes. Moving an unrelated slider doesn't rerun them.
 - **Draws.** A pass draws at most 1024 times per frame, whatever `iterations` asks for.
@@ -247,6 +254,18 @@ interface InterStageVariable {
 - Names are global. Prefix them with your extension's name. Letters, digits and underscores, no `__`.
 - A consumer ordered before its producer reads 0. A consumer whose producer is missing is left out of the program, with a warning.
 - Passes can't use them. Needs Safelight 3.0.1.
+
+### Dormant stages: `dormantWhen`
+
+A stage that declares `dormantWhen` is left out of the live view's develop program while it has nothing to do, so an installed but untouched tool costs no shader time. The rule maps uniform keys to values: the stage is dormant while every listed uniform's value (the photo's, or its `default`) equals the given one. List the switches that make the stage an exact no-op, for example `{ amount: 0 }`.
+
+- Once a stage is needed, it stays in the program for the rest of the session, so moving between photos doesn't rebuild it again and again.
+- Opening or hovering your panel starts building the program with your stages in it, in the background, so the first slider move rarely waits for a compile.
+- It applies to the live view on version 2 photos. Thumbnails, exports and version 1 photos run every stage, as before.
+- Prepasses follow the same rule.
+- Declare it only where the stage is an exact no-op. Leaving a dormant stage out may differ from running it by float rounding, and nothing more.
+- The rule is ignored, with a warning, on `geometry` and `noise-reduction` stages, stages that `produces` values, and patch stages. It is also ignored on display stages without a `space`, whose input is clipped on version 2 photos, unless they are official Safelight extensions' stages, which never are. A malformed rule refuses the stage.
+- Older builds ignore the field and run the stage as before.
 
 ### Masks
 

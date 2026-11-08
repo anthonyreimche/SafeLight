@@ -63,6 +63,7 @@ vi.mock("@/catalog/orient", async (importOriginal) => ({
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { storedPhoto } from "@/catalog/types";
+import { stackOf } from "@/catalog/stacks";
 import {
   fieldChanges,
   photoById,
@@ -1462,5 +1463,77 @@ describe("startup and reconnect", () => {
 
     expect(state().fileAccessNonce).toBe(0);
     expect(state().reconnecting).toBe(true);
+  });
+});
+
+describe("stacks", () => {
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c"), photo("d")] });
+  });
+
+  const stacked = () =>
+    state().photos.map((p) => [p.id, p.stackId !== undefined, p.stackCover === true] as const);
+
+  it("puts the photos in one stack, with the cover marked, and writes them through", async () => {
+    await state().setStack(["a", "b", "c"], { cover: "b" });
+
+    const [a, b, c, d] = state().photos;
+    expect(a.stackId).toBeDefined();
+    expect(new Set([a.stackId, b.stackId, c.stackId]).size).toBe(1);
+    expect(d.stackId).toBeUndefined();
+    expect(stacked().map(([, , cover]) => cover)).toEqual([false, true, false, false]);
+    expect(store.rows.get("b")).toMatchObject({ stackId: a.stackId, stackCover: true });
+  });
+
+  it("marks the first id as the cover when none is named, and keeps one mark only", async () => {
+    await state().setStack(["a", "b"], { cover: "a" });
+    await state().setStack(["c", "b", "a"]);
+
+    expect(stacked().map(([, , cover]) => cover)).toEqual([false, false, true, false]);
+    expect(stackOf(state().photos, "a")?.cover).toBe("c");
+  });
+
+  it("marks the first id as the cover when the named cover isn't a member", async () => {
+    await state().setStack(["b", "c"], { cover: "d" });
+
+    expect(stackOf(state().photos, "b")?.cover).toBe("b");
+  });
+
+  it("makes no stack of fewer than two photos, or of photos that aren't here", async () => {
+    await state().setStack(["a"]);
+    await state().setStack(["a", "ghost"]);
+
+    expect(stacked().every(([, inStack]) => !inStack)).toBe(true);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("takes photos out of their stack with clearStack", async () => {
+    await state().setStack(["a", "b", "c"], { cover: "a" });
+    await state().clearStack(["a"]);
+
+    expect(stacked()).toEqual([
+      ["a", false, false],
+      ["b", true, false],
+      ["c", true, false],
+      ["d", false, false],
+    ]);
+    expect(store.rows.get("a")?.stackId).toBeUndefined();
+  });
+
+  it("names no photo in its broadcast, like any other metadata", async () => {
+    await state().setStack(["a", "b"]);
+
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", origin: "test-window" } },
+    ]);
+  });
+
+  it("drops a removed photo from its stack and leaves the rest stacked", async () => {
+    await state().setStack(["a", "b", "c"]);
+    await state().removePhotos(["a"]);
+
+    expect(stackOf(state().photos, "b")?.ids).toEqual(["b", "c"]);
+    await state().removePhotos(["b"]);
+    expect(stackOf(state().photos, "c")).toBeNull();
   });
 });

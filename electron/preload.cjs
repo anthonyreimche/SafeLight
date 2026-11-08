@@ -86,6 +86,12 @@ const privileged = {
     setBackend: (choice) => ipcRenderer.invoke("gpu:setBackend", typeof choice === "string" ? choice : null),
     rendererFailed: (detail) => ipcRenderer.invoke("gpu:rendererFailed", String(detail)),
   },
+  // The window's material (acrylic, mica): a theme asks for it, the system
+  // draws it. Privileged so an extension can't change how the window paints.
+  window: {
+    setMaterial: (material) =>
+      ipcRenderer.invoke("window:setMaterial", typeof material === "string" ? material : null),
+  },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.
   osOpen: {

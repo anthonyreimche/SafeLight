@@ -30,7 +30,7 @@
 // so the main thread is never blocked.
 
 import { getSettings } from "@/state/settings-store";
-import type { CachedPreview } from "./cache-encode";
+import type { CachedPreview, EncodedEntry } from "./cache-encode";
 import {
   setCacheDirOnWorker,
   workerReadCachedPreview,
@@ -190,7 +190,8 @@ export async function cachedKeys(): Promise<Set<string>> {
  * Whether the cache could take the write: false only when the write itself
  * failed (the disk or the storage quota is full, say), which a caller filling
  * the cache in bulk needs to know. A write left undone because the cache is
- * off or the project changed is not a failure.
+ * off or the project changed is not a failure. `entry`: the entry the decode
+ * already built from `data`, off the main thread (see workerWriteCachedPreview).
  */
 export async function writeCachedPreview(
   key: string,
@@ -198,6 +199,7 @@ export async function writeCachedPreview(
   width: number,
   height: number,
   begunIn: number,
+  entry?: EncodedEntry,
 ): Promise<boolean> {
   if (!getSettings().rawCacheEnabled) return true;
   // Checked in the same synchronous step that queues the write, so a folder
@@ -206,7 +208,7 @@ export async function writeCachedPreview(
   try {
     // An accepted decode outranks any verdict struck against the photo before.
     const [stored] = await Promise.all([
-      workerWriteCachedPreview(key, data, width, height, getSettings().rawCacheMaxEdge),
+      workerWriteCachedPreview(key, data, width, height, getSettings().rawCacheMaxEdge, entry),
       ...markerKeysOf(key).map((k) => workerDeleteCachedPreview(k)),
     ]);
     return stored;

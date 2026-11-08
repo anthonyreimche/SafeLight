@@ -16,7 +16,7 @@
 
 import { create } from "zustand";
 import { getSettings, useSettings } from "./settings-store";
-import { useThemeStore } from "@/extensions/themes";
+import { syncWindowMaterial, useThemeStore } from "@/extensions/themes";
 import { useRegistry } from "@/extensions/registry";
 
 // The theme vars the high-contrast overlay replaces. On disable we restore each
@@ -187,6 +187,7 @@ export function applyAccessibility(): void {
     "sl-opaque",
     s.reduceTransparency || osWants("reduceTransparency"),
   );
+  syncWindowMaterial();
   root.classList.toggle("sl-focus-ring", s.strongFocus);
   root.classList.toggle("sl-larger-text", s.largerText);
   root.classList.toggle("sl-large-targets", s.largerControls);
@@ -315,6 +316,7 @@ export function deactivateAccessibility(): void {
   );
   root.removeAttribute("data-sl-cvd");
   document.getElementById(CVD_FILTERS_ID)?.remove();
+  syncWindowMaterial();
   useA11yActive.setState({ active: false });
 }
 

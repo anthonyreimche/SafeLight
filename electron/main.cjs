@@ -27,6 +27,8 @@ const {
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const os = require("node:os");
+const { readMaterial, windowOptions, writeMaterial } = require("./window-material.cjs");
 const {
   isRuntimeGpuCrash,
   isRendererCrash,
@@ -325,12 +327,13 @@ app.commandLine.appendSwitch("disable-domain-reliability");
 app.commandLine.appendSwitch("disable-component-update");
 app.commandLine.appendSwitch("disable-features", "Translate,MediaRouter,OptimizationHints");
 
-// The app shell's CSP (app-protocol.cjs). connect-src takes the HTTPS origins
-// extensions declare in their manifest's permissions.network: the installed
-// ones under userData/plugins and, read the same way, those in the Developer
-// Tools dev folder (extension-origins.cjs). The set is computed once per launch
-// from the manifests on disk; a newly-installed extension's origins, or a newly
-// chosen dev folder's, take effect on the next launch (a natural consent point).
+// The app shell's CSP (app-protocol.cjs). connect-src takes the HTTPS and wss:
+// origins extensions declare in their manifest's permissions.network: the
+// installed ones under userData/plugins and, read the same way, those in the
+// Developer Tools dev folder (extension-origins.cjs). The set is computed once
+// per launch from the manifests on disk; a newly-installed extension's origins,
+// or a newly chosen dev folder's, take effect on the next launch (a natural
+// consent point).
 // Malformed entries never reach the policy, so a manifest can't inject
 // 'unsafe-eval', a data: source, or a bare * into it.
 const galleryOrigins = galleryOriginsFrom(process.env);
@@ -359,6 +362,15 @@ registerAppScheme(protocol);
 // ---------------------------------------------------------------------------
 
 const userData = () => app.getPath("userData");
+// The window material the last session ended on, so a new window's first paint
+// already has it. Software rendering has no backdrop to show through.
+const materialFile = () => path.join(userData(), "window-material");
+const materialSystem = () => ({
+  platform: process.platform,
+  release: os.release(),
+  software: backend === SOFTWARE_BACKEND,
+});
+const materialOptions = () => windowOptions(readMaterial(materialFile()), materialSystem());
 const pluginsDir = () => path.join(userData(), "plugins");
 // Work area for in-flight installs/updates (see plugin-files.cjs): beside
 // plugins/, never inside it.
@@ -509,6 +521,8 @@ function registerIpcChannels() {
     devFolderFile,
     extensionConnectHosts,
     gpuBackendState,
+    saveMaterial: (material) => writeMaterial(materialFile(), material),
+    isSoftware: () => backend === SOFTWARE_BACKEND,
     setSoftwareRendering,
     setGraphicsBackend,
     rendererFailed,
@@ -646,9 +660,9 @@ function windowOpenHandler({ url }) {
       action: "allow",
       overrideBrowserWindowOptions: {
         show: false,
-        backgroundColor: "#1a1a1a",
         autoHideMenuBar: true,
         ...titleBarOpts,
+        ...materialOptions(),
         webPreferences: {
           preload: path.join(__dirname, "preload.cjs"),
           contextIsolation: true,
@@ -680,10 +694,10 @@ function createWindow() {
     height: state.height,
     minWidth: minimum.width,
     minHeight: minimum.height,
-    backgroundColor: "#1a1a1a",
     show: false,
     autoHideMenuBar: true,
     ...titleBarOpts,
+    ...materialOptions(),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

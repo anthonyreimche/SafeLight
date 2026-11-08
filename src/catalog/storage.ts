@@ -9,12 +9,19 @@
 
 import type { CatalogPhoto, EditState } from "./types";
 
+export interface PutOptions {
+  /** The records hold only what a pass can derive again, so the catalogue save may
+   *  wait (about 10 s) instead of following within a second or two. Other windows
+   *  hear of the change at once, and any flush or later save writes it. */
+  lazy?: boolean;
+}
+
 export interface CatalogStorage {
-  putPhoto(photo: CatalogPhoto): Promise<void>;
+  putPhoto(photo: CatalogPhoto, options?: PutOptions): Promise<void>;
   /** Store the records, then their previews that changed. A preview that can't be
    *  written doesn't reject: the records are stored either way, and the next put
    *  that carries the preview writes it again. */
-  putPhotos(photos: CatalogPhoto[]): Promise<void>;
+  putPhotos(photos: CatalogPhoto[], options?: PutOptions): Promise<void>;
   /** Remove several photos at once: one save and one message to the other windows,
    *  where a deletePhoto per photo would send and save each. */
   deletePhotos(ids: readonly string[]): Promise<void>;

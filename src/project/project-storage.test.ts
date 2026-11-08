@@ -1799,6 +1799,50 @@ describe("virtual copies", () => {
   });
 });
 
+describe("stacks", () => {
+  const cfg = BUILDS[1];
+
+  it("keeps a stack and its cover across a save and an open, stamped as one group", async () => {
+    const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B", "c.jpg": "C" });
+    const first = await open(p);
+    const [a, b] = first.photos;
+    await first.storage.putPhotos([
+      { ...a, stackId: "S", stackCover: true },
+      { ...b, stackId: "S" },
+    ]);
+    await first.storage.flush();
+
+    expect(catalog(p)?.photos.filter((x) => x.stackId === "S").map((x) => x.id)).toEqual([a.id, b.id]);
+    const saved = JSON.parse(catalogText(p) ?? "{}");
+    expect(Object.keys(saved.changed.photos[a.id])).toContain("stack");
+
+    const second = await open(p);
+
+    expect(second.photos.map((x) => [x.stackId, x.stackCover])).toEqual([
+      ["S", true],
+      ["S", undefined],
+      [undefined, undefined],
+    ]);
+  });
+
+  it("opens a catalogue whose records carry stack fields it was saved with", async () => {
+    const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
+    const first = await open(p);
+    await first.storage.flush();
+    const saved = catalog(p)!;
+    saved.photos = saved.photos.map((rec) => ({ ...rec, stackId: "S", stackCover: rec.relPath === "b.jpg" ? true : undefined }));
+    p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify(saved));
+    first.storage.close();
+
+    const second = await open(p);
+
+    expect(second.photos.map((x) => [x.relPath, x.stackId, x.stackCover])).toEqual([
+      ["a.jpg", "S", undefined],
+      ["b.jpg", "S", true],
+    ]);
+  });
+});
+
 describe("removing photos from a large catalogue", () => {
   // A removal finds the photo's virtual copies without looking through every
   // record, so removing many photos at once stays quick in every window.
@@ -2310,6 +2354,9 @@ describe("the edit a stored preview showed", () => {
 
     expect((await recordIn(a.storage)).previewEdit).toBe("edit-2");
     expect((await recordIn(b.storage)).previewEdit).toBe("edit-2");
+    // The save of the landed preview waits for the bulk delay.
+    expect(catalog(p)?.photos[0].previewEdit).toBe("edit-1");
+    await vi.advanceTimersByTimeAsync(5000);
     expect(catalog(p)?.photos[0].previewEdit).toBe("edit-2");
   });
 

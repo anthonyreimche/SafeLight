@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useRegistry } from "@/extensions/registry";
 import { useSettings } from "@/state/settings-store";
 import { useDevelopStore } from "@/state/develop-store";
@@ -63,7 +63,11 @@ const VALUE_KEYS = new Set([
 // going after that writes and commits nothing, or the next photo would get it.
 const openPhoto = () => useDevelopStore.getState().photoId;
 
-export function Slider({
+// A panel that subscribes to every param re-renders all its sliders on each
+// tick of one. The body only re-renders for what it shows; the callbacks reach
+// it through stable proxies that call the latest ones, since callers pass
+// inline closures bound to a mask or key.
+const SliderView = memo(function SliderView({
   label,
   ariaLabel,
   icon,
@@ -412,4 +416,17 @@ export function Slider({
       )}
     </div>
   );
+});
+
+export function Slider({ onChange, onCommit, onModifierPreview, ...shown }: SliderProps) {
+  const latest = useRef({ onChange, onCommit, onModifierPreview });
+  useLayoutEffect(() => {
+    latest.current = { onChange, onCommit, onModifierPreview };
+  });
+  const proxies = useRef({
+    onChange: (v: number) => latest.current.onChange(v),
+    onCommit: () => latest.current.onCommit?.(),
+    onModifierPreview: (active: boolean) => latest.current.onModifierPreview?.(active),
+  }).current;
+  return <SliderView {...shown} {...proxies} />;
 }

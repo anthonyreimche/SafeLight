@@ -178,7 +178,7 @@ describe("fillCacheEntry", () => {
   it("decodes as background work with the signal and writes the entry under the photo's key in its generation", async () => {
     const signal = new AbortController().signal;
     expect(await fillCacheEntry(rawPhoto("DSC_0001.NEF"), 7, signal)).toBe("taken");
-    expect(h.decodes).toEqual([{ background: true, signal }]);
+    expect(h.decodes).toEqual([expect.objectContaining({ background: true, signal })]);
     expect(h.writes).toEqual([["DSC_0001.NEF:64:0", 1, 1, 7]]);
     expect(h.marks).toEqual([]);
   });

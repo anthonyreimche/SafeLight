@@ -54,9 +54,13 @@ let head = 0;
 const queued = new Set<string>();
 // Cells on screen (insertion-ordered), served before the prefill.
 const front = new Set<string>();
+// How many cells asked for each id in `front`; the id leaves only when all cancel.
+const frontHolders = new Map<string, number>();
 // Previews other windows rewrote (insertion-ordered): served after the cells on
 // screen, which a burst of them would otherwise hold up, and before the prefill.
 const reloading = new Set<string>();
+// Ids a visible request took out of the idle prefill: a cancel gives them back.
+const takenFromPrefill = new Set<string>();
 const inFlight = new Set<string>();
 let active = 0;
 let pending: { id: string; blob: LoadedPreview }[] = [];
@@ -80,7 +84,9 @@ export function setThumbnailLoader(l: Loader | null, opts?: LoaderOptions): numb
   head = 0;
   queued.clear();
   front.clear();
+  frontHolders.clear();
   reloading.clear();
+  takenFromPrefill.clear();
   // Stale in-flight reads keep their slots until they settle (their results are
   // discarded by the generation guard); clearing the set here lets the new
   // project re-request the same id without being deduped against a stale read.
@@ -101,19 +107,52 @@ export function thumbnailGen(): number {
 /** Request a photo's grid preview. Deduped; FIFO so previews arrive in request
  *  order (visible cells, mounting top-to-bottom, naturally request in order).
  *  `visible` jumps the idle prefill: the id is read as soon as a slot frees, even
- *  if the prefill already holds it. */
-export function requestThumbnail(id: string, opts?: { visible?: boolean }): void {
-  if (!loader || front.has(id) || inFlight.has(id)) return;
+ *  if the prefill already holds it. Returns whether it took a hold that
+ *  cancelThumbnail releases: only a visible request that wasn't already read. */
+export function requestThumbnail(id: string, opts?: { visible?: boolean }): boolean {
+  if (!loader || inFlight.has(id)) return false;
+  if (front.has(id)) {
+    if (!opts?.visible) return false;
+    frontHolders.set(id, (frontHolders.get(id) ?? 0) + 1);
+    return true;
+  }
   if (opts?.visible) {
-    queued.delete(id);
+    if (queued.delete(id)) takenFromPrefill.add(id);
     reloading.delete(id);
     front.add(id);
+    frontHolders.set(id, 1);
   } else {
-    if (queued.has(id) || reloading.has(id)) return;
+    if (queued.has(id) || reloading.has(id)) return false;
     queued.add(id);
     queue.push(id);
   }
   pump();
+  return opts?.visible === true;
+}
+
+/** A visible cell no longer wants its preview (it scrolled away). Drops the
+ *  request once its last requester cancels, unless the read already started, so
+ *  cells on screen aren't queued behind everything that scrolled past. The id
+ *  isn't moved to the idle queue; the prefill still holds it if it is within
+ *  its limit. */
+export function cancelThumbnail(id: string): void {
+  const holders = frontHolders.get(id);
+  if (holders === undefined) return;
+  if (holders > 1) {
+    frontHolders.set(id, holders - 1);
+    return;
+  }
+  frontHolders.delete(id);
+  front.delete(id);
+  // A reload waiting on this read still needs it.
+  if (replacing.has(id)) {
+    reloading.add(id);
+    takenFromPrefill.delete(id);
+  } else if (takenFromPrefill.delete(id)) {
+    // The prefill's entry may be behind its head by now.
+    queued.add(id);
+    queue.push(id);
+  }
 }
 
 function nextId(): string | undefined {
@@ -121,6 +160,8 @@ function nextId(): string | undefined {
     const first = waiting.values().next();
     if (!first.done) {
       waiting.delete(first.value);
+      frontHolders.delete(first.value);
+      takenFromPrefill.delete(first.value);
       return first.value;
     }
   }

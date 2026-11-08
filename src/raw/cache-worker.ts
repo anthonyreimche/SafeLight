@@ -47,6 +47,8 @@ export type CacheRequest =
   // `sample`: also decompress the entry's centre sample (8 MB).
   | { cmd: "read"; id: number; key: string; sample: boolean }
   | { cmd: "write"; id: number; key: string; data: Float32Array; width: number; height: number; maxEdge: number }
+  // The entry already built from the frame (frame-job.ts), answered as a write.
+  | { cmd: "store"; id: number; key: string; entry: EncodedEntry }
   // A negative marker: an entry holding a short text instead of pixels.
   | { cmd: "mark"; id: number; key: string; value: string }
   | { cmd: "peek"; id: number; key: string }
@@ -375,18 +377,14 @@ async function handleRead(key: string, wantSample: boolean): Promise<ReadReply> 
   return { data: new Uint16Array(preview), width: entry.width, height: entry.height, full, sample };
 }
 
-async function handleWrite(
-  key: string,
-  data: Float32Array,
-  width: number,
-  height: number,
-  maxEdge: number,
-): Promise<boolean> {
+const handleWrite = (key: string, data: Float32Array, width: number, height: number, maxEdge: number) =>
+  handleStore(key, encodeCacheEntry(data, width, height, maxEdge));
+
+async function handleStore(key: string, entry: EncodedEntry): Promise<boolean> {
   // Taken as the write arrives: a folder set while it compresses is the next
   // project's, and the write must not land there.
   const dir = cacheDir;
   const s = scope;
-  const entry = encodeCacheEntry(data, width, height, maxEdge);
   if (dir) {
     await writeToDir(dir, key, entry);
     return true;
@@ -607,6 +605,10 @@ self.onmessage = async (e: MessageEvent<CacheRequest>) => {
           id: msg.id,
           ok: await handleWrite(msg.key, msg.data, msg.width, msg.height, msg.maxEdge),
         });
+        break;
+
+      case "store":
+        respond({ type: "write", id: msg.id, ok: await handleStore(msg.key, msg.entry) });
         break;
 
       case "mark":

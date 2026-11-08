@@ -28,8 +28,11 @@ export interface HistogramScheduler {
   markDirty: () => void;
   /** The source just drawn comes with its own histogram. */
   clearDirty: () => void;
-  /** A frame arrived, with the histogram it carries if it asked for one. */
-  onFrame: (histogram: HistogramData | undefined) => void;
+  /** A frame arrived, with the histogram it carries if it asked for one. `follows`:
+   *  it asked for one that comes on its own, so none is recomputed for it. */
+  onFrame: (histogram: HistogramData | undefined, follows?: boolean) => void;
+  /** The histogram a frame said would follow it arrived. */
+  onHistogram: (histogram: HistogramData) => void;
   /** Drops a request still waiting. */
   dispose: () => void;
 }
@@ -38,6 +41,11 @@ export function createHistogramScheduler(host: HistogramHost): HistogramSchedule
   let dirty = false;
   // performance.now() of the last change that set `dirty`.
   let dirtyAt = 0;
+  // Counts the changes that set `dirty`, to tell whether the histogram of a frame
+  // measured them all.
+  let changes = 0;
+  // `changes` when the last frame whose histogram follows came, if it hasn't.
+  let followedAt: number | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastAt = 0;
 
@@ -61,18 +69,20 @@ export function createHistogramScheduler(host: HistogramHost): HistogramSchedule
   return {
     markDirty() {
       dirty = true;
+      changes++;
       dirtyAt = performance.now();
     },
     clearDirty() {
       dirty = false;
     },
-    onFrame(histogram) {
+    onFrame(histogram, follows = false) {
       if (histogram) {
         host.publish(histogram);
         lastAt = performance.now();
         return;
       }
-      if (!dirty) return;
+      if (follows) followedAt = changes;
+      if (follows || !dirty) return;
       if (getSettings().liveHistogram) {
         // Live: recompute continuously while editing, throttled to HIST_THROTTLE.
         if (!timer) {
@@ -90,7 +100,14 @@ export function createHistogramScheduler(host: HistogramHost): HistogramSchedule
         timer = setTimeout(recompute, Math.max(0, HIST_SETTLE - sinceEdit));
       }
     },
+    onHistogram(histogram) {
+      host.publish(histogram);
+      lastAt = performance.now();
+      if (followedAt === changes) dirty = false;
+      followedAt = null;
+    },
     dispose() {
+      followedAt = null;
       if (timer) {
         clearTimeout(timer);
         timer = null;

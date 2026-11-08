@@ -91,6 +91,12 @@ export const useExternalPluginsSettled = create<{ settled: boolean }>(() => ({
   settled: false,
 }));
 
+/** The ids of the installed external plugins, as the launch pass listed them;
+ *  null until it has. */
+export const useInstalledPlugins = create<{ ids: string[] | null }>(() => ({
+  ids: null,
+}));
+
 export const isExtensionDisabled = (id: string): boolean =>
   useDisabledExtensions.getState().ids.includes(id);
 
@@ -489,6 +495,23 @@ async function enforceBansOnLoaded(): Promise<void> {
   }
 }
 
+/** Let queued input and paint run: activations that settle from cached bundles
+ *  would otherwise chain in microtasks into one long task. */
+function yieldToEventLoop(): Promise<void> {
+  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  // Not a timer: fake and throttled timers would stretch the yield.
+  if (typeof MessageChannel === "undefined") return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => {
+      port1.close();
+      resolve();
+    };
+    port2.postMessage(null);
+  });
+}
+
 export async function loadExternalPlugins(): Promise<void> {
   try {
     await queueEnablement(loadExternalPluginsOnce);
@@ -506,6 +529,7 @@ async function loadExternalPluginsOnce(): Promise<void> {
   } catch {
     return;
   }
+  useInstalledPlugins.setState({ ids: list.map((m) => m.id) });
   // Bundles import side by side; the extensions still activate one at a time in
   // list order, so what they register lands in the same order on every launch.
   const ahead = importAhead(
@@ -517,6 +541,7 @@ async function loadExternalPluginsOnce(): Promise<void> {
         !isInstanceLive(m.id),
     ),
   );
+  let first = true;
   for (const manifest of list) {
     if (isExtensionDisabled(manifest.id)) continue;
     // Kill-switch check against the cached trust list (seeded synchronously from
@@ -524,6 +549,8 @@ async function loadExternalPluginsOnce(): Promise<void> {
     // A banned extension is never activated; we flag it (banner + console) rather
     // than silently dropping it, so the user knows why it stopped working.
     if (refuseIfBanned(manifest, "blocked")) continue;
+    if (!first) await yieldToEventLoop();
+    first = false;
     try {
       await loadPlugin(manifest, ahead.get(manifest));
     } catch (e) {
