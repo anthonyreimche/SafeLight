@@ -23,6 +23,7 @@ import { useState } from "react";
 import type { CatalogPhoto, CropRect, DevelopParams, EditSnapshot } from "@/catalog/types";
 import { DEFAULT_CROP, DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { useDevelopOverlay, type DevelopOverlayState, type OverlayRect } from "@/extensions/develop-host";
+import { useExternalPluginsSettled } from "@/extensions/loader";
 import { registerProcessingStage, registerSlot, unregisterExtension, unregisterSlot } from "@/extensions/registry";
 import { WHOLE_IMAGE, regionOutputSize } from "@/rendering/geometry";
 import { disposeRenderBridge } from "@/rendering/render-bridge";
@@ -232,6 +233,7 @@ const OPEN_ZOOM = useSettings.getState().developOpenZoom;
 const STORE_COMMIT = useDevelopStore.getState().commitEdit;
 
 beforeEach(() => {
+  useExternalPluginsSettled.setState({ settled: true });
   SizingWorker.instances = [];
   vi.stubGlobal("Worker", SizingWorker);
   vi.stubGlobal("ResizeObserver", FixedFrameObserver);

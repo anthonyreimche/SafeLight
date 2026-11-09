@@ -15,6 +15,7 @@ import type { CatalogPhoto } from "@/catalog/types";
 
 const loader = vi.hoisted(() => ({
   requestThumbnail: vi.fn<(id: string, opts?: { visible?: boolean }) => void>(),
+  cancelThumbnail: vi.fn<(id: string) => void>(),
 }));
 
 vi.mock("@/state/thumbnail-loader", () => loader);

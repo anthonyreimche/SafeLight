@@ -238,7 +238,7 @@ export function ExtensionCard({
           <button
             disabled={disabled}
             onClick={onInstall}
-            className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-white hover:opacity-80 disabled:opacity-40"
+            className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-on-accent hover:opacity-80 disabled:opacity-40"
           >
             {installing ? "…" : "Install"}
           </button>

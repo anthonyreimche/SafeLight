@@ -38,7 +38,7 @@ import { stageSignature } from "@/rendering/webgl/stage-injection";
 import { useSettings } from "@/state/settings-store";
 import { resetSetupForTests } from "@/modules/welcome/setup/setup-store";
 import { useCatalogStore } from "@/state/catalog-store";
-import { setCatalogStorage } from "@/catalog/storage";
+import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { defaultMaskAdjustments, type EditState, type Mask } from "@/catalog/types";
 import { installMemoryStorage, photo, snapshot } from "@/catalog/stored-edit.fixtures";
 
@@ -1032,6 +1032,76 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
 
     const ask = await screen.findByRole("dialog");
     within(ask).getByText("2 photos use Grain. They'll render and export without it until it's installed again.");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  });
+
+  const failReads = (failing: (id: string) => boolean, onRead?: (id: string) => Promise<void>) => {
+    const storage = catalogStorage();
+    setCatalogStorage({
+      ...storage,
+      getEditState: async (id) => {
+        await onRead?.(id);
+        if (failing(id)) throw new Error("unreadable");
+        return storage.getEditState(id);
+      },
+    });
+  };
+
+  it("skips a photo whose edit can't be read, and still asks about the rest", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    privilegedBridge = { ...privilegedBridge!, uninstall: vi.fn(async () => {}) };
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    installMemoryStorage(uses("a", 0.5), uses("b", 0.5));
+    failReads((id) => id === "b");
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    within(ask).getByText("1 photo uses Grain. It'll render and export without it until it's installed again.");
+    expect(warn.mock.calls.some((c) => c.join(" ").includes("b"))).toBe(true);
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+    warn.mockRestore();
+  });
+
+  it("uninstalls when no photo's edit can be read", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const uninstall = vi.fn(async () => {});
+    privilegedBridge = { ...privilegedBridge!, uninstall };
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    installMemoryStorage(uses("a", 0.5), uses("b", 0.5));
+    failReads(() => true);
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith(installed.id));
+    warn.mockRestore();
+  });
+
+  it("reads edits a few at a time", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `p${i}`);
+    privilegedBridge = { ...privilegedBridge!, uninstall: vi.fn(async () => {}) };
+    useCatalogStore.setState({ photos: ids.map((id) => photo(id)) });
+    installMemoryStorage(...ids.map((id) => uses(id, 0.5)));
+    let inFlight = 0;
+    let peak = 0;
+    failReads(
+      () => false,
+      async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+      },
+    );
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    within(ask).getByText("20 photos use Grain. They'll render and export without it until it's installed again.");
+    expect(peak).toBeLessThanOrEqual(8);
     await user.click(within(ask).getByRole("button", { name: "Cancel" }));
   });
 });

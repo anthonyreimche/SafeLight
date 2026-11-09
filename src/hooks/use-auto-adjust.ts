@@ -55,16 +55,28 @@ async function run(
   // Develop commits what is left on the photo it leaves.
   const stopGuard = beforePhotoLeave(() => useDevelopStore.setState({ params, paramBag }));
   try {
-    for (let i = 0; i < MAX_ITERS; i++) {
-      if (!useDevelopStore.getState().histogram) break;
-      const done = await apply();
-      if (!done) await settle();
-      // Another photo opened mid-run; committing would add this run's step
-      // to that photo's history.
-      if (useDevelopStore.getState().photoId !== photoId) return;
-      if (done) break;
+    try {
+      for (let i = 0; i < MAX_ITERS; i++) {
+        if (!useDevelopStore.getState().histogram) break;
+        const done = await apply();
+        if (!done) await settle();
+        // Another photo opened mid-run; committing would add this run's step
+        // to that photo's history.
+        if (useDevelopStore.getState().photoId !== photoId) return;
+        if (done) break;
+      }
+    } catch (e) {
+      // The steps applied so far are in the live params but not in history,
+      // so the next unrelated commit would bake a partial run into the photo.
+      if (useDevelopStore.getState().photoId === photoId) useDevelopStore.setState({ params, paramBag });
+      console.error(`[auto-adjust] ${label} failed`, e);
+      return;
     }
-    await useDevelopStore.getState().commitEdit(label);
+    try {
+      await useDevelopStore.getState().commitEdit(label);
+    } catch (e) {
+      console.error(`[auto-adjust] couldn't commit ${label}`, e);
+    }
   } finally {
     stopGuard();
     running = false;

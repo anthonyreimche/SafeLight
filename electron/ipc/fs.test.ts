@@ -3,23 +3,29 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The fs:list channel: what the renderer is told when a folder can't be listed.
+// The fs:* channels: what the renderer is told when a folder can't be listed, and
+// which paths the mutating channels refuse to touch.
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAtomicWriter } from "../atomic-write.cjs";
 import { fsChannels } from "./fs.cjs";
 
 type Handler = (event: unknown, path: string) => Promise<{ name: string; kind: string }[]>;
 
-function channel<T>(name: string, userData = ""): T {
+type Deps = { fileWriter?: object; shell?: object };
+
+function channel<T>(name: string, userData = "", deps: Deps = {}): T {
   const channels = fsChannels({
     userData: () => userData,
     fileWriter: {},
     shell: {},
     dialog: {},
     BrowserWindow: {},
+    ...deps,
   } as never) as { channel: string; handler: T }[];
   return channels.find((c) => c.channel === name)!.handler;
 }
@@ -229,5 +235,105 @@ describe("fs:externalCatalogDir", () => {
       lastOpenedAt: 99,
       sampleNames: ["IMG_0001.CR3", "IMG_0050.CR3", "IMG_0099.CR3"],
     });
+  });
+});
+
+describe("mutating fs channels", () => {
+  type OnePath = (event: unknown, p: string) => Promise<void>;
+  type Write = (event: unknown, p: string, data: Uint8Array) => Promise<void>;
+  type Move = (event: unknown, src: string, dest: string) => Promise<void>;
+
+  const root = path.parse(os.tmpdir()).root;
+
+  it("marks every channel privileged", () => {
+    const channels = fsChannels({} as never) as { privileged: boolean }[];
+    expect(channels.every((c) => c.privileged === true)).toBe(true);
+  });
+
+  it.each(["undefined", "", root])("fs:remove refuses %j and removes nothing", async (p) => {
+    const rm = vi.spyOn(fs.promises, "rm").mockResolvedValue();
+    await expect(channel<OnePath>("fs:remove")({}, p)).rejects.toThrow(Error);
+    expect(rm).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== "win32")("fs:remove refuses a network share's root", async () => {
+    const rm = vi.spyOn(fs.promises, "rm").mockResolvedValue();
+    await expect(channel<OnePath>("fs:remove")({}, "\\\\server\\share\\")).rejects.toThrow(Error);
+    expect(rm).not.toHaveBeenCalled();
+  });
+
+  it("fs:remove still removes a folder", async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "a.json"), "{}");
+    await channel<OnePath>("fs:remove")({}, dir);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it.each(["rel/x", root])("fs:trash refuses %j", async (p) => {
+    const trashItem = vi.fn().mockResolvedValue(undefined);
+    await expect(channel<OnePath>("fs:trash", "", { shell: { trashItem } })({}, p)).rejects.toThrow(Error);
+    expect(trashItem).not.toHaveBeenCalled();
+  });
+
+  it("fs:move refuses a relative source or a root destination", async () => {
+    const rename = vi.spyOn(fs.promises, "rename").mockResolvedValue();
+    const mkdir = vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
+    const dir = path.join(os.tmpdir(), "safelight-fs-move");
+    const move = channel<Move>("fs:move");
+    await expect(move({}, "rel/a.jpg", path.join(dir, "a.jpg"))).rejects.toThrow(Error);
+    await expect(move({}, path.join(dir, "a.jpg"), root)).rejects.toThrow(Error);
+    await expect(move({}, root, path.join(dir, "a.jpg"))).rejects.toThrow(Error);
+    expect(rename).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "rel/file.json"])("fs:write refuses %j", async (p) => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const handler = channel<Write>("fs:write", "", { fileWriter: { write } });
+    await expect(handler({}, p, new Uint8Array([1]))).rejects.toThrow(Error);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("fs:mkdir refuses a relative path", async () => {
+    const mkdir = vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
+    await expect(channel<OnePath>("fs:mkdir")({}, "rel")).rejects.toThrow(Error);
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+});
+
+describe("fs:setSpilloverPointer", () => {
+  type Set = (event: unknown, rootPath: string, spilloverDir: string) => Promise<void>;
+  type Get = (event: unknown, rootPath: string) => Promise<string | null>;
+
+  it("hands the pointer to the shared atomic writer", async () => {
+    const userData = tempDir();
+    const write = vi.fn().mockResolvedValue(undefined);
+    await channel<Set>("fs:setSpilloverPointer", userData, { fileWriter: { write } })({}, "D:/card", "D:/x/.safelight");
+
+    const tag = crypto.createHash("sha1").update(path.resolve("D:/card")).digest("hex");
+    expect(write).toHaveBeenCalledTimes(1);
+    const [file, bytes] = write.mock.calls[0] as [string, Uint8Array];
+    expect(file).toBe(path.join(userData, "external-catalogs", ".pointers", `${tag}.json`));
+    expect(JSON.parse(Buffer.from(bytes).toString("utf8"))).toEqual({
+      source: path.resolve("D:/card"),
+      spillover: "D:/x/.safelight",
+    });
+  });
+
+  it("fails when the write fails", async () => {
+    const write = vi.fn().mockRejectedValue(new Error("disk full"));
+    const set = channel<Set>("fs:setSpilloverPointer", tempDir(), { fileWriter: { write } });
+    await expect(set({}, "D:/card", "D:/x/.safelight")).rejects.toThrow("disk full");
+  });
+
+  it("is found again by fs:getSpilloverPointer", async () => {
+    const userData = tempDir();
+    const fileWriter = createAtomicWriter({
+      fsp: fs.promises,
+      randomId: () => crypto.randomBytes(8).toString("hex"),
+      retry: (op: () => Promise<void>) => op(),
+    });
+    await channel<Set>("fs:setSpilloverPointer", userData, { fileWriter })({}, "D:/card", "D:/x/.safelight");
+    await expect(channel<Get>("fs:getSpilloverPointer", userData)({}, "D:/card")).resolves.toBe("D:/x/.safelight");
   });
 });

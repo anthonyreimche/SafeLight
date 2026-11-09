@@ -12,6 +12,7 @@ import { installKeyDiag } from "./dev/key-diag";
 import { installErrorLog, syncNativeCrashes } from "./diagnostics/error-log";
 import { windowRole } from "./diagnostics/environment";
 import { watchOsOpen } from "./project/project-store";
+import { installNativeDragGuard } from "./ui/native-drag-guard";
 import "./index.css";
 
 // Record warnings, errors and crashes for Report an issue from the start, so
@@ -27,6 +28,9 @@ installKeyDiag();
 // before any extension can load — see src/native/privileged.ts. Must precede
 // initExtensionHost(), which activates built-ins and external plugins.
 claimPrivileged();
+
+// Stray image, link and text-selection drags would cancel canvas pointer tools.
+installNativeDragGuard(document);
 
 // A GPU or renderer crash reloads the window; the main process remembers it.
 void syncNativeCrashes();

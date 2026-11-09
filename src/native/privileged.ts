@@ -18,11 +18,13 @@
 
 import type {
   NativeCaptureBridge,
+  NativeDevtoolsBridge,
   NativeFsBridge,
   NativeGpuBridge,
   NativeOsOpenBridge,
   NativePluginsBridge,
   NativeUpdatesBridge,
+  NativeWindowBridge,
 } from "@/extensions/types";
 
 let claimed = false;
@@ -32,6 +34,8 @@ let pluginsBridge: NativePluginsBridge | null = null;
 let captureBridge: NativeCaptureBridge | null = null;
 let gpuBridge: NativeGpuBridge | null = null;
 let osOpenBridge: NativeOsOpenBridge | null = null;
+let windowBridge: NativeWindowBridge | null = null;
+let devtoolsBridge: NativeDevtoolsBridge | null = null;
 
 /** Claim the privileged bridge into module scope. Idempotent. Must run before
  *  the first extension loads — call it at the very top of renderer boot. */
@@ -45,6 +49,8 @@ export function claimPrivileged(): void {
   captureBridge = priv?.capture ?? null;
   gpuBridge = priv?.gpu ?? null;
   osOpenBridge = priv?.osOpen ?? null;
+  windowBridge = priv?.window ?? null;
+  devtoolsBridge = priv?.devtools ?? null;
 }
 
 /** The privileged fs bridge, or null in the plain-browser build. Lazily claims
@@ -82,4 +88,16 @@ export function privilegedGpu(): NativeGpuBridge | null {
 export function privilegedOsOpen(): NativeOsOpenBridge | null {
   if (!claimed) claimPrivileged();
   return osOpenBridge;
+}
+
+/** The window material for a theme, or null outside Electron. */
+export function privilegedWindow(): NativeWindowBridge | null {
+  if (!claimed) claimPrivileged();
+  return windowBridge;
+}
+
+/** Recording the Developer Tools dev folder, or null outside Electron. */
+export function privilegedDevtools(): NativeDevtoolsBridge | null {
+  if (!claimed) claimPrivileged();
+  return devtoolsBridge;
 }

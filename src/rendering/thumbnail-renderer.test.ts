@@ -34,7 +34,11 @@ const h = vi.hoisted(() => {
     static renderError: Error | null = null;
     /** What a failed prepareProgram throws: the real renderer rethrows one remembered object. */
     static buildError = new Error("no program");
+    /** What prepareProgramAsync resolves with: the driver's build finishing. None is done at once. */
+    static driverBuild: Promise<void> | null = null;
 
+    /** Each prepareProgramAsync call's version. */
+    builtAsync: number[] = [];
     prepared: number[] = [];
     stockPrepared: number[] = [];
     disposed = false;
@@ -43,6 +47,11 @@ const h = vi.hoisted(() => {
 
     constructor() {
       FakeRenderer.instances.push(this);
+    }
+
+    prepareProgramAsync(version: number): Promise<void> {
+      this.builtAsync.push(version);
+      return FakeRenderer.driverBuild ?? Promise.resolve();
     }
 
     prepareProgram(version: number) {
@@ -176,6 +185,7 @@ beforeEach(async () => {
   h.FakeRenderer.stockFails = () => false;
   h.FakeRenderer.renderError = null;
   h.FakeRenderer.buildError = new Error("no program");
+  h.FakeRenderer.driverBuild = null;
   h.loads.length = 0;
   h.gates.length = 0;
   h.canvases.length = 0;
@@ -237,6 +247,24 @@ describe("renderPhotoHistogram's stage bag", () => {
     await renderPhotoHistogram(photo(), NR, { "own.stage.x": 1 });
     await renderPhotoHistogram(photo(), { ...NR, luminanceNR: 0 }, {});
     expect(h.FakeRenderer.instances[0].contributed.at(-1)).toEqual({});
+  });
+});
+
+// Built at the first frame, on the window's thread, the program held the Library
+// still for up to a second on the first selection and after every extension change.
+describe("renderPhotoHistogram's develop program", () => {
+  it("is built by the driver before any build on this thread, decode or draw", async () => {
+    const driver = h.gate();
+    h.FakeRenderer.driverBuild = driver.promise;
+    const histogram = renderPhotoHistogram(photo(), normalizeParams({ processVersion: LEGACY_PROCESS_VERSION }));
+    const [renderer] = h.FakeRenderer.instances;
+    expect(renderer.builtAsync).toEqual([LEGACY_PROCESS_VERSION]);
+    expect(renderer.prepared).toEqual([]);
+    expect(h.loads).toHaveLength(0);
+
+    driver.open();
+    expect(await histogram).toBe(h.histogram);
+    expect(new Set(renderer.prepared)).toEqual(new Set([LEGACY_PROCESS_VERSION]));
   });
 });
 

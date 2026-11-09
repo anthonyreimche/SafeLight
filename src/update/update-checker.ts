@@ -98,6 +98,18 @@ function notAListDetail(data: unknown): string {
     : "GitHub didn't send a list of releases";
 }
 
+function isRelease(v: unknown): v is GHRelease {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.tag_name === "string" &&
+    typeof r.html_url === "string" &&
+    typeof r.draft === "boolean" &&
+    typeof r.prerelease === "boolean" &&
+    (r.body === null || typeof r.body === "string")
+  );
+}
+
 /** Fetch recent releases from GitHub.
  *  Routes through the Electron main-process IPC bridge when available so the
  *  renderer CSP (connect-src 'self') does not block the request. */
@@ -116,7 +128,11 @@ async function fetchReleases(): Promise<FetchOutcome> {
       data = await resp.json();
     }
     if (!Array.isArray(data)) return { ok: false, reason: "parse", detail: notAListDetail(data) };
-    return { ok: true, releases: data as GHRelease[] };
+    const releases = data.filter(isRelease);
+    if (data.length > 0 && releases.length === 0) {
+      return { ok: false, reason: "parse", detail: "GitHub's release list couldn't be read" };
+    }
+    return { ok: true, releases };
   } catch (e) {
     return { ok: false, reason: "network", detail: e instanceof Error ? e.message : String(e) };
   }

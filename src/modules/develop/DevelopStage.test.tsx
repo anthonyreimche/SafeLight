@@ -10,12 +10,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useDevelopStore } from "@/state/develop-store";
+import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage, photo } from "@/catalog/stored-edit.fixtures";
 import { DevelopStage } from "./DevelopStage";
 
 vi.mock("./DevelopCanvas", () => ({ DevelopCanvas: () => null }));
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
 
 const INITIAL = useDevelopStore.getState();
 
@@ -33,9 +35,13 @@ describe("DevelopStage", () => {
     expect(surround()?.contains(screen.getByText("No photo selected"))).toBe(true);
   });
 
-  it("follows the theme's surround, and the ISO middle grey under colour assessment", () => {
+  it("follows the theme's surround at full opacity, and the ISO middle grey under colour assessment", () => {
     render(<DevelopStage zoom={null} onZoomChange={() => {}} />);
-    expect(surround()?.style.background).toBe("var(--color-canvas-surround, var(--color-surface-0))");
+    // A translucent theme surface (a window-material theme) must not let the
+    // desktop through behind the image.
+    expect(surround()?.style.background).toBe(
+      "rgb(from var(--color-canvas-surround, var(--color-surface-0)) r g b / 1)",
+    );
 
     act(() => useDevelopStore.setState({ colorAssessment: true }));
     expect(surround()?.style.background).toBe("rgb(102, 102, 102)");
@@ -66,5 +72,107 @@ describe("DevelopStage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await vi.waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(useDevelopStore.getState().history).toHaveLength(1);
+  });
+
+  describe("returning to the open photo", () => {
+    function countingStorage() {
+      installMemoryStorage();
+      const base = catalogStorage();
+      const reads: string[] = [];
+      setCatalogStorage({
+        ...base,
+        getEditState: async (id) => {
+          reads.push(id);
+          return base.getEditState(id);
+        },
+      });
+      return reads;
+    }
+    const stage = <DevelopStage zoom={null} onZoomChange={() => {}} />;
+
+    it("doesn't read the edit again, and keeps the params it holds", async () => {
+      const reads = countingStorage();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      const first = render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+      const held = useDevelopStore.getState().params;
+      first.unmount();
+
+      render(stage);
+      await act(async () => {});
+
+      expect(reads).toEqual(["A"]);
+      expect(useDevelopStore.getState().params).toBe(held);
+    });
+
+    it("keeps a change not yet committed", async () => {
+      countingStorage();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      const first = render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+      act(() => useDevelopStore.getState().setParam("exposure", 1.5));
+      first.unmount();
+
+      render(stage);
+      await act(async () => {});
+
+      expect(useDevelopStore.getState().params.exposure).toBe(1.5);
+    });
+
+    it("reads again when the photo's as-shot temperature has changed", async () => {
+      const reads = countingStorage();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      const first = render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+      first.unmount();
+
+      const learned = photo("A");
+      learned.exif = { colorTemperature: 5200 };
+      useCatalogStore.setState({ photos: [learned] });
+      render(stage);
+
+      await vi.waitFor(() => expect(useDevelopStore.getState().asShotTemperature).toBe(5200));
+      expect(reads).toEqual(["A", "A"]);
+    });
+
+    it("reads again after a failed read", async () => {
+      const reads = countingStorage();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      const first = render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+      first.unmount();
+      act(() => useDevelopStore.setState({ editError: "locked" }));
+
+      render(stage);
+
+      await vi.waitFor(() => expect(reads).toEqual(["A", "A"]));
+    });
+
+    it("draws the thumbnail still waiting for quiet as Develop is left", async () => {
+      countingStorage();
+      vi.mocked(regenerateEditedThumbnail).mockClear();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      const open = render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+      act(() => useDevelopStore.getState().setParam("temperature", 5000));
+      await act(() => useDevelopStore.getState().commitEdit("Edit"));
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+      open.unmount();
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("still reads a different photo", async () => {
+      const reads = countingStorage();
+      useCatalogStore.setState({ photos: [photo("A"), photo("B")], activePhotoId: "A" });
+      render(stage);
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("A"));
+
+      act(() => useCatalogStore.setState({ activePhotoId: "B" }));
+
+      await vi.waitFor(() => expect(useDevelopStore.getState().photoId).toBe("B"));
+      expect(reads).toEqual(["A", "B"]);
+    });
   });
 });

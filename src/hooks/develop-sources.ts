@@ -153,6 +153,10 @@ export async function prefetchNeighbors(
     if (cancelled()) return;
     const nk = photoSourceKey(np);
     if (await bridge.hasSource("main", nk)) continue;
+    // An upload costs the render worker 0.1-0.4 s: not while an edit is drawing frames.
+    // Waited for before the decode, which holds up to 16 B/px until it is uploaded, and
+    // which is wasted if the neighbour is opened meanwhile.
+    await bridge.whenRenderQuiet(undefined, signal);
     if (cancelled()) return;
     // The develop renderer keeps the native sample (render-worker.ts), and a
     // neighbour bound later restores what was uploaded, so ask for it now.

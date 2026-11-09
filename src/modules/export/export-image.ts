@@ -37,6 +37,7 @@ import { failsEveryWrite, fsErrorText, mayFailEveryWrite } from "@/project/fs-er
 import { nativeFs, nativePathOf, readFileSlice } from "@/project/native-fs";
 import { listNames } from "@/project/fs";
 import { useCatalogStore } from "@/state/catalog-store";
+import { noteStageBuild, withoutCrashed } from "@/rendering/gpu-crash-guard";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
@@ -720,10 +721,13 @@ class DecodeAhead {
 
   private readonly photos: CatalogPhoto[];
   private readonly settings: ExportSettings;
+  private readonly cancel: AbortSignal | undefined;
 
-  constructor(photos: CatalogPhoto[], settings: ExportSettings) {
+  /** `cancel` is the batch's own signal: a batch cancelled already begins nothing. */
+  constructor(photos: CatalogPhoto[], settings: ExportSettings, cancel?: AbortSignal) {
     this.photos = photos;
     this.settings = settings;
+    this.cancel = cancel;
   }
 
   /** Photo `index`'s preparation, which the caller then owns: it throws what
@@ -745,6 +749,11 @@ class DecodeAhead {
     this.abort.abort();
     for (const prepared of this.pending.values()) prepared.then(({ image }) => discardImage(image), () => undefined);
     this.pending.clear();
+  }
+
+  /** Starts preparing photo `index` before its turn, which take() then hands over. */
+  begin(index: number): void {
+    if (index < this.photos.length && !this.cancel?.aborted) this.start(index);
   }
 
   private start(index: number): Promise<PreparedPhoto> {
@@ -930,15 +939,17 @@ async function renderOne(
  *    matching ICC; set once, persists across the batch's single context.
  *  - First photo's program: a renderer builds its develop program on the first
  *    frame, so it is built here, with that photo's process version and display
- *    transform, ahead of any decode. A stock program the driver can't build fails
- *    the whole batch up front, like a context that can't be created, instead of
- *    decoding every photo only to fail each at its frame. Stages or a transform
- *    that can't be built are logged, and the photos that use them fail one by one,
- *    as they always did. A photo whose edit can't be read is left to fail on its
- *    own when it is rendered. */
+ *    transform, ahead of any frame. The driver builds it while `ahead` starts
+ *    that photo's decode, rather than on this thread first. A stock program the
+ *    driver can't build fails the whole batch up front, like a context that
+ *    can't be created, instead of decoding every photo only to fail each at its
+ *    frame. Stages or a transform that can't be built are logged, and the photos
+ *    that use them fail one by one, as they always did. A photo whose edit can't
+ *    be read is left to fail on its own when it is rendered. */
 async function makeBatchRenderer(
   settings: ExportSettings,
   first: CatalogPhoto | undefined,
+  ahead: DecodeAhead,
   onStageQuarantined?: (stage: QuarantinedStage) => void,
 ): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | { unavailable: string }> {
   const canvas = document.createElement("canvas");
@@ -946,10 +957,11 @@ async function makeBatchRenderer(
   try {
     renderer = new WebGLRenderer(canvas, {
       highBitDepth: getSettings().highBitDepth,
-      stages: Object.values(useRegistry.getState().processingStages),
+      stages: withoutCrashed(Object.values(useRegistry.getState().processingStages)),
       pipeline: resolveDefaultPipeline(),
       derive: windowDerived,
       onStageQuarantined,
+      onStageBuild: noteStageBuild,
     });
     const saved = first
       ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
@@ -957,6 +969,9 @@ async function makeBatchRenderer(
     if (saved) {
       const { displayTransform, processVersion } = saved.params;
       renderer.setActivePipeline(resolvePipelineFor(displayTransform));
+      const built = renderer.prepareProgramAsync(processVersion);
+      ahead.begin(0);
+      await built;
       try {
         renderer.prepareProgram(processVersion);
       } catch (err) {
@@ -1041,13 +1056,15 @@ export async function renderPhotosToBlobs(
   onProgress?: (p: ExportProgress) => void,
   options?: RenderPhotosOptions,
 ): Promise<RenderedPhoto[]> {
-  const made = await makeBatchRenderer(settings, photos[0]);
-  if ("unavailable" in made)
+  const ahead = new DecodeAhead(photos, settings, options?.signal);
+  const made = await makeBatchRenderer(settings, photos[0], ahead);
+  if ("unavailable" in made) {
+    ahead.release();
     return photos.map((photo) => ({ photo, blob: null, width: 0, height: 0 }));
+  }
   const { renderer, canvas } = made;
   const procSettings = settings.processorSettings ?? {};
   const out: RenderedPhoto[] = [];
-  const ahead = new DecodeAhead(photos, settings);
   try {
     for (let i = 0; i < photos.length; i++) {
       if (options?.signal?.aborted) break;
@@ -1089,8 +1106,10 @@ export async function exportPhotos(
   // The extension stages this batch's renderer left out; one left out stays out
   // for the rest of the batch.
   const quarantined = new Set<string>();
-  const made = await makeBatchRenderer(settings, photos[0], (stage) => quarantined.add(stage.stageId));
-  if ("unavailable" in made)
+  const ahead = new DecodeAhead(photos, settings, options?.signal);
+  const made = await makeBatchRenderer(settings, photos[0], ahead, (stage) => quarantined.add(stage.stageId));
+  if ("unavailable" in made) {
+    ahead.release();
     return {
       exported: 0,
       failed: photos.map((p) => p.filename),
@@ -1098,6 +1117,7 @@ export async function exportPhotos(
       degradedTo8Bit: 0,
       reducedPrecision: 0,
     };
+  }
   const { renderer, canvas } = made;
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
@@ -1130,7 +1150,6 @@ export async function exportPhotos(
     ? useRegistry.getState().filenameTemplates[settings.filenameTemplateId]
     : undefined;
 
-  const ahead = new DecodeAhead(photos, settings);
   try {
     // Names already in the folder count as taken, so an export written beside
     // its originals gets a " (2)" name. A folder that can't be listed is still

@@ -671,7 +671,7 @@ describe("a panel that throws while rendering", () => {
     });
     const { close, view } = boot();
     expect(view.getByText('Panel "ext.bad" crashed: boom').className).toBe(
-      "p-3 text-[11px] text-red-400",
+      "p-3 text-[11px] text-danger",
     );
     expect(view.getByText("still here")).toBeTruthy();
     close();

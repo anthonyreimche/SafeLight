@@ -32,20 +32,26 @@ import {
   SourceCache,
   capDrawableToEdge,
   capFloatToEdge,
+  capHalfToEdge,
   createSourceTexture,
   downsampleDrawable,
   uploadFloatMips,
+  type SourceFill,
+  type UploadedSource,
 } from "./source-cache";
 import { PatchedSource } from "./patched-source";
 import { PrepassRunner, type PrepassFrame } from "./prepass-runner";
 import {
   ATTR_POS,
   ATTR_UV,
+  MAX_PROGRAMS,
   ProgramCache,
   createProgram,
   isolateFailingStages,
   type FailingStage,
   type PipelineProgram,
+  type ProgramBuilds,
+  type StageBuildOutcome,
 } from "./program-cache";
 import {
   PROBE_PX,
@@ -56,10 +62,11 @@ import {
   probePatch,
   topDown,
 } from "./readback";
-import { maskInstances, type MaskInstances } from "./mask-stage-instances";
+import { isMaskInstance, maskInstances, type MaskInstances } from "./mask-stage-instances";
 import {
   RESULT_ARRAY_UNIFORM,
   buildStageInjection,
+  dormantRule,
   stageSignature,
   type BuiltStageInjection,
   type ContributedBinding,
@@ -83,7 +90,8 @@ import type {
   StageSpace,
   StageTextureData,
 } from "@/extensions/types";
-import { coverageItemsFromBag, paintLayersFromValue } from "./stage-coverage";
+import { coverageItemsFromBag, isDormant, paintLayersFromValue } from "./stage-coverage";
+import { brushTipsGeneration } from "./brush-tips";
 import { PaintBaker, type PaintBakeResult } from "./paint-bake";
 import {
   OUT_SPACE_CODE,
@@ -105,7 +113,6 @@ import {
   type CoverageItem,
 } from "./mask-coverage";
 import { sourcePixelsFromLinear } from "../source-pixels";
-import { halfToFloat32 } from "@/raw/half-float";
 import {
   cutSourceSample,
   unpackSourceSample,
@@ -114,8 +121,36 @@ import {
   type StoredSample,
 } from "@/rendering/source-sample";
 
+/** A live RAW decode, or a camera preview decoded as one (isFallbackPreview). */
+interface LinearImage {
+  kind: "float";
+  data: Float32Array;
+  width: number;
+  height: number;
+  isFallbackPreview?: boolean;
+  baselineExposure?: number;
+  baselineShadows?: number;
+}
+
+type SourceImage = ImageBitmap | LinearImage | Float16Source;
+
 type StageSet = ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
 const NO_STAGES: StageSet = [];
+
+/** A program build with extension stages in it, by "{id}:{signature}". */
+export type StageBuildEvent =
+  | { phase: "start"; stages: string[] }
+  | { phase: "end"; stages: string[]; outcome: StageBuildOutcome };
+
+// A stage injection and what it was built from: the ids of the registered
+// stages in it (a mask copy's stage's id for the copy), and the stages left
+// out of it while dormant.
+interface ProgramStages {
+  built: BuiltStageInjection;
+  ids: ReadonlySet<string>;
+  dormant: readonly string[];
+}
+
 
 /** What the stages derive from a frame of `params` (stage-derive.ts). */
 export type StageDerive = (
@@ -239,6 +274,16 @@ export interface WebGLRendererOpts {
   /** Told of each extension stage the renderer quarantines: once per stage,
    *  signature and process version. */
   onStageQuarantined?: (stage: QuarantinedStage) => void;
+  /** Told as each program with extension stages in it starts and stops building,
+   *  for the window to pin a build that takes the graphics driver down on its
+   *  stages (gpu-crash-guard.ts). */
+  onStageBuild?: (event: StageBuildEvent) => void;
+  /** Leave a stage out of version 2 and later programs while its dormantWhen
+   *  holds and no frame has needed it yet; once one does, it stays in for the
+   *  renderer's life (dormantStages). For the live view's renderer: one that
+   *  draws many photos once each (thumbnails, exports) would build a program
+   *  for each set of stages its photos need. Defaults to off. */
+  skipDormantStages?: boolean;
 }
 
 export class WebGLRenderer {
@@ -260,10 +305,7 @@ export class WebGLRenderer {
   // Downscaled 8-bit sRGB copy of the source, which the owner of a renderer that
   // keeps it forwards to the window for the searches extensions run there
   // (source-pixels.ts).
-  private healSig = "";
-  private fillSrc: Uint8ClampedArray | null = null;
-  private fillW = 0;
-  private fillH = 0;
+  private fill: SourceFill | null = null;
   // What this context renders and holds, read once at construction.
   private readonly caps: Caps;
   // The histogram, downscale, float-capture and export read-backs.
@@ -437,8 +479,16 @@ export class WebGLRenderer {
   // between them reuse each.
   private injectionMemo: {
     source: readonly ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
-    built: Map<string, BuiltStageInjection>;
+    built: Map<string, ProgramStages>;
   } | null = null;
+  // skipDormantStages: the ids of the stages a frame has needed, which no later
+  // frame leaves out, and those the program in use was built without.
+  private readonly skipDormant: boolean;
+  private readonly awake = new Set<string>();
+  // Stages a prewarm hint named together, by id: one waking wakes the rest, so
+  // the program it needs is the one the hint built.
+  private readonly wakeGroups = new Map<string, ReadonlySet<string>>();
+  private dormantIds: readonly string[] = [];
   // Extension stages a process version's develop program couldn't be built with,
   // by id, as "signature|variant": left out of that version's programs for the
   // renderer's life. Registered again with anything changed, a stage signs anew
@@ -453,7 +503,10 @@ export class WebGLRenderer {
   // True while this.imageTexture is owned by the renderer (legacy setImage path)
   // rather than the cache. A cache-owned texture must not be deleted on the next
   // load or on dispose — the cache owns its lifetime.
-  private imageTextureOwned = true;
+  private imageTextureOwned = false;
+  // An empty texture imageTexture points at while there is no source, so a
+  // draw that binds it binds a live texture. Made once, owned by neither.
+  private readonly noSource: WebGLTexture;
   // Viewport window into the displayed image (null = whole frame). When set, the
   // output canvas is sized to roiOut and only the window is rendered at that
   // resolution (crisp zoom). See setViewport.
@@ -478,6 +531,7 @@ export class WebGLRenderer {
     this.newestVersion = opts?.processVersionCap ?? CURRENT_PROCESS_VERSION;
     this.maskCopyPrepassesPerFrame = opts?.maskCopyPrepassesPerFrame ?? Infinity;
     this.onStageQuarantined = opts?.onStageQuarantined;
+    this.skipDormant = opts?.skipDormantStages ?? false;
 
     const caps = readCaps(gl, { norm16: opts?.highBitDepth ?? true });
     this.caps = caps;
@@ -487,16 +541,19 @@ export class WebGLRenderer {
     });
     this.samplerBudget = caps.textureUnits - DEVELOP_SAMPLERS;
     this.sources = new SourceCache(gl);
-    this.programs = new ProgramCache(gl);
+    const builds = opts?.onStageBuild ? this.stageBuilds(opts.onStageBuild) : undefined;
+    this.programs = new ProgramCache(gl, MAX_PROGRAMS, builds);
     this.readback = new Readback(gl, caps.colorBufferFloat, (vs, fs) => createProgram(gl, vs, fs, "a readback program"));
     this.prepass = new PrepassRunner(gl, caps.colorBufferFloat, {
       drawSplit: (index, srcTex, applyRetouch, target) => this.drawSplit(index, srcTex, applyRetouch, target),
       note: (path, note) => this.noteReducedPrecision(path, note),
+      builds,
     });
 
     this.setupQuad();
 
-    this.imageTexture = createSourceTexture(gl);
+    this.noSource = createSourceTexture(gl);
+    this.imageTexture = this.noSource;
     this.maskTexture = created(gl.createTexture());
     this.initCoverageTexture(this.maskTexture);
   }
@@ -543,6 +600,12 @@ export class WebGLRenderer {
    *  another frame of the same params finishes it. */
   get prepassPending(): boolean {
     return this.prepass.copiesPutOff;
+  }
+
+  /** The stages, each mask copy after its stage, the program in use was built
+   *  without because they were dormant (skipDormantStages). */
+  get dormantStages(): readonly string[] {
+    return this.dormantIds;
   }
 
   // 1x1 transparent default so a coverage sampler is always valid even with no
@@ -605,6 +668,7 @@ export class WebGLRenderer {
       this.imageWidth,
       this.imageHeight,
       this.stageTextureBindings,
+      brushTipsGeneration(),
       ...brushes.flatMap((b) => [b.id, b.dabs]),
       ...keys.map((k) => this.contributedParams[k]),
     ];
@@ -675,7 +739,8 @@ export class WebGLRenderer {
     const held = entry;
     // derive hands over a new list each time; each stroke's dabs are the edit's own.
     const items = atlasItems(value);
-    held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, ...items.flatMap((i) => [i.id, i.dabs])], () => {
+    const inputs = [this.imageWidth, this.imageHeight, brushTipsGeneration(), ...items.flatMap((i) => [i.id, i.dabs])];
+    held.inputs.bakeIfChanged(inputs, () => {
       const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
       const sig = coverageSignature(items, aspect);
       if (sig === held.sig) return;
@@ -697,7 +762,7 @@ export class WebGLRenderer {
       this.paints.set(qk, entry);
     }
     const held = entry;
-    held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, value], () => {
+    held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, brushTipsGeneration(), value], () => {
       const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
       const baked = held.baker.bake(paintLayersFromValue(value), aspect);
       if (baked !== null && baked === held.baked) return;
@@ -749,10 +814,7 @@ export class WebGLRenderer {
   }
 
   setImage(
-    image:
-      | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
-      | Float16Source,
+    image: SourceImage,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     // Opt-in (thumb renderer only): cap a cached float16 source to maxEdge. It
@@ -761,122 +823,185 @@ export class WebGLRenderer {
     // thumbnails that wastes GPU memory.
     capFloat16 = false,
   ) {
-    const gl = this.gl;
-    this.maxEdge = maxEdge;
+    // A texture of the renderer's own is freed before the upload, so it and
+    // the new one never sit on the GPU together.
+    this.releaseSource();
+    this.adoptSource(this.buildSource(image, maxEdge, isFallbackPreview, capFloat16));
+  }
 
-    // The single imageTexture is reused across opens. The float path writes N
-    // RGBA16F mip levels by hand; a later 8-bit load only rewrites level 0,
-    // so the leftover higher levels (wrong format/size) make the texture
-    // mipmap-incomplete -> generateMipmap throws 0x0502 and the LINEAR_MIPMAP_LINEAR
-    // sampler returns black on re-open. Recreate so every load starts level-clean.
-    // Only free the previous texture if the renderer owns it. A cache-owned
-    // texture (left bound after bindSource) belongs to the cache, which manages
-    // its lifetime via eviction; freeing it here would corrupt a cached entry.
-    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
-    this.imageTexture = createSourceTexture(gl);
-    this.imageTextureOwned = true;
-    this.sources.unbind();
-    this.sourceEpoch++;
-    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+  // Uploads `image` into a texture of its own and returns it with the state it
+  // is drawn with. Nothing drawn changes: no source epoch, canvas size or
+  // texture binding, so a neighbour decoded ahead leaves the open photo and its
+  // prepass results as they were.
+  private buildSource(
+    image: SourceImage,
+    maxEdge: number,
+    isFallbackPreview: boolean,
+    capFloat16: boolean,
+  ): UploadedSource {
+    const gl = this.gl;
+    const bound: WebGLTexture | null = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const tex = createSourceTexture(gl);
     // An error left by earlier work isn't this upload's.
     drainErrors(gl);
-    if ("kind" in image) {
-      // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
-      // ~10-bit precision AND real HDR headroom. The previous code quantized to 8-bit
-      // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
-      // (×32) stretched ~50 code values across the bright sky into visible bands, and
-      // because R/G/B quantize independently their ratios stepped → rainbow posterizing.
-      // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F without
-      // float colour buffers, so the mip chain for the local-contrast taps is built
-      // by hand below.
-      //
-      // A cached develop preview (float16) holds the same scene-linear values as
-      // half floats, so it rides this path too and renders like the fresh decode.
-      const fromCache = image.kind === "float16";
-      const src0 = fromCache ? halfToFloat32(image.data) : image.data;
-      // Bound the working texture to the develop cap. The live RAW decode is
-      // full sensor resolution; uploading it whole (plus the hand-built mip
-      // chain and heal pass) is what exhausted memory on low-RAM machines. The
-      // cached preview is already bounded by the cache's edge preference, so
-      // only the GL texture limit applies unless capFloat16 asks for maxEdge.
-      // Either way the texture limit bounds it: a VM driver's can sit below
-      // the develop cap.
-      const cap = fromCache && !capFloat16 ? this.maxTextureEdge : Math.min(maxEdge, this.maxTextureEdge);
-      const fimg = capFloatToEdge(src0, image.width, image.height, cap);
-      this.imageWidth = fimg.width;
-      this.imageHeight = fimg.height;
-      this.sourceFullWidth = image.kind === "float16" ? image.fullWidth ?? image.width : image.width;
-      this.sourceFullHeight = image.kind === "float16" ? image.fullHeight ?? image.height : image.height;
-      // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
-      this.linear = true;
-      this.isFallbackPreview = fromCache
-        ? false
-        : (image.isFallbackPreview ?? isFallbackPreview);
+    try {
+      const source = "kind" in image
+        ? this.uploadLinear(image, maxEdge, isFallbackPreview, capFloat16)
+        : this.uploadBitmap(image, maxEdge, isFallbackPreview);
+      return { tex, ...source };
+    } catch (err) {
+      gl.deleteTexture(tex);
+      throw err;
+    } finally {
+      gl.bindTexture(gl.TEXTURE_2D, bound);
+    }
+  }
+
+  // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
+  // ~10-bit precision AND real HDR headroom. The previous code quantized to 8-bit
+  // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
+  // (×32) stretched ~50 code values across the bright sky into visible bands, and
+  // because R/G/B quantize independently their ratios stepped → rainbow posterizing.
+  // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F without
+  // float colour buffers, so the mip chain for the local-contrast taps is built
+  // by hand.
+  //
+  // A cached develop preview (float16) holds the same scene-linear values as
+  // half floats, so it rides this path too and renders like the fresh decode.
+  // Its halves are uploaded and searched as they are unless the cap shrinks it.
+  private uploadLinear(
+    image: LinearImage | Float16Source,
+    maxEdge: number,
+    isFallbackPreview: boolean,
+    capFloat16: boolean,
+  ): Omit<UploadedSource, "tex"> {
+    const gl = this.gl;
+    const fromCache = image.kind === "float16";
+    // Bound the working texture to the develop cap. The live RAW decode is
+    // full sensor resolution; uploading it whole (plus the hand-built mip
+    // chain and heal pass) is what exhausted memory on low-RAM machines. The
+    // cached preview is already bounded by the cache's edge preference, so
+    // only the GL texture limit applies unless capFloat16 asks for maxEdge.
+    // Either way the texture limit bounds it: a VM driver's can sit below
+    // the develop cap.
+    const cap = fromCache && !capFloat16 ? this.maxTextureEdge : Math.min(maxEdge, this.maxTextureEdge);
+    const fimg =
+      image.kind === "float16"
+        ? capHalfToEdge(image.data, image.width, image.height, cap)
+        : capFloatToEdge(image.data, image.width, image.height, cap);
+    const fallback = fromCache ? false : (image.isFallbackPreview ?? isFallbackPreview);
+    uploadFloatMips(gl, fimg.data, fimg.width, fimg.height);
+    this.checkSourceUpload();
+    return {
+      width: fimg.width,
+      height: fimg.height,
+      // Texture holds true linear scene values, so the shader must NOT sRGB-decode.
+      linear: true,
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
-      this.applyBaseCurve = !this.isFallbackPreview;
-      this.baselineGain = 2 ** (image.baselineExposure ?? 0);
-      this.baselineShadows = image.baselineShadows ?? 0;
+      applyBaseCurve: !fallback,
+      baselineGain: 2 ** (image.baselineExposure ?? 0),
+      baselineShadows: image.baselineShadows ?? 0,
+      isFallbackPreview: fallback,
+      fullWidth: image.kind === "float16" ? image.fullWidth ?? image.width : image.width,
+      fullHeight: image.kind === "float16" ? image.fullHeight ?? image.height : image.height,
       // The sample is the sensor's own pixels: cut here from a live decode, or
       // kept in the cache entry beside the preview (3.1.0 and later; an older
       // entry has none). The camera preview is a JPEG and has none either. Only
       // a renderer asked to keep it pays for it.
-      this.sourceSample =
-        !this.keepSourceSample || this.isFallbackPreview
+      sample:
+        !this.keepSourceSample || fallback
           ? null
           : image.kind === "float16"
             ? image.sample ?? null
-            : this.cutSampleOrSkip(src0, image.width, image.height);
-      const f0 = fimg.data;
-      uploadFloatMips(gl, f0, fimg.width, fimg.height);
-      this.checkSourceUpload();
+            : this.cutSampleOrSkip(image.data, image.width, image.height),
       // The search image stays 8-bit sRGB (its own pipeline).
-      this.keepFill(() => sourcePixelsFromLinear(f0, fimg.width, fimg.height, FILL_EDGE));
-    } else {
-      // 8-bit sRGB bitmap path. Cap the upload to the develop edge (and never
-      // above the GL max texture size) so an oversized bitmap can't fail
-      // texImage2D into a black frame — the float path caps the same way.
-      const cap = Math.min(maxEdge, this.maxTextureEdge);
-      const capped = capDrawableToEdge(image, image.width, image.height, cap);
-      this.imageWidth = capped.width;
-      this.imageHeight = capped.height;
-      this.sourceFullWidth = image.width;
-      this.sourceFullHeight = image.height;
-      this.sourceSample = null;
-      this.linear = false;
-      this.isFallbackPreview = isFallbackPreview;
+      fill: this.keepSourcePixels ? sourcePixelsFromLinear(fimg.data, fimg.width, fimg.height, FILL_EDGE) : null,
+      maxEdge,
+    };
+  }
+
+  // 8-bit sRGB bitmap path. Cap the upload to the develop edge (and never
+  // above the GL max texture size) so an oversized bitmap can't fail
+  // texImage2D into a black frame — the float path caps the same way.
+  private uploadBitmap(image: ImageBitmap, maxEdge: number, isFallbackPreview: boolean): Omit<UploadedSource, "tex"> {
+    const gl = this.gl;
+    const cap = Math.min(maxEdge, this.maxTextureEdge);
+    const capped = capDrawableToEdge(image, image.width, image.height, cap);
+    // Orientation is handled by the vertex shader (V flip). Do NOT use
+    // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, capped.source,
+    );
+    const fill = this.keepSourcePixels ? downsampleDrawable(image, image.width, image.height) : null;
+    // Mip chain for the local-contrast blurs (Texture/Clarity/Dehaze); the
+    // float path supplies its own by hand.
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this.checkSourceUpload();
+    return {
+      width: capped.width,
+      height: capped.height,
+      linear: false,
       // Camera-rendered bitmaps already carry a tone curve.
-      this.applyBaseCurve = false;
-      this.baselineGain = 1;
-      this.baselineShadows = 0;
-      // Orientation is handled by the vertex shader (V flip). Do NOT use
-      // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, capped.source,
-      );
-      this.keepFill(() => downsampleDrawable(image, image.width, image.height));
-      // Mip chain for the local-contrast blurs (Texture/Clarity/Dehaze); the
-      // float path supplies its own by hand.
-      gl.generateMipmap(gl.TEXTURE_2D);
-      this.checkSourceUpload();
-    }
-    this.hasImage = true;
-    this.resize();
+      applyBaseCurve: false,
+      baselineGain: 1,
+      baselineShadows: 0,
+      isFallbackPreview,
+      fullWidth: image.width,
+      fullHeight: image.height,
+      sample: null,
+      fill,
+      maxEdge,
+    };
   }
 
   // A refused upload (out of memory, say) leaves an incomplete texture that
-  // samples black, so it fails the source instead: the texture is let go and
-  // nothing is drawn until the next one.
+  // samples black, so it fails the source instead.
   private checkSourceUpload(): void {
     const gl = this.gl;
     const error = gl.getError();
     if (error === gl.NO_ERROR) return;
     drainErrors(gl);
-    gl.deleteTexture(this.imageTexture);
-    this.imageTexture = createSourceTexture(gl);
-    this.hasImage = false;
     const reason = error === gl.OUT_OF_MEMORY ? "out of GPU memory" : `GL error 0x${error.toString(16)}`;
     throw new Error(`Source upload failed: ${reason}`);
+  }
+
+  // Draws nothing until the next source. A texture of the renderer's own is
+  // freed; a cached one stays with the cache.
+  private releaseSource(): void {
+    if (this.imageTextureOwned) this.gl.deleteTexture(this.imageTexture);
+    this.imageTexture = this.noSource;
+    this.imageTextureOwned = false;
+    this.sources.unbind();
+    this.hasImage = false;
+  }
+
+  // Draws `source` from a texture the renderer owns, held under no key.
+  private adoptSource(source: UploadedSource): void {
+    if (this.imageTextureOwned) this.gl.deleteTexture(this.imageTexture);
+    this.imageTexture = source.tex;
+    this.imageTextureOwned = true;
+    this.sources.unbind();
+    this.showSource(source, source.maxEdge);
+  }
+
+  // Draws from now on with `source`'s texture and state, under `maxEdge`.
+  private showSource(source: UploadedSource, maxEdge: number): void {
+    this.sourceEpoch++;
+    this.imageWidth = source.width;
+    this.imageHeight = source.height;
+    this.maxEdge = maxEdge;
+    this.linear = source.linear;
+    this.applyBaseCurve = source.applyBaseCurve;
+    this.baselineGain = source.baselineGain;
+    this.baselineShadows = source.baselineShadows;
+    this.isFallbackPreview = source.isFallbackPreview;
+    this.sourceFullWidth = source.fullWidth;
+    this.sourceFullHeight = source.fullHeight;
+    this.sourceSample = source.sample;
+    this.fill = source.fill;
+    this.hasImage = true;
+    this.resize();
   }
 
   // ── GPU-resident source cache ──────────────────────────────────────────
@@ -891,59 +1016,28 @@ export class WebGLRenderer {
     return this.sources.has(key);
   }
 
-  // Decode-and-upload a source under `key`, then bind it as active. Reuses the
-  // full setImage upload path, then transfers ownership of the resulting texture
-  // (plus its derived render state) into the cache so a later bindSource(key) is
-  // a zero-decode swap.
+  // Decode-and-upload a source under `key`, so a later bindSource(key) is a
+  // zero-decode swap, and draw it.
   uploadSource(
     key: string,
-    image:
-      | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
-      | Float16Source,
+    image: SourceImage,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
-    // When false, the source is uploaded into the cache but the previously-active
-    // source is re-bound afterwards — used to prefetch neighbours without
-    // disturbing the displayed image.
+    // When false, the source only joins the cache and what is drawn stays as
+    // it was: a neighbour decoded ahead.
     bind = true,
     // Cap a cached float16 source to maxEdge (thumb renderer only — see setImage).
     capFloat16 = false,
   ) {
-    const prevKey = this.sources.bound;
+    // A re-upload of the bound key replaces the source drawn, ahead or not.
+    const draws = bind || key === this.sources.bound;
     // Drop any stale entry for this key (e.g. re-decode after an edit changed the
     // pixels) so we don't leak its texture. A bound entry's texture is the active
     // one: adopted, so it's cleaned up normally on the next load.
     if (this.sources.drop(key)) this.imageTextureOwned = true;
-    try {
-      this.setImage(image, maxEdge, isFallbackPreview, capFloat16);
-    } catch (err) {
-      // A prefetch that fails must not take the open photo down with it.
-      if (!bind && prevKey) this.bindSource(prevKey);
-      throw err;
-    }
-    // setImage built into this.imageTexture and marked it owned; hand it to the cache.
-    this.sources.add(key, {
-      tex: this.imageTexture,
-      width: this.imageWidth,
-      height: this.imageHeight,
-      linear: this.linear,
-      applyBaseCurve: this.applyBaseCurve,
-      baselineGain: this.baselineGain,
-      baselineShadows: this.baselineShadows,
-      isFallbackPreview: this.isFallbackPreview,
-      fullWidth: this.sourceFullWidth,
-      fullHeight: this.sourceFullHeight,
-      sample: this.sourceSample,
-      fill: this.fillSrc ? { data: this.fillSrc, w: this.fillW, h: this.fillH } : null,
-      maxEdge: this.maxEdge, // setImage just set this from `maxEdge`
-    });
-    this.imageTextureOwned = false; // the cache owns this texture now
-    // Prefetch: restore the source that was active before so the display is
-    // unchanged. No render() runs here, so nothing repaints in between.
-    if (!bind && prevKey && prevKey !== key && this.sources.has(prevKey)) {
-      this.bindSource(prevKey);
-    }
+    if (draws) this.releaseSource();
+    this.sources.add(key, this.buildSource(image, maxEdge, isFallbackPreview, capFloat16));
+    if (draws) this.bindSource(key);
     this.sources.evict();
   }
 
@@ -954,38 +1048,14 @@ export class WebGLRenderer {
   bindSource(key: string, maxEdge?: number): boolean {
     const e = this.sources.bind(key);
     if (!e) return false;
-    const gl = this.gl;
     // Release an orphan owned texture (a prior legacy setImage) before pointing
     // at the cached one; never free another cache entry's texture.
-    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
+    if (this.imageTextureOwned) this.gl.deleteTexture(this.imageTexture);
     this.imageTexture = e.tex;
     this.imageTextureOwned = false;
-    this.sourceEpoch++;
-    this.imageWidth = e.width;
-    this.imageHeight = e.height;
-    this.maxEdge = maxEdge ?? e.maxEdge;
-    this.linear = e.linear;
-    this.applyBaseCurve = e.applyBaseCurve;
-    this.baselineGain = e.baselineGain;
-    this.baselineShadows = e.baselineShadows;
-    this.isFallbackPreview = e.isFallbackPreview;
-    this.sourceFullWidth = e.fullWidth;
-    this.sourceFullHeight = e.fullHeight;
-    this.sourceSample = e.sample;
-    // Restore the search image (the downscaled 8-bit copy) for this image.
-    if (e.fill) {
-      this.fillSrc = e.fill.data;
-      this.fillW = e.fill.w;
-      this.fillH = e.fill.h;
-    } else {
-      this.fillSrc = null;
-    }
-    this.healSig = "";
-    this.hasImage = true;
-    this.resize();
+    this.showSource(e, maxEdge ?? e.maxEdge);
     return true;
   }
-
   /** Hand a resident cached source the decoded size and the centre sample its
    *  completed RAW cache entry now holds (cache-events.ts). True when applied.
    *  Refused, with nothing changed, on a renderer that keeps no samples, for a
@@ -1230,16 +1300,9 @@ export class WebGLRenderer {
   // every source change; without it a search has no pixels and falls back to a
   // blind offset. Returns a copy so the caller can transfer/clone it.
   sourcePixelsData(): { data: Uint8ClampedArray; w: number; h: number } | null {
-    if (!this.fillSrc || this.fillW === 0 || this.fillH === 0) return null;
-    return { data: new Uint8ClampedArray(this.fillSrc), w: this.fillW, h: this.fillH };
-  }
-
-  private keepFill(downscale: () => { data: Uint8ClampedArray; w: number; h: number }) {
-    const ds = this.keepSourcePixels ? downscale() : null;
-    this.fillSrc = ds?.data ?? null;
-    this.fillW = ds?.w ?? 0;
-    this.fillH = ds?.h ?? 0;
-    this.healSig = "";
+    const fill = this.fill;
+    if (!fill || fill.w === 0 || fill.h === 0) return null;
+    return { data: new Uint8ClampedArray(fill.data), w: fill.w, h: fill.h };
   }
 
   setStages(stages: ProcessingStageContribution[]) {
@@ -1334,13 +1397,25 @@ export class WebGLRenderer {
   /** Build the develop program for a process version under the pipeline and stages
    *  the renderer holds now, so its first frame finds it built. Throws what a frame
    *  would throw for a program that can't be built. It writes only to the renderer's
-   *  caches (programs, remembered failures, stage injections, quarantined stages),
-   *  never to the stage set, pipeline or bindings it draws with. Whoever creates a
-   *  renderer calls this to fail there, ahead of any frame, rather than out of
-   *  render(). */
+   *  caches (programs, remembered failures, stage injections, quarantined stages,
+   *  stages woken from dormancy), never to the stage set, pipeline or bindings it
+   *  draws with. Whoever creates a renderer calls this to fail there, ahead of any
+   *  frame, rather than out of render(). */
   prepareProgram(processVersion: number): void {
     const variant = shaderVariantFor(processVersion, this.newestVersion);
-    this.developEntry(this.pipeline, variant, this.currentStageIds(), undefined);
+    this.developEntry(this.pipeline, variant, undefined);
+  }
+
+  /** The program prepareProgram would build, built without holding the thread
+   *  while the driver works, where it can say when a build is done
+   *  (KHR_parallel_shader_compile). Resolves once it is built or has failed,
+   *  never rejecting: the prepareProgram that follows finds it built, or meets
+   *  the failure and quarantines what is to blame as it always has. Without the
+   *  extension it builds nothing and leaves the build to prepareProgram. */
+  prepareProgramAsync(processVersion: number): Promise<void> {
+    const variant = shaderVariantFor(processVersion, this.newestVersion);
+    const stages = this.stageInjection(variant);
+    return this.programs.whenBuilt(this.pipeline, stages.built, variant, stages.ids);
   }
 
   /** Build the stock develop program for a process version: the built-in transform
@@ -1361,9 +1436,47 @@ export class WebGLRenderer {
     );
   }
 
+  /** The window's hint that the stages `stageIds` names are about to be needed
+   *  (a panel opened or hovered, a control focused): start building, without
+   *  waiting for it, the program the photo held now would need with those of
+   *  them that are dormant awake. The frame that wakes them finishes that build
+   *  rather than starting another; until then the frame is drawn as before.
+   *  Stages hinted together wake together, so a frame needing any of them
+   *  needs the program built here. Nothing for stages that aren't dormant, or on a renderer that doesn't skip
+   *  dormant stages. */
+  prewarmStages(stageIds: readonly string[]): void {
+    if (!this.skipDormant) return;
+    const variant = this.params ? shaderVariantFor(this.params.processVersion, this.newestVersion) : this.variant;
+    const now = this.stageInjection(variant);
+    const hinted = new Set(stageIds.filter((id) => now.dormant.includes(id)));
+    if (hinted.size === 0) return;
+    for (const id of hinted) this.wakeGroups.set(id, hinted);
+    const woken = this.stageInjection(variant, true, hinted);
+    this.programs.submit(this.pipeline, woken.built, variant, woken.ids);
+  }
+
   private derivedFor(params: DevelopParams): Record<string, unknown> {
     if (!this.derive) throw new Error("setParams was handed no derived values, and this renderer has no derive");
     return this.derive(params, this.currentStages());
+  }
+
+  // Builds named by the keys of the extension stages in them; a build of
+  // Safelight's own stages alone says nothing.
+  private stageBuilds(report: (event: StageBuildEvent) => void): ProgramBuilds {
+    const keysOf = (ids: ReadonlySet<string>): string[] =>
+      this.currentStages()
+        .filter((s) => ids.has(s.id) && !isBuiltInStage(s))
+        .map((s) => `${s.id}:${stageSignature(s)}`);
+    return {
+      started: (ids) => {
+        const stages = keysOf(ids);
+        if (stages.length > 0) report({ phase: "start", stages });
+      },
+      ended: (ids, outcome) => {
+        const stages = keysOf(ids);
+        if (stages.length > 0) report({ phase: "end", stages, outcome });
+      },
+    };
   }
 
   private currentStages(): readonly ProcessingStageContribution[] {
@@ -1476,23 +1589,23 @@ export class WebGLRenderer {
   private developEntry(
     p: ResolvedPipeline,
     variant: ShaderVariant,
-    stageIds: ReadonlySet<string>,
     exit: ProgramExit | undefined,
-  ): { entry: PipelineProgram; built: BuiltStageInjection; dropped: string[] } {
+  ): { entry: PipelineProgram; built: BuiltStageInjection; dropped: string[]; dormant: readonly string[] } {
     for (;;) {
-      let built = this.stageInjection(variant);
+      let stages = this.stageInjection(variant);
       let failure: unknown;
       try {
-        return { entry: this.programs.entryFor(p, built, variant, stageIds, exit), built, dropped: [] };
+        const entry = this.programs.entryFor(p, stages.built, variant, stages.ids, exit);
+        return { entry, built: stages.built, dropped: [], dormant: stages.dormant };
       } catch (err) {
         failure = err;
       }
       const copies = this.maskCopies(variant);
       if (copies.sig !== "") {
-        built = this.stageInjection(variant, false);
+        stages = this.stageInjection(variant, false);
         try {
-          const entry = this.programs.entryFor(p, built, variant, stageIds, exit);
-          return { entry, built, dropped: [...copies.slots.keys()] };
+          const entry = this.programs.entryFor(p, stages.built, variant, stages.ids, exit);
+          return { entry, built: stages.built, dropped: [...copies.slots.keys()], dormant: stages.dormant };
         } catch (err) {
           failure = err;
         }
@@ -1502,7 +1615,8 @@ export class WebGLRenderer {
     }
   }
 
-  private stageInjection(variant: ShaderVariant, withCopies = true): BuiltStageInjection {
+  // `hinted`: stages taken as awake without waking them (prewarmStages).
+  private stageInjection(variant: ShaderVariant, withCopies = true, hinted?: ReadonlySet<string>): ProgramStages {
     const source = this.stageSource();
     let memo = this.injectionMemo;
     if (memo?.source !== source) {
@@ -1510,14 +1624,53 @@ export class WebGLRenderer {
       memo = { source, built: new Map() };
       this.injectionMemo = memo;
     }
-    const copies = withCopies ? this.maskCopies(variant) : null;
-    const key = `${variantKey(variant)}|${copies?.sig ?? ""}`;
+    const copies = this.maskCopies(variant);
+    const given = withCopies ? copies.stages : this.stagesFor(variant);
+    const { stages, dormant } = this.withoutDormant(given, variant, this.frameBag(copies), hinted);
+    const key = `${variantKey(variant)}|${withCopies ? copies.sig : ""}|${dormant.join(",")}`;
     let built = memo.built.get(key);
     if (!built) {
-      built = buildStageInjection(copies?.stages ?? this.stagesFor(variant), variant, this.samplerBudget);
+      built = {
+        built: buildStageInjection(stages, variant, this.samplerBudget),
+        ids: new Set(stages.map((s) => (isMaskInstance(s) ? s.instanceOf : s.id))),
+        dormant,
+      };
       memo.built.set(key, built);
     }
     return built;
+  }
+
+  /** `stages` bar the dormant ones (skipDormantStages): on a version 2 or later
+   *  frame, each stage whose dormantWhen holds on `bag` that no frame has needed
+   *  yet. A stage this frame needs is awake from now on, and a mask copy wakes
+   *  its stage with it: the copy's block reads the stage's helpers and textures. */
+  private withoutDormant(
+    stages: readonly ProcessingStageContribution[],
+    variant: ShaderVariant,
+    bag: Record<string, unknown>,
+    hinted?: ReadonlySet<string>,
+  ): { stages: readonly ProcessingStageContribution[]; dormant: string[] } {
+    if (!this.skipDormant || !variant.fullInfo) return { stages, dormant: [] };
+    const asleep = new Set<string>();
+    for (const s of stages) {
+      if (this.awake.has(s.id)) continue;
+      const rule = dormantRule(s);
+      if (!rule) continue;
+      if (isDormant(rule, bag)) {
+        asleep.add(s.id);
+        continue;
+      }
+      this.wake(s.id);
+      if (isMaskInstance(s)) this.wake(s.instanceOf);
+    }
+    const dormant = [...asleep].filter((id) => !this.awake.has(id) && !hinted?.has(id));
+    if (dormant.length === 0) return { stages, dormant };
+    return { stages: stages.filter((s) => !dormant.includes(s.id)), dormant };
+  }
+
+  private wake(stageId: string): void {
+    this.awake.add(stageId);
+    for (const id of this.wakeGroups.get(stageId) ?? []) this.awake.add(id);
   }
 
   /** The registered stages with the copies the frame's masks call for. The
@@ -1535,8 +1688,7 @@ export class WebGLRenderer {
 
   /** The bag the stage uniforms and prepasses read this frame: the photo's,
    *  with the masks' values under their copies' keys. */
-  private frameBag(): Record<string, unknown> {
-    const copies = this.maskCopies();
+  private frameBag(copies: MaskInstances = this.maskCopies()): Record<string, unknown> {
     const derived = this.derivedValues;
     if (copies.sig === "" && Object.keys(derived).length === 0) return this.contributedParams;
     const m = this.frameBagMemo;
@@ -1551,7 +1703,8 @@ export class WebGLRenderer {
     const variant = this.params
       ? shaderVariantFor(this.params.processVersion, this.newestVersion)
       : this.variant;
-    let built = this.stageInjection(variant);
+    const stages = this.stageInjection(variant);
+    let built = stages.built;
     // A mask probe's frame stops where the mask components read `lin`, a scene
     // measurement where the display transform takes it.
     const exit: ProgramExit | undefined =
@@ -1564,6 +1717,9 @@ export class WebGLRenderer {
     // Taken ahead of the early return: a re-registered default changes the
     // bindings and no signature.
     this.transformBindings = p.bindings ?? NO_TRANSFORM_BINDINGS;
+    // A dormant stage registering leaves the program, and so the signatures, as
+    // they were.
+    if (unchanged) this.dormantIds = stages.dormant;
     // The stock transform and an empty stage set both sign as "", and the variant
     // starts at version 2, so a fresh renderer can already match its first frame:
     // equal signatures only mean "built" once a program exists.
@@ -1574,14 +1730,16 @@ export class WebGLRenderer {
     // so switching back to that set finds its own bindings, not the failed set's.
     const stageIds = this.currentStageIds();
     // Dropped mask copies are named by the overflow notice.
-    const chosen = this.developEntry(p, variant, stageIds, exit);
+    const chosen = this.developEntry(p, variant, exit);
     const e = chosen.entry;
     built = chosen.built;
     this.droppedCopies = chosen.dropped;
+    this.dormantIds = chosen.dormant;
     this.programs.setCurrent(e);
-    // Pass programs are keyed by stageSig; a stage-set change invalidates them
-    // and the prepass result cache. No process version changes stageSig, so a
-    // photo on the other version keeps both (each kept under its version).
+    // A stage-set change invalidates the pass programs and prepass results of
+    // the stages it changed (stageSetChanged), and every split. No process
+    // version changes stageSig, so a photo on the other version keeps both
+    // (each kept under its version).
     if (built.sig !== this.stageSig) {
       this.splitTokens.clear();
       // A stage that left the set (its extension was turned off) takes its
@@ -1624,6 +1782,7 @@ export class WebGLRenderer {
   render(options: { viewOverlays?: boolean } = {}): void {
     if (!this.hasImage || !this.params) return;
     const overlays = options.viewOverlays ?? true;
+    this.programs.settle();
     this.syncPipeline();
     this.resize();
     const gl = this.gl;
@@ -1787,7 +1946,7 @@ export class WebGLRenderer {
       this.prepass.run(
         this.prepassFrame(
           developed,
-          `e${this.sourceEpoch}|p${patch.sig}|h${this.healSig}` +
+          `e${this.sourceEpoch}|p${patch.sig}` +
             `|${variantKey(this.variant)}:${this.patchedSource.format}`,
           false,
           p,
@@ -2137,7 +2296,6 @@ export class WebGLRenderer {
       units: this.prepassUnitPool(),
       copyBudget: this.redirect ? Infinity : this.maskCopyPrepassesPerFrame,
       epoch: this.sourceEpoch,
-      stageSig: this.stageSig,
       processVersion: this.variant.version,
       linear: this.linear,
       isFallbackPreview: this.isFallbackPreview,
@@ -2258,6 +2416,7 @@ export class WebGLRenderer {
     // still owns it (a cache-owned active texture is freed with the cache).
     this.sources.dispose();
     if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
+    gl.deleteTexture(this.noSource);
     this.patchedSource.dispose();
     gl.deleteTexture(this.maskTexture);
     // Histogram targets and the sharpening and box-filter programs.

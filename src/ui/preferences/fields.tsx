@@ -145,7 +145,7 @@ export function OptionRow<T extends string | number>({
           aria-pressed={o.value === value}
           className={`rounded px-2 py-1 text-[11px] ${
             o.value === value
-              ? "bg-slider-fill text-white"
+              ? "bg-slider-fill text-on-accent"
               : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
           }`}
         >

@@ -12,8 +12,10 @@
 // canvas-free so they run in the node unit suite.
 
 import type { BrushDab } from "@/catalog/types";
-import { MAX_PAINT_LAYERS, type PaintDab, type PaintLayer } from "@/extensions/api/contributions";
+import { MAX_PAINT_LAYERS, type PaintDab, type PaintLayer, type UniformValue } from "@/extensions/api/contributions";
 import type { CoverageItem } from "./mask-coverage";
+import type { ContributedBinding } from "./stage-injection";
+import { boundValue } from "./uniform-values";
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const finiteOrAbsent = (v: unknown): v is number | undefined => v === undefined || finite(v);
@@ -82,4 +84,17 @@ export function paramIsActive(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   if (Array.isArray(value)) return value.some((x) => typeof x === "number" && x !== 0);
   return false;
+}
+
+/** A stage's dormantWhen (ProcessingStageContribution), each listed value
+ *  with the binding its uniform is read through (stage-injection.ts dormantRule). */
+export type DormantRule = readonly { readonly binding: ContributedBinding; readonly value: UniformValue }[];
+
+const sameValue = (a: unknown, b: UniformValue): boolean =>
+  Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((x, i) => x === b[i]) : a === b;
+
+/** Whether `bag` holds every value of `rule`, each read as its binding reads
+ *  it: a value the uniform can't take, or none, as the uniform's default. */
+export function isDormant(rule: DormantRule, bag: Record<string, unknown>): boolean {
+  return rule.every(({ binding, value }) => sameValue(boundValue(bag, binding), value));
 }

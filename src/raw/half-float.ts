@@ -54,7 +54,10 @@ export function encodeHalf(data: Float32Array): Uint16Array<ArrayBuffer> {
 
 let halfToFloatLut: Float32Array | null = null;
 
-function lut(): Float32Array {
+/** The Float32 value of each binary16 bit pattern, indexed by the pattern:
+ *  the table halfToFloat32 reads, for code that reads halves in place. Shared,
+ *  so never written to. */
+export function halfToFloatTable(): Float32Array {
   if (halfToFloatLut) return halfToFloatLut;
   const table = new Float32Array(65536);
   for (let h = 0; h < 65536; h++) {
@@ -72,7 +75,7 @@ function lut(): Float32Array {
 /** binary16 bit patterns back to Float32 values, through a 65536-entry
  *  table built on first use. */
 export function halfToFloat32(bits: Uint16Array): Float32Array<ArrayBuffer> {
-  const table = lut();
+  const table = halfToFloatTable();
   const out = new Float32Array(bits.length);
   for (let i = 0; i < bits.length; i++) out[i] = table[bits[i]];
   return out;

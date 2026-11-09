@@ -13,7 +13,7 @@ import { photoGeometry } from "@/rendering/photo-geometry";
 import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
 import { leavePicture, releaseHandover, takeHandover } from "@/ui/canvas-handover";
 import { Slot } from "@/extensions/Slot";
-import { boundaryKey } from "@/extensions/guard";
+import { boundaryKey, guardCallback } from "@/extensions/guard";
 import { ErrorBoundary } from "@/ui/components/ErrorBoundary";
 import { useCanvasGesture } from "@/state/canvas-gesture";
 import { DevelopOverlayProvider } from "@/extensions/develop-host";
@@ -28,9 +28,39 @@ import {
   useGraphics,
 } from "@/state/graphics-store";
 import { overflowNotice } from "./stage-overflow";
-import { usePickDragStore } from "./pick-drag";
+import { usePickDragStore, type CanvasPoint, type PickDragTool } from "./pick-drag";
 import { useCanvasToolStore } from "./canvas-tool";
 import { lendCanvasProbe } from "./canvas-probe";
+
+interface GuardedPickDrag {
+  onPress(point: CanvasPoint): void;
+  onDown(rgb: readonly [number, number, number], point: CanvasPoint): void;
+  onMove(point: CanvasPoint): void;
+  onUp(): void;
+}
+
+// One guarded set per tool: guardCallback counts throws per function, so a
+// fresh wrapper per press would never switch a failing tool off.
+const guardedPickDrags = new WeakMap<PickDragTool, GuardedPickDrag>();
+
+function guardedPickDrag(owner: string, tool: PickDragTool): GuardedPickDrag {
+  let g = guardedPickDrags.get(tool);
+  if (!g) {
+    g = {
+      onPress: guardCallback(owner, "pick-drag press", (point: CanvasPoint) => tool.onPress?.(point), undefined),
+      onDown: guardCallback(
+        owner,
+        "pick-drag down",
+        (rgb: readonly [number, number, number], point: CanvasPoint) => tool.onDown?.(rgb, point),
+        undefined,
+      ),
+      onMove: guardCallback(owner, "pick-drag move", (point: CanvasPoint) => tool.onMove?.(point), undefined),
+      onUp: guardCallback(owner, "pick-drag up", () => tool.onUp?.(), undefined),
+    };
+    guardedPickDrags.set(tool, g);
+  }
+  return g;
+}
 
 export function DevelopCanvas({
   photo,
@@ -138,13 +168,7 @@ export function DevelopCanvas({
   // click-through (global passthrough — see canvas-gesture + ViewportImage).
   const overlayPassthrough = useCanvasGesture((s) => s.zoomGesture);
   const pickDrag = usePickDragStore((s) => s.held?.tool ?? null);
-
-  // The linear colour the output stage gives the buffer pixel (bx, by), read from
-  // the worker's live frame; null when it has none.
-  const probeOutput = (bx: number, by: number) =>
-    width > 0 && height > 0
-      ? getRenderBridge().probe(bx / width, by / height, "output")
-      : Promise.resolve(null);
+  const pickDragOwner = usePickDragStore((s) => s.held?.owner ?? null);
 
   // The eyedropper's convergence loop and extensions probe by canvas point
   // (canvas-probe.ts).
@@ -162,27 +186,36 @@ export function DevelopCanvas({
   // is still the latest and has not been released.
   const pickPress = useRef(0);
   const pickDragging = useRef(false);
-
-  const onPickDragDown = async (bx: number, by: number) => {
-    const press = ++pickPress.current;
-    pickDrag?.onPress?.({ x: bx, y: by });
-    if (!pickDrag?.onDown) return;
-    const rgb = await probeOutput(bx, by);
-    if (!rgb || !pickDrag.onDown || press !== pickPress.current) return;
-    pickDragging.current = true;
-    pickDrag.onDown(rgb, { x: bx, y: by });
-  };
-
-  const onPickDragMove = (bx: number, by: number) => {
-    if (pickDragging.current) pickDrag?.onMove?.({ x: bx, y: by });
-  };
-
-  const onPickDragUp = () => {
-    pickPress.current++;
-    if (!pickDragging.current) return;
-    pickDragging.current = false;
-    pickDrag?.onUp?.();
-  };
+  const onPickDrag = useMemo(() => {
+    if (!pickDrag || !pickDragOwner || canvasTool) return null;
+    const tool = guardedPickDrag(pickDragOwner, pickDrag);
+    // The linear colour the output stage gives the buffer pixel (bx, by), read from
+    // the worker's live frame; null when it has none.
+    const probeOutput = (bx: number, by: number) =>
+      width > 0 && height > 0
+        ? getRenderBridge().probe(bx / width, by / height, "output")
+        : Promise.resolve(null);
+    return {
+      onDown: async (bx: number, by: number) => {
+        const press = ++pickPress.current;
+        tool.onPress({ x: bx, y: by });
+        if (!pickDrag.onDown) return;
+        const rgb = await probeOutput(bx, by).catch(() => null);
+        if (!rgb || !pickDrag.onDown || press !== pickPress.current) return;
+        pickDragging.current = true;
+        tool.onDown(rgb, { x: bx, y: by });
+      },
+      onMove: (bx: number, by: number) => {
+        if (pickDragging.current) tool.onMove({ x: bx, y: by });
+      },
+      onUp: () => {
+        pickPress.current++;
+        if (!pickDragging.current) return;
+        pickDragging.current = false;
+        tool.onUp();
+      },
+    };
+  }, [pickDrag, pickDragOwner, canvasTool, width, height]);
 
   // Use the real decoded source aspect (upright) when available, so aspect-locked
   // crops match the pixels on screen even when stored metadata is transposed by
@@ -241,6 +274,24 @@ export function DevelopCanvas({
       radiusToImage: (px: number) => (px / ir.h) * shown.height,
     };
   }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, geometry, imageAspect]);
+
+  const toolOverlay = useMemo(
+    () =>
+      canvasTool && canvasToolOwner
+        ? (rect: OverlayRect) => (
+            <DevelopOverlayProvider value={overlayState}>
+              <ErrorBoundary
+                key={boundaryKey(canvasToolOwner, canvasTool.overlay)}
+                what={`Canvas tool "${canvasToolOwner}"`}
+                className="text-[11px] text-danger"
+              >
+                <canvasTool.overlay rect={rect} />
+              </ErrorBoundary>
+            </DevelopOverlayProvider>
+          )
+        : undefined,
+    [canvasTool, canvasToolOwner, overlayState],
+  );
 
   if (!supported) {
     return (
@@ -313,30 +364,8 @@ export function DevelopCanvas({
       initialZoom={openZoom === "100" ? 1 : null}
       fadeToken={fadeToken}
       overlayZoomable={!!canvasTool?.zoomable}
-      onPickDrag={
-        pickDrag && !canvasTool
-          ? {
-              onDown: onPickDragDown,
-              onMove: onPickDragMove,
-              onUp: onPickDragUp,
-            }
-          : null
-      }
-      overlay={
-        canvasTool && canvasToolOwner
-          ? (rect) => (
-              <DevelopOverlayProvider value={overlayState}>
-                <ErrorBoundary
-                  key={boundaryKey(canvasToolOwner, canvasTool.overlay)}
-                  what={`Canvas tool "${canvasToolOwner}"`}
-                  className="text-[11px] text-red-400"
-                >
-                  <canvasTool.overlay rect={rect} />
-                </ErrorBoundary>
-              </DevelopOverlayProvider>
-            )
-          : undefined
-      }
+      onPickDrag={onPickDrag}
+      overlay={toolOverlay}
     />
       {/* The photo before, where it showed, until this photo's first picture. Placed
           and sized by canvas-handover; hidden until then. */}

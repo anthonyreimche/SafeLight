@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import type { CropRect, DevelopParams } from "@/catalog/types";
-import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
+import type { BrushTipContribution, ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolvePipelineFor } from "@/extensions/pipelines";
 import type { HistogramData } from "./histogram";
@@ -25,8 +25,23 @@ import {
 import { RenderRequests, blankBitmap } from "./render-bridge/requests";
 import { RenderMailbox } from "./render-bridge/mailbox";
 import { ParamSync, derivedFor } from "./render-bridge/param-sync";
-import { stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
-import { forgetStageFailures, recordStageFailure, stageFailureText } from "./render-bridge/stage-failures";
+import { flushStageSync, stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
+import { unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
+import {
+  forgetStageFailures,
+  recordStageFailure,
+  stageFailureText,
+  syncCrashFailures,
+} from "./render-bridge/stage-failures";
+import {
+  GPU_CRASH_LOG,
+  blameLostContext,
+  noteStageBuild,
+  settleLeftoverBuild,
+  stageKey,
+  subscribeCrashes,
+} from "./gpu-crash-guard";
+import { stageSignature } from "./webgl/stage-injection";
 import { useRegistry } from "@/extensions/registry";
 import { privilegedGpu } from "@/native/privileged";
 
@@ -57,12 +72,15 @@ export interface FrameResult {
    *  widens to the whole image; null, unknown. */
   crop: CropRect | null;
   histogram?: HistogramData;
+  /** It asked for a histogram that arrives on its own (setOnHistogram), after it. */
+  histogramFollows?: boolean;
   /** The prepass stages it was drawn without, for want of a texture unit. */
   overflowedStages: readonly string[];
 }
 
 type FrameCallback = (frame: FrameResult) => void;
 type HistogramCallback = (histogram: HistogramData) => void;
+type HistogramErrorCallback = () => void;
 type ErrorCallback = (message: string) => void;
 /** The number (RenderBridge.sourceGen) of a develop source the worker couldn't take,
  *  and why. */
@@ -95,6 +113,7 @@ export class RenderBridge {
   readonly ready: Promise<void>;
   private onFrame: FrameCallback | null = null;
   private onHistogram: HistogramCallback | null = null;
+  private onHistogramError: HistogramErrorCallback | null = null;
   private onError: ErrorCallback | null = null;
   private onSourceError: SourceErrorCallback | null = null;
   private onSourcePixels: SourcePixelsCallback | null = null;
@@ -103,6 +122,11 @@ export class RenderBridge {
   private pixelsClearedGen: number | null = null;
   // The ids of the stages last posted, to tell when the set loses one.
   private postedStageIds: ReadonlySet<string> = new Set();
+  // The stages the GPU crash guard leaves out changed: the worker is sent the set without them.
+  private readonly unsubCrashes = subscribeCrashes(() => {
+    syncCrashFailures(useRegistry.getState().processingStages);
+    this.syncStages();
+  });
 
   constructor() {
     this.transport = new RenderTransport({
@@ -120,6 +144,7 @@ export class RenderBridge {
       ready: () => this.mailbox.armWatchdog(),
       stopped: () => this.mailbox.clear(),
       settlePending: () => this.requests.settleAll(),
+      contextLost: () => this.blameCrash(),
       error: (message) => this.onError?.(message),
       unusable: (detail) => {
         void privilegedGpu()?.rendererFailed(detail).catch(() => undefined);
@@ -133,6 +158,8 @@ export class RenderBridge {
       () => this.requests.longRunning,
     );
     this.paramSync = new ParamSync(this.transport);
+    // A build the last window died in stays blamed only if the graphics process crashed.
+    void settleLeftoverBuild(async () => window.safelightNative?.diagnostics?.crashes?.());
   }
 
   /** Whether the worker's WebGL2 context has renderable float colour buffers;
@@ -174,6 +201,7 @@ export class RenderBridge {
           wholeHeight: msg.wholeHeight ?? 0,
           crop: msg.crop ?? null,
           histogram: msg.histogram,
+          histogramFollows: msg.histogramFollows,
           overflowedStages: msg.overflowedStages ?? [],
         });
         break;
@@ -191,6 +219,10 @@ export class RenderBridge {
         break;
       case "histogram":
         this.onHistogram?.(msg.histogram);
+        break;
+      case "histogramError":
+        this.onHistogramError?.();
+        this.onError?.(msg.message);
         break;
       // A thumbnail request settles once, by its requestId: with its answer, or with
       // null for a miss or a failure.
@@ -243,6 +275,9 @@ export class RenderBridge {
         if (msg.sourceGen !== this.sourcesBound || msg.sourceGen === this.pixelsClearedGen) break;
         this.onSourcePixels?.({ data: msg.data, width: msg.width, height: msg.height });
         break;
+      case "stageBuild":
+        noteStageBuild(msg);
+        break;
       case "stageQuarantined": {
         const stage = { stageId: msg.stageId, signature: msg.signature, log: msg.log };
         recordStageFailure(stage);
@@ -267,6 +302,7 @@ export class RenderBridge {
 
   dispose() {
     if (this.transport.disposed) return;
+    this.unsubCrashes();
     this.paramSync.dispose();
     this.mailbox.clear();
     this.transport.dispose();
@@ -278,6 +314,9 @@ export class RenderBridge {
 
   setOnFrame(cb: FrameCallback | null) { this.onFrame = cb; }
   setOnHistogram(cb: HistogramCallback | null) { this.onHistogram = cb; }
+  /** Told when the histogram a frame said would follow it failed to be measured, so the
+   *  view can ask for one at its next frame. */
+  setOnHistogramError(cb: HistogramErrorCallback | null) { this.onHistogramError = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
   setOnSourceError(cb: SourceErrorCallback | null) { this.onSourceError = cb; }
   setOnSourcePixels(cb: SourcePixelsCallback | null) { this.onSourcePixels = cb; }
@@ -392,6 +431,7 @@ export class RenderBridge {
         (answer) => resolve(answer?.type === "thumbnail" ? answer.blob : null),
         () => null,
       );
+      flushStageSync();
       const pipeline = resolvePipelineFor(opts.params.displayTransform);
       const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
       this.post({
@@ -438,6 +478,18 @@ export class RenderBridge {
     this.post({ cmd: "setStageTextures", bag });
   }
 
+  /** The brush tips the worker's bakes stamp with, the whole set: it replaces the
+   *  one the worker holds. Structured-cloned, as the textures are. */
+  setBrushTips(tips: Record<string, BrushTipContribution>) {
+    this.post({ cmd: "setBrushTips", tips });
+  }
+
+  /** Start building, in the background, the program that would wake those of
+   *  `stageIds` that are dormant (WebGLRenderer.prewarmStages). */
+  prewarmStages(stageIds: string[]) {
+    this.post({ cmd: "prewarmStages", stageIds });
+  }
+
   /** The stage textures set and the keys cleared since the bag last posted, whole
    *  or by patches; the worker merges them into the bag it holds. */
   patchStageTextures(set: Record<string, StageTextureData>, remove: string[]) {
@@ -457,6 +509,7 @@ export class RenderBridge {
     return new Promise<ImageBitmap>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.captures, reqId, resolve, blankBitmap);
+      flushStageSync();
       const pipeline = resolvePipelineFor(params.displayTransform);
       const bagPatch = this.paramSync.capturePatch(pipeline, opts.paramBag);
       this.post({
@@ -485,6 +538,7 @@ export class RenderBridge {
     return new Promise<FloatFrame | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.floatCaptures, reqId, resolve, () => null, { long: true });
+      flushStageSync();
       const pipeline = resolvePipelineFor(params.displayTransform);
       const bagPatch = this.paramSync.capturePatch(pipeline, opts.paramBag);
       this.post({
@@ -527,6 +581,7 @@ export class RenderBridge {
     return new Promise<[number, number, number] | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.probes, reqId, resolve, () => null);
+      flushStageSync();
       this.post({ cmd: "probe", reqId, u, v, point });
     });
   }
@@ -560,7 +615,28 @@ export class RenderBridge {
    *  for, and goes once the worker answers. Messages that set state still go at once,
    *  so the worker has them before the render that waits. */
   render(wantHistogram = false, wantExtended = false) {
+    flushStageSync();
     this.mailbox.render(wantHistogram, wantExtended);
+  }
+
+  /** Resolves once no render has been requested for `ms`: work that would land on
+   *  the worker mid-drag (a neighbour's decode) waits for the edit to go quiet. Aborting
+   *  `signal` stops the wait and resolves it at once. */
+  whenRenderQuiet(ms = 300, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const check = () => {
+        const wait = this.mailbox.lastRequestedAt + ms - performance.now();
+        if (wait <= 0) resolve();
+        else timer = setTimeout(check, wait);
+      };
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      if (signal?.aborted) resolve();
+      else check();
+    });
   }
 
   renderThumbnail(opts: ThumbEncodeOptions & {
@@ -568,6 +644,7 @@ export class RenderBridge {
     float?: Pick<FloatFrame, "point" | "space">;
   }) {
     const { image } = opts;
+    flushStageSync();
     const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
     const pipeline = resolvePipelineFor(opts.params.displayTransform);
     const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
@@ -610,6 +687,7 @@ export class RenderBridge {
       );
       const float = floatRead(opts.float);
       if (opts.key !== undefined) {
+        flushStageSync();
         const pipeline = resolvePipelineFor(opts.params.displayTransform);
         const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
         this.post({
@@ -655,6 +733,7 @@ export class RenderBridge {
    *  measurement rides on it: sent on its own, the worker would measure the render in
    *  flight, and the newer one waiting would go unmeasured. */
   computeHistogram(wantExtended?: boolean) {
+    flushStageSync();
     this.mailbox.computeHistogram(wantExtended);
   }
 
@@ -664,6 +743,7 @@ export class RenderBridge {
     return new Promise<DevelopedPixels | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.pixels, reqId, resolve, () => null, { long: true });
+      flushStageSync();
       this.post({ cmd: "readDevelopedPixels", reqId, edge });
     });
   }
@@ -675,6 +755,7 @@ export class RenderBridge {
   setStages(stages: ProcessingStageContribution[]) {
     const ids = new Set(stages.map((s) => s.id));
     if ([...this.postedStageIds].some((id) => !ids.has(id))) forgetStageFailures();
+    syncCrashFailures(useRegistry.getState().processingStages);
     this.postedStageIds = ids;
     this.post({ cmd: "setStages", stages });
   }
@@ -696,6 +777,19 @@ export class RenderBridge {
     this.paramSync.syncPipeline();
   }
 
+  // A context lost while a build had stages in hand that never built on this
+  // machine is pinned on them (gpu-crash-guard.ts), and each is named once.
+  private blameCrash() {
+    const blamed = new Set(blameLostContext());
+    if (blamed.size === 0) return;
+    const stages = useRegistry.getState().processingStages;
+    for (const stage of Object.values(stages)) {
+      if (!blamed.has(stageKey(stage))) continue;
+      const failure = { stageId: stage.id, signature: stageSignature(stage), log: GPU_CRASH_LOG };
+      this.onError?.(stageFailureText(failure, stages));
+    }
+  }
+
   private post(msg: WorkerRequest, transfer?: Transferable[]) {
     this.transport.post(msg, transfer);
   }
@@ -710,12 +804,20 @@ export function getRenderBridge(): RenderBridge {
     // init posts the current stages and pipeline ahead of itself.
     singleton.init(2560, 2560);
     wireBridge(singleton);
+    wireBrushTips(singleton);
   }
   return singleton;
 }
 
+/** Pass a prewarm hint to the shared bridge, if there is one: a hint is never a
+ *  reason to start the render worker. */
+export function hintStages(stageIds: string[]): void {
+  singleton?.prewarmStages(stageIds);
+}
+
 export function disposeRenderBridge() {
   unwireBridge();
+  unwireBrushTips();
   singleton?.dispose();
   singleton = null;
 }

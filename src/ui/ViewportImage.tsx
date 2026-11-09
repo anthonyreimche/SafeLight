@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -138,8 +139,11 @@ export function assessMatPx(frameW: number, frameH: number, assessBorder: number
 // position and scale it with a CSS transform. The zoom level is owned by the
 // parent (so its controls can live in the status bar); panning offset is local.
 // Default "fit" letterboxes the whole image; clicking zooms to 100% anchored at
-// the cursor, dragging pans, clicking again returns to fit.
-export function ViewportImage({
+// the cursor, dragging pans, clicking again returns to fit. Memoised: the develop
+// canvas around it renders again for changes it isn't handed.
+export const ViewportImage = memo(ViewportImageView);
+
+function ViewportImageView({
   canvasRef,
   fadeCanvasRef,
   bufferWidth,
@@ -766,7 +770,7 @@ export function ViewportImage({
   return (
     <div
       ref={frameRef}
-      className="relative h-full w-full overflow-hidden"
+      className="relative h-full w-full select-none overflow-hidden"
       style={{ cursor }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

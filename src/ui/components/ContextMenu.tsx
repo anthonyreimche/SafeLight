@@ -3,7 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
+import { createPortal } from "react-dom";
 
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
@@ -35,7 +36,7 @@ interface Props {
  *  viewport. Closes on outside click, Escape, scroll, or selecting an item.
  *  Focus moves to the first item on open; the arrow keys, Home and End walk
  *  the enabled items, Enter or Space runs one, and closing hands focus back. */
-export function ContextMenu({ x, y, items, onClose }: Props) {
+export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
 
@@ -95,10 +96,21 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     target.focus();
   };
 
-  return (
+  // Portalled so a transformed ancestor (a centred floating panel) can't become
+  // the fixed backdrop's containing block. React still bubbles portal events
+  // through the owner tree, so presses stop here: a host that acts on
+  // pointerdown (the dock header's drag) would otherwise preventDefault the
+  // mousedown and read the release as its own click.
+  return createPortal(
     <div
+      data-testid="context-menu-backdrop"
       className="fixed inset-0 z-[160]"
-      onMouseDown={onClose}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (!ref.current?.contains(e.target as Node)) onClose();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
       <div
@@ -106,7 +118,6 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         role="menu"
         className="absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
         style={{ left: pos.x, top: pos.y }}
-        onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={onMenuKeyDown}
       >
         {items.map((item, i) =>
@@ -139,6 +150,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           ),
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -268,6 +268,74 @@ describe("api.catalog.readPreview", () => {
   });
 });
 
+// Records go to storage before the grid shows them, so a malformed one is
+// stored for good, and one reusing an id overwrites that photo's record.
+describe("api.catalog.addPhotos", () => {
+  const putPhotos = vi.fn(async () => {});
+  const before = useCatalogStore.getState().photos;
+
+  /** A record the way Stacking Tools builds a virtual copy. */
+  const record = (id: string): CatalogPhoto => ({
+    id,
+    filename: "a.jpg",
+    relPath: "shoot/a.jpg",
+    folder: "shoot",
+    directoryHandle: null,
+    fileHandle: null,
+    thumbnailBlob: null,
+    thumbnailUrl: null,
+    width: 6000,
+    height: 4000,
+    fileSize: 1024,
+    mimeType: "image/jpeg",
+    rating: 0,
+    colorLabel: "none",
+    flag: "none",
+    rotation: 0,
+    keywords: [],
+    dateCreated: 1,
+    dateImported: 2,
+    exif: {},
+  });
+  /** A batch as an extension might hand it over, whatever its type says. */
+  const untyped = (json: string): CatalogPhoto[] => JSON.parse(json);
+
+  beforeEach(() => {
+    putPhotos.mockClear();
+    setCatalogStorage({
+      putPhoto: async () => {},
+      putPhotos,
+      deletePhotos: async () => {},
+      getEditState: async () => undefined,
+      putEditState: async () => {},
+      putEditStates: async () => {},
+      readPreview: async () => null,
+    });
+    useCatalogStore.setState({ photos: [record("p1"), record("p2")] });
+  });
+  afterEach(() => {
+    setCatalogStorage(null);
+    useCatalogStore.setState({ photos: before });
+  });
+
+  it.each([
+    ["not a list", untyped('"p3"'), /addPhotos: /],
+    ["an id already in the catalogue", [record("p1")], /"p1"/],
+    ["the same id twice", [record("p3"), record("p3")], /"p3"/],
+    ["a record missing its fields", untyped('[{"id":"x"}]'), /addPhotos: /],
+  ])("refuses %s without storing anything", async (_, photos, message) => {
+    await expect(api().catalog.addPhotos(photos)).rejects.toThrow(message);
+    expect(putPhotos).not.toHaveBeenCalled();
+    expect(useCatalogStore.getState().photos.map((p) => p.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("stores a full record and shows it after the photo named", async () => {
+    await api().catalog.addPhotos([record("p3")], { afterId: "p1" });
+    expect(putPhotos).toHaveBeenCalledWith([record("p3")]);
+    expect(useCatalogStore.getState().photos.map((p) => p.id)).toEqual(["p1", "p3", "p2"]);
+  });
+});
+
 describe("api.dock.isPanelOpen", () => {
   const before = useDockStore.getState();
   afterEach(() => useDockStore.setState(before, true));

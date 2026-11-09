@@ -175,6 +175,24 @@ export interface NativeGpuBridge {
   rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
 }
 
+/** The window's system-drawn backdrop. Privileged so extensions can't change
+ *  how the window paints; a theme asks for it through the core. */
+export interface NativeWindowBridge {
+  /** Resolves true when the window now draws the material; null clears it.
+   *  False on a system or backend that can't draw it. */
+  setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+}
+
+/** The Developer Tools dev folder. Privileged because the folder's manifests
+ *  widen the next launch's network policy. */
+export interface NativeDevtoolsBridge {
+  /** Record the folder (an absolute path, or null for none) with the main
+   *  process, which reads its manifests' `permissions.network` at the next
+   *  launch the way it reads installed extensions'. Resolves with the declared
+   *  origins the current launch's policy does not allow yet. */
+  syncDevFolder(folder: string | null): Promise<{ pending: string[] }>;
+}
+
 /** Opening what the OS hands the app. Privileged so extensions can't point the
  *  project at a folder of their choosing. */
 export interface NativeOsOpenBridge {
@@ -213,6 +231,10 @@ export interface PrivilegedBridge {
   gpu?: NativeGpuBridge;
   /** Optional: absent in older Electron builds. */
   osOpen?: NativeOsOpenBridge;
+  /** Optional: absent in older Electron builds. */
+  window?: NativeWindowBridge;
+  /** Optional: absent in older Electron builds. */
+  devtools?: NativeDevtoolsBridge;
 }
 
 declare global {
@@ -306,12 +328,6 @@ declare global {
         isOpen(): Promise<boolean>;
         /** Reload the renderer. `hard` ignores the HTTP cache. */
         reload(hard?: boolean): Promise<void>;
-        /** Record the Developer Tools dev folder with the main process, which
-         *  reads its manifests' `permissions.network` at the next launch the way
-         *  it reads installed extensions'. Resolves with the declared origins
-         *  the current launch's policy does not allow yet. Optional: absent in
-         *  older Electron builds. */
-        syncDevFolder?(folder: string | null): Promise<{ pending: string[] }>;
       };
       /** Main-process diagnostics for the Developer Tools System / Native tabs. */
       diagnostics?: {

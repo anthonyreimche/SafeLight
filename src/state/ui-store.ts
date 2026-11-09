@@ -92,6 +92,10 @@ interface UIState {
   activeFolder: string | null;
   setActiveFolder: (path: string | null) => void;
 
+  /** The stacks shown expanded, by stackId. Per session: a stack opens collapsed. */
+  expandedStacks: ReadonlySet<string>;
+  toggleStack: (stackId: string) => void;
+
   gridSize: number;
   setGridSize: (size: number) => void;
   stepGridSize: (direction: 1 | -1) => void;
@@ -132,6 +136,14 @@ export const useUIStore = create<UIState>((set) => ({
 
   activeFolder: null,
   setActiveFolder: (path) => set({ activeFolder: path }),
+
+  expandedStacks: new Set<string>(),
+  toggleStack: (stackId) =>
+    set((s) => {
+      const next = new Set(s.expandedStacks);
+      if (!next.delete(stackId)) next.add(stackId);
+      return { expandedStacks: next };
+    }),
 
   gridSize: loadStoredGridSize() ?? getSettings().defaultGridSize,
   setGridSize: (size) => {

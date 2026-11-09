@@ -257,6 +257,42 @@ async function relocateSubtree(
   await relocate(moved);
 }
 
+/** The handle of a file an op just put at `name` in `folder`, or null when the
+ *  lookup fails: the record still follows the file, and the next scan re-attaches
+ *  a handle rather than the record keeping one to the old path. */
+async function movedFileHandle(
+  rootHandle: FileSystemDirectoryHandle,
+  folder: string,
+  name: string,
+): Promise<FileSystemFileHandle | null> {
+  try {
+    return await (await resolveDir(rootHandle, folder)).getFileHandle(name);
+  } catch (e) {
+    console.warn(`[folder-ops] ${joinRel(folder, name)} moved but couldn't be found again:`, e);
+    return null;
+  }
+}
+
+/** Best-effort: keep a photo's sidecar paired with its image. A sidecar already
+ *  at `toRel` isn't this photo's, and a native rename would replace it, so then
+ *  this one stays where it is. */
+async function carrySidecar(
+  rootHandle: FileSystemDirectoryHandle,
+  fromRel: string,
+  toRel: string,
+): Promise<void> {
+  try {
+    if (!(await existsRel(rootHandle, fromRel))) return;
+    if (await nameTaken(rootHandle, fromRel, toRel, "file")) {
+      console.warn(`[folder-ops] sidecar move ${fromRel} → ${toRel} skipped: name in use`);
+      return;
+    }
+    await moveOnDisk(rootHandle, fromRel, toRel, "file");
+  } catch (e) {
+    console.warn(`[folder-ops] sidecar move ${fromRel} skipped:`, e);
+  }
+}
+
 // ── public operations ────────────────────────────────────────────────────────
 
 /** Create a subfolder under `parentRel`. Returns its relative path, or null. */
@@ -343,18 +379,13 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
       continue;
     }
 
-    // Best-effort: keep the sidecar paired with its image in the new folder.
-    const oldSidecar = joinRel(p.folder, `${p.filename}${SIDECAR_SUFFIX}`);
-    const newSidecar = joinRel(destRel, `${p.filename}${SIDECAR_SUFFIX}`);
-    try {
-      if (await existsRel(rootHandle, oldSidecar)) {
-        await moveOnDisk(rootHandle, oldSidecar, newSidecar, "file");
-      }
-    } catch (e) {
-      console.warn(`[folder-ops] sidecar move ${oldSidecar} skipped:`, e);
-    }
+    await carrySidecar(
+      rootHandle,
+      joinRel(p.folder, `${p.filename}${SIDECAR_SUFFIX}`),
+      joinRel(destRel, `${p.filename}${SIDECAR_SUFFIX}`),
+    );
 
-    const fileHandle = await destDir.getFileHandle(p.filename);
+    const fileHandle = await movedFileHandle(rootHandle, destRel, p.filename);
     // Its virtual copies come along (see relocate), so they don't go stale before
     // the next scan re-attaches them.
     moved.set(p.id, { folder: destRel, relPath: newRel, directoryHandle: destDir, fileHandle });
@@ -427,19 +458,13 @@ export async function renamePhoto(
     return { ok: false, reason: "Couldn't rename the file on disk." };
   }
 
-  // Best-effort: keep the sidecar paired with its image under the new name.
-  const oldSidecar = joinRel(photo.folder, `${photo.filename}${SIDECAR_SUFFIX}`);
-  const newSidecar = joinRel(photo.folder, `${newFilename}${SIDECAR_SUFFIX}`);
-  try {
-    if (await existsRel(rootHandle, oldSidecar)) {
-      await moveOnDisk(rootHandle, oldSidecar, newSidecar, "file");
-    }
-  } catch (e) {
-    console.warn(`[folder-ops] sidecar rename ${oldSidecar} skipped:`, e);
-  }
+  await carrySidecar(
+    rootHandle,
+    joinRel(photo.folder, `${photo.filename}${SIDECAR_SUFFIX}`),
+    joinRel(photo.folder, `${newFilename}${SIDECAR_SUFFIX}`),
+  );
 
-  const dir = await resolveDir(rootHandle, photo.folder);
-  const fileHandle = await dir.getFileHandle(newFilename);
+  const fileHandle = await movedFileHandle(rootHandle, photo.folder, newFilename);
   // Its virtual copies come along (see relocate), so they don't go stale before
   // the next project scan re-attaches them.
   const { folder, directoryHandle } = photo;
@@ -448,23 +473,28 @@ export async function renamePhoto(
   return { ok: true, filename: newFilename };
 }
 
-/** Delete a folder: drop its photos (and their previews/edits) from the catalogue,
- *  remove the directory from disk, then refresh the tree. No-op for the root. */
+/** Delete a folder: remove the directory from disk, then drop its photos (and
+ *  their previews/edits) from the catalogue and refresh the tree. No-op for the
+ *  root. Rejects when the disk delete fails, leaving the catalogue as it was: the
+ *  files are still there, and dropping their records would lose their edits and
+ *  keep them from being imported again. */
 export async function deleteFolder(rel: string): Promise<void> {
   const rootHandle = root();
   if (!rootHandle || !rel) return;
+  try {
+    const parent = await resolveDir(rootHandle, dirnameRel(rel));
+    await parent.removeEntry(basename(rel), { recursive: true });
+  } catch (e) {
+    console.error(`[folder-ops] delete ${rel} failed:`, e);
+    await useProjectStore.getState().refreshTree();
+    throw new Error(`Couldn't delete the folder “${rel}”.`, { cause: e });
+  }
+
   const ids = useCatalogStore
     .getState()
     .photos.filter((p) => p.folder === rel || p.folder.startsWith(`${rel}/`))
     .map((p) => p.id);
   await useCatalogStore.getState().removePhotos(ids);
-
-  const parent = await resolveDir(rootHandle, dirnameRel(rel));
-  try {
-    await parent.removeEntry(basename(rel), { recursive: true });
-  } catch (e) {
-    console.error(`[folder-ops] delete ${rel} failed:`, e);
-  }
 
   const active = useUIStore.getState().activeFolder;
   if (active !== null && (active === rel || active.startsWith(`${rel}/`))) {
@@ -477,34 +507,44 @@ export async function deleteFolder(rel: string): Promise<void> {
  *  ratings/labels and develop edits travel if the file is moved to another
  *  project. Returns the number of sidecars written. */
 export async function exportPhotoData(ids: string[]): Promise<number> {
+  return (await exportPhotoDataReport(ids)).written;
+}
+
+/** exportPhotoData with the sidecars that couldn't be written counted too.
+ *  Photos it skips (virtual copies, records with no live folder) count in neither. */
+export async function exportPhotoDataReport(
+  ids: string[],
+): Promise<{ written: number; failed: number }> {
   const idSet = new Set(ids);
   const photos = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
   const storage = catalogStorage();
   let written = 0;
+  let failed = 0;
   for (const p of photos) {
     if (!p.directoryHandle) continue;
     // A virtual copy shares its master's file — its sidecar path collides with
     // the master's, so exporting it would clobber the master's. Only the master
     // owns the on-disk sidecar.
     if (p.copyOf) continue;
-    const edit = await storage.getEditState(p.id);
-    const sidecar: PhotoSidecar = {
-      safelightSidecar: 1,
-      filename: p.filename,
-      info: {
-        rating: p.rating,
-        colorLabel: p.colorLabel,
-        flag: p.flag,
-        keywords: p.keywords,
-      },
-      maps: edit ? { stack: edit.stack, currentIndex: edit.currentIndex } : null,
-    };
     try {
+      const edit = await storage.getEditState(p.id);
+      const sidecar: PhotoSidecar = {
+        safelightSidecar: 1,
+        filename: p.filename,
+        info: {
+          rating: p.rating,
+          colorLabel: p.colorLabel,
+          flag: p.flag,
+          keywords: p.keywords,
+        },
+        maps: edit ? { stack: edit.stack, currentIndex: edit.currentIndex } : null,
+      };
       await writeJSON(p.directoryHandle, `${p.filename}${SIDECAR_SUFFIX}`, sidecar);
       written++;
     } catch (e) {
+      failed++;
       console.error(`[folder-ops] sidecar export ${p.relPath} failed:`, e);
     }
   }
-  return written;
+  return { written, failed };
 }

@@ -394,6 +394,44 @@ const KEY = "sl_settings_v1";
 /** Written only by updateSettings, i.e. by a person's choice. */
 export const SETTINGS_STORAGE_KEY = KEY;
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The value if it fits setting `key`, else undefined (no setting is undefined).
+ *  The scale is clamped rather than refused, except when it isn't a positive
+ *  number: a zero or negative CSS zoom blanks the window. */
+function validSetting(key: keyof AppSettings, value: unknown): unknown {
+  const fallback: unknown = DEFAULT_SETTINGS[key];
+  if (key === "exportLongEdge") {
+    return value === null || (typeof value === "number" && Number.isFinite(value) && value > 0)
+      ? value
+      : undefined;
+  }
+  if (key === "uiScale") {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, value))
+      : undefined;
+  }
+  if (typeof fallback === "number") {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  }
+  if (Array.isArray(fallback)) return Array.isArray(value) ? value : undefined;
+  if (isPlainObject(fallback)) return isPlainObject(value) ? value : undefined;
+  return typeof value === typeof fallback ? value : undefined;
+}
+
+/** The entries of `input` that are known settings holding a value of the right
+ *  shape. JSON turns NaN and Infinity into null, which lands here as invalid. */
+function sanitizeSettings(input: Record<string, unknown>): Partial<AppSettings> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
+    if (!Object.hasOwn(input, key)) continue;
+    const value = validSetting(key, input[key]);
+    if (value !== undefined) out[key] = value;
+  }
+  return out as Partial<AppSettings>;
+}
+
 /** Layer a persisted payload over the defaults, or null if it isn't one. Shared
  *  by the boot-time read and the cross-window storage event so a settings object
  *  written by any build is validated and migrated exactly once, the same way. */
@@ -404,15 +442,13 @@ function parseSettings(raw: string): AppSettings | null {
   } catch {
     return null;
   }
-  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
-  const s: AppSettings = { ...DEFAULT_SETTINGS, ...(stored as Partial<AppSettings>) };
+  if (!isPlainObject(stored)) return null;
+  const s: AppSettings = { ...stored, ...DEFAULT_SETTINGS, ...sanitizeSettings(stored) };
   // updateChannel used to be "minor" | "patch" (version-number granularity);
   // neither expressed pre-release intent, so both fold into "stable".
   if (s.updateChannel !== "all" && s.updateChannel !== "stable") {
     s.updateChannel = "stable";
   }
-  // JSON turns NaN and Infinity into null, which the stepper can't recover from.
-  if (!Number.isFinite(s.uiScale)) s.uiScale = DEFAULT_SETTINGS.uiScale;
   return s;
 }
 
@@ -463,12 +499,32 @@ function applySideEffects(s: AppSettings): void {
 }
 
 export function updateSettings(patch: Partial<AppSettings>): void {
-  useSettings.setState(patch);
+  useSettings.setState(sanitizeSettings(patch));
   const s = useSettings.getState();
   applySideEffects(s);
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {}
+}
+
+// Whether and how Safelight updates itself and its extensions stays the user's
+// call in Preferences.
+const EXTENSION_LOCKED_SETTINGS = [
+  "checkExtensionUpdates",
+  "autoUpdateExtensions",
+  "checkForUpdates",
+  "updateChannel",
+] as const satisfies readonly (keyof AppSettings)[];
+
+/** updateSettings for extensions (api.appSettings.update): the update policy
+ *  keys are dropped with a warning, the rest applies. */
+export function updateSettingsFromExtension(patch: Partial<AppSettings>): void {
+  const allowed: Partial<AppSettings> = { ...patch };
+  const dropped = EXTENSION_LOCKED_SETTINGS.filter((k) => k in allowed);
+  for (const k of dropped) delete allowed[k];
+  if (dropped.length)
+    console.warn(`[extensions] update settings can only be changed in Preferences; ignored ${dropped.join(", ")}`);
+  updateSettings(allowed);
 }
 
 export function resetSettings(): void {

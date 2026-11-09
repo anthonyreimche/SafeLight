@@ -9,7 +9,7 @@
 
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import { DEFAULT_DEVELOP_PARAMS, type CatalogPhoto } from "@/catalog/types";
 import type {
   CatalogHooksContribution,
   ExportProcessorContribution,
@@ -52,9 +52,11 @@ import { clearExtensionCursors } from "@/state/cursor-store";
 import { setPickDrag } from "@/modules/develop/pick-drag";
 import { setCanvasTool } from "@/modules/develop/canvas-tool";
 import { setStageViewValues } from "@/modules/develop/stage-view-values";
+import { dropBrushTips } from "@/rendering/brush-tip-registry";
 import { dropExtensionVariables } from "./variables-host";
 import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardCallback, guardExtension } from "./guard";
 import { forgetStartFailure } from "./start-failures";
+import { isPlainObject } from "@/project/fs";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -273,7 +275,19 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
     call: "registerPanel",
     vet: (extensionId, c, claim) => (claim() ? { ...c, owns: knownOwns(extensionId, c) } : null),
   },
-  themes: { call: "registerTheme" },
+  themes: {
+    call: "registerTheme",
+    vet: (extensionId, c, claim) => {
+      const vars: unknown = c.vars;
+      if (!isPlainObject(vars) || !Object.values(vars).every((v) => typeof v === "string")) {
+        console.warn(
+          `[extensions] ${extensionId}: theme "${c.id}" vars isn't an object of CSS values; registerTheme ignored`,
+        );
+        return null;
+      }
+      return claim() ? c : null;
+    },
+  },
   sliderIcons: { call: "registerSliderIcon" },
   layouts: { call: "registerLayout" },
   pipelines: {
@@ -734,15 +748,50 @@ async function runHook<R>(
   }
 }
 
+/** Record fields an onPhotoImport result may not set. They key the record or
+ *  point it at its file, preview or source photo, so setting one would re-key
+ *  the photo or attach another photo's edits and previews to it. */
+const IMPORT_FIXED_FIELDS: readonly (keyof CatalogPhoto)[] = [
+  "id",
+  "filename",
+  "relPath",
+  "folder",
+  "directoryHandle",
+  "fileHandle",
+  "thumbnailBlob",
+  "thumbnailUrl",
+  "previewEdit",
+  "previewRotation",
+  "copyOf",
+  "copyName",
+];
+
+/** Extensions already warned that an onPhotoImport field was ignored. */
+const warnedImportFields = new Set<string>();
+
+/** One handler's result as overrides, or null when it isn't an object. */
+function importOverrides(extensionId: string, result: unknown): Partial<CatalogPhoto> | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const kept: Partial<CatalogPhoto> = { ...result };
+  const fixed = IMPORT_FIXED_FIELDS.filter((k) => Object.hasOwn(kept, k));
+  for (const k of fixed) delete kept[k];
+  if (fixed.length > 0 && !warnedImportFields.has(extensionId)) {
+    warnedImportFields.add(extensionId);
+    console.warn(`[ext:${extensionId}] onPhotoImport can't set ${fixed.join(", ")}; ignored`);
+  }
+  return kept;
+}
+
 /** Run every onPhotoImport handler and merge their returned partials (later
  *  handlers win). Returns the merged overrides, or null if none contributed. */
-export async function emitPhotoImport(
-  ctx: ImportCtx,
-): Promise<Partial<import("@/catalog/types").CatalogPhoto> | null> {
-  let merged: Partial<import("@/catalog/types").CatalogPhoto> | null = null;
+export async function emitPhotoImport(ctx: ImportCtx): Promise<Partial<CatalogPhoto> | null> {
+  let merged: Partial<CatalogPhoto> | null = null;
   for (const h of catalogHookList()) {
     if (!h.onPhotoImport) continue;
-    const ov = await runHook(h, "onPhotoImport", () => h.onPhotoImport?.(ctx));
+    const ov = importOverrides(
+      h.extensionId,
+      await runHook(h, "onPhotoImport", () => h.onPhotoImport?.(ctx)),
+    );
     if (ov) merged = { ...(merged ?? {}), ...ov };
   }
   return merged;
@@ -870,6 +919,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => setPickDrag(id, null),
   (id) => setCanvasTool(id, null),
   (id) => setStageViewValues(id, null),
+  (id) => dropBrushTips(id),
   (id) => dropExtensionVariables(id),
   (id) => forgetCallbackFailures(id),
   (id) => dropSubscriptions(id),

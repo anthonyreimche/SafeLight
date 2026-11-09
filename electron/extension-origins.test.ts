@@ -179,37 +179,37 @@ describe("listInstalledManifests", () => {
 });
 
 describe("listDevManifests", () => {
-  it("treats a folder with a root manifest as that one extension", () => {
+  it("treats a folder with a root manifest as that one extension", async () => {
     writeExt(root, manifest("solo"));
     writeExt(path.join(root, "nested"), manifest("nested"));
-    expect(ids(listDevManifests(root))).toEqual(["solo"]);
+    expect(ids(await listDevManifests(root))).toEqual(["solo"]);
   });
 
-  it("otherwise reads each immediate subfolder with a manifest, whatever the folder is called", () => {
+  it("otherwise reads each immediate subfolder with a manifest, whatever the folder is called", async () => {
     writeExt(path.join(root, "Map"), manifest("map"));
     writeExt(path.join(root, "theme-slate"), manifest("com.example.slate"));
     fs.mkdirSync(path.join(root, "notes"));
-    expect(ids(listDevManifests(root)).sort()).toEqual(["com.example.slate", "map"]);
+    expect(ids(await listDevManifests(root)).sort()).toEqual(["com.example.slate", "map"]);
   });
 
-  it("skips invalid manifests and anything nested deeper", () => {
+  it("skips invalid manifests and anything nested deeper", async () => {
     writeExt(path.join(root, "broken"), "{");
     writeExt(path.join(root, "partial"), { id: "partial", main: "index.js" });
     writeExt(path.join(root, "group", "deep"), manifest("deep"));
-    expect(listDevManifests(root)).toEqual([]);
+    expect(await listDevManifests(root)).toEqual([]);
   });
 
-  it("never lists an extension under a reserved id, as the folder itself or inside it", () => {
+  it("never lists an extension under a reserved id, as the folder itself or inside it", async () => {
     writeExt(path.join(root, "solo"), manifest("core.hsl"));
-    expect(listDevManifests(path.join(root, "solo"))).toEqual([]);
+    expect(await listDevManifests(path.join(root, "solo"))).toEqual([]);
     writeExt(path.join(root, "parent", "tools"), manifest("core"));
     writeExt(path.join(root, "parent", "ok"), manifest("acme.ok"));
-    expect(ids(listDevManifests(path.join(root, "parent")))).toEqual(["acme.ok"]);
+    expect(ids(await listDevManifests(path.join(root, "parent")))).toEqual(["acme.ok"]);
   });
 
-  it("is empty for no folder or a missing one", () => {
-    expect(listDevManifests(null)).toEqual([]);
-    expect(listDevManifests(path.join(root, "missing"))).toEqual([]);
+  it("is empty for no folder or a missing one", async () => {
+    expect(await listDevManifests(null)).toEqual([]);
+    expect(await listDevManifests(path.join(root, "missing"))).toEqual([]);
   });
 });
 
@@ -240,6 +240,11 @@ describe("declaredConnectHosts", () => {
     expect(hosts).toEqual(["https://spaced.example.com"]);
   });
 
+  it("accepts a wss origin and refuses ws", () => {
+    const hosts = declaredConnectHosts([manifest("a", network("wss://live.example.com", "wss://*.example.com:8443", "ws://insecure.example.com"))]);
+    expect(hosts).toEqual(["wss://live.example.com", "wss://*.example.com:8443"]);
+  });
+
   it("accepts a leading-label wildcard and a port", () => {
     expect(declaredConnectHosts([manifest("a", network("https://*.workers.dev", "https://localhost:8787"))])).toEqual([
       "https://*.workers.dev",
@@ -247,7 +252,7 @@ describe("declaredConnectHosts", () => {
     ]);
   });
 
-  it("never come from an extension under a reserved id, installed or in the dev folder", () => {
+  it("never come from an extension under a reserved id, installed or in the dev folder", async () => {
     writeExt(
       path.join(root, "plugins", "core.tools"),
       manifest("core.tools", network("https://a.example.com")),
@@ -256,7 +261,7 @@ describe("declaredConnectHosts", () => {
     writeExt(path.join(root, "dev", "ok"), manifest("acme.ok", network("https://c.example.com")));
     const hosts = declaredConnectHosts([
       ...listInstalledManifests(path.join(root, "plugins")),
-      ...listDevManifests(path.join(root, "dev")),
+      ...(await listDevManifests(path.join(root, "dev"))),
     ]);
     expect(hosts).toEqual(["https://c.example.com"]);
   });
@@ -277,21 +282,34 @@ describe("pendingConnectHosts", () => {
 });
 
 describe("the recorded dev folder", () => {
-  it("round-trips a folder and is cleared with null", () => {
+  it("round-trips a folder and is cleared with null", async () => {
     const file = path.join(root, "dev-folder.json");
-    writeDevFolder(file, "D:\\Repositories\\Extensions");
-    expect(readDevFolder(file)).toBe("D:\\Repositories\\Extensions");
-    writeDevFolder(file, null);
+    const folder = path.join(root, "Extensions");
+    await writeDevFolder(file, folder);
+    expect(await readDevFolder(file)).toBe(folder);
+    await writeDevFolder(file, null);
     expect(fs.existsSync(file)).toBe(false);
-    expect(readDevFolder(file)).toBeNull();
+    expect(await readDevFolder(file)).toBeNull();
   });
 
-  it("reads null from a missing, malformed or empty record", () => {
+  it("reads null from a missing, malformed or empty record", async () => {
     const file = path.join(root, "dev-folder.json");
-    expect(readDevFolder(file)).toBeNull();
+    expect(await readDevFolder(file)).toBeNull();
     fs.writeFileSync(file, "nope");
-    expect(readDevFolder(file)).toBeNull();
+    expect(await readDevFolder(file)).toBeNull();
     fs.writeFileSync(file, JSON.stringify({ folder: "" }));
-    expect(readDevFolder(file)).toBeNull();
+    expect(await readDevFolder(file)).toBeNull();
+  });
+
+  it("reads null from a record of a relative folder", async () => {
+    const file = path.join(root, "dev-folder.json");
+    fs.writeFileSync(file, JSON.stringify({ folder: "Extensions" }));
+    expect(await readDevFolder(file)).toBeNull();
+  });
+
+  it("refuses to record a relative folder", async () => {
+    const file = path.join(root, "dev-folder.json");
+    await expect(writeDevFolder(file, "Extensions")).rejects.toThrow("Bad folder");
+    expect(fs.existsSync(file)).toBe(false);
   });
 });

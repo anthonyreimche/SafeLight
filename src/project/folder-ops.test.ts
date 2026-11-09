@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   photos: [] as CatalogPhoto[],
   activeFolder: null as string | null,
   edits: new Map<string, EditState>(),
+  unreadableEdits: new Set<string>(),
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedFs: () => h.fs }));
@@ -52,7 +53,12 @@ vi.mock("@/state/ui-store", () => ({
 }));
 
 vi.mock("@/catalog/storage", () => ({
-  catalogStorage: () => ({ getEditState: async (id: string) => h.edits.get(id) }),
+  catalogStorage: () => ({
+    getEditState: async (id: string) => {
+      if (h.unreadableEdits.has(id)) throw new Error(`edit ${id} unreadable`);
+      return h.edits.get(id);
+    },
+  }),
 }));
 
 import {
@@ -60,6 +66,7 @@ import {
   createFolder,
   deleteFolder,
   exportPhotoData,
+  exportPhotoDataReport,
   moveFolder,
   movePhotos,
   renameFolder,
@@ -170,6 +177,7 @@ beforeEach(() => {
   h.photos = [];
   h.activeFolder = null;
   h.edits = new Map();
+  h.unreadableEdits = new Set();
   // The ops log skipped/failed work; keep the reporter clean.
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -184,6 +192,29 @@ afterEach(() => {
 function foldingCase(env: Env): void {
   vi.stubGlobal("window", { safelightNative: { platform: "win32" } });
   env.fs.foldCase = true;
+}
+
+/** Fail a plain lookup of `name` in the top-level `folder` ("" for the root) once
+ *  the file is there, as a lookup can right after the file moved onto it. */
+function failLookupOnceThere(env: Env, folder: string, name: string): void {
+  const failing = (dir: FileSystemDirectoryHandle) => {
+    const lookup = dir.getFileHandle.bind(dir);
+    vi.spyOn(dir, "getFileHandle").mockImplementation(async (n, options) => {
+      if (n === name && !options?.create && env.fs.has(at(env, folder ? `${folder}/${n}` : n)))
+        throw new Error(`lookup of ${n} failed`);
+      return lookup(n, options);
+    });
+    return dir;
+  };
+  if (!folder) {
+    failing(env.root);
+    return;
+  }
+  const openDir = env.root.getDirectoryHandle.bind(env.root);
+  vi.spyOn(env.root, "getDirectoryHandle").mockImplementation(async (n, options) => {
+    const dir = await openDir(n, options);
+    return n === folder ? failing(dir) : dir;
+  });
 }
 
 describe("uniqueFolderName", () => {
@@ -455,6 +486,32 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(late.id)).toMatchObject({ rating: 4, relPath: "2024/a.jpg", folder: "2024" });
   });
 
+  it("records every photo that moved even when one's new file can't be looked up", async () => {
+    const env = start();
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "b.jpg");
+    failLookupOnceThere(env, "2024", "a.jpg");
+
+    await movePhotos(["id:a.jpg", "id:b.jpg"], "2024");
+
+    expect(env.fs.text(at(env, "2024/a.jpg"))).toBe("pixels:a.jpg");
+    expect(find("id:a.jpg")).toMatchObject({ folder: "2024", relPath: "2024/a.jpg" });
+    expect(find("id:b.jpg")).toMatchObject({ folder: "2024", relPath: "2024/b.jpg" });
+  });
+
+  it("never overwrites a sidecar already in the destination", async () => {
+    const env = start();
+    await addPhoto(env, "a.jpg");
+    env.fs.put(at(env, `a.jpg${SIDECAR_SUFFIX}`), "mine");
+    env.fs.put(at(env, `2024/a.jpg${SIDECAR_SUFFIX}`), "orphan");
+
+    await movePhotos(["id:a.jpg"], "2024");
+
+    expect(env.fs.text(at(env, "2024/a.jpg"))).toBe("pixels:a.jpg");
+    expect(env.fs.text(at(env, `2024/a.jpg${SIDECAR_SUFFIX}`))).toBe("orphan");
+    expect(env.fs.text(at(env, `a.jpg${SIDECAR_SUFFIX}`))).toBe("mine");
+  });
+
   // ── renamePhoto ───────────────────────────────────────────────────────────
 
   it("renames a photo in place, keeping its extension and its sidecar", async () => {
@@ -630,6 +687,29 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find("id:a.jpg")).toMatchObject({ rating: 4, filename: "b.jpg", relPath: "b.jpg" });
   });
 
+  it("follows a renamed file even when its new name can't be looked up", async () => {
+    const env = start();
+    await addPhoto(env, "trip/a.jpg");
+    failLookupOnceThere(env, "trip", "b.jpg");
+
+    await expect(renamePhoto("id:trip/a.jpg", "b")).resolves.toEqual({ ok: true, filename: "b.jpg" });
+
+    expect(env.fs.text(at(env, "trip/b.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(find("id:trip/a.jpg")).toMatchObject({ filename: "b.jpg", relPath: "trip/b.jpg" });
+  });
+
+  it("never renames a sidecar onto one already under the new name", async () => {
+    const env = start();
+    await addPhoto(env, "trip/a.jpg");
+    env.fs.put(at(env, `trip/a.jpg${SIDECAR_SUFFIX}`), "mine");
+    env.fs.put(at(env, `trip/b.jpg${SIDECAR_SUFFIX}`), "orphan");
+
+    await expect(renamePhoto("id:trip/a.jpg", "b")).resolves.toEqual({ ok: true, filename: "b.jpg" });
+
+    expect(env.fs.text(at(env, `trip/b.jpg${SIDECAR_SUFFIX}`))).toBe("orphan");
+    expect(env.fs.text(at(env, `trip/a.jpg${SIDECAR_SUFFIX}`))).toBe("mine");
+  });
+
   it("reports a missing photo or a closed project instead of throwing", async () => {
     start();
     await expect(renamePhoto("nope", "x")).resolves.toMatchObject({ ok: false });
@@ -649,6 +729,20 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 
     expect(env.fs.tree()).toEqual([at(env, "keep/c.jpg")]);
     expect(h.photos.map((p) => p.id)).toEqual(["id:keep/c.jpg"]);
+  });
+
+  it("keeps the catalogue and reports the failure when the folder can't be deleted", async () => {
+    const env = start();
+    await addPhoto(env, "trip/a.jpg");
+    await addPhoto(env, "keep/c.jpg");
+    h.activeFolder = "trip";
+    env.fs.freeze(at(env, "trip"));
+
+    await expect(deleteFolder("trip")).rejects.toThrow();
+
+    expect(env.fs.text(at(env, "trip/a.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(h.photos.map((p) => p.id)).toEqual(["id:trip/a.jpg", "id:keep/c.jpg"]);
+    expect(h.activeFolder).toBe("trip");
   });
 
   it("clears the active folder only when it was inside the deleted tree", async () => {
@@ -731,6 +825,32 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 
     await expect(exportPhotoData(["id:a.jpg"])).resolves.toBe(0);
     expect(env.fs.tree()).toEqual([at(env, "a.jpg")]);
+  });
+
+  it("goes on to the next photo when one photo's edits can't be read", async () => {
+    const env = start();
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "b.jpg");
+    h.unreadableEdits.add("id:a.jpg");
+
+    await expect(exportPhotoData(["id:a.jpg", "id:b.jpg"])).resolves.toBe(1);
+    expect(env.fs.text(at(env, `b.jpg${SIDECAR_SUFFIX}`))).not.toBeNull();
+    await expect(exportPhotoDataReport(["id:a.jpg", "id:b.jpg"])).resolves.toEqual({
+      written: 1,
+      failed: 1,
+    });
+  });
+
+  it("reports a sidecar that couldn't be written as failed, not skipped", async () => {
+    const env = start();
+    const p = await addPhoto(env, "a.jpg");
+    const virtual = addCopy(p, "copy");
+    vi.spyOn(p.directoryHandle!, "getFileHandle").mockRejectedValue(new Error("read-only volume"));
+
+    await expect(exportPhotoDataReport([p.id, virtual.id])).resolves.toEqual({
+      written: 0,
+      failed: 1,
+    });
   });
 });
 

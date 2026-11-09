@@ -264,3 +264,83 @@ describe("CurveEditor point values", () => {
     expect(canvas.getAttribute("aria-label")).toContain("input 32, output 22");
   });
 });
+
+describe("CurveEditor canvas palette", () => {
+  const strokes: string[] = [];
+  const recorder = new Proxy(
+    {},
+    {
+      get: () => () => {},
+      set: (_t, key, value) => {
+        if (key === "strokeStyle") strokes.push(String(value));
+        return true;
+      },
+    },
+  );
+
+  const useRecorder = () => {
+    strokes.length = 0;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => recorder,
+    });
+  };
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty("--curve-grid");
+    document.documentElement.style.removeProperty("--curve-rgb");
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => noopContext,
+    });
+  });
+
+  it("draws with the theme's curve colours", () => {
+    document.documentElement.style.setProperty("--curve-grid", "#123456");
+    document.documentElement.style.setProperty("--curve-rgb", "#654321");
+    useRecorder();
+    setup(IDENTITY);
+    expect(strokes).toContain("#123456");
+    expect(strokes).toContain("#654321");
+    expect(strokes).not.toContain("#2a2a2a");
+    expect(strokes).not.toContain("#c8c8c8");
+  });
+
+  it("keeps the shipped colours when a theme sets none", () => {
+    useRecorder();
+    setup(IDENTITY);
+    expect(strokes).toContain("#2a2a2a");
+    expect(strokes).toContain("#c8c8c8");
+  });
+});
+
+describe("CurveEditor interrupted drags", () => {
+  const start = async () => {
+    const onCommit = vi.fn();
+    const onChange = vi.fn<(channel: ToneCurveChannel, points: CurvePoint[]) => void>();
+    render(<Harness rgb={IDENTITY} onChange={onChange} onCommit={onCommit} />);
+    const canvas = screen.getByLabelText(/^Tone curve,/);
+    const user = userEvent.setup();
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: canvas, coords: at(0, 0) },
+      { target: canvas, coords: at(0.25, 0) },
+    ]);
+    return { canvas, onChange, onCommit };
+  };
+
+  it("commits once and stops dragging when the pointer is cancelled", async () => {
+    const { canvas, onChange, onCommit } = await start();
+    fireEvent.pointerCancel(canvas, { pointerId: 1 });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    const calls = onChange.mock.calls.length;
+    fireEvent.pointerMove(canvas, { pointerId: 1, ...at(0.5, 0) });
+    expect(onChange.mock.calls.length).toBe(calls);
+  });
+
+  it("commits once when capture is lost after the pointer is released", async () => {
+    const { canvas, onCommit } = await start();
+    fireEvent.pointerUp(canvas, { pointerId: 1 });
+    fireEvent.lostPointerCapture(canvas, { pointerId: 1 });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+});

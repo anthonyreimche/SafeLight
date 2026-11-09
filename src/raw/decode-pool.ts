@@ -41,7 +41,8 @@ function getCtor(): Promise<LibRawCtor | null> {
   return ctorPromise;
 }
 
-/** Why libraw-wasm could not be loaded on the latest attempt, if it could not. */
+/** Why libraw-wasm could not be loaded, or an instance of it made, on the latest
+ *  attempt, if it could not. */
 export function decodePoolFailure(): string | undefined {
   return loadFailure;
 }
@@ -66,6 +67,17 @@ interface DecodePriority {
 // an instance early; see discardInstance.)
 export interface DecodeRequest extends DecodePriority {
   signal?: AbortSignal;
+  /** The long edge, in pixels, the caller renders from. A frame whose half
+   *  size still reaches it is decoded at half size (libraw's half_size): about
+   *  a quarter of the pixels to demosaic and convert. Unset: full size. */
+  targetEdge?: number;
+  /** Clockwise degrees to bake into a libraw frame, which arrives EXIF-upright:
+   *  the photo's manual turns (catalog/orient.ts manualRotation). The turn is
+   *  made off the main thread, as the frame is converted. */
+  turn?: number;
+  /** Also build the develop-preview cache entry for the frame, its preview
+   *  downscaled to this long edge, off the main thread (raw-cache.ts). */
+  cacheEdge?: number;
 }
 
 // null: the pool was disposed while this request waited.
@@ -86,21 +98,33 @@ async function ensurePool(): Promise<void> {
   const Ctor = await getCtor();
   if (!Ctor) return;
   ctor = Ctor;
-  while (pool.length < DEFAULT_SIZE) free.push(spawn(Ctor));
+  while (pool.length < DEFAULT_SIZE) {
+    const inst = spawn(Ctor);
+    if (!inst) break;
+    free.push(inst);
+  }
   poolSize = pool.length;
 }
 
-function spawn(Ctor: LibRawCtor): LibRawInstance {
-  const inst = new Ctor();
-  pool.push(inst);
-  return inst;
+// Making an instance can fail (its Worker refused, memory exhausted). The pool
+// then carries on with the instances it has, and with none, requests get null.
+function spawn(Ctor: LibRawCtor): LibRawInstance | null {
+  try {
+    const inst = new Ctor();
+    pool.push(inst);
+    return inst;
+  } catch (e: unknown) {
+    console.warn("[decode-pool] libraw instance could not be made", e);
+    loadFailure = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    return null;
+  }
 }
 
 /** A free instance, or a fresh one in the place of one that was discarded. */
 function takeFree(): LibRawInstance | undefined {
   const inst = free.pop();
   if (inst) return inst;
-  return ctor && pool.length < poolSize ? spawn(ctor) : undefined;
+  return (ctor && pool.length < poolSize && spawn(ctor)) || undefined;
 }
 
 export function warmDecodePool(): Promise<void> {
@@ -131,6 +155,8 @@ export async function acquireInstance(
       return inst;
     }
   }
+  // No replacement could be made and nothing is left to release.
+  if (pool.length === 0) return null;
 
   const queue = background ? waitingBackground : waitingInteractive;
   return new Promise<LibRawInstance | null>((resolve) => {
@@ -188,7 +214,18 @@ export function discardInstance(inst: LibRawInstance): void {
   const servable =
     waitingInteractive.length > 0 ||
     (waitingBackground.length > 0 && heldByBackground.size < backgroundLimit());
-  if (ctor && servable) handOn(spawn(ctor));
+  if (!ctor || !servable) return;
+  const fresh = spawn(ctor);
+  if (fresh) {
+    handOn(fresh);
+    return;
+  }
+  // With no instance left, no release will ever come for them.
+  if (pool.length > 0) return;
+  const stranded = [...waitingInteractive, ...waitingBackground];
+  waitingInteractive = [];
+  waitingBackground = [];
+  for (const wake of stranded) wake(null);
 }
 
 export function decodePoolSize(): number {

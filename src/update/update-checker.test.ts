@@ -222,6 +222,40 @@ describe("checkForUpdateFull — release channels", () => {
   });
 });
 
+describe("checkForUpdateFull — malformed release entries", () => {
+  const junk = [null, 5, { tag_name: 7 }, release({ tag_name: "v9.9.9" })];
+
+  it("skips entries that aren't releases and decides on the rest", async () => {
+    stubNative(bridge("1.0.0", junk));
+
+    await expect(checkForUpdateFull()).resolves.toMatchObject({
+      kind: "update-available",
+      info: { version: "9.9.9" },
+    });
+  });
+
+  it("lists only the readable releases", async () => {
+    stubNative(bridge("1.0.0", junk));
+
+    await expect(fetchAllReleases()).resolves.toMatchObject([{ version: "9.9.9" }]);
+  });
+
+  it("reports a parse-error when nothing in the list is readable", async () => {
+    stubNative(bridge("1.0.0", [null]));
+
+    await expect(checkForUpdateFull()).resolves.toEqual({
+      kind: "parse-error",
+      detail: "GitHub's release list couldn't be read",
+    });
+  });
+
+  it("still treats an empty list as no releases", async () => {
+    stubNative(bridge("1.0.0", []));
+
+    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "no-releases" });
+  });
+});
+
 describe("checkForUpdateFull — failure modes", () => {
   it("degrades to network-error when the bridge rejects", async () => {
     stubNative({

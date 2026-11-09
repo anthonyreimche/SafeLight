@@ -4,12 +4,16 @@
 // be preserved in derived versions.
 
 import { nativePathOf } from "@/project/native-fs";
-import type { CachedPreview } from "./cache-encode";
+import type { CachedPreview, EncodedEntry } from "./cache-encode";
 import type { CacheListing, CacheRequest, CacheResponse } from "./cache-worker";
 
 let worker: Worker | null = null;
 let ready: Promise<void> | null = null;
 let nextId = 1;
+// The folder the project last pointed the worker at, null included. A worker
+// that replaces a failed one starts with no folder and the no-project scope,
+// so it is told again before anything else.
+let lastCacheDir: { dir: FileSystemDirectoryHandle | null } | null = null;
 
 const pending = new Map<
   number,
@@ -22,6 +26,7 @@ function getWorker(): Worker {
     worker = w;
     ready = new Promise<void>((resolve, reject) => {
       const fail = (err: Error) => {
+        w.terminate();
         for (const p of pending.values()) p.reject(err);
         pending.clear();
         if (worker === w) {
@@ -42,6 +47,7 @@ function getWorker(): Worker {
       w.onerror = (e) => fail(new Error(e.message || "cache worker failed"));
       w.onmessageerror = () => fail(new Error("cache worker message deserialization failed"));
     });
+    if (lastCacheDir) pointAt(w, ready, lastCacheDir.dir);
   }
   return worker;
 }
@@ -82,9 +88,10 @@ function send<T>(msg: CacheRequest, transfer?: Transferable[]): Promise<T> {
 
 let warnedCacheDir = false;
 
-export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void {
-  const w = getWorker();
-  ready!
+/** Chained onto `r` ahead of any request sent after it, so the worker has the
+ *  folder before it serves one. */
+function pointAt(w: Worker, r: Promise<void>, dir: FileSystemDirectoryHandle | null): void {
+  r
     .then(() => {
       try {
         w.postMessage({ cmd: "setCacheDir", dir, scope: "" } satisfies CacheRequest);
@@ -107,6 +114,13 @@ export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void
     });
 }
 
+export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void {
+  lastCacheDir = { dir };
+  // A worker spawned here is pointed at the folder by getWorker itself.
+  if (worker && ready) pointAt(worker, ready, dir);
+  else getWorker();
+}
+
 /** The entry under `key`, with its centre sample only when `sample` asks for it
  *  (8 MB more to decompress and move). */
 export async function workerReadCachedPreview(
@@ -122,14 +136,26 @@ export async function workerReadCachedPreview(
     : null;
 }
 
+/** `entry`: the cache entry already built from `data` (the decode builds it off
+ *  the main thread, frame-job.ts). It goes to the worker as it is and the frame
+ *  stays where it is. Without one, the frame is copied across for the worker to
+ *  encode, which copies it on this thread. */
 export async function workerWriteCachedPreview(
   key: string,
   data: Float32Array,
   width: number,
   height: number,
   maxEdge: number,
+  entry?: EncodedEntry,
 ): Promise<boolean> {
   const id = nextId++;
+  if (entry) {
+    const stored = await send<Extract<CacheResponse, { type: "write" }>>(
+      { cmd: "store", id, key, entry },
+      [entry.preview.data.buffer, entry.sample.data.buffer],
+    );
+    return stored.ok;
+  }
   const copy = new Float32Array(data);
   const resp = await send<Extract<CacheResponse, { type: "write" }>>(
     { cmd: "write", id, key, data: copy, width, height, maxEdge },

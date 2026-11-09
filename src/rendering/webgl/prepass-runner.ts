@@ -12,9 +12,9 @@ import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { SCRATCH_UNIT, allocateInto, created, workingFormat, type TexFormat } from "./gl-resources";
 import { simpleHash } from "./hash";
 import { passDraws, stageDraws } from "./pass-draws";
-import { createProgram, withProcessVersion } from "./program-cache";
+import { buildOutcome, createProgram, withProcessVersion, type ProgramBuilds } from "./program-cache";
 import type { ProcessVersion } from "./shaders";
-import { paramIsActive } from "./stage-coverage";
+import { isDormant, paramIsActive } from "./stage-coverage";
 import {
   PASS_VERTEX_SHADER,
   SOURCE_IMAGE_UNIFORM,
@@ -24,6 +24,16 @@ import {
 } from "./stage-injection";
 import { StageResultLayers } from "./stage-result-layers";
 import { bindUniformByType, boundValue } from "./uniform-values";
+
+// A layered stage's cached result is kept under its id with this prefix.
+const LAYER_KEY = "layer:";
+
+/** What a stage's pass programs and results are made from, besides the bag:
+ *  its passes' sources and draw counts, and the stage whose programs it draws with. */
+function passesPrint(stage: PrepassStage): string {
+  const passes = stage.passes.map((p) => [p.fragmentSource, p.vertexSource ?? null, p.iterations, p.drawCount ?? null]);
+  return simpleHash(JSON.stringify([passes, stage.passesOf ?? ""]));
+}
 
 type UnitResult = { kind: "unit"; resultUniform: string; tex: WebGLTexture; unit: number };
 type LayerResult = { kind: "layer"; layerUniform: string; layer: number };
@@ -55,8 +65,6 @@ export interface PrepassFrame {
   copyBudget: number;
   /** The source epoch, which the shared array starts over on. */
   epoch: number;
-  /** The stage set's signature, which keys the pass programs. */
-  stageSig: string;
   /** The photo's, which pass programs are built and results kept under. */
   processVersion: ProcessVersion;
   linear: boolean;
@@ -76,6 +84,8 @@ export interface PrepassHost {
   ): void;
   /** Says once what a path loses on this GPU. */
   note(path: "prepass" | "stage-results", note: string): void;
+  /** Told as each pass program starts and stops building. */
+  builds?: ProgramBuilds;
 }
 
 export class PrepassRunner {
@@ -89,8 +99,15 @@ export class PrepassRunner {
   private ppW = 0;
   private ppH = 0;
   private resultTargets = new Map<string, { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number }>();
-  // Cached pass programs, keyed by stageSig|stageId|passIdx|source hash|process version.
-  private passPrograms = new Map<string, { program: WebGLProgram; locs: Record<string, WebGLUniformLocation | null> }>();
+  // Cached pass programs, keyed by stageId|passIdx|source hash|process version,
+  // with the stage that owns them.
+  private passPrograms = new Map<
+    string,
+    { owner: string; program: WebGLProgram; locs: Record<string, WebGLUniformLocation | null> }
+  >();
+  // Each stage's passes as the set holding it declared them (passesPrint), so a
+  // new set tells the stages it changed from the ones it kept.
+  private prints = new Map<string, string>();
   // A layered program's prepass results: one array, a layer per stage that has run.
   private readonly layers: StageResultLayers;
   // Per-stage signature of the last prepass run; lets run() skip the
@@ -178,20 +195,44 @@ export class PrepassRunner {
     return this.layers.texture();
   }
 
-  /** A new stage set: pass programs and cached results go, a stage whose GLSL
-   *  was fixed (extension update / dev-folder reload) gets a fresh compile
-   *  attempt, and a stage that left the set (its extension was turned off)
-   *  takes its targets with it. Only the stages that read a layer in the
-   *  program now selected keep one: a set within the sampler budget has no use
-   *  for the array, the one large result texture, and what it held is stale. */
+  /** A new stage set. A stage that left it (its extension was turned off)
+   *  takes its pass programs, cached result and targets with it, and one whose
+   *  passes changed (extension update / dev-folder reload) its programs and
+   *  cached result; one in both sets as it was keeps them, so a stage joining
+   *  the set (woken from dormancy) costs the others no pass. Every failed
+   *  stage gets a fresh compile attempt. Only the stages that read a layer in
+   *  the program now selected keep one: a set within the sampler budget has no
+   *  use for the array, the one large result texture, and what it held is stale.
+   *  A stage that reads a layer now gives back the full-size target of its own. */
   stageSetChanged(prepass: readonly PrepassStage[]): void {
-    for (const pass of this.passPrograms.values()) this.gl.deleteProgram(pass.program);
-    this.passPrograms.clear();
-    this.sigs.clear();
+    const before = this.prints;
+    const next = new Map(prepass.map((s) => [s.stageId, passesPrint(s)]));
+    const kept = (stageId: string): boolean => {
+      const print = next.get(stageId);
+      return print !== undefined && print === before.get(stageId);
+    };
+    this.prints = next;
+    for (const [key, pass] of this.passPrograms) {
+      if (kept(pass.owner)) continue;
+      this.gl.deleteProgram(pass.program);
+      this.passPrograms.delete(key);
+    }
+    const layered = new Set(prepass.filter((s) => s.layerUniform !== undefined).map((s) => s.stageId));
+    for (const key of this.sigs.keys()) {
+      const stageId = key.startsWith(LAYER_KEY) ? key.slice(LAYER_KEY.length) : key;
+      if (!kept(stageId) || (stageId !== key && !layered.has(stageId))) this.sigs.delete(key);
+    }
+    for (const stageId of layered) {
+      this.sigs.delete(stageId);
+      const t = this.resultTargets.get(stageId);
+      if (!t) continue;
+      this.gl.deleteTexture(t.tex);
+      this.gl.deleteFramebuffer(t.fbo);
+      this.resultTargets.delete(stageId);
+    }
     this.failed.clear();
     this.releaseTargets(prepass);
-    const layered = prepass.filter((s) => s.layerUniform !== undefined);
-    this.layers.release(new Set(layered.map((s) => s.stageId)));
+    this.layers.release(layered);
   }
 
   dispose(): void {
@@ -300,20 +341,35 @@ export class PrepassRunner {
     return t;
   }
 
-  private passProgram(key: string, name: string, fragmentSource: string, bindings: ContributedBinding[]) {
+  private passProgram(
+    key: string,
+    owner: string,
+    name: string,
+    sources: { fragment: string; vertex?: string },
+    bindings: ContributedBinding[],
+  ) {
     let e = this.passPrograms.get(key);
     if (e) return e;
-    const program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource, name);
+    const stageIds = new Set([owner]);
+    this.host.builds?.started(stageIds);
+    let program: WebGLProgram;
+    try {
+      program = createProgram(this.gl, sources.vertex ?? PASS_VERTEX_SHADER, sources.fragment, name);
+    } catch (err) {
+      this.host.builds?.ended(stageIds, buildOutcome(err));
+      throw err;
+    }
+    this.host.builds?.ended(stageIds, "built");
     const gl = this.gl;
     const locs: Record<string, WebGLUniformLocation | null> = {};
     for (const n of [
-      "uPrevPass", "uTexel", "uPassIndex", "uPassCount",
+      "uPrevPass", "uTexel", "uPassIndex", "uPassCount", "uWholeDraw",
       "uPrevRaw", "uSrcLinear", "uIsFallbackPreview", "uApplyBaseCurve", "uSourceSize", SOURCE_IMAGE_UNIFORM,
     ]) {
       locs[n] = gl.getUniformLocation(program, n);
     }
     for (const b of bindings) locs[b.glslName] = gl.getUniformLocation(program, b.glslName);
-    e = { program, locs };
+    e = { owner, program, locs };
     this.passPrograms.set(key, e);
     return e;
   }
@@ -330,10 +386,12 @@ export class PrepassRunner {
   // It covers `{ key, max }` counts only, so fixed counts and plain non-zero
   // uniform defaults (Moiré's `pattern`/`edge` at 50) don't start every such
   // stage on every photo. A mask copy whose mask applies nothing (hidden, 0
-  // opacity) is idle too.
+  // opacity) is idle too. A stage that declares dormantWhen is active exactly
+  // while that rule doesn't hold.
   private active(stage: PrepassStage, frame: PrepassFrame): boolean {
     if (frame.copySlots.get(stage.stageId) === -1) return false;
     const { bag } = frame;
+    if (stage.dormant) return !isDormant(stage.dormant, bag);
     const prefix = stage.stageId + ".";
     for (const [k, v] of Object.entries(bag)) {
       if (!k.startsWith(prefix)) continue;
@@ -371,7 +429,6 @@ export class PrepassRunner {
     this.copiesPending = false;
     this.denoiseReady = false; // set true below only if the denoise prepass yields a real result
     if (frame.stages.length === 0) return;
-    const gl = this.gl;
     const { srcTex, w, h } = frame;
     // The ping-pong pair is two full-size targets, so it's made only once some
     // stage runs, not for every photo opened with a prepass extension installed.
@@ -456,15 +513,10 @@ export class PrepassRunner {
       // whole render. Disable just this stage for the session and fall back to
       // the raw source so the rest of the pipeline keeps working.
       try {
-        const result = this.drawStagePasses(stage, split, frame);
-        // Copy the final ping-pong result into the stage's dedicated target so the
-        // next stage's ping-pong doesn't clobber it.
+        // The stage's dedicated target, so the next stage's ping-pong doesn't
+        // clobber the result.
         const target = this.ensureStageResult(stage.stageId, w, h);
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, result);
-        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target.fbo);
-        gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        this.drawStagePasses(stage, split, frame, target.fbo);
         this.sigs.set(stage.stageId, { sig, srcSig: frame.srcSig, w, h });
         this.results.push({ kind: "unit", resultUniform: stage.resultUniform, tex: target.tex, unit });
         if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
@@ -509,7 +561,7 @@ export class PrepassRunner {
     frame.stages.forEach((stage, i) => {
       if (!active[i] || stage.passesOf === undefined) return;
       const layered = stage.layerUniform !== undefined;
-      const last = this.sigs.get(layered ? `layer:${stage.stageId}` : stage.stageId);
+      const last = this.sigs.get(layered ? `${LAYER_KEY}${stage.stageId}` : stage.stageId);
       if (last?.sig === this.prepassKey(stage, frame).sig) return;
       if (started < budget) {
         started++;
@@ -560,12 +612,11 @@ export class PrepassRunner {
     }
     // A dropped layer is never read through an old signature: every signature
     // carries the source epoch, and the store drops on a new epoch or size.
-    const cacheKey = `layer:${stage.stageId}`;
+    const cacheKey = `${LAYER_KEY}${stage.stageId}`;
     try {
       const { split, sig } = this.prepassKey(stage, frame);
       if (!held && this.sigs.get(cacheKey)?.sig !== sig) {
-        const result = this.drawStagePasses(stage, split, frame);
-        this.layers.write(stage.stageId, result, frame.w, frame.h);
+        this.drawStagePasses(stage, split, frame, this.layers.target(stage.stageId));
         this.sigs.set(cacheKey, { sig, srcSig: frame.srcSig, w: frame.w, h: frame.h });
       }
       this.results.push({ kind: "layer", layerUniform, layer });
@@ -596,18 +647,26 @@ export class PrepassRunner {
   }
 
   // Draws a stage's passes over the ping-pong pair, after its split draw when it
-  // reads the current image, and returns the framebuffer holding the result.
+  // reads the current image. The last draw goes to `target`, the stage's result,
+  // so nothing is copied after it. Passes sample the ping-pong textures and the
+  // source only, never a result, so the target is never read while it is written.
+  // A pass that names its region draws only that, except on the stage's first
+  // two draws, which fill a pair that holds another stage's leftovers, and its
+  // last, which fills the result.
   private drawStagePasses(
     stage: PrepassStage,
     split: StageSplit | null,
     frame: PrepassFrame,
-  ): WebGLFramebuffer {
+    target: WebGLFramebuffer,
+  ): void {
     const gl = this.gl;
+    let remaining = stageDraws(stage, frame.bag);
+    let drawn = 0;
+    if (remaining === 0) throw new Error(`stage '${stage.stageId}' has no draw to write its result`);
     const { srcTex, applyRetouch, w, h, baseCurve } = frame;
     let readTex: WebGLTexture = srcTex;
     let prevRaw = true;            // first read linearizes + base-curves the source
     let writeIdx = 0;
-    let lastIdx = 0;
     if (split) {
       this.host.drawSplit(split.index, srcTex, applyRetouch, { fbo: this.ppFbo[0], w, h });
       this.draws.split++;
@@ -622,14 +681,19 @@ export class PrepassRunner {
       // length-only key collided and reused the first pass's program.
       // A mask copy draws with its stage's programs (same source, its own values).
       const owner = stage.passesOf ?? stage.stageId;
-      const key = `${frame.stageSig}|${owner}|${passIdx}|${simpleHash(pass.fragmentSource)}|pv${frame.processVersion}`;
+      const key = `${owner}|${passIdx}|${simpleHash(pass.fragmentSource + (pass.vertexSource ?? ""))}|pv${frame.processVersion}`;
       const name = `pass ${passIdx + 1} of stage "${owner}"`;
       passIdx++;
-      const prog = this.passProgram(key, name, withProcessVersion(pass.fragmentSource, frame.processVersion), pass.bindings);
+      const sources = {
+        fragment: withProcessVersion(pass.fragmentSource, frame.processVersion),
+        ...(pass.vertexSource === undefined ? {} : { vertex: withProcessVersion(pass.vertexSource, frame.processVersion) }),
+      };
+      const prog = this.passProgram(key, owner, name, sources, pass.bindings);
       const { bag } = frame;
       const draws = passDraws(pass, bag);
       for (let it = 0; it < draws; it++) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
+        const last = --remaining === 0;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, last ? target : this.ppFbo[writeIdx]);
         gl.viewport(0, 0, w, h);
         gl.useProgram(prog.program);
         const sourceLoc = prog.locs[SOURCE_IMAGE_UNIFORM];
@@ -644,6 +708,8 @@ export class PrepassRunner {
         gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
         gl.uniform1i(prog.locs.uPassIndex!, it);
         gl.uniform1i(prog.locs.uPassCount!, draws);
+        // Null without a region (not declared); a no-op then.
+        gl.uniform1i(prog.locs.uWholeDraw, last || drawn < 2 ? 1 : 0);
         gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
         gl.uniform1i(prog.locs.uSrcLinear!, frame.linear ? 1 : 0);
         // Null where the pass doesn't name it (not declared, see stage-injection.ts); a no-op then.
@@ -657,13 +723,12 @@ export class PrepassRunner {
         }
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         this.draws.pass++;
+        drawn++;
         readTex = this.ppTex[writeIdx]!;
         prevRaw = false;
-        lastIdx = writeIdx;
         writeIdx = 1 - writeIdx;
       }
     }
-    return this.ppFbo[lastIdx]!;
   }
 
   // The denoiser's forward pass stores VST luma, which is always above 1, so an

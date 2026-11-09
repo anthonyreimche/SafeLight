@@ -124,6 +124,22 @@ async function dirSizeBytes(dir) {
   return total;
 }
 
+// The preload stringifies every path, so a renderer bug that passes undefined
+// arrives as "undefined": relative, it would resolve against the main process's
+// working directory. Mutating channels take absolute paths only.
+function absolutePath(p) {
+  if (typeof p !== "string" || p === "" || !path.isAbsolute(p))
+    throw new Error(`Refused a path that isn't absolute: ${JSON.stringify(p)}`);
+  return p;
+}
+
+// A drive, filesystem or network-share root, which no remove or move may take.
+function notRoot(p) {
+  const at = path.resolve(absolutePath(p));
+  if (at === path.parse(at).root) throw new Error(`Refused a filesystem root: ${p}`);
+  return p;
+}
+
 /**
  * @param {{
  *   userData: () => string,
@@ -152,8 +168,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
     {
       channel: "fs:write",
       privileged: true,
-      handler: (_e, p, data) =>
-        fileWriter.write(p, data instanceof Uint8Array ? data : Buffer.from(data)),
+      handler: async (_e, p, data) =>
+        fileWriter.write(absolutePath(p), data instanceof Uint8Array ? data : Buffer.from(data)),
     },
     {
       channel: "fs:list",
@@ -184,7 +200,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       channel: "fs:mkdir",
       privileged: true,
       handler: async (_e, p) => {
-        await fs.promises.mkdir(p, { recursive: true });
+        await fs.promises.mkdir(absolutePath(p), { recursive: true });
       },
     },
     // Resolve a "separate" .safelight working directory for a project folder — used
@@ -337,22 +353,17 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         return out;
       },
     },
-    // Record where a source's read-only spillover catalogue lives (atomic write).
+    // Record where a source's read-only spillover catalogue lives, through the
+    // shared atomic writer so it is queued per file and drained at quit.
     {
       channel: "fs:setSpilloverPointer",
       privileged: true,
       handler: async (_e, rootPath, spilloverDir) => {
-        const p = spilloverPointerPath(userData(), rootPath);
-        await fs.promises.mkdir(path.dirname(p), { recursive: true });
         const body = JSON.stringify({
           source: path.resolve(String(rootPath)),
           spillover: String(spilloverDir),
         });
-        // Random suffix so two same-source writers in the same millisecond can't share
-        // a tmp path (the loser's rename would ENOENT); both write identical content.
-        const tmp = `${p}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-        await fs.promises.writeFile(tmp, body);
-        await fs.promises.rename(tmp, p);
+        await fileWriter.write(spilloverPointerPath(userData(), rootPath), Buffer.from(body));
       },
     },
     // Look up a source's spillover dir, or null. Verifies the recorded source path
@@ -388,7 +399,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       channel: "fs:remove",
       privileged: true,
       handler: async (_e, p) => {
-        await fs.promises.rm(p, { recursive: true, force: true });
+        await fs.promises.rm(notRoot(p), { recursive: true, force: true });
       },
     },
     // Recoverable delete: the OS trash (Recycle Bin) instead of rm. Rejects when
@@ -398,7 +409,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       channel: "fs:trash",
       privileged: true,
       handler: async (_e, p) => {
-        await shell.trashItem(path.normalize(p));
+        await shell.trashItem(path.normalize(notRoot(p)));
       },
     },
     // Move/rename a file or directory. Used by folder-ops for drag-to-reorganize
@@ -407,6 +418,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       channel: "fs:move",
       privileged: true,
       handler: async (_e, src, dest) => {
+        notRoot(src);
+        notRoot(dest);
         await fs.promises.mkdir(path.dirname(dest), { recursive: true });
         await fs.promises.rename(src, dest);
       },

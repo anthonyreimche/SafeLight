@@ -37,6 +37,9 @@ const COLOR_LABELS: readonly CatalogPhoto["colorLabel"][] = [
   "purple",
 ];
 const FLAGS: readonly CatalogPhoto["flag"][] = ["none", "pick", "reject"];
+/** How many keywords a sidecar may bring, and how long each may be. */
+const MAX_KEYWORDS = 1000;
+const MAX_KEYWORD_LENGTH = 512;
 
 /** The fields of a sidecar's info a photo can hold. A sidecar travels between
  *  machines and versions, so each value is checked rather than trusted. */
@@ -49,7 +52,11 @@ export function adoptSidecar(
     adopted.rating = rating;
   if (colorLabel && COLOR_LABELS.includes(colorLabel)) adopted.colorLabel = colorLabel;
   if (flag && FLAGS.includes(flag)) adopted.flag = flag;
-  if (Array.isArray(keywords))
-    adopted.keywords = keywords.filter((k): k is string => typeof k === "string" && k !== "");
+  if (Array.isArray(keywords)) {
+    const kept = keywords.filter(
+      (k): k is string => typeof k === "string" && k !== "" && k.length <= MAX_KEYWORD_LENGTH,
+    );
+    adopted.keywords = [...new Set(kept)].slice(0, MAX_KEYWORDS);
+  }
   return adopted;
 }

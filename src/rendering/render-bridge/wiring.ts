@@ -11,6 +11,7 @@ import { activeMonitorTransform, useDisplayProfile } from "../display-profile-st
 import { currentDisplaySpace, subscribeDisplaySpace } from "../display-space";
 import type { MonitorTransform } from "../display-profile";
 import type { DisplaySpace } from "../color-space";
+import { forgetCrashesOf, withoutCrashed } from "../gpu-crash-guard";
 
 /** What the app-wide state feeds into the shared bridge (RenderBridge). */
 interface WiredBridge {
@@ -38,13 +39,54 @@ const stageTextures: Record<string, StageTextureData> = {};
 // a film stock) wouldn't repaint until the next interaction. Redraw here,
 // rAF-debounced so a swap (re-register + N texture uploads) coalesces into one.
 let stageRenderRaf: number | null = null;
+// A hidden or minimised window runs no animation frames, so the same work also runs
+// from a timeout, whichever comes first.
+const STAGE_SYNC_FALLBACK_MS = 50;
+let stageRenderTimer: ReturnType<typeof setTimeout> | null = null;
+// The stage and pipeline sets ride the same frame, so a boot that registers
+// stages one extension at a time posts the set once a frame, not once each.
+let stagesDirty = false;
+let pipelineDirty = false;
+
+function sameStages(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const before = Object.values(a);
+  const after = Object.values(b);
+  return before.length === after.length && before.every((stage, i) => stage === after[i]);
+}
+
+function cancelStageRender(): void {
+  if (stageRenderRaf != null) cancelAnimationFrame(stageRenderRaf);
+  if (stageRenderTimer != null) clearTimeout(stageRenderTimer);
+  stageRenderRaf = null;
+  stageRenderTimer = null;
+}
+
 function requestStageRender(): void {
   if (!wired || stageRenderRaf != null) return;
-  stageRenderRaf = requestAnimationFrame(() => {
-    stageRenderRaf = null;
+  const run = () => {
+    // The other of the frame and the timeout, or a frame a cancelled request left.
+    if (stageRenderRaf !== frame) return;
+    cancelStageRender();
+    flushStageSync();
     postStageTextures();
     wired?.render(false);
-  });
+  };
+  const frame = requestAnimationFrame(run);
+  stageRenderRaf = frame;
+  stageRenderTimer = setTimeout(run, STAGE_SYNC_FALLBACK_MS);
+}
+
+/** Post the stages and pipeline that changed since they last went, without waiting for
+ *  the frame that batches them: the bridge calls this before it asks the worker to draw
+ *  or read, which must use the current set. */
+export function flushStageSync(): void {
+  if (!wired) return;
+  const stages = stagesDirty;
+  const pipeline = pipelineDirty;
+  stagesDirty = false;
+  pipelineDirty = false;
+  if (stages) wired.syncStages();
+  if (pipeline) wired.syncPipeline();
 }
 
 // Posting clones every texture it carries, so the worker gets the bag whole when the
@@ -179,6 +221,8 @@ function releaseStageTextures(stageIds: readonly string[]): void {
   }
 }
 onStagesReleased(releaseStageTextures);
+// Turning an extension off and on tries the stages the crash guard blamed again.
+onStagesReleased(forgetCrashesOf);
 
 /** The current stage-texture bag (qualified key → data). Returned by reference;
  *  callers must not mutate. Used by the export pipeline to seed its own renderer
@@ -189,9 +233,10 @@ export function getStageTextures(): Record<string, StageTextureData> {
 }
 
 /** The registered stages as the render worker takes them: without `derive`,
- *  which runs in the window (frameStageBag) and can't be posted. */
+ *  which runs in the window (frameStageBag) and can't be posted, and without
+ *  those that took the graphics driver down (gpu-crash-guard.ts). */
 export function stagesForWorker(): ProcessingStageContribution[] {
-  return Object.values(useRegistry.getState().processingStages).map((stage) => {
+  return Object.values(withoutCrashed(useRegistry.getState().processingStages)).map((stage) => {
     const { derive, ...sent } = stage;
     return derive ? sent : stage;
   });
@@ -241,20 +286,25 @@ export function wireBridge(bridge: WiredBridge): void {
   let prevPipelines = useRegistry.getState().pipelines;
   const unsubStages = useRegistry.subscribe((s) => {
     if (s.processingStages !== prevStages) {
+      const changed = !sameStages(prevStages, s.processingStages);
       prevStages = s.processingStages;
-      wired?.syncStages();
-      requestStageRender();
+      // Unregistering an extension rebuilds the map even when it held no stage; the
+      // workers clear their injection memos on every set they are sent.
+      if (changed) {
+        stagesDirty = true;
+        requestStageRender();
+      }
     }
     if (s.pipelines !== prevPipelines) {
       prevPipelines = s.pipelines;
-      wired?.syncPipeline();
+      pipelineDirty = true;
       // A pipeline (display-transform) swap is silent like a stage swap:
       // it updates renderer state but isn't param-driven, so force a redraw.
       requestStageRender();
     }
   });
   const unsubPipeline = usePipelineStore.subscribe(() => {
-    wired?.syncPipeline();
+    pipelineDirty = true;
     // A new Preferences default changes what a photo without its own pick
     // renders with; repaint, else the canvas keeps the previous transform
     // until the next interaction.
@@ -270,8 +320,9 @@ export function unwireBridge(): void {
   unsubscribers = [];
   // A frame that hasn't run would hold back the next bridge's redraws until
   // it does, and one that never runs (a hidden page) would hold them for good.
-  if (stageRenderRaf != null) cancelAnimationFrame(stageRenderRaf);
-  stageRenderRaf = null;
+  cancelStageRender();
+  stagesDirty = false;
+  pipelineDirty = false;
   if (texturePostRaf != null) cancelAnimationFrame(texturePostRaf);
   texturePostRaf = null;
   changedTextureKeys.clear();

@@ -11,8 +11,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { validRepo } = require("../window-policy.cjs");
-const { validManifest } = require("../extension-origins.cjs");
-const { replacePlugin, settlePlugin, contains } = require("../plugin-files.cjs");
+const { isOfficialRepo, validManifest } = require("../extension-origins.cjs");
+const { replacePlugin, settlePlugin, removePlugin, contains } = require("../plugin-files.cjs");
 const { unzip } = require("../unzip.cjs");
 const {
   checkInstallFiles,
@@ -45,7 +45,7 @@ function parseRepoSpec(spec) {
  *   pluginsDir: () => string,
  *   pluginWorkDir: () => string,
  *   appVersion: () => string,
- *   fetchTrustList: () => Promise<{ repos: string[], owners: string[], reason: Record<string, string> }>,
+ *   fetchTrustList: () => Promise<{ repos: string[], owners: string[], reason: Record<string, string>, unchecked?: boolean }>,
  *   registryVersionsFor: (repo: string) => Promise<object | undefined>,
  *   releases: {
  *     fetchTarballFiles(owner: string, repo: string, ref: string): Promise<Array<{ name: string, data: Buffer }>>,
@@ -90,10 +90,15 @@ function createInstaller({
     // Remote kill-switch: refuse banned repos/owners before any download or write.
     // The renderer enforces this too (nicer UX), but this is the authoritative
     // gate — it holds even if the renderer bundle is tampered with.
-    const banned = bannedReason(await fetchTrustList(), owner, repo);
-    if (banned)
-      throw new Error(`"${owner}/${repo}" is blocked by Safelight — ${banned}.`);
     const full = `${owner}/${repo}`;
+    const trust = await fetchTrustList();
+    if (trust.unchecked && !isOfficialRepo(full))
+      throw new Error(
+        "Safelight couldn't download its list of blocked extensions, so only official extensions can be installed for now. Check your internet connection and try again."
+      );
+    const banned = bannedReason(trust, owner, repo);
+    if (banned)
+      throw new Error(`"${full}" is blocked by Safelight — ${banned}.`);
     let files;
     let release = null;
     let origin = "the repo";
@@ -165,13 +170,10 @@ function createInstaller({
     return restored && validManifest(restored) ? restored : null;
   }
 
-  function uninstallPlugin(id) {
+  async function uninstallPlugin(id) {
     if (!EXTENSION_ID.test(String(id)))
       throw new Error("Bad extension id");
-    const dir = path.join(pluginsDir(), String(id));
-    // Retry: on Windows a just-imported bundle can be briefly locked.
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    if (fs.existsSync(dir)) throw new Error("Could not delete extension files");
+    return removePlugin({ pluginsDir: pluginsDir(), workDir: pluginWorkDir(), id: String(id) });
   }
 
   return { installPlugin, settleUpdate, uninstallPlugin };

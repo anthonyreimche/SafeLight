@@ -41,11 +41,13 @@ export function UpdateBanner() {
     }
     let alive = true;
     const run = () =>
-      void checkForUpdate(channel).then((info) => {
-        if (!alive) return;
-        if (info && closedThisSession.current.has(info.version)) return;
-        setUpdate(info);
-      });
+      void checkForUpdate(channel)
+        .then((info) => {
+          if (!alive) return;
+          if (info && closedThisSession.current.has(info.version)) return;
+          setUpdate(info);
+        })
+        .catch((e) => console.warn("[update] check failed:", e));
     run(); // immediately on mount…
     // …then re-check periodically so a release published while the app is left
     // open surfaces without a restart (the old behaviour only checked on launch).
@@ -119,7 +121,7 @@ function BannerInstall({
       {support === "release-page" ? (
         <button
           onClick={() => openUrl(update.releasesUrl)}
-          className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+          className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-on-accent hover:opacity-90"
         >
           Open release page
         </button>
@@ -139,7 +141,7 @@ function BannerInstall({
         ) : (
           <button
             onClick={handleDownload}
-            className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+            className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-on-accent hover:opacity-90"
           >
             Download
           </button>

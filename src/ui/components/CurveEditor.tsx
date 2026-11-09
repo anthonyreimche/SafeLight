@@ -3,7 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useThemeStore } from "@/extensions/themes";
 import { makeCurveEvaluator } from "@/rendering/curve";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
 import { useSettings } from "@/state/settings-store";
@@ -21,11 +22,43 @@ const COARSE = 0.05;
 const LEVELS = 255;
 const toLevel = (v: number) => Math.round(v * LEVELS);
 
-const CHANNELS: { key: ToneCurveChannel; label: string; color: string }[] = [
-  { key: "rgb", label: "RGB", color: "#c8c8c8" },
-  { key: "red", label: "R", color: channelHex("red") },
-  { key: "green", label: "G", color: channelHex("green") },
-  { key: "blue", label: "B", color: channelHex("blue") },
+// Canvas colours a theme can override through custom properties; the values
+// here are what the editor has always drawn.
+const PALETTE_DEFAULTS = {
+  rgb: "#c8c8c8",
+  grid: "#2a2a2a",
+  identity: "#3a3a3a",
+  ring: "#9c9c9c",
+  ringFocused: "#ffffff",
+  point: "#f0f0f0",
+};
+
+type Palette = typeof PALETTE_DEFAULTS;
+
+const PALETTE_VARS: Record<keyof Palette, string> = {
+  rgb: "--curve-rgb",
+  grid: "--curve-grid",
+  identity: "--curve-identity",
+  ring: "--curve-ring",
+  ringFocused: "--curve-ring-focused",
+  point: "--curve-point",
+};
+
+function readPalette(): Palette {
+  const style = getComputedStyle(document.documentElement);
+  const out = { ...PALETTE_DEFAULTS };
+  for (const key of Object.keys(PALETTE_VARS) as (keyof Palette)[]) {
+    const v = style.getPropertyValue(PALETTE_VARS[key]).trim();
+    if (v) out[key] = v;
+  }
+  return out;
+}
+
+const CHANNELS: { key: ToneCurveChannel; label: string }[] = [
+  { key: "rgb", label: "RGB" },
+  { key: "red", label: "R" },
+  { key: "green", label: "G" },
+  { key: "blue", label: "B" },
 ];
 
 export interface CurveEditorProps {
@@ -76,8 +109,14 @@ export function CurveEditor({
   // Whether to draw the selection/focus ring on the active point.
   const showHighlights = useSettings((s) => s.editingHighlights);
 
+  const themeId = useThemeStore((s) => s.activeId);
+  const highContrast = useSettings((s) => s.highContrast);
+  const palette = useMemo(() => readPalette(), [themeId, highContrast]);
+  const channelColor = (key: ToneCurveChannel) =>
+    key === "rgb" ? palette.rgb : channelHex(key);
+
   const points = curves[channel];
-  const color = CHANNELS.find((c) => c.key === channel)!.color;
+  const color = channelColor(channel);
   const channelLabel = CHANNELS.find((c) => c.key === channel)!.label;
   // Guard the index against a curve that shrank (channel switch, point removed).
   const sel = Math.min(selected, points.length - 1);
@@ -109,8 +148,8 @@ export function CurveEditor({
     canvas.height = size * dpr;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, size, points, color, sel, focused, showHighlights);
-  }, [points, size, color, sel, focused, showHighlights]);
+    draw(ctx, size, points, color, palette, sel, focused, showHighlights);
+  }, [points, size, color, palette, sel, focused, showHighlights]);
 
   const update = (next: CurvePoint[]) => onChange(channel, next);
   const describe = (i: number, p: CurvePoint) =>
@@ -306,7 +345,7 @@ export function CurveEditor({
                 ? "bg-surface-3"
                 : "text-text-muted hover:text-text-secondary"
             }`}
-            style={channel === c.key ? { color: c.color } : undefined}
+            style={channel === c.key ? { color: channelColor(c.key) } : undefined}
           >
             {c.label}
           </button>
@@ -326,6 +365,8 @@ export function CurveEditor({
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onLostPointerCapture={handlePointerUp}
           onDoubleClick={handleDoubleClick}
           onKeyDown={kbd ? onKeyDown : undefined}
           onKeyUp={kbd ? onKeyUp : undefined}
@@ -425,6 +466,7 @@ function draw(
   size: number,
   points: CurvePoint[],
   color: string,
+  palette: Palette,
   selected: number,
   focused: boolean,
   showHighlight: boolean,
@@ -433,7 +475,7 @@ function draw(
   ctx.clearRect(0, 0, size, size);
 
   // Grid.
-  ctx.strokeStyle = "#2a2a2a";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const t = PAD + (i / 4) * plot;
@@ -446,7 +488,7 @@ function draw(
   }
 
   // Identity reference.
-  ctx.strokeStyle = "#3a3a3a";
+  ctx.strokeStyle = palette.identity;
   ctx.beginPath();
   ctx.moveTo(PAD, PAD + plot);
   ctx.lineTo(PAD + plot, PAD);
@@ -473,13 +515,13 @@ function draw(
     const cx = PAD + points[i].x * plot;
     const cy = PAD + (1 - points[i].y) * plot;
     if (showHighlight && i === selected) {
-      ctx.strokeStyle = focused ? "#ffffff" : "#9c9c9c";
+      ctx.strokeStyle = focused ? palette.ringFocused : palette.ring;
       ctx.lineWidth = focused ? 2 : 1.5;
       ctx.beginPath();
       ctx.arc(cx, cy, 6, 0, Math.PI * 2);
       ctx.stroke();
     }
-    ctx.fillStyle = "#f0f0f0";
+    ctx.fillStyle = palette.point;
     ctx.beginPath();
     ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
     ctx.fill();

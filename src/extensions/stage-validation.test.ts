@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import { PROCESSING_PHASE_ORDER, type ProcessingStageContribution } from "./types";
-import { checkStageContract } from "./stage-validation";
+import { checkStageContract, dormancyIgnored } from "./stage-validation";
 
 const base: ProcessingStageContribution = {
   id: "acme.stage",
@@ -483,6 +483,33 @@ describe("pass draw counts", () => {
   });
 });
 
+// A pass carries three channels, or four when it asks: anything else would
+// compile a program whose `c` the author didn't write for.
+describe("a pass's channels", () => {
+  it.each([3, 4, undefined])("accepts %s", (channels) => {
+    const check = checkStageContract(withFields({ passes: [{ glsl: "", channels }] }));
+    expect(check.error).toBeNull();
+  });
+
+  it.each([2, 5, 3.5, "4", null])("refuses %o", (channels) => {
+    const stage = withFields({ passes: [{ glsl: "" }, { glsl: "", channels }] });
+    expect(checkStageContract(stage).error).toMatch(/passes\[1\]\.channels must be 3 or 4/);
+  });
+});
+
+// A region is GLSL the vertex program runs; anything else would build a
+// program that can't compile, or one that draws nothing.
+describe("a pass's region", () => {
+  it("accepts GLSL text", () => {
+    expect(checkStageContract(withFields({ passes: [{ glsl: "", region: "return ivec4(0);" }] })).error).toBeNull();
+  });
+
+  it.each(["", "  ", 4, null, ["return ivec4(0);"]])("refuses %o", (region) => {
+    const stage = withFields({ passes: [{ glsl: "" }, { glsl: "", region }] });
+    expect(checkStageContract(stage).error).toMatch(/passes\[1\]\.region must be GLSL text/);
+  });
+});
+
 // The ordering reads `after` as a list of stage ids and ignores anything else, so
 // a value it can't use is a warning: the author would otherwise get no effect and
 // no word about it.
@@ -591,5 +618,75 @@ describe("paint textures", () => {
       "acme",
     );
     expect(check.error).toMatch(/^stage "acme\.stage": .*paint texture/);
+  });
+});
+
+// dormantWhen lets the live view leave a stage out while its values change
+// nothing. A rule the renderer can't read refuses the stage; a stage whose
+// absence would change the frame anyway registers, its rule ignored.
+describe("dormantWhen", () => {
+  const amount = { key: "amount", glslType: "float", default: 0 };
+  const tint = { key: "tint", glslType: "vec3", default: [0, 0, 0] };
+  const clean = { error: null, readsIgnored: null, warnings: [] };
+
+  it("accepts a rule naming the stage's uniforms with values that fit them", () => {
+    const check = checkStageContract(withFields({ uniforms: [amount, tint], dormantWhen: { amount: 0, tint: [0, 0, 0] } }));
+    expect(check).toEqual(clean);
+  });
+
+  it("accepts a rule naming a pass's uniform", () => {
+    const passes = [{ glsl: "c = c;", uniforms: [{ key: "radius", glslType: "float", default: 0 }] }];
+    expect(checkStageContract(withFields({ passes, dormantWhen: { radius: 0 } }))).toEqual(clean);
+  });
+
+  it.each([
+    ["not an object", 0],
+    ["a list", [0]],
+    ["empty", {}],
+    ["naming a uniform the stage lacks", { strength: 0 }],
+    ["a value that doesn't fit the uniform", { amount: [0, 0] }],
+    ["a vector of the wrong size", { tint: [0, 0] }],
+  ])("refuses a rule %s", (_, dormantWhen) => {
+    const check = checkStageContract(withFields({ uniforms: [amount, tint], dormantWhen }));
+    expect(check.error).toMatch(/^stage "acme\.stage": dormantWhen/);
+  });
+
+  it("refuses a rule naming an array uniform", () => {
+    const bands = { key: "bands", glslType: "float", default: [0, 0], length: 2 };
+    const check = checkStageContract(withFields({ uniforms: [bands], dormantWhen: { bands: [0, 0] } }));
+    expect(check.error).toMatch(/^stage "acme\.stage": dormantWhen/);
+  });
+
+  it.each([
+    ["a geometry stage", { phase: "geometry" }, "geometry"],
+    ["a noise-reduction stage", { phase: "noise-reduction" }, "noise-reduction"],
+    ["a display stage without space", { phase: "effects" }, "space"],
+    ["a stage that produces values", { produces: [{ name: "acme_v", glslType: "float", producer: "0.0" }] }, "produces"],
+    ["a stage that patches the source", { patch: { active: ["amount"] } }, "patches"],
+  ])("ignores the rule of %s, with a warning", (_, fields, why) => {
+    const check = checkStageContract(withFields({ uniforms: [amount], dormantWhen: { amount: 0 }, ...fields }));
+    expect(check.error).toBeNull();
+    expect(check.warnings).toHaveLength(1);
+    expect(check.warnings[0]).toMatch(new RegExp(`^stage "acme\.stage": .*${why}.*, so dormantWhen is ignored$`));
+  });
+
+  it("keeps the rule of a display stage that declares its space", () => {
+    const check = checkStageContract(
+      withFields({ phase: "effects", space: { encoding: "perceptual" }, uniforms: [amount], dormantWhen: { amount: 0 } }),
+    );
+    expect(check).toEqual(clean);
+  });
+
+  // An official extension's stage writes the develop program's own names and
+  // never has its input clipped, so leaving it out clips nothing either.
+  it("keeps the rule of an official extension's display stage without space", () => {
+    const stage = withFields({ id: "safelight.basic.presence", phase: "display-adjust", uniforms: [amount], dormantWhen: { amount: 0 } });
+    expect(checkStageContract(stage, "safelight.basic").warnings).toEqual([]);
+    expect(dormancyIgnored({ ...stage, extensionId: "safelight.basic" })).toBeNull();
+  });
+
+  it("still ignores the rule of another extension's display stage without space", () => {
+    const stage = withFields({ phase: "display-adjust", uniforms: [amount], dormantWhen: { amount: 0 } });
+    expect(dormancyIgnored({ ...stage, extensionId: "acme" })).toMatch(/space/);
   });
 });

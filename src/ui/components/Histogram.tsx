@@ -8,6 +8,7 @@ import type { HistogramData } from "@/rendering/histogram";
 import type { ClippingMask } from "@/state/develop-slices/view-slice";
 import { channelHex, channelRgba } from "./channel-colors";
 import { useThemeStore } from "@/extensions/themes";
+import { useSettings } from "@/state/settings-store";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 
@@ -131,7 +132,7 @@ export function Histogram({
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(220);
-  const dragRef = useRef<{ startX: number; zone: HistogramZone } | null>(null);
+  const dragRef = useRef<{ startX: number; zone: HistogramZone; dx: number } | null>(null);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -154,7 +155,8 @@ export function Histogram({
   const prevSizeRef = useRef({ w: 0, h: 0, dpr: 0 });
   const dpr = useDevicePixelRatio();
   const themeId = useThemeStore((s) => s.activeId);
-  const palette = useMemo(() => readPalette(), [themeId]);
+  const highContrast = useSettings((s) => s.highContrast);
+  const palette = useMemo(() => readPalette(), [themeId, highContrast]);
 
   const LERP_RATE = 0.35;
 
@@ -269,7 +271,7 @@ export function Histogram({
     if (!onAdjust || e.button !== 0) return;
     const { zone } = zoneAt(x / w);
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = { startX: e.clientX, zone };
+    dragRef.current = { startX: e.clientX, zone, dx: 0 };
     setHoverZone(zone);
     onAdjust(zone, 0, "start");
   };
@@ -278,7 +280,8 @@ export function Histogram({
     if (!onAdjust) return;
     const d = dragRef.current;
     if (d) {
-      onAdjust(d.zone, e.clientX - d.startX, "move");
+      d.dx = e.clientX - d.startX;
+      onAdjust(d.zone, d.dx, "move");
     } else {
       const { x, w } = localXY(e);
       setHoverZone(zoneAt(x / w).zone);
@@ -290,6 +293,15 @@ export function Histogram({
     const d = dragRef.current;
     dragRef.current = null;
     if (d) onAdjust(d.zone, e.clientX - d.startX, "end");
+  };
+
+  // A cancel's clientX is unreliable (it can be 0), so end at the last moved offset.
+  const onPointerAbort = () => {
+    const d = dragRef.current;
+    if (!onAdjust || !d) return;
+    dragRef.current = null;
+    setHoverZone(null);
+    onAdjust(d.zone, d.dx, "end");
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -308,6 +320,8 @@ export function Histogram({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onPointerCancel={onPointerAbort}
+          onLostPointerCapture={onPointerAbort}
           onDoubleClick={onDoubleClick}
           onPointerLeave={() => {
             if (!dragRef.current) setHoverZone(null);

@@ -28,6 +28,7 @@ export type PhotoGroup =
   | "keywords"
   | "decodeError"
   | "copyName"
+  | "stack"
   | "created";
 
 /** The fields of a photo record a stamp covers: all but its id and the
@@ -39,7 +40,8 @@ type StampedField = Exclude<keyof StoredPhoto, "id" | "previewEdit" | "previewRo
  *  share a group, so a merge never takes half of such a change. A move or rename
  *  writes the location; a turn swaps width and height; a reimport, or the read of
  *  metadata an import left pending, rewrites the file's facts; copyOf and
- *  dateImported are set as the record is made. */
+ *  dateImported are set as the record is made; a stack's id and cover mark are
+ *  written together. */
 const GROUP_OF: Record<StampedField, PhotoGroup> = {
   filename: "location",
   relPath: "location",
@@ -58,6 +60,8 @@ const GROUP_OF: Record<StampedField, PhotoGroup> = {
   keywords: "keywords",
   decodeError: "decodeError",
   copyName: "copyName",
+  stackId: "stack",
+  stackCover: "stack",
   copyOf: "created",
   dateImported: "created",
 };

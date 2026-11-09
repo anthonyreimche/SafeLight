@@ -8,6 +8,7 @@ import type { AppModule } from "@/catalog/types";
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
+import { startRenderBridgeWarmup } from "@/rendering/render-bridge-warm";
 import { getSettings } from "@/state/settings-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWindowSync } from "@/hooks/use-window-sync";
@@ -63,6 +64,14 @@ export function App() {
     if (dm || devtoolsWindow) return;
     if (!getSettings().restoreLastProject) return;
     void useProjectStore.getState().openLast();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Main window only: start the render worker while idle once a project is open, so
+  // the first Develop open doesn't pay for it. Runs once on mount.
+  useEffect(() => {
+    if (dm || devtoolsWindow) return;
+    return startRenderBridgeWarmup();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

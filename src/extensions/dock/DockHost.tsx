@@ -8,8 +8,9 @@
 
 import {
   createContext,
+  memo,
   useContext,
-  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -50,10 +51,11 @@ import {
   without,
 } from "./actions";
 import { startHeaderDrag, startResize } from "./dnd";
+import { prewarmPanel } from "./prewarm";
 
 function PanelErrorBoundary({ id, children }: { id: string; children: ReactNode }) {
   return (
-    <ErrorBoundary what={`Panel "${id}"`} className="p-3 text-[11px] text-red-400">
+    <ErrorBoundary what={`Panel "${id}"`} className="p-3 text-[11px] text-danger">
       {children}
     </ErrorBoundary>
   );
@@ -80,7 +82,7 @@ export function useDockPlacement(): PanelPlacement {
   return useContext(PlacementCtx);
 }
 
-function PanelBody({ id }: { id: string }) {
+const PanelBody = memo(function PanelBody({ id }: { id: string }) {
   const reg = useRegistry((s) => s.panels[id]);
   if (!reg)
     return (
@@ -94,7 +96,7 @@ function PanelBody({ id }: { id: string }) {
       <C />
     </DockPanelTitleCtx.Provider>
   );
-}
+});
 
 function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
@@ -116,6 +118,7 @@ function PanelHeader({ id }: { id: string }) {
   return (
     <div
       onPointerDown={(e) => startHeaderDrag(id, e, containerRef?.current ?? null)}
+      onPointerEnter={() => prewarmPanel(id)}
       onContextMenu={
         onReset
           ? (e) => {
@@ -134,7 +137,7 @@ function PanelHeader({ id }: { id: string }) {
           <ErrorBoundary
             key={boundaryKey(id, Accessory)}
             what={`Panel "${id}" header`}
-            className="truncate text-[11px] text-red-400"
+            className="truncate text-[11px] text-danger"
           >
             <Accessory />
           </ErrorBoundary>
@@ -145,7 +148,7 @@ function PanelHeader({ id }: { id: string }) {
           <ErrorBoundary
             key={boundaryKey(accId, A)}
             what={`Header control "${accId}"`}
-            className="truncate text-[11px] text-red-400"
+            className="truncate text-[11px] text-danger"
           >
             <A
               panelId={id}
@@ -183,7 +186,13 @@ function PanelHeader({ id }: { id: string }) {
 
 /** `stretch` panels fill the remaining rail space and let the body scroll
  *  itself (fill panels in side rails; every panel in a bottom rail). */
-function DockedPanel({ id, stretch = false }: { id: string; stretch?: boolean }) {
+const DockedPanel = memo(function DockedPanel({
+  id,
+  stretch = false,
+}: {
+  id: string;
+  stretch?: boolean;
+}) {
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   const body = (
     <PanelErrorBoundary id={id}>
@@ -202,9 +211,9 @@ function DockedPanel({ id, stretch = false }: { id: string; stretch?: boolean })
         (stretch ? <div className="min-h-0 flex-1 overflow-hidden">{body}</div> : body)}
     </div>
   );
-}
+});
 
-function Rail({ rail }: { rail: RailState }) {
+const Rail = memo(function Rail({ rail }: { rail: RailState }) {
   // At most one fill panel per rail stretches to the leftover height; while one
   // is present (and expanded) the rail stops scrolling and the panel scrolls.
   const fillId = useRegistry(
@@ -244,9 +253,9 @@ function Rail({ rail }: { rail: RailState }) {
       </div>
     </PlacementCtx.Provider>
   );
-}
+});
 
-function BottomRail({ rail }: { rail: RailState }) {
+const BottomRail = memo(function BottomRail({ rail }: { rail: RailState }) {
   // Collapsing a bottom panel folds the strip downward: with every panel in the
   // rail collapsed it drops its fixed height and sizes to the headers alone, so
   // the canvas takes back the band instead of looking at an empty strip. (One
@@ -282,9 +291,9 @@ function BottomRail({ rail }: { rail: RailState }) {
       </div>
     </PlacementCtx.Provider>
   );
-}
+});
 
-function FloatingPanel({ id }: { id: string }) {
+const FloatingPanel = memo(function FloatingPanel({ id }: { id: string }) {
   const pos = useDockStore((s) => s.floating[id]);
   const z = useDockStore((s) => s.zOrder.indexOf(id));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
@@ -323,7 +332,7 @@ function FloatingPanel({ id }: { id: string }) {
       />
     </div>
   );
-}
+});
 
 function DragOverlay() {
   const drag = useDockStore((s) => s.drag);
@@ -372,7 +381,9 @@ export function DockHost({
   const rails = useDockStore((s) => s.rails);
   const floatIds = useDockStore((s) => s.zOrder);
 
-  useEffect(() => {
+  // A layout effect so the incoming module's rails commit before the browser
+  // paints; `ready` keeps the outgoing module's rails off the screen until then.
+  useLayoutEffect(() => {
     initModule(module);
   }, [module]);
 

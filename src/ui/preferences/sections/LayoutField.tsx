@@ -105,7 +105,7 @@ export function LayoutField() {
           e.preventDefault();
           onCommit();
         }}
-        className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-white hover:opacity-90"
+        className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-on-accent hover:opacity-90"
       >
         Save
       </button>

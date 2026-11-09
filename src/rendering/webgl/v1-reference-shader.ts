@@ -7,10 +7,14 @@
 // transform, and the stage GLSL b1f5ec5 ("Overhaul 1") built for the fixtures
 // in v1-identity.fixtures.ts. Generated once. The identity test holds the live
 // shader's version 1 output to these tokens, which is what keeps every edit
-// made before process versions rendering as it always has. Edited once on
-// purpose, on 2026-11-06 with Anthony's approval: main()'s bounds check also
+// made before process versions rendering as it always has. Edited on
+// purpose on 2026-11-06 with Anthony's approval: main()'s bounds check also
 // tests sensorUv, the point before the contributed geometry stages warp it
-// (program-reference.ts).
+// (program-reference.ts). Edited again on 2026-11-08 with his approval: a
+// three-channel pass starts every draw after its first from its own texel
+// fetched exactly. Every hardware backend tested already read it exactly;
+// SwiftShader mixed in a trace of the neighbours that long chains compounded
+// (pass-reads-exact.webgl.test.ts).
 
 export const V1_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
@@ -1751,7 +1755,7 @@ vec3 readPrev(vec2 uv) {
 
 
 void main() {
-  vec3 c = readPrev(vUv);
+  vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;
   {
 
 float Y = dot(c, vec3(0.25, 0.5, 0.25));
@@ -1818,7 +1822,7 @@ vec3 readPrev(vec2 uv) {
 
 
 void main() {
-  vec3 c = readPrev(vUv);
+  vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;
   {
 
 float atrDil = exp2(float(uPassIndex));
@@ -1906,7 +1910,7 @@ vec3 readPrev(vec2 uv) {
 
 
 void main() {
-  vec3 c = readPrev(vUv);
+  vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;
   {
 
 float Yv = c.x;
@@ -1966,7 +1970,7 @@ vec3 readPrev(vec2 uv) {
 
 
 void main() {
-  vec3 c = readPrev(vUv);
+  vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;
   {
 c = 0.5 * (readPrev(vUv - vec2(uTexel.x, 0.0)) + readPrev(vUv + vec2(uTexel.x, 0.0)));
   }
@@ -2019,7 +2023,7 @@ vec3 readPrev(vec2 uv) {
 
 vec3 _1p0n_smoothTap(vec2 uv, float r) { return 0.5 * (readPrev(uv) + readPrev(uv + vec2(0.0, uTexel.y * r))); }
 void main() {
-  vec3 c = readPrev(vUv);
+  vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;
   {
 c = _1p0n_smoothTap(vUv, u_1p0n_smoothRadius);
   }

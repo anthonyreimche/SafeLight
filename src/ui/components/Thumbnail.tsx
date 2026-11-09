@@ -8,6 +8,7 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
 import { hasPreviewLoaded, markPreviewLoaded, revokePreviewUrl } from "@/state/preview-urls";
 import { Rating } from "./Rating";
+import { StackBadge } from "./StackBadge";
 import { usePhotoOption } from "./use-photo-option";
 import { usePreviewRequest } from "./use-preview-request";
 
@@ -153,7 +154,7 @@ function ThumbnailImpl({
 
       {photo.keywords.length > 0 && (
         <div
-          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-text-secondary transition-opacity group-hover:opacity-0"
+          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-on-media-muted transition-opacity group-hover:opacity-0"
           title={photo.keywords.join(", ")}
         >
           <span aria-hidden="true">{"🏷"}</span>
@@ -166,6 +167,8 @@ function ThumbnailImpl({
           {"★".repeat(photo.rating)}
         </div>
       )}
+
+      {photo.stackId && <StackBadge photoId={photo.id} />}
 
       {labelBar && (
         <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${labelBar}`} />

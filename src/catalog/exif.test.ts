@@ -231,6 +231,56 @@ describe.each([
     expect(exif.gpsLatitude).toBeUndefined();
   });
 
+  it("reads no GPS position from the 0/0 rationals a camera without a fix writes", async () => {
+    const exif = await fromTiff({
+      le,
+      gps: [
+        [G.LatRef, ascii("N")],
+        [G.Lat, rational([0, 0], [0, 0], [0, 0])],
+        [G.LonRef, ascii("E")],
+        [G.Lon, rational([0, 0], [0, 0], [0, 0])],
+      ],
+    });
+    expect(exif.gpsLatitude).toBeUndefined();
+    expect(exif.gpsLongitude).toBeUndefined();
+  });
+
+  it("drops a GPS coordinate with any zero denominator or one out of range", async () => {
+    const exif = await fromTiff({
+      le,
+      gps: [
+        [G.Lat, rational([91, 1], [0, 1], [0, 1])],
+        [G.Lon, rational([20, 1], [5, 0], [0, 1])],
+      ],
+    });
+    expect(exif.gpsLatitude).toBeUndefined();
+    expect(exif.gpsLongitude).toBeUndefined();
+
+    const far = await fromTiff({
+      le,
+      gps: [
+        [G.Lat, rational([4_000_000_000, 1], [0, 1], [0, 1])],
+        [G.Lon, rational([181, 1], [0, 1], [0, 1])],
+      ],
+    });
+    expect(far.gpsLatitude).toBeUndefined();
+    expect(far.gpsLongitude).toBeUndefined();
+  });
+
+  it("keeps a GPS coordinate on the range's edge and a normal one as written", async () => {
+    const exif = await fromTiff({
+      le,
+      gps: [
+        [G.LatRef, ascii("N")],
+        [G.Lat, rational([49, 1], [7, 1], [3000, 100])],
+        [G.LonRef, ascii("W")],
+        [G.Lon, rational([180, 1], [0, 1], [0, 1])],
+      ],
+    });
+    expect(exif.gpsLatitude).toBe(49.125);
+    expect(exif.gpsLongitude).toBe(-180);
+  });
+
   it("estimates colour temperature from DNG AsShotNeutral without a colour matrix", async () => {
     const kelvin = async (r: number, g: number, b: number): Promise<number | undefined> =>
       (
@@ -679,6 +729,11 @@ describe("parseExif — malformed structures", () => {
     expect(exif.cameraModel).toBeUndefined();
   });
 
+  it("caps a text tag whose count runs to hundreds of kilobytes", async () => {
+    const exif = await fromTiff({ le: true, ifd0: [[T.Artist, ascii("A".repeat(200_000))]] });
+    expect(exif.artist?.length).toBe(8 << 10);
+  });
+
   it("returns nothing for random bytes that happen to start with a byte-order mark", async () => {
     const junk = new Uint8Array(64);
     junk[0] = 0x49;
@@ -817,6 +872,71 @@ describe("parseXmp", () => {
   it("returns nothing when the XMP value pointer lies outside the buffer", async () => {
     const bytes = buildTiff({ le: true, ifd0: [[T.Xmp, pointer(1, 128, 0x7000)]] });
     expect(await parseXmp(blobOf(bytes))).toEqual({});
+  });
+
+  it("reads elements with attributes, trims them and decodes their entities", async () => {
+    const elements =
+      `<xmp:Rating rdf:datatype="xs:int">\n 5 \n</xmp:Rating>` +
+      `<xmp:Label>  &lt;Second&gt; &quot;pick&quot; &amp;amp;  </xmp:Label>`;
+    expect(await parseXmp(blobOf(xmpTiff(true, elements)))).toEqual({
+      rating: 5,
+      colorLabel: `<Second> "pick" &amp;`,
+    });
+  });
+
+  it("skips an element holding markup or left open and falls back to the attribute", async () => {
+    const elements = `<xmp:Label><b>x</b></xmp:Label><xmp:Label>Green</xmp:Label><xmp:Rating>3`;
+    expect(await parseXmp(blobOf(xmpTiff(true, elements, ` xmp:Rating="&apos;2&apos;"`)))).toEqual({
+      colorLabel: "Green",
+    });
+    expect(await parseXmp(blobOf(xmpTiff(true, `<xmp:Rating>3`, ` xmp:Rating=" 2 "`)))).toEqual({
+      rating: 2,
+    });
+  });
+
+  it("reads bag items with attributes and whitespace, dropping empty ones", async () => {
+    const subject =
+      `<dc:subjectX><rdf:Bag><rdf:li>wrong</rdf:li></rdf:Bag></dc:subjectX>` +
+      `<dc:subject rdf:parseType="Resource"><rdf:Bag>` +
+      `<rdf:li xml:lang="en"> lake </rdf:li><rdf:li></rdf:li><rdf:lix>no</rdf:lix>` +
+      `<rdf:li>Tom &amp; Jerry</rdf:li></rdf:Bag></dc:subject>` +
+      `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">\n  Dawn &lt;1&gt;\n</rdf:li></rdf:Alt></dc:title>`;
+    expect(await parseXmp(blobOf(xmpTiff(true, subject)))).toEqual({
+      keywords: ["lake", "Tom & Jerry"],
+      title: "Dawn <1>",
+    });
+  });
+
+  it("reads no bag when its container or its items are never closed", async () => {
+    const open = `<dc:subject><rdf:Bag><rdf:li>a</rdf:li></rdf:Bag>`;
+    expect((await parseXmp(blobOf(xmpTiff(true, open)))).keywords).toBeUndefined();
+    const items = `<dc:subject><rdf:Bag><rdf:li>a</rdf:li><rdf:li>b</rdf:Bag></dc:subject>`;
+    expect((await parseXmp(blobOf(xmpTiff(true, items)))).keywords).toEqual(["a"]);
+  });
+
+  describe("on a hostile megabyte packet", () => {
+    const filler = (unit: string): string => unit.repeat(Math.floor(1_000_000 / unit.length));
+    const timed = async (body: string): Promise<number> => {
+      const blob = blobOf(xmpTiff(true, body));
+      const started = performance.now();
+      await parseXmp(blob);
+      return performance.now() - started;
+    };
+
+    it("returns quickly from items that are never closed", async () => {
+      const ms = await timed(`<dc:subject><rdf:Bag>${filler("<rdf:li>")}</rdf:Bag></dc:subject>`);
+      expect(ms).toBeLessThan(500);
+    });
+
+    it("returns quickly from bag containers that are never closed", async () => {
+      const ms = await timed(filler("<dc:subject>"));
+      expect(ms).toBeLessThan(500);
+    });
+
+    it("returns quickly from element openers that never end", async () => {
+      const ms = await timed(filler("<xmp:Rating "));
+      expect(ms).toBeLessThan(500);
+    });
   });
 });
 

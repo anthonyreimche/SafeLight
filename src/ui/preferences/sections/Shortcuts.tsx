@@ -114,7 +114,7 @@ export function ShortcutsSection() {
             title={conflict ? "Conflicts with another shortcut" : undefined}
             className={`rounded px-2 py-0.5 font-medium ${
               capturing === a.id
-                ? "bg-slider-fill text-white"
+                ? "bg-slider-fill text-on-accent"
                 : conflict
                   ? "bg-surface-2 text-danger"
                   : "bg-surface-2 text-text-primary hover:bg-surface-3"

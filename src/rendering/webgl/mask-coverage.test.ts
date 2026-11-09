@@ -9,7 +9,8 @@
 // signature it is paired with, and the identity memo that spares it, are pure
 // and get the real coverage.
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { setActiveBrushTips } from "./brush-tips";
 import { CoverageInputs, bakeCoverage, coverageSignature } from "./mask-coverage";
 import type { CoverageItem } from "./mask-coverage";
 import type { BrushDab } from "@/catalog/types";
@@ -79,6 +80,33 @@ describe("coverageSignature", () => {
 
   it("separates an item with no dabs from no item at all", () => {
     expect(coverageSignature([item("m1", [])], 1)).not.toBe(coverageSignature([], 1));
+  });
+
+  describe("brush tips", () => {
+    afterEach(() => setActiveBrushTips({}));
+    const tip = (id: string, value = 255) => ({
+      id,
+      label: id,
+      alpha: { width: 1, height: 1, data: new Uint8Array([value]) },
+    });
+
+    it("changes with the tip and its angle", () => {
+      const base = coverageSignature([item("m1", [dab({ strokeStart: true })])], 1);
+      const chalk = coverageSignature([item("m1", [dab({ strokeStart: true, tip: "chalk" })])], 1);
+      const angled = coverageSignature([item("m1", [dab({ strokeStart: true, tip: "chalk", angle: 0.5 })])], 1);
+      const other = coverageSignature([item("m1", [dab({ strokeStart: true, tip: "sponge" })])], 1);
+      expect(new Set([base, chalk, angled, other]).size).toBe(4);
+    });
+
+    it("changes when the named tip is registered or replaced", () => {
+      const items = [item("m1", [dab({ strokeStart: true, tip: "chalk" })])];
+      const unknown = coverageSignature(items, 1);
+      setActiveBrushTips({ chalk: tip("chalk") });
+      const registered = coverageSignature(items, 1);
+      setActiveBrushTips({ chalk: tip("chalk", 128) });
+      const replaced = coverageSignature(items, 1);
+      expect(new Set([unknown, registered, replaced]).size).toBe(3);
+    });
   });
 });
 

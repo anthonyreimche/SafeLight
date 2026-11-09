@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -94,6 +94,7 @@
       "electron/self-update.cjs",
       "electron/unzip.cjs",
       "electron/window-bounds.cjs",
+      "electron/window-material.cjs",
       "electron/window-policy.cjs",
       "electron/preload.cjs",
       "package.json"

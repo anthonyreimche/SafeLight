@@ -46,6 +46,10 @@
   --color-label-green: #27ae60;
   --color-label-blue: #3498db;
   --color-label-purple: #9b59b6;
+  /* Text on the dark scrim over photos (bg-black/50). The scrim is the same in
+     every theme, so this is too. */
+  --color-on-media: #f4f4f4;
+  --color-on-media-muted: #d0d0d0;
   --font-mono: "Afacad", system-ui, -apple-system, "Segoe UI", Roboto,
     sans-serif;
   --font-code: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
@@ -70,10 +74,21 @@ body,
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: var(--color-surface-0);
   color: var(--color-text-primary);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* Windows are created with a transparent backdrop so a theme's window material
+   can show through, so <html> alone paints the opaque surface (body and #root
+   stay clear, or a translucent surface would stack three times) unless a
+   material is active (sl-material, set once the window confirms it draws one). */
+html {
+  background-color: #1a1a1a;
+  background-image: linear-gradient(var(--color-surface-0), var(--color-surface-0));
+}
+html.sl-material {
+  background: transparent;
 }
 
 ::selection {

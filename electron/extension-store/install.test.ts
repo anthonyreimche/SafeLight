@@ -23,7 +23,9 @@ beforeEach(() => {
 
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-function installerFor(id: string) {
+type Trust = { repos: string[]; owners: string[]; reason: Record<string, string>; unchecked?: boolean };
+
+function installerFor(id: string, trust: Trust = { repos: [], owners: [], reason: {} }) {
   const manifest = { id, name: "Thing", version: "1.0.0", main: "index.js" };
   const files = [
     { name: "safelight.json", data: Buffer.from(JSON.stringify(manifest)) },
@@ -33,7 +35,7 @@ function installerFor(id: string) {
     pluginsDir: () => pluginsDir,
     pluginWorkDir: () => path.join(root, "work"),
     appVersion: () => "3.0.0",
-    fetchTrustList: async () => ({ repos: [], owners: [], reason: {} }),
+    fetchTrustList: async () => trust,
     registryVersionsFor: async () => undefined,
     releases: {
       fetchTarballFiles: async () => files,
@@ -62,5 +64,47 @@ describe("installPlugin id case", () => {
     fs.rmSync(pluginsDir, { recursive: true });
     const manifest = await installerFor("acme.tool").installPlugin("o/r#main");
     expect(manifest.id).toBe("acme.tool");
+  });
+});
+
+describe("uninstallPlugin", () => {
+  it("also removes an update still waiting to be settled", async () => {
+    const installer = installerFor("acme.tool");
+    await installer.installPlugin("o/r#main");
+    await installer.installPlugin("o/r#main");
+    expect(fs.existsSync(path.join(root, "work", "acme.tool", "prev"))).toBe(true);
+    await installer.uninstallPlugin("acme.tool");
+    expect(fs.existsSync(path.join(pluginsDir, "acme.tool"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "work", "acme.tool"))).toBe(false);
+  });
+
+  it("refuses a bad id", async () => {
+    await expect(installerFor("acme.tool").uninstallPlugin("../x")).rejects.toThrow(
+      "Bad extension id",
+    );
+  });
+});
+
+// A first launch that can't reach the trust registry has no blocklist at all,
+// so only Safelight's own extensions can be checked without it.
+describe("installPlugin before the blocklist was ever fetched", () => {
+  const unchecked: Trust = { repos: [], owners: [], reason: {}, unchecked: true };
+
+  it("refuses a third-party repo and writes nothing", async () => {
+    await expect(installerFor("acme.tool", unchecked).installPlugin("acme/tool#main")).rejects.toThrow(
+      /only official extensions/,
+    );
+    expect(fs.readdirSync(pluginsDir)).toEqual([]);
+  });
+
+  it("installs an official repo, by its name or an alias", async () => {
+    expect((await installerFor("acme.tool", unchecked).installPlugin("AnthonyReimche/crop#main")).id).toBe("acme.tool");
+    expect(
+      (await installerFor("acme.tool", unchecked).installPlugin("anthonyreimche/crop-and-straighten#main")).id,
+    ).toBe("acme.tool");
+  });
+
+  it("installs a third-party repo once the blocklist is known", async () => {
+    expect((await installerFor("acme.tool").installPlugin("acme/tool#main")).id).toBe("acme.tool");
   });
 });

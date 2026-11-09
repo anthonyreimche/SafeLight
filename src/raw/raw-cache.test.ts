@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   refuseWrites: false,
   /** What the worker lists. */
   entries: [] as { key: string; complete: boolean }[],
+  /** The entries handed to writes, which the worker takes as they are. */
+  entriesWritten: [] as unknown[],
   /** The reads the worker was asked for: the key, and whether with the sample. */
   reads: [] as [string, boolean][],
   /** What the worker reports it could not clear, or why it was unreachable. */
@@ -24,7 +26,8 @@ vi.mock("./cache-bridge", () => ({
   setCacheDirOnWorker: (dir: FileSystemDirectoryHandle | null) => {
     h.sent.push(`folder ${dir?.name ?? "none"}`);
   },
-  workerWriteCachedPreview: async (key: string) => {
+  workerWriteCachedPreview: async (key: string, _data: Float32Array, _w: number, _h: number, _edge: number, entry?: unknown) => {
+    h.entriesWritten.push(entry);
     if (h.refuseWrites) throw new Error("The quota has been exceeded.");
     h.sent.push(`write ${key}`);
     return h.stores;
@@ -45,6 +48,7 @@ vi.mock("@/state/settings-store", () => ({
   getSettings: () => ({ rawCacheEnabled: true, rawCacheMaxEdge: 3072 }),
 }));
 
+import { encodeCacheEntry } from "./cache-encode";
 import {
   cacheListing,
   cachedKeys,
@@ -64,6 +68,7 @@ beforeEach(() => {
   h.sent = [];
   h.refuseWrites = false;
   h.entries = [];
+  h.entriesWritten = [];
   h.reads = [];
   h.clear = { failed: 0 };
   h.stores = true;
@@ -155,6 +160,17 @@ describe("writeCachedPreview's answer", () => {
     const taken = await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, begun);
 
     expect(taken).toBe(true);
+  });
+});
+
+describe("writeCachedPreview with an entry built off the main thread", () => {
+  it("hands the entry on for the worker to store", async () => {
+    setRawCacheDir(folder("A"));
+    const entry = encodeCacheEntry(pixels(), 1, 1, 3072);
+
+    await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, rawCacheGeneration(), entry);
+
+    expect(h.entriesWritten).toEqual([entry]);
   });
 });
 

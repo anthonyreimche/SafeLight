@@ -88,6 +88,20 @@ describe("when it appears", () => {
     expect(banner()).toBeNull();
   });
 
+  it("stays silent, without an unhandled rejection, when the release list is junk", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => [null, 5, { tag_name: 7 }] });
+      await mount();
+      await settle(10);
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(banner()).toBeNull();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("stays silent when GitHub can't be reached", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));
     await mount();

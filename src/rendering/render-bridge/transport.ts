@@ -46,6 +46,9 @@ export interface TransportEvents {
   /** No render in flight will be answered: an init failed, the worker died
    *  before its renderer was ready, or its graphics context was lost. */
   stopped(): void;
+  /** The worker's graphics context was lost (a GPU reset, or a shader the
+   *  driver couldn't take). */
+  contextLost?(): void;
   /** The worker won't answer, or will only answer that it can't: every request
    *  waiting is settled with what a failure is answered with. */
   settlePending(): void;
@@ -117,6 +120,7 @@ export class RenderTransport implements WorkerLink {
         break;
       case "contextLost":
         this.restoring = true;
+        this.events.contextLost?.();
         this.events.stopped();
         this.setAvailability("lost", "the graphics context was lost");
         break;

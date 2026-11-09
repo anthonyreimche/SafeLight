@@ -7,7 +7,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 // installer (which fetches + executes a release asset), installing and removing
 // extensions (which puts code on disk that later runs), capturing the
 // window for Report an issue, switching how the next launch draws (software
-// rendering), and opening the folder the OS asked for. Extension code shares
+// rendering), opening the folder the OS asked for, and recording the Developer
+// Tools dev folder (which widens the next launch's network policy). Extension code shares
 // the renderer realm, so anything left on window.safelightNative is reachable by
 // a malicious extension. These are handed out exactly once, at renderer boot, to
 // core code that captures them privately (src/native/privileged.ts); every later
@@ -85,6 +86,19 @@ const privileged = {
     setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
     setBackend: (choice) => ipcRenderer.invoke("gpu:setBackend", typeof choice === "string" ? choice : null),
     rendererFailed: (detail) => ipcRenderer.invoke("gpu:rendererFailed", String(detail)),
+  },
+  // The window's material (acrylic, mica): a theme asks for it, the system
+  // draws it. Privileged so an extension can't change how the window paints.
+  window: {
+    setMaterial: (material) =>
+      ipcRenderer.invoke("window:setMaterial", typeof material === "string" ? material : null),
+  },
+  // Records the dev folder so the next launch reads its manifests' declared
+  // network origins like an installed extension's; resolves with the origins
+  // this launch's policy does not allow yet.
+  devtools: {
+    syncDevFolder: (folder) =>
+      ipcRenderer.invoke("devtools:sync-dev-folder", folder == null ? null : String(folder)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.
@@ -171,11 +185,6 @@ contextBridge.exposeInMainWorld("safelightNative", {
     toggle: () => ipcRenderer.invoke("devtools:toggle"),
     isOpen: () => ipcRenderer.invoke("devtools:isOpen"),
     reload: (hard) => ipcRenderer.invoke("devtools:reload", !!hard),
-    // Records the dev folder so the next launch reads its manifests' declared
-    // network origins like an installed extension's; resolves with the origins
-    // this launch's policy does not allow yet.
-    syncDevFolder: (folder) =>
-      ipcRenderer.invoke("devtools:sync-dev-folder", folder == null ? null : String(folder)),
   },
   diagnostics: {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),

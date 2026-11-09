@@ -173,18 +173,39 @@ export function startResize(
   if (e.button !== 0) return;
   e.preventDefault();
   const startPos = axis === "x" ? e.clientX : e.clientY;
+  const pointerId = e.pointerId;
   // Pointer delta is visual px under the <body> UI-scale zoom; the size it
   // drives is layout px, so map it back through the zoom to track 1:1.
   const z = getSettings().uiScale || 1;
+  // Each write re-lays-out the canvas and queues a save, so a drag applies once
+  // per frame with the latest size and settles exactly where the pointer ended.
+  let pending: number | null = null;
+  let frame = 0;
+  const flush = () => {
+    cancelAnimationFrame(frame);
+    if (pending === null) return;
+    const size = pending;
+    pending = null;
+    apply(size);
+  };
   const move = (ev: PointerEvent) => {
+    if (ev.pointerId !== pointerId) return;
     const pos = axis === "x" ? ev.clientX : ev.clientY;
     const w = start + (sign * (pos - startPos)) / z;
-    apply(Math.min(Math.max(w, min), max));
+    const first = pending === null;
+    pending = Math.min(Math.max(w, min), max);
+    if (first) frame = requestAnimationFrame(flush);
   };
-  const up = () => {
+  const end = (ev: PointerEvent) => {
+    if (ev.pointerId !== pointerId) return;
+    flush();
     window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    window.removeEventListener("lostpointercapture", end);
   };
   window.addEventListener("pointermove", move);
-  window.addEventListener("pointerup", up);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  window.addEventListener("lostpointercapture", end);
 }

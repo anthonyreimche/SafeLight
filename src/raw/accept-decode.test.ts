@@ -22,6 +22,8 @@ const h = vi.hoisted(() => ({
   samplable: true,
   /** Whether a WebGL2 context can be had for the readback. */
   webgl: true,
+  /** Whether the readback itself throws, as a lost or failing GPU's does. */
+  readThrows: false,
   /** Every sample request, as [resizeWidth, resizeHeight, resizeQuality]. */
   samples: [] as [number | undefined, number | undefined, string | undefined][],
   closedSamples: 0,
@@ -59,6 +61,7 @@ function readback(): Record<string, unknown> {
       _type: number,
       pixels: Uint8Array,
     ) => {
+      if (h.readThrows) throw new Error("readPixels failed");
       for (let i = 0; i < pixels.length; i += 4) {
         pixels.set([...(h.previewPixel?.(i / 4) ?? h.previewRgb), 255], i);
       }
@@ -82,6 +85,7 @@ beforeEach(() => {
   h.previewPixel = null;
   h.samplable = true;
   h.webgl = true;
+  h.readThrows = false;
   h.samples = [];
   h.closedSamples = 0;
   h.lostContexts = 0;
@@ -237,6 +241,15 @@ describe("acceptDecode when the colour check can't run", () => {
     h.webgl = false;
     const verdict = await acceptDecode({}, flatDecode([10, 200, 10]), preview);
     expect(verdict).toEqual({ use: true, cache: true });
+  });
+
+  // Browsers cap live WebGL contexts, so a leaked one can evict a live canvas.
+  it("trusts the decode and still frees the sample and its GL context when the readback throws", async () => {
+    h.readThrows = true;
+    const verdict = await acceptDecode({}, flatDecode([10, 200, 10]), preview);
+    expect(verdict).toEqual({ use: true, cache: true });
+    expect(h.lostContexts).toBe(1);
+    expect(h.closedSamples).toBe(1);
   });
 
   it("still keeps a suspicious decode out of the cache", async () => {

@@ -365,3 +365,44 @@ describe("a window opening while another's change is on its way to disk", () => 
     expect(disk()?.rating).toBe(1);
   });
 });
+
+describe("stacks across two windows", () => {
+  const photoY = async (storage: ProjectStorage) => {
+    const held = (await storage.getAllPhotos()).find((p) => p.id === "y");
+    if (!held) throw new Error("y is gone");
+    return held;
+  };
+  const stackOf = async (storage: ProjectStorage) =>
+    Object.fromEntries(
+      (await storage.getAllPhotos()).map((p) => [p.id, [p.stackId, p.stackCover]] as const),
+    );
+
+  it("carries a stack made in one window to the other, and to disk", async () => {
+    const { a, b, disk } = await twoWindows();
+    h.latency = () => 50;
+
+    await a.putPhoto({ ...(await x(a)), stackId: "S", stackCover: true });
+    await a.putPhoto({ ...(await photoY(a)), stackId: "S" });
+    await settle(a, b);
+
+    expect(await x(b)).toMatchObject({ stackId: "S", stackCover: true });
+    expect(await photoY(b)).toMatchObject({ stackId: "S" });
+    expect(disk()).toMatchObject({ stackId: "S", stackCover: true });
+  });
+
+  it("leaves both windows, and the disk, the same two covers to choose one from", async () => {
+    const { a, b, disk } = await twoWindows();
+    h.latency = () => 50;
+
+    await a.putPhoto({ ...(await x(a)), stackId: "S", stackCover: true });
+    await a.putPhoto({ ...(await photoY(a)), stackId: "S" });
+    await b.putPhoto({ ...(await photoY(b)), stackId: "S", stackCover: true });
+    await b.putPhoto({ ...(await x(b)), stackId: "S" });
+    await settle(a, b);
+
+    const inA = await stackOf(a);
+    expect(await stackOf(b)).toEqual(inA);
+    expect(disk()).toMatchObject({ stackId: "S" });
+    expect(Object.values(inA).every(([stackId]) => stackId === "S")).toBe(true);
+  });
+});

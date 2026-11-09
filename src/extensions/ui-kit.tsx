@@ -37,7 +37,7 @@ const BTN_BASE =
   "inline-flex items-center justify-center gap-1.5 rounded font-medium leading-none transition-colors disabled:opacity-45 disabled:cursor-default";
 const BTN_SIZE = { sm: "px-2 py-1 text-[10px]", md: "px-3 py-1.5 text-[11px]" };
 const BTN_VARIANT: Record<ButtonVariant, string> = {
-  primary: "bg-slider-fill text-white hover:opacity-90",
+  primary: "bg-slider-fill text-on-accent hover:opacity-90",
   secondary: "border border-border bg-surface-2 text-text-primary hover:bg-surface-3",
   ghost: "bg-transparent text-text-secondary hover:bg-surface-2",
   danger: "border border-border bg-transparent text-[color:var(--color-label-red)] hover:bg-surface-2",
@@ -62,7 +62,7 @@ export function Button({
   children,
   ...rest
 }: ButtonProps) {
-  const look = active ? "bg-slider-fill text-white" : BTN_VARIANT[variant];
+  const look = active ? "bg-slider-fill text-on-accent" : BTN_VARIANT[variant];
   return (
     <button
       type={type}
@@ -210,7 +210,7 @@ export function SegmentedControl({ value, onChange, options, size = "md" }: Segm
           onClick={() => onChange(o.value)}
           className={`flex-1 ${pad} ${i > 0 ? "border-l border-border" : ""} ${
             value === o.value
-              ? "bg-slider-fill text-white"
+              ? "bg-slider-fill text-on-accent"
               : "bg-surface-2 text-text-secondary hover:bg-surface-3"
           }`}
         >

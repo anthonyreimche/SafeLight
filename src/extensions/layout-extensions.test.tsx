@@ -591,6 +591,32 @@ describe("turning an extension on or off elsewhere", () => {
 
     expect(remembered(LAYOUT)).toEqual({ "acme.tool": true });
   });
+
+  it("logs a change from another window that fails, without an unhandled rejection, and follows the next", async () => {
+    initEnablement();
+    await boot(["acme.tool", "acme.other"], ["acme.tool", "acme.other"]);
+    const list = vi.fn(async () => installed).mockRejectedValueOnce(new Error("bridge gone"));
+    vi.stubGlobal("safelightNative", { plugins: { list, uninstall: vi.fn(async () => {}) } });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const follow = (ids: string[]) =>
+        window.dispatchEvent(
+          new StorageEvent("storage", { key: "sl_ext_disabled", newValue: JSON.stringify(ids) }),
+        );
+      follow(["acme.other"]);
+      follow([]);
+      await vi.waitFor(() => expect(running("acme.other")).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(running("acme.tool")).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("acme.tool"), expect.any(Error));
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });
 
 describe("the extensions a layout lists", () => {

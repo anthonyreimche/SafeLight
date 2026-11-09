@@ -20,6 +20,9 @@ type Values = Record<string, unknown>;
 // it derived only while they are the same object (stage-derive.ts).
 const parsed = new Map<string, { raw: string | null; values: Values }>();
 
+const asValues = (v: unknown): Values =>
+  v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Values) : {};
+
 function load(id: string): Values {
   let raw: string | null;
   try {
@@ -31,7 +34,7 @@ function load(id: string): Values {
   if (last && last.raw === raw) return last.values;
   let values: Values;
   try {
-    values = JSON.parse(raw ?? "{}");
+    values = asValues(JSON.parse(raw ?? "{}"));
   } catch {
     values = {};
   }
@@ -51,7 +54,13 @@ function valuesFor(id: string): Values {
 const listeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
 function notify(id: string, key: string, value: unknown): void {
-  listeners.get(id)?.forEach((cb) => cb(key, value));
+  listeners.get(id)?.forEach((cb) => {
+    try {
+      cb(key, value);
+    } catch (e) {
+      console.error(`[extensions] ${id} settings listener failed:`, e);
+    }
+  });
 }
 
 /** Everything the extension has stored (for the generic settings dialogue). */
@@ -112,7 +121,7 @@ export function initExtSettings(): void {
     }
     try {
       const prev = useExtSettings.getState()[id] ?? {};
-      const next = JSON.parse(e.newValue) as Values;
+      const next = asValues(JSON.parse(e.newValue));
       useExtSettings.setState({ [id]: next });
       for (const k of Object.keys(next)) {
         if (next[k] !== prev[k]) notify(id, k, next[k]);

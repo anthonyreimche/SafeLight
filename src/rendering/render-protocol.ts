@@ -7,9 +7,9 @@
 // (render-worker.ts). Types only: both sides import this, neither the other.
 
 import type { CropRect, DevelopParams, Mask } from "@/catalog/types";
-import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
+import type { BrushTipContribution, ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
-import type { ProbePoint, QuarantinedStage } from "./webgl/renderer";
+import type { ProbePoint, QuarantinedStage, StageBuildEvent } from "./webgl/renderer";
 import type { CapturePoint, FloatFrame } from "./float-frame";
 import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
 import type { HistogramData } from "./histogram";
@@ -103,6 +103,9 @@ export type WorkerRequest =
   // The stage textures set (`set`) and cleared (`remove`, none of them in `set`) since
   // the bag the bridge last posted, whole or by patches.
   | { cmd: "patchStageTextures"; set: Record<string, StageTextureData>; remove: string[] }
+  // The brush tips the bakes stamp with, whole each time: the set the window holds,
+  // which replaces the worker's. Every renderer in the worker reads it as one.
+  | { cmd: "setBrushTips"; tips: Record<string, BrushTipContribution> }
   // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
@@ -172,6 +175,10 @@ export type WorkerRequest =
   | { cmd: "setSharpenViz"; mode: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
+  // The stages the window expects the photo to need soon (a panel opened or hovered,
+  // a control focused): the develop renderer starts building the program that wakes
+  // those of them that are dormant (ProcessingStageContribution.dormantWhen).
+  | { cmd: "prewarmStages"; stageIds: string[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
   | { cmd: "readDevelopedPixels"; reqId: number; edge: number }
   // ── GPU source cache ──
@@ -237,6 +244,10 @@ export type WorkerResponse =
       // Absent, unknown.
       crop?: CropRect;
       histogram?: HistogramData;
+      // Set when the frame asked for a histogram and it is posted on its own after the
+      // frame (or after the follow-up frame of a pending prepass), so the frame itself
+      // never waits for the readback.
+      histogramFollows?: boolean;
       // The prepass stages this frame was drawn without (no texture unit was left
       // for their result); absent when it ran every stage that was on.
       overflowedStages?: string[];
@@ -253,6 +264,8 @@ export type WorkerResponse =
   // no picture of the photo then, so renders are answered frameSkipped until the next.
   | { type: "sourceError"; sourceGen: number; message: string }
   | { type: "histogram"; histogram: HistogramData }
+  // The histogram a frame asked for (histogramFollows) threw after the frame was posted.
+  | { type: "histogramError"; message: string }
   | { type: "thumbnail"; requestId: string; blob: Blob }
   // A thumbnail asked for as floats. null: no float render targets.
   | { type: "thumbnailFloat"; requestId: string; frame: FloatFrame | null }
@@ -285,4 +298,7 @@ export type WorkerResponse =
   // with it, and draws without it until it is registered again changed. Once per
   // stage, signature and process version, and renderer.
   | ({ type: "stageQuarantined" } & QuarantinedStage)
+  // A renderer started or ended building a program with these extension stages
+  // in it: the window's crash guard pins a lost context on a build in hand.
+  | ({ type: "stageBuild" } & StageBuildEvent)
   | { type: "error"; message: string };

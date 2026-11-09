@@ -634,6 +634,31 @@ describe("loading several installed extensions", () => {
     expect(activated).toEqual(ids);
   });
 
+  it("lets a task queued before loading run before the last one starts", async () => {
+    let queuedRan = false;
+    let ranBeforeLast: boolean | null = null;
+    importer.mockImplementation(async (url) => {
+      const id = idOf(url);
+      return {
+        activate: () => {
+          activated.push(id);
+          if (id === ids[COUNT - 1]) ranBeforeLast = queuedRan;
+        },
+      };
+    });
+    const queued = new MessageChannel();
+    queued.port1.onmessage = () => {
+      queuedRan = true;
+      queued.port1.close();
+    };
+    queued.port2.postMessage(null);
+
+    await loadExternalPlugins();
+
+    expect(activated).toEqual(ids);
+    expect(ranBeforeLast).toBe(true);
+  });
+
   it("imports no more than six bundles at a time", async () => {
     vi.useFakeTimers();
     let importing = 0;

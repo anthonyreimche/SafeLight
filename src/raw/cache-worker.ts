@@ -47,6 +47,8 @@ export type CacheRequest =
   // `sample`: also decompress the entry's centre sample (8 MB).
   | { cmd: "read"; id: number; key: string; sample: boolean }
   | { cmd: "write"; id: number; key: string; data: Float32Array; width: number; height: number; maxEdge: number }
+  // The entry already built from the frame (frame-job.ts), answered as a write.
+  | { cmd: "store"; id: number; key: string; entry: EncodedEntry }
   // A negative marker: an entry holding a short text instead of pixels.
   | { cmd: "mark"; id: number; key: string; value: string }
   | { cmd: "peek"; id: number; key: string }
@@ -191,6 +193,12 @@ const putEntry = (db: IDBDatabase, entry: CacheEntry, meta: CacheMeta) =>
     tx.objectStore(META).put(meta);
   });
 
+const dropEntry = (db: IDBDatabase, key: string) =>
+  committed(db, (tx) => {
+    tx.objectStore(STORE).delete(key);
+    tx.objectStore(META).delete(key);
+  });
+
 const entryBytes = (row: CacheEntry) => row.blob.size + (row.sample?.blob.size ?? 0);
 
 /** Meta for entries written before v7. Reading their rows gets the blobs by
@@ -273,6 +281,10 @@ async function gunzip(blob: Blob): Promise<ArrayBuffer> {
 
 const miss = (): ReadReply => ({ data: null, width: 0, height: 0, full: null, sample: null });
 
+/** Four half floats a pixel. A damaged size, or a stream that decompresses
+ *  cleanly to the wrong length, would otherwise be served on every read. */
+const pixelsFit = (data: Uint16Array, width: number, height: number) => data.length === width * height * 4;
+
 // A marker's file holds its key, a NUL (which no path contains), then its text.
 const MARKER_SEPARATOR = "\u0000";
 
@@ -310,7 +322,15 @@ async function readFromDir(
           sourceHeight: full.height,
         }
       : null;
-    return { data: new Uint16Array(preview), width: header.width, height: header.height, full, sample };
+    const data = new Uint16Array(preview);
+    if (
+      !pixelsFit(data, header.width, header.height) ||
+      (sample && !pixelsFit(sample.data, sample.width, sample.height))
+    ) {
+      await dir.removeEntry(name);
+      return null;
+    }
+    return { data, width: header.width, height: header.height, full, sample };
   } catch {
     return null;
   }
@@ -372,21 +392,26 @@ async function handleRead(key: string, wantSample: boolean): Promise<ReadReply> 
           sourceHeight: full.height,
         }
       : null;
-  return { data: new Uint16Array(preview), width: entry.width, height: entry.height, full, sample };
+  const data = new Uint16Array(preview);
+  if (
+    !pixelsFit(data, entry.width, entry.height) ||
+    (sample && !pixelsFit(sample.data, sample.width, sample.height))
+  ) {
+    // Gone, so the next decode writes it afresh.
+    await dropEntry(db, entry.key).catch(() => {});
+    return miss();
+  }
+  return { data, width: entry.width, height: entry.height, full, sample };
 }
 
-async function handleWrite(
-  key: string,
-  data: Float32Array,
-  width: number,
-  height: number,
-  maxEdge: number,
-): Promise<boolean> {
+const handleWrite = (key: string, data: Float32Array, width: number, height: number, maxEdge: number) =>
+  handleStore(key, encodeCacheEntry(data, width, height, maxEdge));
+
+async function handleStore(key: string, entry: EncodedEntry): Promise<boolean> {
   // Taken as the write arrives: a folder set while it compresses is the next
   // project's, and the write must not land there.
   const dir = cacheDir;
   const s = scope;
-  const entry = encodeCacheEntry(data, width, height, maxEdge);
   if (dir) {
     await writeToDir(dir, key, entry);
     return true;
@@ -468,12 +493,7 @@ async function handleDelete(key: string): Promise<void> {
   }
   const s = scope;
   if (s === null) return;
-  const db = await getDB();
-  const scoped = scopedKey(s, key);
-  await committed(db, (tx) => {
-    tx.objectStore(STORE).delete(scoped);
-    tx.objectStore(META).delete(scoped);
-  });
+  await dropEntry(await getDB(), scopedKey(s, key));
 }
 
 /** How many parts of the cache could not be cleared: each file left in the
@@ -607,6 +627,10 @@ self.onmessage = async (e: MessageEvent<CacheRequest>) => {
           id: msg.id,
           ok: await handleWrite(msg.key, msg.data, msg.width, msg.height, msg.maxEdge),
         });
+        break;
+
+      case "store":
+        respond({ type: "write", id: msg.id, ok: await handleStore(msg.key, msg.entry) });
         break;
 
       case "mark":

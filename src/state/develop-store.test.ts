@@ -17,8 +17,29 @@ vi.mock("./broadcast", () => ({
   WINDOW_ID: "test-window",
 }));
 vi.mock("./edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
+// The live view's last render request, on the faked clock; the real bridge's
+// whenRenderQuiet reads the same way.
+const bridge = vi.hoisted(() => ({
+  lastRequestedAt: Number.NEGATIVE_INFINITY,
+  whenRenderQuiet(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const check = () => {
+        const wait = bridge.lastRequestedAt + ms - Date.now();
+        if (wait <= 0) resolve();
+        else timer = setTimeout(check, wait);
+      };
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      check();
+    });
+  },
+}));
+vi.mock("@/rendering/render-bridge", () => ({ getRenderBridge: () => bridge }));
 
-import { closeOpenPhoto, useDevelopStore } from "./develop-store";
+import { closeOpenPhoto, flushPendingThumbnails, useDevelopStore } from "./develop-store";
 import { broadcast } from "./broadcast";
 import { regenerateEditedThumbnail } from "./edited-thumbnail";
 import { useCatalogStore } from "./catalog-store";
@@ -127,6 +148,7 @@ describe("loadEdit", () => {
     await s().loadEdit(PHOTO_ID, 3200);
     s().setParam("exposure", 1);
     await s().commitEdit("Exposure");
+    flushPendingThumbnails();
     expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][2]).toBe(3200);
   });
 
@@ -716,11 +738,13 @@ describe("commitEdit", () => {
     s().setParam("exposure", 1);
     s().setDynParam("ext.stage.amount", 40);
     await s().commitEdit("Exposure");
+    flushPendingThumbnails();
     expect(regenerateEditedThumbnail).toHaveBeenCalledWith(
       PHOTO_ID,
       params(),
       5000,
       { "ext.stage.amount": 40 },
+      undefined,
     );
     expect(vi.mocked(broadcast).mock.lastCall?.[0]).toEqual({
       type: "edit-update",
@@ -765,6 +789,174 @@ describe("commitEdit", () => {
     finish();
     await new Promise((r) => setTimeout(r, 0));
     expect(closed).toBe(true);
+  });
+
+  describe("grid thumbnail refresh", () => {
+    beforeEach(() => {
+      bridge.lastRequestedAt = Number.NEGATIVE_INFINITY;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    });
+    afterEach(() => {
+      flushPendingThumbnails();
+      vi.useRealTimers();
+    });
+
+    async function commitExposure(value: number) {
+      s().setParam("exposure", value);
+      await s().commitEdit("Exposure");
+    }
+
+    it("waits for the edits to go quiet: five commits 200 ms apart render once", async () => {
+      for (let i = 1; i <= 5; i++) {
+        await commitExposure(i);
+        await vi.advanceTimersByTimeAsync(200);
+      }
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(5);
+    });
+
+    it("renders 300 ms after a commit when the live view makes no more renders", async () => {
+      await commitExposure(2);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits while renders keep arriving, then renders 300 ms after the last", async () => {
+      await commitExposure(2);
+      for (let i = 0; i < 10; i++) {
+        bridge.lastRequestedAt = Date.now();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(199);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders at the cap however long the live view keeps rendering", async () => {
+      await commitExposure(2);
+      for (let t = 0; t < 2900; t += 100) {
+        bridge.lastRequestedAt = Date.now();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      bridge.lastRequestedAt = Date.now();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      for (let t = 0; t < 1000; t += 100) {
+        bridge.lastRequestedAt = Date.now();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops polling the live view once the cap has drawn the thumbnail", async () => {
+      await commitExposure(2);
+      for (let t = 0; t < 3000; t += 100) {
+        bridge.lastRequestedAt = Date.now();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("renders the look another writer stored while the wait ran", async () => {
+      await commitExposure(2);
+      installMemoryStorage(
+        editState(
+          [snapshot("Original", { temperature: 5000 }), snapshot("Other", { temperature: 5000, exposure: 7 })],
+          1,
+        ),
+      );
+      await s().reloadEdit();
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(7);
+    });
+
+    it("renders the undone look last when an undo lands while the commit's hooks run", async () => {
+      let release = (): void => {};
+      const slow = new Promise<void>((r) => (release = r));
+      registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit: () => slow });
+      s().setParam("exposure", 2);
+      const committing = s().commitEdit("Exposure");
+      await vi.advanceTimersByTimeAsync(0);
+      s().undo();
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
+
+      release();
+      await committing;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders the photo left at once when another is opened", async () => {
+      useCatalogStore.setState({ photos: [photo(PHOTO_ID), photo("photo-2")] });
+      await commitExposure(2);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+      await s().loadEdit("photo-2", 5000);
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      const [id, rendered] = vi.mocked(regenerateEditedThumbnail).mock.calls[0];
+      expect(id).toBe(PHOTO_ID);
+      expect(rendered.exposure).toBe(2);
+    });
+
+    it("renders a change committed as the photo is left once, at once", async () => {
+      useCatalogStore.setState({ photos: [photo(PHOTO_ID), photo("photo-2")] });
+      s().setParam("exposure", 3);
+      await s().loadEdit("photo-2", 5000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(3);
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes the wait as the project closes, into the catalogue being left", async () => {
+      await commitExposure(2);
+      const left = useCatalogStore.getState().photos[0];
+      const leftStorage = catalogStorage();
+
+      await closeOpenPhoto(leftStorage);
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][4]).toEqual({
+        photo: left,
+        storage: leftStorage,
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes on request, as Develop is left", async () => {
+      await commitExposure(2);
+      flushPendingThumbnails();
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders an undo step at once and drops the older wait", async () => {
+      await commitExposure(2);
+      s().undo();
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("is a no-op with no photo loaded", async () => {
@@ -1205,8 +1397,9 @@ describe("process versions", () => {
     it("announces the new version and refreshes the grid thumbnail like any commit", async () => {
       await openLegacy();
       await s().updateProcessing();
+      flushPendingThumbnails();
 
-      expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5200, BAG);
+      expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5200, BAG, undefined);
       expect(vi.mocked(broadcast).mock.lastCall?.[0]).toEqual({
         type: "edit-update",
         payload: { photoId: PHOTO_ID, params: params() },

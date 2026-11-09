@@ -105,4 +105,33 @@ describe("White-balance eyedropper", () => {
     expect(labels()).toEqual(["Original"]);
     expect(storage.written).toEqual([]);
   });
+
+  it("takes its applied steps back off when a later sample fails", async () => {
+    await s().loadEdit("A", 5000);
+    s().setHistogram(darkHistogram());
+    const { params, paramBag } = s();
+    const commitEdit = vi.spyOn(s(), "commitEdit");
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let reads = 0;
+    const sample = vi.fn(async (): Promise<Rgb | null> => {
+      if (reads++ === 0) return WARM;
+      throw new Error("worker gone");
+    });
+
+    const running = whiteBalanceFromSample(sample);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(running).resolves.toBeUndefined();
+
+    expect(sample).toHaveBeenCalledTimes(2);
+    expect(s().params).toEqual(params);
+    expect(s().paramBag).toEqual(paramBag);
+    expect(commitEdit).not.toHaveBeenCalled();
+    expect(labels()).toEqual(["Original"]);
+    expect(error).toHaveBeenCalled();
+
+    const again = vi.fn(async () => null);
+    await whiteBalanceFromSample(again);
+    expect(again).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
 });

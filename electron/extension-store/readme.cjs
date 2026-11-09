@@ -20,6 +20,7 @@ function createRepoInfo({ net, fetchOgImage }) {
     if (!validRepo(repo)) throw new Error("Bad repository");
     const res = await net.fetch(`https://api.github.com/repos/${repo}`, {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "Safelight" },
+      signal: AbortSignal.timeout(10000),
     });
     if (res.status === 403 || res.status === 429)
       throw new Error("GitHub rate limit reached — try again in a minute.");
@@ -52,7 +53,7 @@ function createRepoInfo({ net, fetchOgImage }) {
     for (const name of ["README.md", "readme.md", "README.markdown", "README"]) {
       const res = await net.fetch(
         `https://raw.githubusercontent.com/${repo}/${branch}/${name}`,
-        { headers: { "User-Agent": "Safelight" } }
+        { headers: { "User-Agent": "Safelight" }, signal: AbortSignal.timeout(10000) }
       );
       if (res.ok) return res.text();
       if (res.status !== 404) throw new Error(`GitHub error: ${res.status}`);

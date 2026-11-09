@@ -105,9 +105,11 @@ async function previewSample(previewBlob: Blob): Promise<Pixels | null> {
       resizeHeight: 64,
       resizeQuality: "pixelated",
     });
-    const pf = bitmapToFloat(thumb);
-    thumb.close();
-    return pf;
+    try {
+      return bitmapToFloat(thumb);
+    } finally {
+      thumb.close();
+    }
   } catch {
     return null;
   }
@@ -163,27 +165,32 @@ function bitmapToFloat(bitmap: ImageBitmap): Pixels {
   const gl = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
   if (!gl) throw new Error("WebGL2 unavailable for pixel readback");
 
-  const tex = gl.createTexture();
-  if (!tex) throw new Error("createTexture failed");
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-
-  const fb = gl.createFramebuffer();
-  if (!fb) throw new Error("createFramebuffer failed");
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-
   const pixels = new Uint8Array(width * height * 4);
-  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  let tex: WebGLTexture | null = null;
+  let fb: WebGLFramebuffer | null = null;
+  try {
+    tex = gl.createTexture();
+    if (!tex) throw new Error("createTexture failed");
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
 
-  gl.deleteFramebuffer(fb);
-  gl.deleteTexture(tex);
-  // Free the context immediately: browsers cap live WebGL contexts (~16), and a
-  // batch RAW prefetch calls this once per decode, so a leaked context per call
-  // would evict an older one — including a live canvas.
-  gl.getExtension("WEBGL_lose_context")?.loseContext();
+    fb = gl.createFramebuffer();
+    if (!fb) throw new Error("createFramebuffer failed");
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  } finally {
+    if (fb) gl.deleteFramebuffer(fb);
+    if (tex) gl.deleteTexture(tex);
+    // Free the context immediately, even after a failed readback: browsers cap
+    // live WebGL contexts (~16), and a batch RAW prefetch calls this once per
+    // decode, so a leaked context per call would evict an older one, including
+    // a live canvas.
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  }
 
   // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearize.
   const data = new Float32Array(width * height * 4);

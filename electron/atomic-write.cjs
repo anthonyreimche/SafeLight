@@ -11,6 +11,8 @@
 // two renames racing onto the same target. main.cjs owns the IPC and the quit
 // drain; this module runs against temp folders in tests.
 
+const fs = require("node:fs");
+const crypto = require("node:crypto");
 const path = require("node:path");
 
 // A kill between the temp write and the rename leaves `<name>.tmp-<hex>` behind;
@@ -130,4 +132,28 @@ function createAtomicWriter({ fsp, randomId, retry }) {
   return { write, drain, activePaths };
 }
 
-module.exports = { createAtomicWriter };
+/** Synchronous counterpart for the writes that can't queue: the close-time
+ *  window state and the pre-ready GPU backend cache. */
+function writeAtomicSync(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${crypto.randomBytes(8).toString("hex")}`;
+  try {
+    const fd = fs.openSync(tmp, "w");
+    try {
+      fs.writeSync(fd, text);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // Never created, or already gone.
+    }
+    throw err;
+  }
+}
+
+module.exports = { createAtomicWriter, writeAtomicSync };

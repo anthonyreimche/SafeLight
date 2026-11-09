@@ -32,15 +32,23 @@ export function detachModule(module: AppModule): void {
   const win = window.open(url, `safelight-module-${module}`, "width=1280,height=860");
   if (!win) return;
   popped.set(module, win);
+  markModuleDetached(module);
+  win.focus();
+}
 
+/** The main window records `module` as in its own window and, if it is showing
+ *  it, moves to `previous` when that is still here, else to the first tab that is. */
+export function markModuleDetached(module: AppModule, previous?: AppModule): void {
   const ui = useUIStore.getState();
   ui.markDetached(module);
   // The main window shouldn't keep showing a module that's now in its own window.
-  if (ui.activeModule === module) {
-    const next = moduleTabs().find((m) => !useUIStore.getState().detached.has(m.id));
-    if (next) ui.setActiveModule(next.id);
-  }
-  win.focus();
+  if (ui.activeModule !== module) return;
+  const { detached } = useUIStore.getState();
+  const next =
+    previous && previous !== module && !detached.has(previous) && hasModule(previous)
+      ? previous
+      : moduleTabs().find((m) => !detached.has(m.id))?.id;
+  if (next) ui.setActiveModule(next);
 }
 
 export function focusDetached(module: AppModule): void {

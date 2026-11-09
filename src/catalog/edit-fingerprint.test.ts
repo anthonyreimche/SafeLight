@@ -36,7 +36,7 @@ import {
 } from "./types";
 import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useDevelopStore } from "@/state/develop-store";
+import { flushPendingThumbnails, useDevelopStore } from "@/state/develop-store";
 
 const PHOTO = "photo-1";
 const AS_SHOT = 5200;
@@ -196,6 +196,8 @@ describe("an edit committed in Develop and opened again", () => {
       paramBag: { ...s().paramBag, ...BAG, "ext.gone.amount": undefined },
     });
     await s().commitEdit("Edit");
+    // Staying on the photo, the preview waits for the edits to go quiet.
+    flushPendingThumbnails();
     return memory;
   }
 

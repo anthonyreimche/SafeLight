@@ -13,6 +13,14 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import type { RenderBridge } from "@/rendering/render-bridge";
 import type { Float16Source } from "@/rendering/source-sample";
+import { missingAdjustments } from "@/extensions/essential-params";
+import {
+  isExtensionDisabled,
+  useDisabledExtensions,
+  useExternalPluginsSettled,
+  useInstalledPlugins,
+  useRunningPlugins,
+} from "@/extensions/loader";
 import { useDevelopStore } from "@/state/develop-store";
 import { showsEdit, standsForPhoto } from "@/state/fallback-rules";
 import { getSettings } from "@/state/settings-store";
@@ -29,6 +37,9 @@ import {
 import { storedPicture, type DevelopPicture } from "./use-develop-picture";
 
 export const NO_STAGES: readonly string[] = [];
+
+/** The longest the first frame waits for the essentials its edit needs. */
+const ESSENTIALS_WAIT_MS = 3000;
 
 export interface PhotoLoadArgs {
   photo: CatalogPhoto | undefined;
@@ -158,6 +169,42 @@ export function useDevelopPhotoLoad({
       });
     });
 
+    // The essentials are external extensions that register while the app boots, so a
+    // photo opened before they do would draw its first frame without its white
+    // balance or Basic. It waits for the stages its edit uses, or for the loading
+    // to end, and the stored preview shows meanwhile. One turned off or not installed
+    // never comes, and a slow one holds the frame no longer than ESSENTIALS_WAIT_MS.
+    const essentialsPending = () => {
+      if (useExternalPluginsSettled.getState().settled) return false;
+      const st = useDevelopStore.getState();
+      const running = useRunningPlugins.getState().ids;
+      const installed = useInstalledPlugins.getState().ids;
+      const awaited = (id: string) =>
+        !running.includes(id) && !isExtensionDisabled(id) && (installed === null || installed.includes(id));
+      const asShot = photo.exif.colorTemperature ?? st.asShotTemperature;
+      return missingAdjustments(st.params, (id) => !awaited(id), asShot).length > 0;
+    };
+    let stopEssentials = () => {};
+    const essentialsReady = () =>
+      new Promise<void>((resolve) => {
+        if (cancelled || !essentialsPending()) return resolve();
+        const check = () => {
+          if (!essentialsPending()) stopEssentials();
+        };
+        const offs = [
+          useExternalPluginsSettled.subscribe(check),
+          useRunningPlugins.subscribe(check),
+          useDisabledExtensions.subscribe(check),
+          useInstalledPlugins.subscribe(check),
+        ];
+        const cap = setTimeout(() => stopEssentials(), ESSENTIALS_WAIT_MS);
+        stopEssentials = () => {
+          clearTimeout(cap);
+          for (const off of offs) off();
+          resolve();
+        };
+      });
+
     // The stored preview, drawn as it is while the source loads, once the photo's
     // edit has loaded and only if the preview shows it (previewShowsEdit).
     // An edited photo's preview is re-rendered on every Develop commit, see
@@ -226,6 +273,7 @@ export function useDevelopPhotoLoad({
       void showStoredPreview();
       await bridge.ready;
       await editLoaded;
+      await essentialsReady();
       if (cancelled) return;
       // No renderer to hand the photo to: the stored preview stays, and the view
       // says why (availability).
@@ -315,12 +363,18 @@ export function useDevelopPhotoLoad({
       void prefetch();
     };
 
-    run();
+    run().catch((e) => {
+      if (cancelled) return;
+      console.error("[develop] couldn't show photo", photo.id, e);
+      setCantShow("Can't show this photo.");
+      setLoading(false);
+    });
     return () => {
       cancelled = true;
       abort.abort();
       stopWaiting?.();
       endWait();
+      stopEssentials();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photo?.id, fileAccessNonce]);

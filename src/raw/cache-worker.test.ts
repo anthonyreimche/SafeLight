@@ -11,6 +11,7 @@ import {
   ENTRY_HEADER_BYTES,
   ENTRY_LAYOUT,
   ENTRY_MAGIC,
+  encodeCacheEntry,
   encodeCachedPreview,
   encodeEntryHeader,
 } from "./cache-encode";
@@ -80,6 +81,26 @@ describe("cache worker, project folder", () => {
       full: { width: 3, height: 2 },
       sample: cutSourceSample(pixels(3, 2), 3, 2),
     });
+  });
+
+  it("stores an entry built elsewhere exactly as it stores the one it builds from the frame", async () => {
+    const { send } = await withFolder();
+
+    await send({ cmd: "write", id: 1, key: "built", data: pixels(1026, 1028), width: 1026, height: 1028, maxEdge: 64 });
+    const stored = await send({
+      cmd: "store",
+      id: 2,
+      key: "given",
+      entry: encodeCacheEntry(pixels(1026, 1028), 1026, 1028, 64),
+    });
+
+    expect(stored).toEqual({ type: "write", id: 2, ok: true });
+    const built = await send({ cmd: "read", id: 3, key: "built", sample: true });
+    const given = await send({ cmd: "read", id: 4, key: "given", sample: true });
+    if (built?.type !== "read" || given?.type !== "read") throw new Error("not reads");
+    expect(given.data).toEqual(built.data);
+    expect([given.width, given.height, given.full]).toEqual([built.width, built.height, built.full]);
+    expectSample(given.sample, built.sample as StoredSample);
   });
 
   it("reads the frame's size without the sample when not asked, leaving the sample's bytes alone", async () => {
@@ -257,6 +278,40 @@ describe("cache worker, project folder", () => {
 
     expect(await send({ cmd: "keys", id: 2 })).toEqual({ type: "keys", id: 2, entries: [] });
     expect(await send({ cmd: "read", id: 3, key: KEY, sample: false })).toMatchObject({ data: null });
+  });
+
+  // A preview or sample that doesn't fill its stated size would go to the GPU
+  // as it is, and listed as complete it would never be rebuilt.
+  async function withHeaderWord(word: number) {
+    const KEY = "v6:DSC_0005.NEF:64:0";
+    const { send, fs } = await withFolder();
+    await send({ cmd: "write", id: 1, key: KEY, data: pixels(3, 2), width: 3, height: 2, maxEdge: 4096 });
+    const file = await fileOf(KEY);
+    const bytes = fs.bytes(file);
+    if (!bytes) throw new Error("the write left no file");
+    const words = headerWords(bytes);
+    words[word] *= 2;
+    bytes.set(new Uint8Array(words.buffer));
+    fs.putBytes(file, bytes);
+    return { send, fs, file, KEY };
+  }
+
+  it("reads an entry whose preview doesn't fill its stated size as a miss, and removes it", async () => {
+    const { send, fs, file, KEY } = await withHeaderWord(2);
+
+    expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toEqual({
+      type: "read", id: 2, data: null, width: 0, height: 0, full: null, sample: null,
+    });
+    expect(fs.has(file)).toBe(false);
+  });
+
+  it("reads an entry whose sample doesn't fill its stated size as a miss, and removes it", async () => {
+    const { send, fs, file, KEY } = await withHeaderWord(6);
+
+    expect(await send({ cmd: "read", id: 2, key: KEY, sample: true })).toEqual({
+      type: "read", id: 2, data: null, width: 0, height: 0, full: null, sample: null,
+    });
+    expect(fs.has(file)).toBe(false);
   });
 
   it("removes an entry too short for its header once it reads as a miss", async () => {
@@ -461,6 +516,24 @@ describe("cache worker, no reachable folder", () => {
     expect(await send({ cmd: "keys", id: 2 })).toEqual({
       type: "keys", id: 2, entries: [{ key: KEY, complete: false }],
     });
+  });
+
+  it("reads an entry whose preview doesn't fill its stated size as a miss, and deletes it", async () => {
+    const idb = new FakeIndexedDB();
+    const { send } = await startCacheWorker(idb);
+    await send(scopeTo(A));
+    await send({ cmd: "write", id: 1, key: KEY, data: pixels(3, 2), width: 3, height: 2, maxEdge: 4096 });
+    const scoped = scopedKey(A, KEY);
+    const row = idb.rows.get(scoped);
+    if (!row) throw new Error("the write left no row");
+    const widened = { ...row, width: 6 };
+    idb.rows.set(scoped, widened);
+
+    expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toEqual({
+      type: "read", id: 2, data: null, width: 0, height: 0, full: null, sample: null,
+    });
+    expect(idb.rows.has(scoped)).toBe(false);
+    expect(idb.meta.has(scoped)).toBe(false);
   });
 
   it("deletes only the current project's entry", async () => {

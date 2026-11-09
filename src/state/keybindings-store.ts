@@ -108,12 +108,27 @@ const DEFAULTS: Record<string, string> = Object.fromEntries(
 
 const KEY = "sl_keybindings_v1";
 
+/** Only string-valued entries of a stored object survive; any other payload
+ *  (null, an array, malformed JSON) means no overrides. */
+function parseOverrides(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const stored: unknown = JSON.parse(raw);
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+    return Object.fromEntries(
+      Object.entries(stored).filter((e): e is [string, string] => typeof e[1] === "string"),
+    );
+  } catch {
+    return {};
+  }
+}
+
 function load(): Record<string, string> {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return {};
+    return parseOverrides(localStorage.getItem(KEY));
+  } catch {
+    return {};
+  }
 }
 
 /** Maps action id → combo. Only overrides are stored. */
@@ -233,10 +248,8 @@ export function matchExtensionAction(e: KeyboardEvent): ExtensionActionEntry | n
 /** Follow rebinds made in other windows. Call once at boot. */
 export function initKeybindings(): void {
   window.addEventListener("storage", (e) => {
-    if (e.key !== KEY || e.newValue == null) return;
-    try {
-      useKeybindings.setState({ overrides: JSON.parse(e.newValue) });
-    } catch {}
+    if (e.key !== KEY) return;
+    useKeybindings.setState({ overrides: parseOverrides(e.newValue) });
   });
 }
 

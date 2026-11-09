@@ -16,6 +16,12 @@ vi.mock("@/state/broadcast", () => ({
   WINDOW_ID: "test-window",
 }));
 
+const exportReport = vi.hoisted(() => vi.fn());
+vi.mock("@/project/folder-ops", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/project/folder-ops")>();
+  return { ...real, exportPhotoDataReport: exportReport.mockImplementation(real.exportPhotoDataReport) };
+});
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CALLBACK_FAILURE_LIMIT, useCallbackFailures } from "@/extensions/guard";
 import userEvent from "@testing-library/user-event";
@@ -215,5 +221,46 @@ describe("photo menu: Remove", () => {
     expect(dialog.textContent).not.toMatch(/reappear/);
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(removePhotos).toHaveBeenCalledWith(["a", "b"]);
+  });
+});
+
+describe("photo menu: Export data", () => {
+  async function exportFromMenu() {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    openMenu("a");
+    await user.click(screen.getByRole("menuitem", { name: "Export data… (2)" }));
+    const text = (await screen.findByRole("alertdialog", { name: "Export data" })).textContent ?? "";
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    return text;
+  }
+
+  it("says nothing was written when every sidecar failed", async () => {
+    exportReport.mockResolvedValueOnce({ written: 0, failed: 2 });
+
+    const text = await exportFromMenu();
+
+    expect(exportReport).toHaveBeenCalledWith(["a", "b"]);
+    expect(text).not.toMatch(/Wrote 0/);
+    expect(text).toMatch(/Couldn't write/);
+  });
+
+  it("counts both the written and the failed sidecars", async () => {
+    exportReport.mockResolvedValueOnce({ written: 1, failed: 1 });
+
+    const text = await exportFromMenu();
+
+    expect(text).toMatch(/Wrote 1 sidecar file /);
+    expect(text).toMatch(/Couldn't write 1\./);
+    expect(text).toMatch(/Move the photos with their sidecars/);
+  });
+
+  it("reports an export that throws instead of leaving it unhandled", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    exportReport.mockRejectedValueOnce(new Error("disk gone"));
+
+    const text = await exportFromMenu();
+
+    expect(text).toMatch(/Couldn't write/);
   });
 });

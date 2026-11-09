@@ -390,6 +390,69 @@ describe("readSource in a pass", () => {
   });
 });
 
+// A four-channel pass mutates a vec4 c that starts as readPrev4(vUv) and is
+// written whole, so its alpha carries state to the next draw. Every other pass
+// keeps the vec3 program text the version 1 freeze pins.
+describe("a four-channel pass", () => {
+  const passesOf = (channels?: 3 | 4) =>
+    buildStageInjection([flagged({ passes: [{ glsl: "c.a = 0.5;", ...(channels ? { channels } : {}) }] })]).prepass[0]
+      .passes[0].fragmentSource;
+
+  it("mutates a vec4 and writes it whole", () => {
+    const source = passesOf(4);
+    expect(source).toContain("vec4 readPrev4(vec2 uv) {");
+    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));");
+    expect(source).toContain("fragColor = c;");
+    expect(source).not.toContain("fragColor = vec4(c, 1.0);");
+  });
+
+  it("leaves a three-channel pass as it was", () => {
+    expect(passesOf(3)).toBe(passesOf());
+    expect(passesOf()).not.toContain("readPrev4");
+    expect(passesOf()).toContain("fragColor = vec4(c, 1.0);");
+  });
+});
+
+// A pass that names its region gets a vertex program of its own, which places
+// the draw's quad over that region; every other pass draws the whole frame with
+// the shared one.
+describe("a pass's region", () => {
+  const pass = (over: Partial<StagePass>) =>
+    buildStageInjection([
+      flagged({
+        passes: [
+          {
+            glsl: "c.a = edge;",
+            helpers: "int widthOf(float e) { return int(e); }",
+            uniforms: [{ key: "edge", glslType: "float", default: 4 }],
+            channels: 4,
+            ...over,
+          },
+        ],
+      }),
+    ]).prepass[0].passes[0];
+
+  it("is drawn whole without one", () => {
+    expect(pass({}).vertexSource).toBeUndefined();
+  });
+
+  it("is computed in the vertex program from the pass's uniforms and helpers", () => {
+    const built = pass({ region: "return ivec4(0, 0, widthOf(edge), 1 << 20);" });
+    const source = built.vertexSource ?? "";
+    expect(source).toMatch(/^#version 300 es\n/);
+    expect(source).toMatch(/ivec4 passRegion\(\) \{\s*return ivec4\(0, 0, _\w+_widthOf\(u_\w+_edge\), 1 << 20\);\s*\}/);
+    expect(source).toMatch(/uniform float u_\w+_edge;/);
+    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("uniform bool uWholeDraw;");
+    expect(built.fragmentSource).toBe(pass({}).fragmentSource);
+  });
+
+  it("declares integers at the fragment program's precision, so shared uniforms link", () => {
+    expect(pass({ region: "return ivec4(0);" }).vertexSource).toContain("precision mediump int;");
+  });
+});
+
 // A stage that reads the current image from a later process version reads the
 // source on older ones: no exit, no split, and a prepass keyed on the source.
 describe("readsCurrentFrom", () => {
@@ -1196,6 +1259,13 @@ describe("inter-stage variables", () => {
     expect(sig({ ...STAGE, consumes: ["acmeMade"], produces: [{ name: "acmeMade", glslType: "float" }] })).not.toBe(
       sig({ ...STAGE, produces: [{ name: "acmeMade", glslType: "float" }] }),
     );
+  });
+
+  // The renderer derives which prepasses run from the rule, so a stage
+  // registered again with another rule must not sign as the same stage.
+  it("changes the signature of a stage only when it declares dormantWhen", () => {
+    expect(stageSignature({ ...STAGE, dormantWhen: undefined })).toBe(stageSignature(STAGE));
+    expect(stageSignature({ ...STAGE, dormantWhen: { amount: 0 } })).not.toBe(stageSignature(STAGE));
   });
 });
 

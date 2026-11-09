@@ -59,6 +59,14 @@ export interface CatalogPhoto {
    *  displayed/exported name folds them together as `base_<copyName>.ext` (see
    *  catalog/copy-name.ts). Undefined on a master. */
   copyName?: string;
+  /** The stack this photo belongs to: photos sharing a stackId are one stack (a
+   *  burst, a bracket), shown as the cover alone until it is expanded. A stack
+   *  with fewer than two members shown is no stack (see catalog/stacks). */
+  stackId?: string;
+  /** Marks this photo as its stack's cover. Two windows can mark different
+   *  members, so the cover is resolved, not read: the lowest id of the marked
+   *  members, else the first member in order (stackCoverId). */
+  stackCover?: true;
 }
 
 /** A grid preview as a loader returns it, with the edit it shows. `previewEdit` is

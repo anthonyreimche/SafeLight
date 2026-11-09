@@ -8,7 +8,7 @@
 // list the grid displays, so navigation never lands on a hidden photo and the
 // two modules stay in sync.
 
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { fieldChanges, structureVersion, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { getSettings, useSettings } from "@/state/settings-store";
@@ -22,6 +22,7 @@ import {
 } from "@/extensions/registry";
 import { guardCallback } from "@/extensions/guard";
 import type { CatalogPhoto, SortDirection } from "@/catalog/types";
+import { collapseStacks, type StackView } from "@/catalog/stacks";
 
 export interface VisiblePhotosOptions {
   /** Grid-filter contribution ids to leave out — for a surface that registers
@@ -47,9 +48,15 @@ interface Derived {
   /** fieldChanges(photos, reads) when `order` was derived. */
   changes: number;
   order: number[];
-  /** The photos `list` holds: `order` read against them. */
+  /** The photos `filtered` holds: `order` read against them. */
   photos: CatalogPhoto[];
+  /** The photos that pass the filters, every stack member among them. */
+  filtered: CatalogPhoto[];
+  /** What `list` and `stacks` were collapsed from. */
+  collapsedFrom: { filtered: CatalogPhoto[]; expanded: ReadonlySet<string> } | null;
+  /** `filtered` with each collapsed stack down to its cover: what is shown. */
   list: CatalogPhoto[];
+  stacks: ReadonlyMap<string, StackView>;
   positions: Map<string, number> | null;
 }
 
@@ -75,6 +82,7 @@ function deriveVisible(
   folder: string | null,
   filters: readonly RegisteredGridFilter[],
   sort: RegisteredLibrarySort | undefined,
+  expanded: ReadonlySet<string>,
 ): Derived {
   const structure = structureVersion(photos);
   const subfolders = getSettings().showSubfolderPhotos;
@@ -121,27 +129,41 @@ function deriveVisible(
       changes,
       order,
       photos,
-      list: order.map((i) => photos[i]),
+      filtered: order.map((i) => photos[i]),
+      collapsedFrom: null,
+      list: [],
+      stacks: new Map(),
       positions: null,
     };
     // A handful of filter variants at most (a surface leaving out its own filter).
     derived = [entry, ...derived.slice(0, 3)];
   } else if (entry.photos !== photos) {
     entry.photos = photos;
-    entry.list = entry.order.map((i) => photos[i]);
+    entry.filtered = entry.order.map((i) => photos[i]);
+  }
+  // Stacks collapse over the cached order, so opening one never derives it again.
+  if (entry.collapsedFrom?.filtered !== entry.filtered || entry.collapsedFrom.expanded !== expanded) {
+    const hadStacks = entry.stacks.size > 0;
+    const collapsed = collapseStacks(entry.filtered, expanded);
+    entry.list = collapsed.list;
+    entry.stacks = collapsed.stacks;
+    entry.collapsedFrom = { filtered: entry.filtered, expanded };
+    if (hadStacks || collapsed.stacks.size > 0) entry.positions = null;
   }
   return entry;
 }
 
-/** Reactive `visibleList`: the grid's display order as a hook, re-derived when
- *  the catalogue, filters, sort, folder or extension grid filters/sorts change.
- *  Backs the Library grid and api.catalog.useVisiblePhotos. */
-export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[] {
+function useVisible<T>(
+  pick: (derived: Derived) => T,
+  pickKey: string,
+  options: VisiblePhotosOptions | undefined,
+): T {
   const photos = useCatalogStore((s) => s.photos);
   const filter = useUIStore((s) => s.filter);
   const sortField = useUIStore((s) => s.sortField);
   const sortDirection = useUIStore((s) => s.sortDirection);
   const activeFolder = useUIStore((s) => s.activeFolder);
+  const expandedStacks = useUIStore((s) => s.expandedStacks);
   // Subscribe so the list re-derives when the subfolder preference toggles;
   // the derive reads the value itself (see inFolder).
   const showSubfolderPhotos = useSettings((s) => s.showSubfolderPhotos);
@@ -153,18 +175,85 @@ export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[]
   const withoutKey = without?.join("\0") ?? "";
   return useMemo(
     () =>
-      deriveVisible(
-        photos,
-        filter,
-        sortField,
-        sortDirection,
-        activeFolder,
-        gridFilters.filter((g) => !without?.includes(g.id)),
-        sort,
-      ).list,
+      pick(
+        deriveVisible(
+          photos,
+          filter,
+          sortField,
+          sortDirection,
+          activeFolder,
+          gridFilters.filter((g) => !without?.includes(g.id)),
+          sort,
+          expandedStacks,
+        ),
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, sort, withoutKey],
+    [photos, filter, sortField, sortDirection, activeFolder, expandedStacks, showSubfolderPhotos, gridFilters, sort, withoutKey, pickKey],
   );
+}
+
+/** Reactive `visibleList`: the grid's display order as a hook, re-derived when
+ *  the catalogue, filters, sort, folder, expanded stacks or extension grid
+ *  filters/sorts change. Backs the Library grid and api.catalog.useVisiblePhotos. */
+export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[] {
+  return useVisible((derived) => derived.list, "", options);
+}
+
+const stackListeners = new Set<() => void>();
+let detachStackSources: (() => void) | null = null;
+
+// One subscription to everything the derivation reads, shared by every badge.
+function subscribeToStacks(listener: () => void): () => void {
+  stackListeners.add(listener);
+  detachStackSources ??= (() => {
+    const notify = () => stackListeners.forEach((l) => l());
+    const detach = [
+      useCatalogStore.subscribe(notify),
+      useUIStore.subscribe(notify),
+      useRegistry.subscribe(notify),
+      useSettings.subscribe(notify),
+    ];
+    return () => detach.forEach((d) => d());
+  })();
+  return () => {
+    stackListeners.delete(listener);
+    if (stackListeners.size === 0) {
+      detachStackSources?.();
+      detachStackSources = null;
+    }
+  };
+}
+
+let stableViews = new Map<string, StackView>();
+let stableViewsFrom: ReadonlyMap<string, StackView> | null = null;
+
+function sameView(a: StackView, b: StackView): boolean {
+  return (
+    a.stackId === b.stackId && a.size === b.size && a.coverId === b.coverId && a.expanded === b.expanded
+  );
+}
+
+// Each derivation builds its views anew; a photo keeps the view object it had
+// while its stack looks the same, so a badge sees no change to re-render for.
+function stableStack(id: string): StackView | undefined {
+  const { stacks } = currentVisible();
+  if (stableViewsFrom !== stacks) {
+    const next = new Map<string, StackView>();
+    for (const [photoId, view] of stacks) {
+      const kept = stableViews.get(photoId);
+      next.set(photoId, kept && sameView(kept, view) ? kept : view);
+    }
+    stableViews = next;
+    stableViewsFrom = stacks;
+  }
+  return stableViews.get(id);
+}
+
+/** Reactive `visibleStack`, for the badge on a cell. It changes only when this
+ *  photo's own stack (size, cover, expanded) does, not with every catalogue
+ *  update. */
+export function useVisibleStack(id: string): StackView | undefined {
+  return useSyncExternalStore(subscribeToStacks, () => stableStack(id));
 }
 
 function currentVisible(): Derived {
@@ -178,12 +267,28 @@ function currentVisible(): Derived {
     ui.activeFolder,
     Object.values(registry.gridFilters),
     registry.librarySorts[ui.sortField],
+    ui.expandedStacks,
   );
 }
 
 /** The photos the grid is currently showing, in display order. */
 export function visibleList(): CatalogPhoto[] {
   return currentVisible().list;
+}
+
+/** The stack a shown photo is a member of, as the grid draws it, or undefined
+ *  when the photo is in no stack among the photos the filters let through. */
+export function visibleStack(id: string): StackView | undefined {
+  return currentVisible().stacks.get(id);
+}
+
+/** The ids of every member of `id`'s stack that passes the filters, those a
+ *  collapsed stack hides included; just `id` for a photo in no stack. */
+export function visibleStackMembers(id: string): string[] {
+  const entry = currentVisible();
+  const stackId = entry.stacks.get(id)?.stackId;
+  if (!stackId) return [id];
+  return entry.filtered.filter((p) => p.stackId === stackId).map((p) => p.id);
 }
 
 /** Where photo `id` sits in visibleList(), or -1 when the grid isn't showing it. */

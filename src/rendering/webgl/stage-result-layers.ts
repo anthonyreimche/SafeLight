@@ -137,6 +137,19 @@ export class StageResultLayers {
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
   }
 
+  /** A framebuffer drawing into `id`'s layer, for a pass to render its result
+   *  without a copy. Valid until the next call or the next reserve. */
+  target(id: string): WebGLFramebuffer {
+    const layer = this.layers.get(id);
+    if (layer === undefined || !this.tex) throw new Error(`stage '${id}' holds no result layer`);
+    const gl = this.gl;
+    const fbo = this.framebuffer("draw");
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fbo);
+    gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.tex, 0, layer);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    return fbo;
+  }
+
   /** Frees the layers of stages not in `keep`; with none held the array goes. */
   release(keep: ReadonlySet<string>): void {
     this.layers = releaseLayers(this.layers, keep);

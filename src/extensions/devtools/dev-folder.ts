@@ -26,7 +26,7 @@ import type { ExtensionManifest, ExtensionModule } from "../types";
 import { DEVTOOLS_EXTENSION_ID, manifestIdRefusal } from "../official-extensions";
 import { startInstance, stopInstances } from "../instance";
 import { restoreDisplacedPlugins } from "../loader";
-import { privilegedFs } from "@/native/privileged";
+import { privilegedDevtools, privilegedFs } from "@/native/privileged";
 import {
   getExtSetting,
   onExtSettingChange,
@@ -88,10 +88,10 @@ function unloadAll(): void {
  *  extension's declaration takes — and learn which of those origins the
  *  running launch's policy still lacks. */
 async function syncFolder(folder: string | null): Promise<void> {
-  const sync = window.safelightNative?.devtools?.syncDevFolder;
-  if (!sync) return;
+  const bridge = privilegedDevtools();
+  if (!bridge) return;
   try {
-    const { pending } = await sync(folder);
+    const { pending } = await bridge.syncDevFolder(folder);
     // A folder chosen meanwhile has its own sync in flight.
     if (folder !== useDevFolder.getState().folder) return;
     useDevFolder.setState({ pendingOrigins: pending });

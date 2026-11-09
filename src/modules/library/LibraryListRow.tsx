@@ -6,6 +6,7 @@
 import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { StackBadge } from "@/ui/components/StackBadge";
 import { usePhotoOption } from "@/ui/components/use-photo-option";
 import { usePreviewRequest } from "@/ui/components/use-preview-request";
 
@@ -112,6 +113,8 @@ function LibraryListRowImpl({
           {photo.keywords.length > 1 ? ` ${photo.keywords.length}` : ""}
         </span>
       )}
+
+      {photo.stackId && <StackBadge photoId={photo.id} inline />}
 
       {photo.flag === "pick" && (
         <span

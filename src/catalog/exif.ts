@@ -16,6 +16,8 @@ import type { ExifData } from "./types";
 // everything else is ignored. All parsing stays client-side.
 
 const MAX_BYTES = 1 << 20; // 1 MiB — EXIF/MakerNotes sit near the file start.
+// Text tags land in catalog.json, which is written on every save.
+const ASCII_MAX_CHARS = 8 << 10;
 
 // TIFF field type -> byte size.
 const TYPE_SIZE: Record<number, number> = {
@@ -301,13 +303,42 @@ function parseXmpText(xmp: string): XmpData {
   return out;
 }
 
+// The packet can be a megabyte of a damaged file, so elements are found with
+// forward-only scans: a regex retrying from every opener of an unclosed
+// element costs quadratic time.
+const XMP_MAX_ITEMS = 10_000;
+
+// Index just past the '>' of the first `<tag ...>` start tag at or after
+// `from`, or -1. The name must end at whitespace or '>', so a name that's a
+// prefix of another (xmp:Rating vs xmp:RatingPercent) doesn't collide. When
+// the first such opener never reaches a '>', no later one can either.
+function startTagEnd(xmp: string, tag: string, from: number): number {
+  const open = `<${tag}`;
+  for (let at = xmp.indexOf(open, from); at >= 0; at = xmp.indexOf(open, at + 1)) {
+    const next = xmp.charAt(at + open.length);
+    if (next === ">") return at + open.length + 1;
+    if (/\s/.test(next)) {
+      const end = xmp.indexOf(">", at + open.length);
+      return end < 0 ? -1 : end + 1;
+    }
+  }
+  return -1;
+}
+
 // An XMP property is serialized either as an element (<xmp:Rating>1</xmp:Rating>)
-// or as an attribute on rdf:Description (xmp:Rating="1") — handle both forms. The
-// `(?:\s[^>]*)?>` opener requires the tag to end at a space or '>', so a name
-// that's a prefix of another (xmp:Rating vs xmp:RatingPercent) doesn't collide.
+// or as an attribute on rdf:Description (xmp:Rating="1") — handle both forms. An
+// element counts only when plain text runs up to its closing tag. The attribute
+// regex stays linear: every candidate holds a quote, so each value scan ends at
+// the next candidate at the latest.
 function xmpValue(xmp: string, tag: string): string | undefined {
-  const el = new RegExp(`<${tag}(?:\\s[^>]*)?>([^<]*)</${tag}>`).exec(xmp);
-  if (el) return decodeEntities(el[1].trim());
+  const close = `</${tag}>`;
+  // Openers before the first '<' past a failed one share its '>' and so fail too.
+  for (let start = startTagEnd(xmp, tag, 0); start >= 0; ) {
+    const end = xmp.indexOf("<", start);
+    if (end < 0) break;
+    if (xmp.startsWith(close, end)) return decodeEntities(xmp.slice(start, end).trim());
+    start = startTagEnd(xmp, tag, end);
+  }
   const attr = new RegExp(`\\s${tag}="([^"]*)"`).exec(xmp);
   if (attr) return decodeEntities(attr[1].trim());
   return undefined;
@@ -316,14 +347,19 @@ function xmpValue(xmp: string, tag: string): string | undefined {
 // dc:subject (keywords) and dc:title are rdf:Bag / rdf:Alt containers of
 // rdf:li entries.
 function rdfBagItems(xmp: string, tag: string): string[] {
-  const block = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`).exec(xmp);
-  if (!block) return [];
+  const blockStart = startTagEnd(xmp, tag, 0);
+  if (blockStart < 0) return [];
+  const blockEnd = xmp.indexOf(`</${tag}>`, blockStart);
+  if (blockEnd < 0) return [];
+  const block = xmp.slice(blockStart, blockEnd);
+  const close = "</rdf:li>";
   const items: string[] = [];
-  const re = /<rdf:li(?:\s[^>]*)?>([\s\S]*?)<\/rdf:li>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(block[1]))) {
-    const v = decodeEntities(m[1].trim());
+  for (let start = startTagEnd(block, "rdf:li", 0); start >= 0 && items.length < XMP_MAX_ITEMS; ) {
+    const end = block.indexOf(close, start);
+    if (end < 0) break;
+    const v = decodeEntities(block.slice(start, end).trim());
     if (v) items.push(v);
+    start = startTagEnd(block, "rdf:li", end + close.length);
   }
   return items;
 }
@@ -486,8 +522,8 @@ function parseTiff(view: DataView, base: number): ExifData {
   const gpsPtr = numTag(r, ifd0.get(TAG.GPSIFD));
   if (gpsPtr !== undefined) {
     const g = readIFD(r, gpsPtr);
-    const lat = parseGpsCoord(r, g.get(GPS_TAG.Latitude), g.get(GPS_TAG.LatitudeRef));
-    const lon = parseGpsCoord(r, g.get(GPS_TAG.Longitude), g.get(GPS_TAG.LongitudeRef));
+    const lat = parseGpsCoord(r, g.get(GPS_TAG.Latitude), g.get(GPS_TAG.LatitudeRef), 90);
+    const lon = parseGpsCoord(r, g.get(GPS_TAG.Longitude), g.get(GPS_TAG.LongitudeRef), 180);
     if (lat !== undefined) exif.gpsLatitude = lat;
     if (lon !== undefined) exif.gpsLongitude = lon;
     const altEntry = g.get(GPS_TAG.Altitude);
@@ -519,8 +555,9 @@ function parseTiff(view: DataView, base: number): ExifData {
   return exif;
 }
 
-// Read an array of RATIONAL or SRATIONAL values as numbers.
-function readRationals(r: Reader, e: Entry): number[] {
+// Read an array of RATIONAL or SRATIONAL values as numbers; a zero denominator
+// reads as `zeroDenominator`.
+function readRationals(r: Reader, e: Entry, zeroDenominator = 0): number[] {
   if (e.type !== 5 && e.type !== 10) return [];
   const signed = e.type === 10;
   const sz = 8;
@@ -531,7 +568,7 @@ function readRationals(r: Reader, e: Entry): number[] {
     if (off + sz > r.view.byteLength) break;
     const num = signed ? r.view.getInt32(off, r.le) : r.view.getUint32(off, r.le);
     const den = signed ? r.view.getInt32(off + 4, r.le) : r.view.getUint32(off + 4, r.le);
-    out.push(den === 0 ? 0 : num / den);
+    out.push(den === 0 ? zeroDenominator : num / den);
   }
   return out;
 }
@@ -710,8 +747,8 @@ function dataOffset(r: Reader, e: Entry): number {
 function asciiTag(r: Reader, e: Entry | undefined): string | undefined {
   if (!e || e.type !== 2) return undefined;
   const start = dataOffset(r, e);
-  const end = start + e.count;
-  if (start < 0 || end > r.view.byteLength) return undefined;
+  if (start < 0 || start + e.count > r.view.byteLength) return undefined;
+  const end = start + Math.min(e.count, ASCII_MAX_CHARS);
   let s = "";
   for (let i = start; i < end; i++) {
     const c = r.view.getUint8(i);
@@ -756,15 +793,19 @@ function numTagByte(r: Reader, e: Entry | undefined): number | undefined {
   return r.view.getUint8(off);
 }
 
+// A camera without a fix writes 0/0 rationals; read as 0 they would put the
+// photo at 0°, 0° on the map. `maxDegrees`: 90 for latitude, 180 for longitude.
 function parseGpsCoord(
   r: Reader,
   coordEntry: Entry | undefined,
   refEntry: Entry | undefined,
+  maxDegrees: number,
 ): number | undefined {
   if (!coordEntry) return undefined;
-  const parts = readRationals(r, coordEntry);
-  if (parts.length < 3) return undefined;
+  const parts = readRationals(r, coordEntry, NaN).slice(0, 3);
+  if (parts.length < 3 || !parts.every(Number.isFinite)) return undefined;
   let deg = parts[0] + parts[1] / 60 + parts[2] / 3600;
+  if (Math.abs(deg) > maxDegrees) return undefined;
   const ref = asciiTag(r, refEntry);
   if (ref === "S" || ref === "W") deg = -deg;
   return round(deg, 6);

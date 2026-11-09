@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NativeFsBridge } from "@/extensions/types";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
+import { encodeCacheEntry } from "./cache-encode";
 import type { CacheRequest, CacheResponse } from "./cache-worker";
 
 const h = vi.hoisted(() => ({ fs: null as NativeFsBridge | null }));
@@ -23,6 +24,8 @@ class FakeWorker {
   onerror: ((e: ErrorEvent) => void) | null = null;
   onmessageerror: (() => void) | null = null;
   readonly delivered: CacheRequest[] = [];
+  readonly transfers: Transferable[][] = [];
+  terminated = false;
 
   constructor() {
     FakeWorker.last = this;
@@ -31,10 +34,15 @@ class FakeWorker {
     );
   }
 
-  postMessage(msg: CacheRequest): void {
+  postMessage(msg: CacheRequest, transfer: Transferable[] = []): void {
     if (msg.cmd === "setCacheDir" && msg.dir && !browserHandles.has(msg.dir))
       throw new DOMException("The handle could not be cloned.", "DataCloneError");
     this.delivered.push(msg);
+    this.transfers.push(transfer);
+  }
+
+  terminate(): void {
+    this.terminated = true;
   }
 }
 
@@ -126,6 +134,48 @@ describe("setCacheDirOnWorker when the worker is gone", () => {
   });
 });
 
+describe("a worker that replaces a failed one", () => {
+  async function respawned(first: FakeWorker | null): Promise<FakeWorker> {
+    await vi.waitFor(() => expect(FakeWorker.last).not.toBe(first));
+    const next = FakeWorker.last;
+    if (!next) throw new Error("no worker");
+    return next;
+  }
+
+  // Otherwise every request after a crash lands in the no-project scope: reads
+  // miss and writes go to a space every project shares.
+  it("is pointed at the project's folder before it serves anything", async () => {
+    h.fs = new MemoryFs("D:/A/.safelight/raw");
+    const { nativeDirectoryHandle, setCacheDirOnWorker, workerReadCachedPreview } = await load();
+    setCacheDirOnWorker(nativeDirectoryHandle("D:/A/.safelight/raw"));
+    await delivered();
+    const first = FakeWorker.last;
+
+    first?.onerror?.({ message: "boom" } as ErrorEvent);
+    void workerReadCachedPreview("k", false);
+    const next = await respawned(first);
+
+    expect(first?.terminated).toBe(true);
+    await vi.waitFor(() => expect(next.delivered).toHaveLength(2));
+    expect(next.delivered[0]).toEqual({ cmd: "setCacheDir", dir: null, scope: "D:/A/.safelight/raw" });
+    expect(next.delivered[1]).toMatchObject({ cmd: "read", key: "k" });
+  });
+
+  it("gets nothing extra when no folder was ever set", async () => {
+    const { workerReadCachedPreview } = await load();
+    workerReadCachedPreview("a", false).catch(() => {});
+    await delivered();
+    const first = FakeWorker.last;
+
+    first?.onerror?.({ message: "boom" } as ErrorEvent);
+    void workerReadCachedPreview("k", false);
+    const next = await respawned(first);
+
+    await vi.waitFor(() => expect(next.delivered.length).toBeGreaterThan(0));
+    expect(next.delivered[0]).toMatchObject({ cmd: "read", key: "k" });
+  });
+});
+
 describe("workerWriteCachedPreview", () => {
   it("says whether the worker stored the entry", async () => {
     const { workerWriteCachedPreview } = await load();
@@ -134,6 +184,22 @@ describe("workerWriteCachedPreview", () => {
     if (msg.cmd !== "write") throw new Error("not a write");
     answer({ type: "write", id: msg.id, ok: false });
     expect(await writing).toBe(false);
+  });
+
+  it("sends an entry built off the main thread as it is, without copying the frame", async () => {
+    const { workerWriteCachedPreview } = await load();
+    const frame = new Float32Array(32 * 32 * 4);
+    const entry = encodeCacheEntry(frame, 32, 32, 16);
+
+    const writing = workerWriteCachedPreview("k", frame, 32, 32, 3072, entry);
+
+    const [msg] = await delivered();
+    expect(msg).toEqual({ cmd: "store", id: expect.any(Number), key: "k", entry });
+    expect(FakeWorker.last?.transfers[0]).toEqual([entry.preview.data.buffer, entry.sample.data.buffer]);
+    expect(frame.buffer.byteLength).toBeGreaterThan(0);
+    if (msg.cmd !== "store") throw new Error("not a store");
+    answer({ type: "write", id: msg.id, ok: true });
+    expect(await writing).toBe(true);
   });
 });
 

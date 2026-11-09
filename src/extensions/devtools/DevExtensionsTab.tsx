@@ -80,8 +80,8 @@ function DevRow({ item }: { item: DevExtItem }) {
           <span
             className={`ml-1.5 rounded px-1 py-px text-[9px] uppercase tracking-wider ${
               loaded
-                ? "bg-emerald-500/20 text-emerald-400"
-                : "bg-red-500/20 text-red-400"
+                ? "bg-label-green/20 text-label-green"
+                : "bg-danger/20 text-danger"
             }`}
           >
             {loaded ? "Loaded" : "Error"}
@@ -90,7 +90,7 @@ function DevRow({ item }: { item: DevExtItem }) {
         <div className="truncate text-text-muted" title={item.dir}>
           {item.dir}
         </div>
-        {item.error && <div className="mt-0.5 text-red-400">{item.error}</div>}
+        {item.error && <div className="mt-0.5 break-words text-danger">{item.error}</div>}
       </div>
       <button
         onClick={reload}

@@ -145,6 +145,12 @@ export interface BrushDab {
   // strokes stack over each other; dabs painted before strokes were recorded
   // carry no marker and bake as one stroke.
   strokeStart?: boolean;
+  // Brush tip (api.develop.registerBrushTip) the stroke stamps instead of the
+  // feathered disc, and the angle in radians it is turned by. Both are read
+  // from the strokeStart dab, and the stroke's other dabs inherit them. A tip
+  // nothing has registered bakes as the disc.
+  tip?: string;
+  angle?: number;
 }
 
 // Linear gradient geometry: effect ramps 0->1 from p0 to p1 (source-UV).

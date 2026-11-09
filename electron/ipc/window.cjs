@@ -6,6 +6,10 @@
 // The app's own window: its version, the native title-bar overlay colours, and
 // the folder the OS asked it to open.
 
+const os = require("node:os");
+const { applyMaterial, parseMaterial } = require("../window-material.cjs");
+
+const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const BAR_HEIGHT = 38; // the top bars' h-[38px]
 const OVERLAY_HEIGHT = 36; // 2px under the bar so its bottom border shows
 const TRAFFIC_LIGHT_HEIGHT = 14;
@@ -15,9 +19,11 @@ const TRAFFIC_LIGHT_HEIGHT = 14;
  *   appVersion: () => string,
  *   BrowserWindow: { fromWebContents(contents: Electron.WebContents): Electron.BrowserWindow | null },
  *   takeOsOpen: () => unknown,
+ *   saveMaterial?: (material: "acrylic" | "mica" | null) => void,
+ *   isSoftware?: () => boolean,
  * }} deps
  */
-function windowChannels({ appVersion, BrowserWindow, takeOsOpen }) {
+function windowChannels({ appVersion, BrowserWindow, takeOsOpen, saveMaterial, isSoftware }) {
   return [
     {
       channel: "app:version",
@@ -33,6 +39,10 @@ function windowChannels({ appVersion, BrowserWindow, takeOsOpen }) {
       handler: (e, color, symbolColor, uiScale) => {
         const win = BrowserWindow.fromWebContents(e.sender);
         if (!win) return;
+        if (!HEX_COLOR.test(String(color)) || !HEX_COLOR.test(String(symbolColor))) {
+          console.warn(`[safelight] title-bar overlay colours must be hex, got ${color} / ${symbolColor}`);
+          return;
+        }
         const scale = Number.isFinite(uiScale) && uiScale > 0 ? Number(uiScale) : 1;
         try {
           if (process.platform === "darwin") {
@@ -48,6 +58,25 @@ function windowChannels({ appVersion, BrowserWindow, takeOsOpen }) {
             height: Math.round(OVERLAY_HEIGHT * scale),
           });
         } catch {}
+      },
+    },
+    // Privileged: the window material is the system's to draw, so a theme asks
+    // for it through the core only. Anything but a known material clears it.
+    {
+      channel: "window:setMaterial",
+      privileged: true,
+      handler: (e, material) => {
+        const win = BrowserWindow.fromWebContents(e.sender);
+        if (!win) return false;
+        const wanted = parseMaterial(material);
+        const system = {
+          platform: process.platform,
+          release: os.release(),
+          software: isSoftware ? isSoftware() : false,
+        };
+        const applied = applyMaterial(win, wanted, system);
+        if (system.platform === "win32" || system.platform === "darwin") saveMaterial?.(wanted);
+        return applied;
       },
     },
     // Privileged: it names a folder for the renderer to open as the project.

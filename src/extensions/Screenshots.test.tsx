@@ -162,6 +162,43 @@ describe("Screenshots while enlarged", () => {
     expect(shortcutsSuspended()).toBe(false);
   });
 
+  it("the enlarged view is a modal that takes focus", async () => {
+    const user = userEvent.setup();
+    render(<Screenshots urls={URLS} />);
+    await user.click(enlarge(2));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(dialog);
+  });
+
+  it("Tab does not leave the enlarged view", async () => {
+    const user = userEvent.setup();
+    render(<Screenshots urls={URLS} />);
+    await user.click(enlarge(2));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+  });
+
+  it("closing returns focus to the thumbnail that opened it", async () => {
+    const user = userEvent.setup();
+    render(<Screenshots urls={URLS} />);
+    await user.click(enlarge(2));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(enlarge(2));
+  });
+
+  it("stepping keeps focus on the enlarged view, and closing still returns to the opener", async () => {
+    const user = userEvent.setup();
+    render(<Screenshots urls={URLS} />);
+    await user.click(enlarge(2));
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(enlarge(2));
+  });
+
   it("an earlier screenshot failing keeps the same one enlarged", async () => {
     const user = userEvent.setup();
     render(<Screenshots urls={URLS} />);

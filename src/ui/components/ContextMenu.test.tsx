@@ -134,6 +134,45 @@ describe("ContextMenu keyboard", () => {
   });
 });
 
+// The dock's panel header hosts its menu and starts a drag on pointerdown,
+// calling preventDefault — which suppresses the compatibility mousedown. A
+// click outside the menu must close it without reaching the header, whose
+// pointerup would otherwise toggle the panel's collapse.
+describe("ContextMenu outside click", () => {
+  function openInside(onClose: () => void) {
+    const parentDown = vi.fn((e: React.PointerEvent) => e.preventDefault());
+    render(
+      <div onPointerDown={parentDown}>
+        <ContextMenu x={10} y={10} items={[{ label: "Open", onClick: () => {} }]} onClose={onClose} />
+      </div>,
+    );
+    return parentDown;
+  }
+
+  it("closes on a pointer press outside the menu, even when an ancestor prevents mousedown", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const parentDown = openInside(onClose);
+    await user.pointer({ keys: "[MouseLeft]", target: screen.getByTestId("context-menu-backdrop") });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(parentDown).not.toHaveBeenCalled();
+  });
+
+  it("keeps a press on the menu itself from closing it or reaching ancestors", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const parentDown = openInside(onClose);
+    await user.pointer({ keys: "[MouseLeft>]", target: screen.getByRole("menu") });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(parentDown).not.toHaveBeenCalled();
+  });
+
+  it("renders into document.body so a transformed ancestor can't capture its fixed backdrop", () => {
+    openInside(() => {});
+    expect(screen.getByTestId("context-menu-backdrop").parentElement).toBe(document.body);
+  });
+});
+
 describe("ContextMenu escape", () => {
   it("stays below a dialogue opened after it, however often the menu re-renders", () => {
     const menuItems: ContextMenuEntry[] = [{ label: "Open", onClick: () => {} }];

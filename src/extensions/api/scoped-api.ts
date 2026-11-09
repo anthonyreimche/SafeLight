@@ -5,6 +5,7 @@
 
 import type {
   CatalogHooksContribution,
+  BrushTipContribution,
   CursorContribution,
   ExportProcessorContribution,
   FilenameTemplateContribution,
@@ -283,7 +284,9 @@ export interface SafelightAPI {
   };
   /** Write the app's Preferences (`useSettings` reads them). The change is
    *  saved and its side effects run (UI scale, reduced motion …), which a raw
-   *  `useSettings.setState` does not do. */
+   *  `useSettings.setState` does not do. The update settings
+   *  (`checkExtensionUpdates`, `autoUpdateExtensions`, `checkForUpdates`,
+   *  `updateChannel`) only change in Preferences: they are ignored here. */
   appSettings: {
     update(patch: Partial<AppSettings>): void;
   };
@@ -572,6 +575,14 @@ export interface SafelightAPI {
      *  preview off drops them with its stages' values. Cleared when the
      *  extension stops. Needs Safelight 3.2.1. */
     setViewValues(values: Record<string, unknown> | null): void;
+    /** Offer a brush tip: a shape (an alpha image, at most 128 px an edge) a
+     *  brush can stamp in place of its round disc. Name it by `id` in the `tip`
+     *  of the dab that starts a stroke, with an optional `angle`; an id nothing
+     *  holds bakes as the disc, so strokes saved with a tip keep drawing when
+     *  its extension is off. Feather doesn't apply to a tip. Registering an id
+     *  you hold replaces it; another extension's id is refused. Dropped when
+     *  the extension stops. Needs Safelight 3.2.1. */
+    registerBrushTip(tip: BrushTipContribution): void;
     /** React hook: the panels that can be added to a mask, in their order.
      *  Needs Safelight 3.2.0. */
     useMaskPanels(): MaskPanelEntry[];
@@ -745,6 +756,19 @@ export interface SafelightAPI {
     /** The photo open in Develop (the active photo), or undefined. React hook;
      *  a write to any other photo leaves it alone. */
     useActivePhoto(): import("@/catalog/types").CatalogPhoto | undefined;
+    /** Put the photos in one new stack (a burst, a bracket), `opts.cover` (one
+     *  of them) as its cover; a photo in another stack leaves it. The grid shows
+     *  a collapsed stack as its cover alone, and ←/→ culling, select all and
+     *  `useVisiblePhotos` follow what is shown. Written like a rating: no undo
+     *  entry. Does nothing for fewer than two photos in the catalogue. */
+    setStack(ids: string[], opts?: { cover?: string }): Promise<void>;
+    /** Take the photos out of their stacks. A stack left with one photo is no
+     *  stack. */
+    clearStack(ids: string[]): Promise<void>;
+    /** The stack photo `id` belongs to among all the catalogue's photos: its
+     *  id, its members in catalogue order and its cover (the marked member with
+     *  the lowest id, else the first member). Null for a photo in no stack. */
+    stackOf(id: string): { stackId: string; ids: string[]; cover: string } | null;
     /** The name a photo is shown by: its filename, with a virtual copy's
      *  name added ("IMG_0001_copy.NEF"). */
     photoDisplayName: typeof import("@/catalog/copy-name").photoDisplayName;
@@ -780,6 +804,21 @@ export interface SafelightAPI {
     pathOf(handle: unknown): string | null;
     /** Show a path in the OS file manager; false outside the desktop app. */
     reveal(path: string): Promise<boolean>;
+  };
+  /** Bring files into the open project from outside it (a tether, a watch
+   *  folder, a download). */
+  library: {
+    /** Write each file into `folder` of the open project (relative to its root,
+     *  "/" between names; created if missing; the root when omitted) and import
+     *  it as a photo, as the project scan imports a new file: previews, EXIF,
+     *  then the grid and the Folders panel. `keywords` are added to the ones the
+     *  file carries. One result per file, in order: `{ name, id }`, or
+     *  `{ name, error }` when it was not taken. A name that is not one plain
+     *  entry name (separators, `..`, a drive letter), a folder that leaves the
+     *  project, a name already in use, an unsupported type, a file over 512 MiB
+     *  and a read-only folder are all refused with a message; nothing is
+     *  overwritten. Calls run one at a time. */
+    importFiles: typeof import("@/modules/library/import-files").importFiles;
   };
   /** Presets: the file formats and the descriptions the Presets panel and
    *  Copy Settings share. */

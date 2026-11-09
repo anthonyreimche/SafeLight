@@ -15,12 +15,13 @@ vi.mock("@/state/broadcast", () => ({
   WINDOW_ID: "test-window",
 }));
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { normalizeParams } from "@/catalog/types";
 import { registerPipeline, useRegistry } from "@/extensions/registry";
 import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 import { useDevelopStore } from "@/state/develop-store";
+import { popEscapeHandler } from "@/ui/escape-stack";
 import { DisplayTransformControl } from "./DisplayTransformControl";
 
 function seedPhoto(displayTransform: string | null = null) {
@@ -100,5 +101,68 @@ describe("DisplayTransformControl", () => {
     registerPipeline("core", { id: DEFAULT_PIPELINE, name: "Built-in" });
     const { container } = render(<DisplayTransformControl />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("DisplayTransformControl keyboard", () => {
+  const item = (name: string) => screen.getByRole("menuitemradio", { name });
+
+  it("focuses the checked item when the menu opens", async () => {
+    seedPhoto("test.agx");
+    const user = userEvent.setup();
+    render(<DisplayTransformControl />);
+    await user.click(trigger());
+    expect(document.activeElement).toBe(item("AgX"));
+  });
+
+  it("moves between items with the arrow keys, wrapping at the ends", async () => {
+    const user = userEvent.setup();
+    render(<DisplayTransformControl />);
+    await user.click(trigger());
+    expect(document.activeElement).toBe(item("Default (Built-in)"));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Built-in"));
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(document.activeElement).toBe(item("Default (Built-in)"));
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(item("AgX"));
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(item("Default (Built-in)"));
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(item("AgX"));
+  });
+
+  it("returns focus to the trigger on Escape", async () => {
+    const user = userEvent.setup();
+    render(<DisplayTransformControl />);
+    await user.click(trigger());
+    act(() => {
+      popEscapeHandler();
+    });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it("returns focus to the trigger after choosing", async () => {
+    const user = userEvent.setup();
+    render(<DisplayTransformControl />);
+    await user.click(trigger());
+    await user.click(item("AgX"));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it("leaves focus alone when an outside press closes it", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <DisplayTransformControl />
+        <input aria-label="elsewhere" />
+      </>,
+    );
+    await user.click(trigger());
+    await user.click(screen.getByLabelText("elsewhere"));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText("elsewhere"));
   });
 });

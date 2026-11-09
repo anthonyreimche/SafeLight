@@ -505,6 +505,34 @@ describe("version 2 stage results on the renderer", () => {
     }
   });
 
+  it("gives back the own targets of stages that move into the array when another wakes", () => {
+    driver = samplerLimit(FEW_SAMPLERS);
+    const { canvas, gl } = glHarness();
+    const stages = markers(3).map((s) => ({ ...s, dormantWhen: { take: 0 } }));
+    const liveTextures = (taken: ProcessingStageContribution[][]): number => {
+      const tally = trackGlObjects(gl);
+      const r = new WebGLRenderer(canvas, {
+        stages,
+        pipeline: LINEAR_PROBE_PIPELINE,
+        derive: deriveWithoutSettings,
+        skipDormantStages: true,
+      });
+      try {
+        r.setImage(SOURCE);
+        r.setParams(V2);
+        for (const set of taken) {
+          r.setContributedParams(takingStages(set));
+          r.render();
+        }
+        return tally.live.texture;
+      } finally {
+        r.dispose();
+        tally.restore();
+      }
+    };
+    expect(liveTextures([stages.slice(0, 2), stages])).toBe(liveTextures([stages]));
+  });
+
   it("draws without the stages it can't allocate a layer for, and names them", () => {
     driver = samplerLimit(FEW_SAMPLERS);
     const { gl } = glHarness();

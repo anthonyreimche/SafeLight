@@ -213,7 +213,7 @@ describe("decodeRawFloatViaLibRaw and its timer", () => {
 
     const image = await decodeRawFloatViaLibRaw(rawBytes(), { signal: opened.signal });
 
-    expect(image).toMatchObject({ width: 2, height: 2 });
+    expect(image).toEqual({ failure: "aborted" });
     expect(vi.getTimerCount()).toBe(0);
     expect(h.ended).toEqual([]);
   });

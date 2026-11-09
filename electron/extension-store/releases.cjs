@@ -11,6 +11,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { promisify } = require("node:util");
 const zlib = require("node:zlib");
 const { validRepo } = require("../window-policy.cjs");
 const {
@@ -30,29 +31,100 @@ const {
 // for a slow link, but a dead connection ends the install instead of hanging it.
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
-// Minimal POSIX/GNU tar reader: 512-byte headers, octal sizes, 'L' longnames.
-function untar(buf) {
+// Downloads come from any repo, so they are bounded before they can exhaust the
+// main process's memory. MAX_UNPACKED matches unzip.cjs.
+const MAX_PACKED = 64 * 1024 * 1024;
+const MAX_UNPACKED = 256 * 1024 * 1024;
+const MAX_TAR_ENTRIES = 10000;
+
+const tooLarge = () => new Error("The extension download is too large.");
+const gunzip = promisify(zlib.gunzip);
+const cString = (buf, start, end) => buf.toString("utf8", start, end).replace(/\0[\s\S]*$/, "");
+
+/** The `path` record of a PAX extended header, or null. */
+function paxPath(data) {
+  let found = null;
+  let off = 0;
+  while (off < data.length) {
+    const space = data.indexOf(0x20, off);
+    if (space < 0) break;
+    const length = parseInt(data.toString("utf8", off, space), 10);
+    if (!(length > 0)) break;
+    const record = data.toString("utf8", space + 1, off + length).replace(/\n$/, "");
+    const eq = record.indexOf("=");
+    if (eq > 0 && record.slice(0, eq) === "path") found = record.slice(eq + 1);
+    off += length;
+  }
+  return found;
+}
+
+// Minimal POSIX/GNU tar reader: 512-byte headers, octal sizes, ustar prefixes,
+// 'L' longnames and PAX 'x' paths.
+function untar(buf, { maxEntries = MAX_TAR_ENTRIES } = {}) {
   const files = [];
+  let entries = 0;
   let off = 0;
   let longName = null;
   while (off + 512 <= buf.length) {
     const block = buf.subarray(off, off + 512);
     off += 512;
     if (block.every((b) => b === 0)) continue;
-    const name =
-      longName ?? block.toString("utf8", 0, 100).replace(/\0[\s\S]*$/, "");
-    longName = null;
     const size = parseInt(block.toString("utf8", 124, 136).trim(), 8) || 0;
     const type = String.fromCharCode(block[156]);
     const data = buf.subarray(off, off + size);
     off += Math.ceil(size / 512) * 512;
     if (type === "L") {
-      longName = data.toString("utf8").replace(/\0[\s\S]*$/, "");
-    } else if (type === "0" || type === "\0" || block[156] === 0) {
-      files.push({ name, data });
-    } // dirs ('5'), pax headers ('x'/'g'), links: skipped
+      longName = cString(data, 0, data.length);
+      continue;
+    }
+    if (type === "x") {
+      longName = paxPath(data) ?? longName;
+      continue;
+    }
+    if (type === "g") continue;
+    if (++entries > maxEntries) throw new Error("The extension download has too many files.");
+    // GNU headers ("ustar  ") keep other fields at 345, so only POSIX has a prefix.
+    const prefix = block.toString("latin1", 257, 263) === "ustar\0" ? cString(block, 345, 500) : "";
+    const field = cString(block, 0, 100);
+    const name = longName ?? (prefix ? `${prefix}/${field}` : field);
+    longName = null;
+    if (type === "0" || type === "\0") files.push({ name, data });
+    // dirs ('5'), links and other types: skipped
   }
   return files;
+}
+
+// The response body, refused once it passes MAX_PACKED, whether the server
+// announces its length or not.
+async function readCapped(res) {
+  if (Number(res.headers.get("content-length")) > MAX_PACKED) {
+    if (res.body) res.body.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_PACKED) {
+      reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+async function inflate(gz) {
+  try {
+    return await gunzip(gz, { maxOutputLength: MAX_UNPACKED });
+  } catch (e) {
+    if (e && e.code === "ERR_BUFFER_TOO_LARGE") throw tooLarge();
+    throw e;
+  }
 }
 
 /**
@@ -70,7 +142,7 @@ function createReleases({ net, userData, fileWriter, registryVersionsFor }) {
     const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`;
     const res = await net.fetch(tarUrl, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
-    const tar = zlib.gunzipSync(Buffer.from(await res.arrayBuffer()));
+    const tar = await inflate(await readCapped(res));
     return safeEntries(
       untar(tar).map((f) => ({ ...f, name: f.name.split("/").slice(1).join("/") }))
     );
@@ -82,7 +154,7 @@ function createReleases({ net, userData, fileWriter, registryVersionsFor }) {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`download failed (${res.status})`);
-    return Buffer.from(await res.arrayBuffer());
+    return readCapped(res);
   }
 
   // safelight.json at `ref` (a tag, or HEAD) from GitHub's file CDN, which the API
@@ -149,6 +221,7 @@ function createReleases({ net, userData, fileWriter, registryVersionsFor }) {
           Accept: "application/vnd.github+json",
           "User-Agent": "Safelight",
         },
+        signal: AbortSignal.timeout(10000),
       }
     );
     if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);

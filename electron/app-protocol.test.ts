@@ -139,4 +139,9 @@ describe("app:// responses", () => {
     expect(escape.status).toBe(404);
     expect(await escape.text()).not.toBe("outside");
   });
+
+  it("answers 400 to a path with a malformed escape", async () => {
+    expect((await get("/%E0%A4%A")).status).toBe(400);
+    expect((await get("/__plugins__/demo.ext/%E0%A4%A.js")).status).toBe(400);
+  });
 });

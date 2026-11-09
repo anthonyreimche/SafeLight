@@ -53,7 +53,7 @@ export function DevFolderControls({ variant }: { variant: Variant }) {
           )}
         </div>
 
-        {error && <div className="text-red-400">{error}</div>}
+        {error && <div className="text-danger">{error}</div>}
         {pending.length > 0 && (
           <div role="status" className="text-text-muted">
             Restart Safelight to allow network access to {pending.join(", ")}.
@@ -109,7 +109,7 @@ export function DevFolderControls({ variant }: { variant: Variant }) {
         </div>
       )}
 
-      {error && <p className="text-[10px] text-red-400">{error}</p>}
+      {error && <p className="text-[10px] text-danger">{error}</p>}
       {pending.length > 0 && (
         <p role="status" className="text-[10px] text-text-muted">
           Restart Safelight to allow network access to {pending.join(", ")}.

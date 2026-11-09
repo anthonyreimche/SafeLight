@@ -7,7 +7,7 @@ import { useEffect, type ReactNode } from "react";
 import { DevelopCanvas } from "./DevelopCanvas";
 import { MissingAdjustmentsNotice } from "./MissingAdjustmentsNotice";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useDevelopStore } from "@/state/develop-store";
+import { flushPendingThumbnails, holdsEdit, useDevelopStore } from "@/state/develop-store";
 import { useActivePhoto } from "@/state/use-active-photo";
 import { useDisplaySpace } from "@/rendering/display-space";
 
@@ -42,11 +42,17 @@ export function DevelopStage({ zoom, onZoomChange, empty }: DevelopStageProps) {
   useEffect(() => {
     if (activePhotoId) {
       const p = useCatalogStore.getState().photos.find((ph) => ph.id === activePhotoId);
+      // Other writers (host putEditState, stored-edit, catalog-sync) reload the
+      // open photo themselves, so what is held is current.
+      if (holdsEdit(activePhotoId, p?.exif.colorTemperature)) return;
       loadEdit(activePhotoId, p?.exif.colorTemperature).catch((error: unknown) =>
         console.error("Couldn't save the edit left on the previous photo", error),
       );
     }
   }, [activePhotoId, loadEdit]);
+
+  // Leaving Develop draws the thumbnail still waiting for the edits to go quiet.
+  useEffect(() => flushPendingThumbnails, []);
 
   return (
     <div
@@ -56,10 +62,12 @@ export function DevelopStage({ zoom, onZoomChange, empty }: DevelopStageProps) {
         // Neutral surround behind the image. Colour assessment forces the ISO
         // middle grey; otherwise it follows the theme unless the user
         // overrides it (Preferences ▸ Interface ▸ Canvas surround). The
-        // renderer reads it back for the crop-mode margin.
+        // renderer reads it back for the crop-mode margin. Its alpha is
+        // dropped: a window-material theme's translucent surface would show
+        // the desktop behind the image.
         background: colorAssessment
           ? ASSESSMENT_SURROUND
-          : "var(--color-canvas-surround, var(--color-surface-0))",
+          : "rgb(from var(--color-canvas-surround, var(--color-surface-0)) r g b / 1)",
       }}
     >
       {activePhoto ? (

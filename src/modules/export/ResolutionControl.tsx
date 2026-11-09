@@ -59,7 +59,7 @@ const VARIANTS = {
     chip: (active: boolean) =>
       `rounded px-2 py-1 text-[11px] ${
         active
-          ? "bg-slider-fill text-white"
+          ? "bg-slider-fill text-on-accent"
           : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
       }`,
   },

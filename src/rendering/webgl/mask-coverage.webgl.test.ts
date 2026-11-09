@@ -9,9 +9,12 @@
 // controls that shape a dab — flow builds coverage up, opacity caps how far it
 // can build — and the RGBA packing the shader reads every mask through.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrushDab } from "@/catalog/types";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
+import type { BrushTipContribution } from "@/extensions/api/contributions";
+import { differingBytes } from "./bake-bytes.test-support";
+import { setActiveBrushTips } from "./brush-tips";
 import { CoverageBaker, bakeCoverage, type CoverageItem, type CoverageResult } from "./mask-coverage";
 
 function dab(over: Partial<BrushDab> = {}): BrushDab {
@@ -175,9 +178,7 @@ describe("CoverageBaker", () => {
     const full = bakeCoverage(items, aspect);
     if (!baked || !full) throw new Error("a bake returned null");
     expect(baked.channelOf).toEqual(full.channelOf);
-    let differing = 0;
-    for (let i = 0; i < full.data.length; i++) if (baked.data[i] !== full.data[i]) differing++;
-    expect(differing).toBe(0);
+    expect(differingBytes(baked.data, full.data)).toBe(0);
   }
 
   /** The radial gradients a call creates: two for every dab it rasterizes. */
@@ -248,3 +249,71 @@ describe("CoverageBaker", () => {
   });
 });
 
+
+describe("brush tips", () => {
+  // Opaque on the left half, clear on the right: a disc can't be mistaken for it.
+  const halfTip: BrushTipContribution = {
+    id: "half",
+    label: "Half",
+    alpha: { width: 8, height: 8, data: Uint8Array.from({ length: 64 }, (_, i) => (i % 8 < 4 ? 255 : 0)) },
+  };
+  const tipped = (over: Partial<BrushDab> = {}) => dab({ strokeStart: true, tip: "half", ...over });
+
+  beforeEach(() => setActiveBrushTips({ half: halfTip }));
+  afterEach(() => setActiveBrushTips({}));
+
+  it("bakes an unknown tip exactly like the round disc", () => {
+    const disc = bake([dab({ strokeStart: true, feather: 0.4 })]);
+    const unknown = bake([dab({ strokeStart: true, feather: 0.4, tip: "missing", angle: 1 })]);
+    expect(differingBytes(unknown.data, disc.data)).toBe(0);
+  });
+
+  it("stamps the tip's shape in place of the disc", () => {
+    const baked = bake([tipped()]);
+    expect(coverageAt(baked, 0.4, 0.5)).toBeGreaterThan(240);
+    expect(coverageAt(baked, 0.6, 0.5)).toBeLessThan(15);
+    expect(coverageAt(baked, 0.9, 0.5)).toBe(0);
+  });
+
+  it("turns the tip by its angle on the picture, whatever the image's aspect", () => {
+    const turned = bake([tipped({ angle: Math.PI })], 1.5);
+    expect(coverageAt(turned, 0.5 - 0.2 / 1.5 / 2, 0.5)).toBeLessThan(15);
+    expect(coverageAt(turned, 0.5 + 0.2 / 1.5 / 2, 0.5)).toBeGreaterThan(240);
+    const quarter = bake([tipped({ angle: Math.PI / 2 })]);
+    expect(coverageAt(quarter, 0.5, 0.4)).toBeGreaterThan(240);
+    expect(coverageAt(quarter, 0.5, 0.6)).toBeLessThan(15);
+  });
+
+  it("leaves feather out of a tip, and keeps flow, and the stroke's other dabs take the tip", () => {
+    expect(differingBytes(bake([tipped({ feather: 1 })]).data, bake([tipped({ feather: 0 })]).data)).toBe(0);
+    const half = coverageAt(bake([tipped({ flow: 0.5 })]), 0.4, 0.5);
+    expect(half).toBeGreaterThan(120);
+    expect(half).toBeLessThan(136);
+    const followed = bake([tipped(), dab({ x: 0.6 })]);
+    expect(coverageAt(followed, 0.55, 0.5)).toBeGreaterThan(240);
+    expect(coverageAt(followed, 0.7, 0.5)).toBeLessThan(15);
+  });
+
+  it("lets an erase stroke cut with the tip", () => {
+    const baked = bake([dab({ strokeStart: true }), tipped({ erase: true })]);
+    expect(coverageAt(baked, 0.4, 0.5)).toBeLessThan(15);
+    expect(coverageAt(baked, 0.6, 0.5)).toBeGreaterThan(240);
+  });
+
+  it("keeps the tip when a stroke splits where the brush flips to erase", () => {
+    const baked = bake([dab({ strokeStart: true }), tipped(), dab({ erase: true })]);
+    expect(coverageAt(baked, 0.4, 0.5)).toBeLessThan(15);
+    expect(coverageAt(baked, 0.6, 0.5)).toBeGreaterThan(240);
+  });
+
+  it("bakes again when the tip arrives after the dabs were baked", () => {
+    const baker = new CoverageBaker();
+    const items = [{ id: "a", dabs: [tipped()] }];
+    setActiveBrushTips({});
+    const before = baker.bake(items, 1);
+    setActiveBrushTips({ half: halfTip });
+    const after = baker.bake(items, 1);
+    expect(coverageAt(before as CoverageResult, 0.6, 0.5)).toBe(255);
+    expect(coverageAt(after as CoverageResult, 0.6, 0.5)).toBeLessThan(15);
+  });
+});

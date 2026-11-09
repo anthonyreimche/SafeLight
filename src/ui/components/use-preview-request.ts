@@ -4,29 +4,34 @@
 // be preserved in derived versions.
 
 import { useEffect, useRef } from "react";
-import { requestThumbnail } from "@/state/thumbnail-loader";
+import { cancelThumbnail, requestThumbnail } from "@/state/thumbnail-loader";
 
 /** Ref for a photo's cell or row: while `needsPreview`, asks the loader for the
  *  photo's grid preview as soon as the element nears the viewport, ahead of the idle
  *  prefill. A project's previews are read as they scroll into view, so a cell or row
- *  without one stays blank unless it asks. */
+ *  without one stays blank unless it asks. The request is withdrawn if the cell
+ *  goes away before its read starts. */
 export function usePreviewRequest<T extends HTMLElement>(photoId: string, needsPreview: boolean) {
   const ref = useRef<T>(null);
   useEffect(() => {
     if (!needsPreview) return;
     const el = ref.current;
     if (!el) return;
+    let requested = false;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
-          requestThumbnail(photoId, { visible: true });
+          requested = requestThumbnail(photoId, { visible: true });
           io.disconnect();
         }
       },
       { rootMargin: "300px" },
     );
     io.observe(el);
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      if (requested) cancelThumbnail(photoId);
+    };
   }, [needsPreview, photoId]);
   return ref;
 }

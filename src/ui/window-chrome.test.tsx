@@ -68,4 +68,16 @@ describe("useTitleBarOverlay", () => {
     expect(setOverlay).toHaveBeenLastCalledWith(SURFACE_1, TEXT, 1.5);
     expect(document.documentElement.style.getPropertyValue("--ui-scale")).toBe("1.5");
   });
+
+  it.each([
+    ["rgba(16, 32, 48, 0.5)", "#80102030"],
+    ["rgb(16 32 48 / 50%)", "#80102030"],
+    ["rgb(16, 32, 48)", "#102030"],
+    ["#abc", "#abc"],
+    ["#10203040", "#40102030"],
+  ])("sends %s to the native overlay as hex", (css, hex) => {
+    document.documentElement.style.setProperty("--color-surface-1", css);
+    render(<Bar bgVar="--color-surface-1" />);
+    expect(setOverlay).toHaveBeenLastCalledWith(hex, TEXT, 1);
+  });
 });

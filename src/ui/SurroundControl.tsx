@@ -19,6 +19,7 @@ import {
   useSettings,
 } from "@/state/settings-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { focusInitialMenuItem, handleMenuKeyDown } from "@/ui/menu-keys";
 
 const LAST = CANVAS_SURROUND_SHADES.length - 1;
 
@@ -27,15 +28,23 @@ export function SurroundControl() {
   const surround = useSettings((s) => s.canvasSurround);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const closeToTrigger = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
 
   // Close the picker on outside click or Escape.
   useEffect(() => {
     if (!open) return;
+    focusInitialMenuItem(menuRef.current);
     const onDown = (e: PointerEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     window.addEventListener("pointerdown", onDown, true);
-    const popEsc = pushEscapeHandler(() => setOpen(false));
+    const popEsc = pushEscapeHandler(closeToTrigger);
     return () => {
       window.removeEventListener("pointerdown", onDown, true);
       popEsc();
@@ -63,6 +72,7 @@ export function SurroundControl() {
         −
       </button>
       <button
+        ref={triggerRef}
         className="h-3 w-3 rounded-sm border border-border hover:border-text-muted"
         style={{ background: cur.value }}
         title={`Surround: ${cur.label} — click to choose`}
@@ -83,7 +93,9 @@ export function SurroundControl() {
 
       {open && (
         <div
+          ref={menuRef}
           role="menu"
+          onKeyDown={(e) => handleMenuKeyDown(menuRef.current, e, "horizontal")}
           className="absolute bottom-full left-1/2 mb-1.5 flex -translate-x-1/2 gap-1 rounded border border-border bg-surface-2 p-1 shadow-lg"
         >
           {CANVAS_SURROUND_SHADES.map((shade) => (
@@ -95,7 +107,7 @@ export function SurroundControl() {
               aria-label={shade.label}
               onClick={() => {
                 updateSettings({ canvasSurround: shade.value });
-                setOpen(false);
+                closeToTrigger();
               }}
               className={`h-4 w-4 rounded-sm border ${
                 shade.value === cur.value

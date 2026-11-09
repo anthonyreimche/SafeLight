@@ -44,6 +44,8 @@ const h = vi.hoisted(() => ({
   cacheDeletes: [] as string[],
   /** Ids of the photos handed to catalogStorage().putPhoto. */
   saved: [] as string[],
+  /** The `lazy` option each of those puts carried. */
+  savedLazy: [] as (boolean | undefined)[],
   /** Grid thumbnails built, and decoded bitmaps let go of. */
   thumbnails: 0,
   bitmapsClosed: 0,
@@ -130,8 +132,9 @@ vi.mock("@/state/settings-store", () => ({
 
 vi.mock("@/catalog/storage", () => ({
   catalogStorage: () => ({
-    putPhoto: async (photo: CatalogPhoto) => {
+    putPhoto: async (photo: CatalogPhoto, options?: { lazy?: boolean }) => {
       h.saved.push(photo.id);
+      h.savedLazy.push(options?.lazy);
       h.whileSaving();
     },
   }),
@@ -143,6 +146,8 @@ vi.mock("@/state/catalog-store", () => ({
 }));
 
 import {
+  buildPhoto,
+  buildPreviewBlob,
   preDecodeRawsForCache,
   rebuildThumbnails,
   reimportPhotos,
@@ -261,6 +266,14 @@ describe("the Cache all pre-decode of a project the user has left", () => {
 });
 
 describe("the repair of missing previews of a project the user has left", () => {
+  it("stores what it derives lazily, since a later open derives it again", async () => {
+    h.savedLazy.length = 0;
+
+    await repairMissingPreviews(unrepaired(2));
+
+    expect(h.savedLazy).toEqual([true, true]);
+  });
+
   it("reads nothing when the project was left before it began", async () => {
     await repairMissingPreviews(unrepaired(2), undefined, left());
 
@@ -300,17 +313,27 @@ describe("the repair of missing previews of a project the user has left", () => 
 
     await repairMissingPreviews(unrepaired(1), undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true, signal: project.signal }]);
     expect(h.saved).toEqual(["id:DSC_0000.NEF"]);
   });
 });
 
 describe("rebuilding every preview", () => {
+  it("saves what the user asked for on the normal cadence, not lazily", async () => {
+    h.savedLazy.length = 0;
+
+    await rebuildThumbnails(raws(1));
+    await reimportPhotos(raws(1));
+
+    expect(h.savedLazy.length).toBeGreaterThan(0);
+    expect(h.savedLazy.every((lazy) => !lazy)).toBe(true);
+  });
+
   it("decodes and reads metadata as background work", async () => {
     await rebuildThumbnails(raws(1));
 
-    expect(h.floatDecodes).toEqual([{ background: true }]);
+    expect(h.floatDecodes).toEqual([{ background: true, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true }]);
   });
 
@@ -319,7 +342,7 @@ describe("rebuilding every preview", () => {
 
     await rebuildThumbnails(raws(1), undefined, undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ background: true, signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ background: true, signal: project.signal }]);
   });
 
@@ -491,7 +514,69 @@ describe("importing photos again for a project the user has left", () => {
 
     await reimportPhotos(raws(1), undefined, undefined, project.signal);
 
-    expect(h.floatDecodes).toEqual([{ signal: project.signal }]);
+    expect(h.floatDecodes).toEqual([{ signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ signal: project.signal }]);
+  });
+});
+
+// The decoded bitmap is the whole frame: one left to the garbage collector across
+// a rebuild of the catalogue holds that much memory per photo.
+describe("a preview whose thumbnail can't be built", () => {
+  beforeEach(() => {
+    h.whileThumbnailing = () => {
+      throw new Error("out of memory");
+    };
+  });
+
+  it("lets go of the decoded bitmap in the repair", async () => {
+    await repairMissingPreviews(unrepaired(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap in a rebuild", async () => {
+    await rebuildThumbnails(raws(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap in a re-import", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await reimportPhotos(raws(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap of a preview built on demand", async () => {
+    expect(await buildPreviewBlob(raws(1)[0])).toBeNull();
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap at import", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const file = await raws(1)[0].fileHandle!.getFile();
+
+    await expect(buildPhoto(file, null, null)).rejects.toThrow("out of memory");
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+});
+
+describe("a preview whose save fails", () => {
+  it("lets go of the preview's URL", async () => {
+    const revoked: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:thumb",
+      revokeObjectURL: (url: string) => void revoked.push(url),
+    });
+    h.whileSaving = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+
+    await rebuildThumbnails(raws(1));
+
+    expect(revoked).toEqual(["blob:thumb"]);
   });
 });
