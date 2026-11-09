@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrushDab } from "@/catalog/types";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
 import type { BrushTipContribution } from "@/extensions/api/contributions";
+import { differingBytes } from "./bake-bytes.test-support";
 import { setActiveBrushTips } from "./brush-tips";
 import { CoverageBaker, bakeCoverage, type CoverageItem, type CoverageResult } from "./mask-coverage";
 
@@ -177,9 +178,7 @@ describe("CoverageBaker", () => {
     const full = bakeCoverage(items, aspect);
     if (!baked || !full) throw new Error("a bake returned null");
     expect(baked.channelOf).toEqual(full.channelOf);
-    let differing = 0;
-    for (let i = 0; i < full.data.length; i++) if (baked.data[i] !== full.data[i]) differing++;
-    expect(differing).toBe(0);
+    expect(differingBytes(baked.data, full.data)).toBe(0);
   }
 
   /** The radial gradients a call creates: two for every dab it rasterizes. */
@@ -266,7 +265,7 @@ describe("brush tips", () => {
   it("bakes an unknown tip exactly like the round disc", () => {
     const disc = bake([dab({ strokeStart: true, feather: 0.4 })]);
     const unknown = bake([dab({ strokeStart: true, feather: 0.4, tip: "missing", angle: 1 })]);
-    expect(unknown.data).toEqual(disc.data);
+    expect(differingBytes(unknown.data, disc.data)).toBe(0);
   });
 
   it("stamps the tip's shape in place of the disc", () => {
@@ -286,7 +285,7 @@ describe("brush tips", () => {
   });
 
   it("leaves feather out of a tip, and keeps flow, and the stroke's other dabs take the tip", () => {
-    expect(bake([tipped({ feather: 1 })]).data).toEqual(bake([tipped({ feather: 0 })]).data);
+    expect(differingBytes(bake([tipped({ feather: 1 })]).data, bake([tipped({ feather: 0 })]).data)).toBe(0);
     const half = coverageAt(bake([tipped({ flow: 0.5 })]), 0.4, 0.5);
     expect(half).toBeGreaterThan(120);
     expect(half).toBeLessThan(136);

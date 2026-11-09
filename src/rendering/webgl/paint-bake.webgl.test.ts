@@ -15,6 +15,7 @@ import {
   type PaintDab,
   type PaintLayer,
 } from "@/extensions/api/contributions";
+import { differingBytes } from "./bake-bytes.test-support";
 import { setActiveBrushTips } from "./brush-tips";
 import { bakeCoverage } from "./mask-coverage";
 import { PaintBaker, bakePaint, type PaintBakeResult } from "./paint-bake";
@@ -133,9 +134,7 @@ describe("PaintBaker", () => {
   function expectSameAsFullBake(baked: PaintBakeResult | null, layers: PaintLayer[]) {
     const full = bakePaint(layers, 1);
     if (!baked || !full) throw new Error("a bake returned null");
-    let differing = 0;
-    for (let i = 0; i < full.data.length; i++) if (baked.data[i] !== full.data[i]) differing++;
-    expect(differing).toBe(0);
+    expect(differingBytes(baked.data, full.data)).toBe(0);
   }
 
   it("matches a full bake as strokes of several colours grow and an erase cuts in", () => {
@@ -177,6 +176,7 @@ describe("paint brush tips", () => {
     expect(paintAt(baked, 0, 0.6, 0.5)[3]).toBeLessThan(15);
 
     const unknown = bake([layer("a", [dab({ strokeStart: true, tip: "missing" })])]);
-    expect(unknown.data).toEqual(bake([layer("a", [dab({ strokeStart: true })])]).data);
+    const disc = bake([layer("a", [dab({ strokeStart: true })])]);
+    expect(differingBytes(unknown.data, disc.data)).toBe(0);
   });
 });
