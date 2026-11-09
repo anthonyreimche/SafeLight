@@ -31,7 +31,7 @@ const LAYER_KEY = "layer:";
 /** What a stage's pass programs and results are made from, besides the bag:
  *  its passes' sources and draw counts, and the stage whose programs it draws with. */
 function passesPrint(stage: PrepassStage): string {
-  const passes = stage.passes.map((p) => [p.fragmentSource, p.iterations, p.drawCount ?? null]);
+  const passes = stage.passes.map((p) => [p.fragmentSource, p.vertexSource ?? null, p.iterations, p.drawCount ?? null]);
   return simpleHash(JSON.stringify([passes, stage.passesOf ?? ""]));
 }
 
@@ -341,14 +341,20 @@ export class PrepassRunner {
     return t;
   }
 
-  private passProgram(key: string, owner: string, name: string, fragmentSource: string, bindings: ContributedBinding[]) {
+  private passProgram(
+    key: string,
+    owner: string,
+    name: string,
+    sources: { fragment: string; vertex?: string },
+    bindings: ContributedBinding[],
+  ) {
     let e = this.passPrograms.get(key);
     if (e) return e;
     const stageIds = new Set([owner]);
     this.host.builds?.started(stageIds);
     let program: WebGLProgram;
     try {
-      program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource, name);
+      program = createProgram(this.gl, sources.vertex ?? PASS_VERTEX_SHADER, sources.fragment, name);
     } catch (err) {
       this.host.builds?.ended(stageIds, buildOutcome(err));
       throw err;
@@ -357,7 +363,7 @@ export class PrepassRunner {
     const gl = this.gl;
     const locs: Record<string, WebGLUniformLocation | null> = {};
     for (const n of [
-      "uPrevPass", "uTexel", "uPassIndex", "uPassCount",
+      "uPrevPass", "uTexel", "uPassIndex", "uPassCount", "uWholeDraw",
       "uPrevRaw", "uSrcLinear", "uIsFallbackPreview", "uApplyBaseCurve", "uSourceSize", SOURCE_IMAGE_UNIFORM,
     ]) {
       locs[n] = gl.getUniformLocation(program, n);
@@ -644,6 +650,9 @@ export class PrepassRunner {
   // reads the current image. The last draw goes to `target`, the stage's result,
   // so nothing is copied after it. Passes sample the ping-pong textures and the
   // source only, never a result, so the target is never read while it is written.
+  // A pass that names its region draws only that, except on the stage's first
+  // two draws, which fill a pair that holds another stage's leftovers, and its
+  // last, which fills the result.
   private drawStagePasses(
     stage: PrepassStage,
     split: StageSplit | null,
@@ -652,6 +661,7 @@ export class PrepassRunner {
   ): void {
     const gl = this.gl;
     let remaining = stageDraws(stage, frame.bag);
+    let drawn = 0;
     if (remaining === 0) throw new Error(`stage '${stage.stageId}' has no draw to write its result`);
     const { srcTex, applyRetouch, w, h, baseCurve } = frame;
     let readTex: WebGLTexture = srcTex;
@@ -671,15 +681,19 @@ export class PrepassRunner {
       // length-only key collided and reused the first pass's program.
       // A mask copy draws with its stage's programs (same source, its own values).
       const owner = stage.passesOf ?? stage.stageId;
-      const key = `${owner}|${passIdx}|${simpleHash(pass.fragmentSource)}|pv${frame.processVersion}`;
+      const key = `${owner}|${passIdx}|${simpleHash(pass.fragmentSource + (pass.vertexSource ?? ""))}|pv${frame.processVersion}`;
       const name = `pass ${passIdx + 1} of stage "${owner}"`;
       passIdx++;
-      const source = withProcessVersion(pass.fragmentSource, frame.processVersion);
-      const prog = this.passProgram(key, owner, name, source, pass.bindings);
+      const sources = {
+        fragment: withProcessVersion(pass.fragmentSource, frame.processVersion),
+        ...(pass.vertexSource === undefined ? {} : { vertex: withProcessVersion(pass.vertexSource, frame.processVersion) }),
+      };
+      const prog = this.passProgram(key, owner, name, sources, pass.bindings);
       const { bag } = frame;
       const draws = passDraws(pass, bag);
       for (let it = 0; it < draws; it++) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, --remaining === 0 ? target : this.ppFbo[writeIdx]);
+        const last = --remaining === 0;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, last ? target : this.ppFbo[writeIdx]);
         gl.viewport(0, 0, w, h);
         gl.useProgram(prog.program);
         const sourceLoc = prog.locs[SOURCE_IMAGE_UNIFORM];
@@ -694,6 +708,8 @@ export class PrepassRunner {
         gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
         gl.uniform1i(prog.locs.uPassIndex!, it);
         gl.uniform1i(prog.locs.uPassCount!, draws);
+        // Null without a region (not declared); a no-op then.
+        gl.uniform1i(prog.locs.uWholeDraw, last || drawn < 2 ? 1 : 0);
         gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
         gl.uniform1i(prog.locs.uSrcLinear!, frame.linear ? 1 : 0);
         // Null where the pass doesn't name it (not declared, see stage-injection.ts); a no-op then.
@@ -707,6 +723,7 @@ export class PrepassRunner {
         }
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         this.draws.pass++;
+        drawn++;
         readTex = this.ppTex[writeIdx]!;
         prevRaw = false;
         writeIdx = 1 - writeIdx;

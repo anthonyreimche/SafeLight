@@ -414,6 +414,45 @@ describe("a four-channel pass", () => {
   });
 });
 
+// A pass that names its region gets a vertex program of its own, which places
+// the draw's quad over that region; every other pass draws the whole frame with
+// the shared one.
+describe("a pass's region", () => {
+  const pass = (over: Partial<StagePass>) =>
+    buildStageInjection([
+      flagged({
+        passes: [
+          {
+            glsl: "c.a = edge;",
+            helpers: "int widthOf(float e) { return int(e); }",
+            uniforms: [{ key: "edge", glslType: "float", default: 4 }],
+            channels: 4,
+            ...over,
+          },
+        ],
+      }),
+    ]).prepass[0].passes[0];
+
+  it("is drawn whole without one", () => {
+    expect(pass({}).vertexSource).toBeUndefined();
+  });
+
+  it("is computed in the vertex program from the pass's uniforms and helpers", () => {
+    const built = pass({ region: "return ivec4(0, 0, widthOf(edge), 1 << 20);" });
+    const source = built.vertexSource ?? "";
+    expect(source).toMatch(/^#version 300 es\n/);
+    expect(source).toMatch(/ivec4 passRegion\(\) \{\s*return ivec4\(0, 0, _\w+_widthOf\(u_\w+_edge\), 1 << 20\);\s*\}/);
+    expect(source).toMatch(/uniform float u_\w+_edge;/);
+    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("uniform bool uWholeDraw;");
+    expect(built.fragmentSource).toBe(pass({}).fragmentSource);
+  });
+
+  it("declares integers at the fragment program's precision, so shared uniforms link", () => {
+    expect(pass({ region: "return ivec4(0);" }).vertexSource).toContain("precision mediump int;");
+  });
+});
+
 // A stage that reads the current image from a later process version reads the
 // source on older ones: no exit, no split, and a prepass keyed on the source.
 describe("readsCurrentFrom", () => {

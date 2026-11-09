@@ -182,6 +182,19 @@ function passChannelsError(c: ProcessingStageContribution): string | null {
   return null;
 }
 
+/** Why a pass's `region` can't be built, or null. */
+function passRegionError(c: ProcessingStageContribution): string | null {
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return null;
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    const { region } = pass as Record<string, unknown>;
+    if (region !== undefined && (typeof region !== "string" || region.trim() === ""))
+      return `passes[${index}].region must be GLSL text, got ${formatValue(region)}`;
+  }
+  return null;
+}
+
 /** Notes on the fixed draw counts the renderer clamps to 1…MAX_PASS_DRAWS (a
  *  count that isn't finite becomes 1). They stay registrable: refusing them
  *  would stop an extension written before the bound from loading. */
@@ -383,6 +396,8 @@ export function checkStageContract(
   if (passCount) return fail(passCount);
   const passChannels = passChannelsError(c);
   if (passChannels) return fail(passChannels);
+  const passRegion = passRegionError(c);
+  if (passRegion) return fail(passRegion);
   warnings.push(...fixedCountWarnings(c, stagePrefix));
 
   let readsIgnored: string | null = null;

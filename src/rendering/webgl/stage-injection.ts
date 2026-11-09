@@ -373,6 +373,9 @@ export interface DrawCountBinding {
 
 export interface PrepassPass {
   fragmentSource: string;
+  /** A pass that names its region (StagePass.region): the vertex program that
+   *  places each draw's quad over it, while uWholeDraw is false. */
+  vertexSource?: string;
   /** The fixed draw count; with `drawCount`, the most draws a frame takes. */
   iterations: number;
   /** Set when the count comes from the bag; passDraws() resolves it per frame. */
@@ -457,14 +460,16 @@ const layersResults = (
 ): boolean => variant.fullInfo && stageSamplers(ordered) > samplerBudget;
 
 /** Build a complete fragment program for one StagePass, namespacing its uniforms
- *  + helpers under the owning stage's prefix so they share the stage's param keys.
- *  A mask copy passes its stage's id as `prefixId`: same program, its own keys. */
-function buildPassFragment(
+ *  + helpers under the owning stage's prefix so they share the stage's param keys,
+ *  and, for a pass that names its region, the vertex program that places each
+ *  draw's quad over it. A mask copy passes its stage's id as `prefixId`: same
+ *  programs, its own keys. */
+function buildPassPrograms(
   stageId: string,
   pass: StagePass,
   space: StageSpace | undefined,
   prefixId = stageId,
-): { fragmentSource: string; bindings: ContributedBinding[] } {
+): { fragmentSource: string; vertexSource?: string; bindings: ContributedBinding[] } {
   const uPfx = uniformPrefix(prefixId);
   const hPfx = helperPrefix(prefixId);
   const uniforms = pass.uniforms ?? [];
@@ -478,11 +483,12 @@ function buildPassFragment(
     helpers = h;
   }
   const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
+  const region = pass.region === undefined ? undefined : rewriteGlsl(pass.region, uniforms, uPfx, hPfx, helperNames);
   // uSourceSize and readSource are part of the pass contract (types.ts
   // StagePass) but are declared only where named: the version 1 freeze
   // (v1-identity.test.tsx) pins the prelude every older pass gets, and none of
   // those name them.
-  const named = body + helpers;
+  const named = body + helpers + (region ?? "");
   const readSource = /\breadSource\b/.test(named)
     ? `\nuniform sampler2D ${SOURCE_IMAGE_UNIFORM}; // the decoded source, whatever the stage reads\n` +
       `vec3 readSource(vec2 uv) { return ${sourceRead(space, `texture(${SOURCE_IMAGE_UNIFORM}, uv).rgb`)}; }`
@@ -497,14 +503,15 @@ function buildPassFragment(
     ? `\nvec4 readPrev4(vec2 uv) {\n  vec4 s = texture(uPrevPass, uv);\n  return uPrevRaw ? vec4(${sourceRead(space, "s.rgb")}, 1.0) : s;\n}` +
       `\nvec4 fetchPrev4(ivec2 texel) {\n  return uPrevRaw ? readPrev4((vec2(texel) + 0.5) * uTexel) : texelFetch(uPrevPass, texel, 0);\n}`
     : "";
+  const declarations = `${uniformDecls}
+${passSharedGlsl(space)}
+${/\buSourceSize\b/.test(named) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}${readSource}${readPrev4}
+${helpers}`;
   const fragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
-${uniformDecls}
-${passSharedGlsl(space)}
-${/\buSourceSize\b/.test(named) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}${readSource}${readPrev4}
-${helpers}
+${declarations}
 void main() {
   ${four ? "vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));" : "vec3 c = uPrevRaw ? readPrev(vUv) : texelFetch(uPrevPass, ivec2(gl_FragCoord.xy), 0).rgb;"}
   {
@@ -513,7 +520,33 @@ ${body}
   fragColor = ${four ? "c" : "vec4(c, 1.0)"};
 }
 `;
-  return { fragmentSource, bindings };
+  if (region === undefined) return { fragmentSource, bindings };
+  // The fragment program's integers are mediump by default; a uniform both
+  // programs declare must agree, or the program doesn't link.
+  const vertexSource = `#version 300 es
+precision highp float;
+precision mediump int;
+in vec2 aPos;
+in vec2 aUv;
+out vec2 vUv;
+${declarations}
+uniform bool uWholeDraw;
+ivec4 passRegion() {
+${region}
+}
+void main() {
+  if (uWholeDraw) {
+    vUv = aUv;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    return;
+  }
+  vec2 size = floor(1.0 / uTexel + 0.5);
+  vec4 r = clamp(vec4(passRegion()), vec4(0.0), size.xyxy);
+  vUv = mix(r.xy, max(r.zw, r.xy), aUv) * uTexel;
+  gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+  return { fragmentSource, vertexSource, bindings };
 }
 
 export interface BuiltStageInjection {
@@ -1015,7 +1048,7 @@ function declarePrepass(
     declared.uniforms.push(`uniform sampler2D ${resultUniform};`);
   }
   const passes: PrepassPass[] = stagePasses.map((p) => {
-    const built = buildPassFragment(s.id, p, s.space, passesOf);
+    const built = buildPassPrograms(s.id, p, s.space, passesOf);
     // A copy's pass bindings name its stage's uniforms, which the develop
     // program may declare too: binding a copy's value there would edit the stage.
     for (const b of passesOf ? [] : built.bindings) {
@@ -1023,7 +1056,12 @@ function declarePrepass(
         declared.bindings.push(b);
       }
     }
-    return { fragmentSource: built.fragmentSource, bindings: built.bindings, ...passCount(s, p) };
+    return {
+      fragmentSource: built.fragmentSource,
+      ...(built.vertexSource === undefined ? {} : { vertexSource: built.vertexSource }),
+      bindings: built.bindings,
+      ...passCount(s, p),
+    };
   });
   const dormant = dormantRule(s);
   declared.prepass.push({

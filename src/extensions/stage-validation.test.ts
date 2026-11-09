@@ -497,6 +497,19 @@ describe("a pass's channels", () => {
   });
 });
 
+// A region is GLSL the vertex program runs; anything else would build a
+// program that can't compile, or one that draws nothing.
+describe("a pass's region", () => {
+  it("accepts GLSL text", () => {
+    expect(checkStageContract(withFields({ passes: [{ glsl: "", region: "return ivec4(0);" }] })).error).toBeNull();
+  });
+
+  it.each(["", "  ", 4, null, ["return ivec4(0);"]])("refuses %o", (region) => {
+    const stage = withFields({ passes: [{ glsl: "" }, { glsl: "", region }] });
+    expect(checkStageContract(stage).error).toMatch(/passes\[1\]\.region must be GLSL text/);
+  });
+});
+
 // The ordering reads `after` as a list of stage ids and ignores anything else, so
 // a value it can't use is a warning: the author would otherwise get no effect and
 // no word about it.

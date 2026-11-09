@@ -127,10 +127,13 @@ interface StagePass {
   uniforms?: UniformDeclaration[]; // share the stage's bag keys
   iterations?: number | { key: string; max: number }; // draws (1)
   channels?: 3 | 4;  // 4: glsl mutates vec4 c, alpha included
+  region?: string;   // body of ivec4 passRegion(): the texels each draw writes
 }
 ```
 
 - `channels: 4` keeps a fourth value per pixel between draws. Your `glsl` mutates `vec4 c`, which starts as the previous draw's texel, and the draw stores all four channels. `vec4 fetchPrev4(ivec2 texel)` fetches any texel of the previous draw exactly, alpha included, and `vec4 readPrev4(vec2 uv)` samples it with linear filtering. Use `fetchPrev4` for state you carry through many draws: a filtered read mixes in a trace of the neighbours, about 3·10⁻⁵ of them, and over a long chain that adds up. On the stage's input the alpha is 1, and the first draw's `fetchPrev4` samples the input, which can be the source at another size. Without float render targets the alpha is clipped to [0, 1] at 8 bits, like the rgb. The inline still gets the last draw's rgb as `stageResult`. Needs Safelight 3.2.2.
+
+- `region` limits each draw to a rectangle, for a pass whose draws each change a small part of the frame, such as a cascade that works on a shrinking grid. It is the body of `ivec4 passRegion()` and returns `ivec4(x0, y0, x1, y1)`: the draw writes the texels with `x0 <= x < x1` and `y0 <= y < y1`, in `ivec2(gl_FragCoord.xy)` coordinates, clipped to the frame. It can read the pass's uniforms, helpers, `uPassIndex`, `uPassCount` and `uTexel`. It runs in a vertex program, so the helpers it compiles with can't name `gl_FragCoord` or `discard`. A texel outside the region keeps what that ping-pong target held two draws earlier, so the region must hold every texel this draw or the draw before it changes, and the draw before can be the previous pass's last. The stage's first two draws and its last are drawn whole, whatever the region says. Needs Safelight 3.2.2.
 
 - Each pass gets `uTexel` (1 / pass size), `uPassIndex`, `uPassCount`, `readPrev(uv)` (the previous pass, or the stage's input on the first), `uSrcLinear` (true for RAW float decodes) and `uSourceSize` (the decoded source's pixel size, 3.1.0).
 - Passes run at a capped resolution. Scale a radius given in source pixels by `max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y)`.

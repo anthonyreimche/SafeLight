@@ -810,6 +810,19 @@ export interface StagePass {
      *  bits, like the rgb. The inline's `stageResult` is the last draw's rgb
      *  either way. */
     channels?: 3 | 4;
+    /** GLSL body of `ivec4 passRegion()`, run before each draw: it returns
+     *  `ivec4(x0, y0, x1, y1)`, and the draw writes only the texels with
+     *  x0 <= x < x1 and y0 <= y < y1 (`ivec2(gl_FragCoord.xy)`), clipped to
+     *  the frame; an empty one writes none. It may read the pass's uniforms,
+     *  helpers and the core's (uPassIndex, uPassCount, uTexel …), but it runs in
+     *  a vertex program, so its helpers can't name gl_FragCoord or discard.
+     *  Each texel outside keeps what that ping-pong target held two draws back,
+     *  so a region must hold every texel this draw or the one before it changes;
+     *  the one before may be the previous pass's. The stage's first two draws
+     *  and its last are drawn whole whatever it returns. For a pass whose draws
+     *  each change a small part of the frame, this saves reading the rest
+     *  (since 3.2.2). */
+    region?: string;
 }
 
 /** The values a processing stage receives and hands back (see
