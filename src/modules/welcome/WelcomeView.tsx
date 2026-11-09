@@ -91,7 +91,7 @@ export function WelcomeView() {
           <button
             onClick={() => void openProjectPicker()}
             disabled={opening}
-            className="rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-white hover:bg-surface-4 disabled:opacity-60"
+            className="rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-on-accent hover:opacity-90 disabled:opacity-60"
           >
             Open Folder…
           </button>
@@ -149,7 +149,7 @@ export function WelcomeView() {
                   onClick={() => void remove(c.id)}
                   title="Remove from recents"
                   aria-label={`Remove ${c.name} from recents`}
-                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary opacity-50 hover:text-white focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-on-media-muted opacity-50 hover:text-on-media focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
                 >
                   <span aria-hidden="true">×</span>
                 </button>

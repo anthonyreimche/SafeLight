@@ -24,13 +24,30 @@ export interface Preset {
 
 const STORAGE_KEY = "safelight-presets";
 
-/** A stored payload, or null if it isn't a preset list. Anything else — a stray
- *  object, a truncated write — would otherwise reach the panel as a non-array and
- *  take the whole Develop sidebar down on its first .map(). */
-function parsePresets(raw: string): Preset[] | null {
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+function isPreset(v: unknown): v is Preset {
+  return (
+    isPlainObject(v) &&
+    typeof v.id === "string" &&
+    typeof v.name === "string" &&
+    isPlainObject(v.params) &&
+    (v.group === undefined || typeof v.group === "string") &&
+    (v.paramBag === undefined || isPlainObject(v.paramBag))
+  );
+}
+
+/** The well-formed presets of a stored payload, or null if it isn't a list at
+ *  all. Anything else — a stray object, a truncated write — would otherwise reach
+ *  the panel as a non-array and take the whole Develop sidebar down on its first
+ *  .map(); a malformed entry would do the same one preset at a time. */
+function parsePresets(raw: string): { presets: Preset[]; dropped: boolean } | null {
   try {
     const stored: unknown = JSON.parse(raw);
-    return Array.isArray(stored) ? (stored as Preset[]) : null;
+    if (!Array.isArray(stored)) return null;
+    const presets = stored.filter(isPreset);
+    return { presets, dropped: presets.length !== stored.length };
   } catch {
     return null;
   }
@@ -48,8 +65,11 @@ function loadFromStorage(): Preset[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    const presets = parsePresets(raw);
-    if (presets) return presets;
+    const parsed = parsePresets(raw);
+    if (parsed) {
+      if (parsed.dropped) backUpUnreadable(raw);
+      return parsed.presets;
+    }
     backUpUnreadable(raw);
   } catch {}
   return [];
@@ -161,7 +181,7 @@ export const usePresetsStore = create<PresetsState>((set, get) => {
 export function initPresets(): void {
   window.addEventListener("storage", (e) => {
     if (e.key !== STORAGE_KEY || e.newValue == null) return;
-    const presets = parsePresets(e.newValue);
-    if (presets) usePresetsStore.setState({ presets });
+    const parsed = parsePresets(e.newValue);
+    if (parsed) usePresetsStore.setState({ presets: parsed.presets });
   });
 }

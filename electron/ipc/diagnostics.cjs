@@ -90,15 +90,17 @@ function diagnosticsChannels({
     // network origins the way it reads installed extensions' (see
     // extensionConnectHosts), and answers with the origins that folder declares
     // which this launch's policy does not allow yet.
+    // Privileged: the folder widens the next launch's network policy.
     {
       channel: "devtools:sync-dev-folder",
-      privileged: false,
-      handler: (_e, folder) => {
-        const f = typeof folder === "string" && folder.trim() ? folder : null;
-        writeDevFolder(devFolderFile(), f);
+      privileged: true,
+      handler: async (_e, folder) => {
+        if (folder !== null && typeof folder !== "string") throw new Error("Bad folder");
+        const f = folder && folder.trim() ? folder : null;
+        await writeDevFolder(devFolderFile(), f);
         return {
           pending: pendingConnectHosts(
-            declaredConnectHosts(listDevManifests(f)),
+            declaredConnectHosts(await listDevManifests(f)),
             extensionConnectHosts()
           ),
         };

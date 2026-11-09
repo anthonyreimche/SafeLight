@@ -55,7 +55,7 @@ import { prewarmPanel } from "./prewarm";
 
 function PanelErrorBoundary({ id, children }: { id: string; children: ReactNode }) {
   return (
-    <ErrorBoundary what={`Panel "${id}"`} className="p-3 text-[11px] text-red-400">
+    <ErrorBoundary what={`Panel "${id}"`} className="p-3 text-[11px] text-danger">
       {children}
     </ErrorBoundary>
   );
@@ -137,7 +137,7 @@ function PanelHeader({ id }: { id: string }) {
           <ErrorBoundary
             key={boundaryKey(id, Accessory)}
             what={`Panel "${id}" header`}
-            className="truncate text-[11px] text-red-400"
+            className="truncate text-[11px] text-danger"
           >
             <Accessory />
           </ErrorBoundary>
@@ -148,7 +148,7 @@ function PanelHeader({ id }: { id: string }) {
           <ErrorBoundary
             key={boundaryKey(accId, A)}
             what={`Header control "${accId}"`}
-            className="truncate text-[11px] text-red-400"
+            className="truncate text-[11px] text-danger"
           >
             <A
               panelId={id}

@@ -23,9 +23,7 @@ export function VerifiedBadge({
   reviewedVersion?: string;
   stale?: boolean;
 }) {
-  const color = stale
-    ? "var(--color-label-amber, #c77f00)"
-    : "var(--color-label-green, #27ae60)";
+  const color = stale ? "var(--color-label-yellow)" : "var(--color-label-green)";
   const title = stale
     ? `A maintainer reviewed ${
         reviewedVersion ? `version ${reviewedVersion}` : "an earlier version"

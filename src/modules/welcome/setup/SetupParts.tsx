@@ -17,7 +17,7 @@ import {
 import { Switch } from "@/ui/components/Switch";
 
 export const primaryBtn =
-  "rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-white hover:bg-surface-4";
+  "rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-on-accent hover:opacity-90";
 export const secondaryBtn =
   "rounded bg-surface-3 px-3 py-1.5 text-xs text-text-primary hover:bg-surface-4";
 

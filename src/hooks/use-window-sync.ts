@@ -4,23 +4,27 @@
 // be preserved in derived versions.
 
 import { useEffect } from "react";
+import type { AppModule } from "@/catalog/types";
 import { broadcast, onBroadcast, WINDOW_ID } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { reloadThumbnail } from "@/state/thumbnail-loader";
-import { detachedModule, goToModule } from "@/state/detach";
+import { detachedModule, goToModule, markModuleDetached } from "@/state/detach";
 import { followCatalogRecords } from "@/state/catalog-sync";
 import { hasModule } from "@/extensions/registry";
 
 // Keeps every window (main + detached) in sync: the active photo follows across
 // windows, catalogue records another window writes reach this window's stores, and
 // the main window reflects detach/attach of modules and carries out a detached
-// window's navigation. A detached window also announces its return when closed,
-// so the module is reclaimed.
+// window's navigation. A detached window announces itself when it opens and its
+// return when it unloads, so a closed one's module is reclaimed and a reloaded
+// one's is taken again.
 export function useWindowSync() {
   useEffect(() => {
     const dm = detachedModule();
     const stopFollowing = followCatalogRecords();
+    // The module a pop-out last handed back and what this window showed before it.
+    let lastAttach: { module: AppModule; previous: AppModule } | null = null;
 
     const off = onBroadcast((msg) => {
       if (msg.type === "selection-change") {
@@ -42,18 +46,24 @@ export function useWindowSync() {
         void reloadThumbnail(msg.payload.id);
       } else if (!dm && msg.type === "attach") {
         const ui = useUIStore.getState();
+        lastAttach = { module: msg.payload.module, previous: ui.activeModule };
         ui.markAttached(msg.payload.module);
         // A module this window can't show would only drop it into Library.
         if (hasModule(msg.payload.module)) ui.setActiveModule(msg.payload.module);
       } else if (!dm && msg.type === "navigate") {
         goToModule(msg.payload.module);
       } else if (!dm && msg.type === "detach") {
-        useUIStore.getState().markDetached(msg.payload.module);
+        const { module } = msg.payload;
+        // A reloading pop-out hands its module back on unload, then takes it again.
+        const previous = lastAttach?.module === module ? lastAttach.previous : undefined;
+        lastAttach = null;
+        markModuleDetached(module, previous);
       }
     });
 
     let onUnload: (() => void) | undefined;
     if (dm) {
+      broadcast({ type: "detach", payload: { module: dm } });
       onUnload = () => broadcast({ type: "attach", payload: { module: dm } });
       window.addEventListener("beforeunload", onUnload);
     }

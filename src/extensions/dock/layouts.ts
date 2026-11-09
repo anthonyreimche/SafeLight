@@ -13,6 +13,7 @@
 import { create } from "zustand";
 import { useRegistry, moduleEntry, moduleTabs } from "../registry";
 import { getSettings } from "@/state/settings-store";
+import { isPlainObject } from "@/project/fs";
 import type { AppModule } from "@/catalog/types";
 import type { ModuleLayoutDef } from "../types";
 import {
@@ -33,7 +34,6 @@ import {
   saveLayout,
   scheduleSave,
   useDockStore,
-  type DockState,
   type FloatState,
   type RailState,
 } from "./store";
@@ -87,13 +87,14 @@ function seedDefaults(module: AppModule): {
   const registered = useRegistry.getState().panels;
   const isRegistered = (id: string) => Object.hasOwn(registered, id);
   const def = moduleEntry(useRegistry.getState().modules, module)?.defaultLayout;
-  if (def)
+  const defRails = def ? layoutRails(module, def.rails) : null;
+  if (def && defRails)
     return {
-      rails: railsFromDef(module, def)
+      rails: defRails
         .map((r) => ({ ...r, panels: r.panels.filter(isRegistered) }))
         .filter((r) => r.panels.length > 0),
       floating: Object.fromEntries(
-        Object.entries(def.floating ?? {}).filter(([id]) => isRegistered(id)),
+        Object.entries(recordOr<FloatState>(def.floating)).filter(([id]) => isRegistered(id)),
       ),
       collapsed: collapsedFlags(def.collapsed),
     };
@@ -119,14 +120,38 @@ function seedDefaults(module: AppModule): {
   return { rails, floating: {}, collapsed: {} };
 }
 
-function railsFromDef(module: AppModule, def: ModuleLayoutDef): RailState[] {
-  return def.rails.map((r, i) => ({
-    id: `${module}-${r.side}-${i}`,
-    side: r.side,
-    width: r.width ?? 280,
-    ...(r.side === "bottom" ? { height: r.height ?? DEFAULT_BOTTOM } : {}),
-    panels: [...r.panels],
-  }));
+const isRailSide = (v: unknown): v is RailState["side"] =>
+  v === "left" || v === "right" || v === "bottom";
+
+const finiteOr = (v: unknown, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) ? v : fallback;
+
+function recordOr<T>(v: unknown): Record<string, T> {
+  return isPlainObject(v) ? (v as Record<string, T>) : {};
+}
+
+/** A layout's rails as dock rails, or null when there are none to use: the
+ *  list isn't one, or every rail in it is malformed. Layouts come from
+ *  extensions (plain JS at runtime) and from storage any extension can write,
+ *  so a rail without a known side or a panels list is dropped rather than left
+ *  to throw on every launch. Saved rails keep their ids; a preset's are
+ *  numbered by position. */
+function layoutRails(module: AppModule, list: unknown, keepIds = false): RailState[] | null {
+  if (!Array.isArray(list)) return null;
+  const rails = list.flatMap((r: unknown, i): RailState[] => {
+    if (!isPlainObject(r) || !isRailSide(r.side) || !Array.isArray(r.panels)) return [];
+    const side = r.side;
+    return [
+      {
+        id: keepIds && typeof r.id === "string" ? r.id : `${module}-${side}-${i}`,
+        side,
+        width: finiteOr(r.width, 280),
+        ...(side === "bottom" ? { height: finiteOr(r.height, DEFAULT_BOTTOM) } : {}),
+        panels: r.panels.filter((id): id is string => typeof id === "string"),
+      },
+    ];
+  });
+  return rails.length > 0 || list.length === 0 ? rails : null;
 }
 
 /** A layout's collapsed list as dock flags. Extensions are plain JS at runtime,
@@ -165,26 +190,27 @@ function resolveModuleState(module: AppModule): DockPlacement & { rewritesSaved:
   let fromSaved = false;
 
   if (activeId === CUSTOM_LAYOUT) {
-    let saved: Partial<DockState> | null = null;
+    let saved: unknown = null;
     try {
       const raw = localStorage.getItem(layoutKey(module));
       if (raw) saved = JSON.parse(raw);
     } catch {}
-    if (Array.isArray(saved?.rails)) {
-      rails = saved!.rails!;
-      fromSaved = true;
-    }
-    floating = saved?.floating ?? {};
-    zOrder = saved?.zOrder ?? null;
-    collapsed = saved?.collapsed ?? {};
+    const s = recordOr<unknown>(saved);
+    rails = layoutRails(module, s.rails, true);
+    fromSaved = rails !== null;
+    floating = recordOr(s.floating);
+    zOrder =
+      Array.isArray(s.zOrder) && s.zOrder.every((id) => typeof id === "string") ? s.zOrder : null;
+    collapsed = recordOr(s.collapsed);
   } else {
     // A user layout wins over a registered preset if the id ever collides.
     const def =
       moduleEntry(useUserLayouts.getState().layouts[activeId]?.modules, module) ??
       moduleEntry(useRegistry.getState().layouts[activeId]?.modules, module);
-    if (def) {
-      rails = railsFromDef(module, def);
-      floating = def.floating ?? {};
+    const defRails = def ? layoutRails(module, def.rails) : null;
+    if (def && defRails) {
+      rails = defRails;
+      floating = recordOr(def.floating);
       collapsed = collapsedFlags(def.collapsed);
     }
   }

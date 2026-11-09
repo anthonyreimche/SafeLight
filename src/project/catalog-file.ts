@@ -67,11 +67,14 @@ export interface CatalogRecovery {
 
 /** A saved catalogue as this build opens it: the records it can open, the
  *  top-level keys it doesn't know (saved back as they came), and how many
- *  entries it left out. Its change stamps are in `file.changed`. */
+ *  entries it left out. Its change stamps are in `file.changed`. `damaged` when
+ *  what it left out is the catalogue itself: a list of photos or edits that isn't
+ *  a list, or photos none of which it can open. */
 export interface OpenedCatalog {
   file: CatalogFile & { changed: ChangeStamps };
   extra: Record<string, unknown>;
   skipped: number;
+  damaged: boolean;
 }
 
 /** What an open starts from: the catalogue (null: import the folder as new), how
@@ -112,11 +115,13 @@ function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
     skipped += all.length - kept.length;
     return kept;
   };
+  const openedPhotos = entries(photos, isStoredPhoto);
+  const notList = (list: unknown) => list !== undefined && !Array.isArray(list);
   return {
     file: {
       version: 1,
       id: typeof id === "string" && id !== "" ? id : undefined,
-      photos: entries(photos, isStoredPhoto),
+      photos: openedPhotos,
       edits: entries(edits, hasEditStack).flatMap((edit) => {
         const openable = openableEdit(edit);
         if (openable !== edit) skipped++;
@@ -129,6 +134,10 @@ function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
     },
     extra,
     skipped,
+    damaged:
+      notList(photos) ||
+      notList(edits) ||
+      (Array.isArray(photos) && photos.length > 0 && openedPhotos.length === 0),
   };
 }
 
@@ -185,25 +194,32 @@ export function isMainWindow(): boolean {
   return !new URLSearchParams(globalThis.location?.search).has("detached");
 }
 
-/** Read the catalogue an open starts from. A damaged catalog.json is kept aside,
- *  then the backup stands in for it, as it does for a missing one. With no backup
- *  to use, the folder is imported again: as a new project when neither file was
- *  there, else as a rebuild, keeping a damaged backup aside too, since the next
- *  session's backup would write over it. */
+/** Read the catalogue an open starts from. A damaged catalog.json (unreadable as
+ *  JSON, or `damaged` as opened) is kept aside, then the backup stands in for it,
+ *  as it does for a missing one. A catalog.json that opens damaged still opens
+ *  when its backup is no better. With no backup to use, the folder is imported
+ *  again: as a new project when neither file was there, else as a rebuild,
+ *  keeping a damaged backup aside too, since the next session's backup would
+ *  write over it. */
 export async function readSavedCatalog(sl: FileSystemDirectoryHandle): Promise<SavedCatalog> {
   const read = await readCatalogFile(sl, CATALOG);
+  let asSaved: SavedCatalog | null = null;
+  let kept: string | null = null;
   if (read.kind === "ok") {
     const catalog = openCatalog(read.value);
-    if (catalog.skipped > 0) await keepAside(sl, read.bytes);
-    return { catalog, recovered: null, bytes: read.bytes };
+    if (catalog.skipped > 0) kept = await keepAside(sl, read.bytes);
+    asSaved = { catalog, recovered: null, bytes: read.bytes };
+    if (!catalog.damaged) return asSaved;
+  } else if (read.kind === "corrupt" && read.bytes.length > 0) {
+    kept = await keepAside(sl, read.bytes);
   }
-  const kept =
-    read.kind === "corrupt" && read.bytes.length > 0 ? await keepAside(sl, read.bytes) : null;
   const backup = await readCatalogFile(sl, BACKUP);
   if (backup.kind === "ok") {
     const catalog = openCatalog(backup.value);
-    return { catalog, recovered: { from: "backup", kept }, bytes: null };
+    if (!asSaved || !catalog.damaged)
+      return { catalog, recovered: { from: "backup", kept }, bytes: null };
   }
+  if (asSaved) return asSaved;
   if (read.kind === "missing" && backup.kind === "missing")
     return { catalog: null, recovered: null, bytes: null };
   const keptBackup =

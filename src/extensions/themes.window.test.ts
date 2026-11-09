@@ -21,8 +21,15 @@ vi.mock("@/native/privileged", async (importOriginal) => ({
   privilegedWindow: () => ({ setMaterial }),
 }));
 
-import { applyTheme, syncWindowMaterial } from "./themes";
-import { registerTheme, unregisterExtension } from "./registry";
+import {
+  DEFAULT_THEME,
+  THEME_STORAGE_KEY,
+  applySavedTheme,
+  applyTheme,
+  syncWindowMaterial,
+  useThemeStore,
+} from "./themes";
+import { registerTheme, unregisterExtension, useRegistry } from "./registry";
 
 const OWNER = "test.glass";
 
@@ -177,5 +184,51 @@ describe("a glass theme's colours", () => {
     applyTheme("test.plain-colour");
     expect(rootStyle().getPropertyValue("--color-surface-0")).toBe("rgb(1 2 3 / 0.2)");
     rootStyle().removeProperty("--color-surface-0");
+  });
+});
+
+// Extensions are plain JS at runtime, and the active theme's extension can be
+// turned off or removed while its colours are on the root.
+describe("an extension's theme", () => {
+  const EXT = "x";
+  const CORE = "test.core";
+  const rootStyle = () => document.documentElement.style;
+  const glass = { id: "x.theme", name: "X", vars: { "--x-test": "red" }, window: { material: "mica" as const } };
+
+  afterEach(() => {
+    unregisterExtension(EXT);
+    unregisterExtension(CORE);
+    rootStyle().removeProperty("--x-test");
+    rootStyle().removeProperty("--x-default");
+  });
+
+  it("is refused unless its vars are an object of strings", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerTheme(EXT, { id: "x.none", name: "None", vars: JSON.parse("5") });
+    registerTheme(EXT, { id: "x.number", name: "Number", vars: JSON.parse('{"--x-test": 1}') });
+    expect(useRegistry.getState().themes).not.toHaveProperty("x.none");
+    expect(useRegistry.getState().themes).not.toHaveProperty("x.number");
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("leaves the root when its extension does, and comes back with it", () => {
+    registerTheme(CORE, { id: DEFAULT_THEME, name: "Neutral", vars: { "--x-default": "grey" } });
+    registerTheme(EXT, glass);
+    applyTheme("x.theme");
+    expect(rootStyle().getPropertyValue("--x-test")).toBe("red");
+
+    unregisterExtension(EXT);
+    expect(rootStyle().getPropertyValue("--x-test")).toBe("");
+    expect(rootStyle().getPropertyValue("--x-default")).toBe("grey");
+    expect(useThemeStore.getState().activeId).toBe(DEFAULT_THEME);
+    expect(setMaterial).toHaveBeenLastCalledWith(null);
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("x.theme");
+
+    registerTheme(EXT, glass);
+    applySavedTheme();
+    expect(rootStyle().getPropertyValue("--x-test")).toBe("red");
+    expect(rootStyle().getPropertyValue("--x-default")).toBe("");
+    expect(useThemeStore.getState().activeId).toBe("x.theme");
   });
 });

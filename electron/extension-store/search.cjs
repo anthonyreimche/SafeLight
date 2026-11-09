@@ -98,6 +98,7 @@ function createSearch({ net, userData, fileWriter, registry, cachedThumbnail }) 
             Accept: "application/vnd.github+json",
             "User-Agent": "Safelight",
           },
+          signal: AbortSignal.timeout(10000),
         }
       );
     } catch (e) {

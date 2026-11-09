@@ -27,7 +27,21 @@ import { RenderMailbox } from "./render-bridge/mailbox";
 import { ParamSync, derivedFor } from "./render-bridge/param-sync";
 import { flushStageSync, stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
 import { unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
-import { forgetStageFailures, recordStageFailure, stageFailureText } from "./render-bridge/stage-failures";
+import {
+  forgetStageFailures,
+  recordStageFailure,
+  stageFailureText,
+  syncCrashFailures,
+} from "./render-bridge/stage-failures";
+import {
+  GPU_CRASH_LOG,
+  blameLostContext,
+  noteStageBuild,
+  settleLeftoverBuild,
+  stageKey,
+  subscribeCrashes,
+} from "./gpu-crash-guard";
+import { stageSignature } from "./webgl/stage-injection";
 import { useRegistry } from "@/extensions/registry";
 import { privilegedGpu } from "@/native/privileged";
 
@@ -108,6 +122,11 @@ export class RenderBridge {
   private pixelsClearedGen: number | null = null;
   // The ids of the stages last posted, to tell when the set loses one.
   private postedStageIds: ReadonlySet<string> = new Set();
+  // The stages the GPU crash guard leaves out changed: the worker is sent the set without them.
+  private readonly unsubCrashes = subscribeCrashes(() => {
+    syncCrashFailures(useRegistry.getState().processingStages);
+    this.syncStages();
+  });
 
   constructor() {
     this.transport = new RenderTransport({
@@ -125,6 +144,7 @@ export class RenderBridge {
       ready: () => this.mailbox.armWatchdog(),
       stopped: () => this.mailbox.clear(),
       settlePending: () => this.requests.settleAll(),
+      contextLost: () => this.blameCrash(),
       error: (message) => this.onError?.(message),
       unusable: (detail) => {
         void privilegedGpu()?.rendererFailed(detail).catch(() => undefined);
@@ -138,6 +158,8 @@ export class RenderBridge {
       () => this.requests.longRunning,
     );
     this.paramSync = new ParamSync(this.transport);
+    // A build the last window died in stays blamed only if the graphics process crashed.
+    void settleLeftoverBuild(async () => window.safelightNative?.diagnostics?.crashes?.());
   }
 
   /** Whether the worker's WebGL2 context has renderable float colour buffers;
@@ -253,6 +275,9 @@ export class RenderBridge {
         if (msg.sourceGen !== this.sourcesBound || msg.sourceGen === this.pixelsClearedGen) break;
         this.onSourcePixels?.({ data: msg.data, width: msg.width, height: msg.height });
         break;
+      case "stageBuild":
+        noteStageBuild(msg);
+        break;
       case "stageQuarantined": {
         const stage = { stageId: msg.stageId, signature: msg.signature, log: msg.log };
         recordStageFailure(stage);
@@ -277,6 +302,7 @@ export class RenderBridge {
 
   dispose() {
     if (this.transport.disposed) return;
+    this.unsubCrashes();
     this.paramSync.dispose();
     this.mailbox.clear();
     this.transport.dispose();
@@ -729,6 +755,7 @@ export class RenderBridge {
   setStages(stages: ProcessingStageContribution[]) {
     const ids = new Set(stages.map((s) => s.id));
     if ([...this.postedStageIds].some((id) => !ids.has(id))) forgetStageFailures();
+    syncCrashFailures(useRegistry.getState().processingStages);
     this.postedStageIds = ids;
     this.post({ cmd: "setStages", stages });
   }
@@ -748,6 +775,19 @@ export class RenderBridge {
    *  current registry and Preferences default. */
   syncPipeline() {
     this.paramSync.syncPipeline();
+  }
+
+  // A context lost while a build had stages in hand that never built on this
+  // machine is pinned on them (gpu-crash-guard.ts), and each is named once.
+  private blameCrash() {
+    const blamed = new Set(blameLostContext());
+    if (blamed.size === 0) return;
+    const stages = useRegistry.getState().processingStages;
+    for (const stage of Object.values(stages)) {
+      if (!blamed.has(stageKey(stage))) continue;
+      const failure = { stageId: stage.id, signature: stageSignature(stage), log: GPU_CRASH_LOG };
+      this.onError?.(stageFailureText(failure, stages));
+    }
   }
 
   private post(msg: WorkerRequest, transfer?: Transferable[]) {

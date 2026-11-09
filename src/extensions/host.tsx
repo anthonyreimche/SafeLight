@@ -112,6 +112,7 @@ import {
 import { nativePathOf, pickDirectoryHandle, revealNativePath } from "@/project/native-fs";
 import { useProjectStore } from "@/project/project-store";
 import { isEditState } from "@/project/edit-files";
+import { isPlainObject } from "@/project/fs";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
 import { importFiles } from "@/modules/library/import-files";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
@@ -200,7 +201,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 import { GRID_SIZE_MAX, GRID_SIZE_MIN, GRID_SIZE_STEP, useUIStore } from "@/state/ui-store";
 import { goToModule } from "@/state/detach";
-import { initSettings, updateSettings, useSettings } from "@/state/settings-store";
+import { initSettings, updateSettingsFromExtension, useSettings } from "@/state/settings-store";
 import { initDisplayProfile } from "@/rendering/display-profile-store";
 import { initPresets, usePresetsStore } from "@/state/presets-store";
 import {
@@ -251,6 +252,33 @@ function devtoolsAPI(): DevtoolsAPI {
     electron: window.safelightNative?.devtools,
     native: nativeDetails(),
   };
+}
+
+const PHOTO_TEXT_FIELDS = ["id", "filename", "relPath", "folder"] as const;
+const PHOTO_NUMBER_FIELDS = ["width", "height", "rating", "rotation"] as const;
+
+/** Why `photos` can't go into the catalogue, or null when they can. The store
+ *  writes records to storage before it shows them, so a malformed one would
+ *  stay stored and one reusing an id would overwrite that photo's record. */
+function catalogPhotoError(photos: unknown): string | null {
+  if (!Array.isArray(photos)) return "not a list of photo records";
+  const taken = new Set(useCatalogStore.getState().photos.map((p) => p.id));
+  const batch = new Set<string>();
+  for (const [i, p] of photos.entries()) {
+    const invalid = `photo ${i} is not a valid record; it needs`;
+    if (!isPlainObject(p)) return `${invalid} to be an object`;
+    const text = PHOTO_TEXT_FIELDS.find((k) => typeof p[k] !== "string");
+    if (text) return `${invalid} a string ${text}`;
+    const number = PHOTO_NUMBER_FIELDS.find((k) => !Number.isFinite(p[k]));
+    if (number) return `${invalid} a finite number ${number}`;
+    if (!Array.isArray(p.keywords)) return `${invalid} a keywords list`;
+    if (!isPlainObject(p.exif)) return `${invalid} an exif object`;
+    const id = String(p.id);
+    if (taken.has(id)) return `photo id "${id}" is already in the catalogue`;
+    if (batch.has(id)) return `photo id "${id}" appears twice`;
+    batch.add(id);
+  }
+  return null;
 }
 
 /** Every register* call made through a scoped API is tagged with the
@@ -337,7 +365,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       create,
     },
     registry: { use: (selector) => useRegistry(selector) },
-    appSettings: { update: updateSettings },
+    appSettings: { update: updateSettingsFromExtension },
     params: {
       list: () => Array.from(getAllDescriptors().values()),
       get: (qualifiedKey) => getParamDescriptor(qualifiedKey),
@@ -422,8 +450,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       proPhotoAt8Bit,
     },
     catalog: {
-      addPhotos: (photos, opts) =>
-        useCatalogStore.getState().addPhotos(photos, opts),
+      addPhotos: async (photos, opts) => {
+        const error = catalogPhotoError(photos);
+        if (error) throw new Error(`addPhotos: ${error}`);
+        await useCatalogStore.getState().addPhotos(photos, opts);
+      },
       getEditState: (photoId) =>
         catalogStorage()
           .getEditState(photoId)

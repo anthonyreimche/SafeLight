@@ -22,7 +22,7 @@ export function StackBadge({ photoId, inline = false }: { photoId: string; inlin
       aria-expanded={stack.expanded}
       className={`flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight hover:bg-black/70 ${
         inline ? "shrink-0" : "absolute right-1 bottom-1 z-10"
-      } ${stack.expanded ? "text-text-primary" : "text-text-secondary"}`}
+      } ${stack.expanded ? "text-on-media" : "text-on-media-muted"}`}
       onClick={(e) => {
         e.stopPropagation();
         toggleStack(stack.stackId);

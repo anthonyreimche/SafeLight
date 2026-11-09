@@ -145,6 +145,24 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-accent": "#636363",
           "--color-accent-hover": "#525252",
           "--color-slider-fill": "#8a8a8a",
+          // The curve editor and histogram draw dark on the light surface; the
+          // clip readouts are darker than the defaults to read as small text.
+          "--curve-rgb": "#2e2e2e",
+          "--curve-grid": "#d6d6d6",
+          "--curve-identity": "#c4c4c4",
+          "--curve-ring": "#5a5a5a",
+          "--curve-ring-focused": "#000000",
+          "--curve-point": "#1c1c1c",
+          "--histogram-curve": "rgba(46,46,46,0.85)",
+          "--histogram-grid": "rgba(0,0,0,0.08)",
+          "--histogram-zone": "rgba(0,0,0,0.06)",
+          "--histogram-label": "rgba(28,28,28,0.85)",
+          "--histogram-clip-shadow": "rgba(30,50,200,0.95)",
+          "--histogram-clip-highlight": "rgba(190,20,20,0.95)",
+          "--histogram-clip-shadow-active": "rgb(20,40,170)",
+          "--histogram-clip-highlight-active": "rgb(160,10,10)",
+          "--histogram-clip-shadow-bg": "rgba(50,77,255,0.18)",
+          "--histogram-clip-highlight-bg": "rgba(255,50,50,0.18)",
         },
       });
       // Built-in multi-pass wavelet denoiser (noise-reduction phase). A community

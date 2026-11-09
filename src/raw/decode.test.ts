@@ -34,19 +34,27 @@ vi.mock("./libraw-wasm-adapter", () => ({
 
 const SIDE = 4;
 
-/** An uncompressed 8-bit RGGB DNG whose single strip holds `pixels`. */
-function dng(extra: Field[], pixels: Uint8Array): Blob {
+interface Layout {
+  width?: number;
+  height?: number;
+  /** One StripByteCounts value per strip; every strip starts at the pixels. */
+  stripByteCounts?: number[];
+}
+
+/** An uncompressed 8-bit RGGB DNG whose strip holds `pixels`. */
+function dng(extra: Field[], pixels: Uint8Array, layout: Layout = {}): Blob {
+  const { width = SIDE, height = SIDE, stripByteCounts = [pixels.length] } = layout;
   const spec = (stripOffset: number): IfdSpec => ({
     fields: [
       field(TIFF_TAG.PhotometricInterpretation, TYPE.SHORT, PHOTOMETRIC_CFA),
-      field(TIFF_TAG.ImageWidth, TYPE.LONG, SIDE),
-      field(TIFF_TAG.ImageLength, TYPE.LONG, SIDE),
+      field(TIFF_TAG.ImageWidth, TYPE.LONG, width),
+      field(TIFF_TAG.ImageLength, TYPE.LONG, height),
       field(TIFF_TAG.BitsPerSample, TYPE.SHORT, 8),
       field(TIFF_TAG.Compression, TYPE.SHORT, COMPRESSION.None),
       field(TIFF_TAG.SamplesPerPixel, TYPE.SHORT, 1),
-      field(TIFF_TAG.RowsPerStrip, TYPE.LONG, SIDE),
-      field(TIFF_TAG.StripOffsets, TYPE.LONG, stripOffset),
-      field(TIFF_TAG.StripByteCounts, TYPE.LONG, pixels.length),
+      field(TIFF_TAG.RowsPerStrip, TYPE.LONG, height),
+      field(TIFF_TAG.StripOffsets, TYPE.LONG, ...stripByteCounts.map(() => stripOffset)),
+      field(TIFF_TAG.StripByteCounts, TYPE.LONG, ...stripByteCounts),
       field(TIFF_TAG.CFAPattern, TYPE.BYTE, 0, 1, 1, 2),
       ...extra,
     ],
@@ -107,6 +115,39 @@ describe("decodeRawToFloat in-house path", () => {
   it("takes the table's top entry as the white level when WhiteLevel is absent", async () => {
     const file = dng([TABLE], plane(2));
     expect(await flatValue(file)).toBeCloseTo(4000 / 8000, 5);
+  });
+});
+
+// The in-house path declining leaves libraw's verdict as the answer, so the
+// caller shows the embedded preview; an in-house throw would add its reason.
+describe("decodeRawToFloat in-house path on a damaged header", () => {
+  it("declines a header claiming 30000x30000 over a 1 KB strip", async () => {
+    const file = dng([], new Uint8Array(1024).fill(51), { width: 30_000, height: 30_000 });
+
+    expect(await decodeRawToFloat(file)).toEqual({ failure: "transient" });
+    expect(await decodeRawToBitmap(file)).toBeNull();
+  });
+
+  it("declines strips that hold fewer bytes than the frame needs", async () => {
+    const file = dng([], new Uint8Array(1024).fill(51), { width: 64, height: 64 });
+
+    expect(await decodeRawToFloat(file)).toEqual({ failure: "transient" });
+    expect(await decodeRawToBitmap(file)).toBeNull();
+  });
+
+  it("declines strip byte counts that add up past the file without allocating them", async () => {
+    const file = dng([], plane(51), { stripByteCounts: Array.from({ length: 1024 }, () => 0xffffffff) });
+
+    const started = performance.now();
+    expect(await decodeRawToFloat(file)).toEqual({ failure: "transient" });
+    expect(await decodeRawToBitmap(file)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("declines a strip that runs past the end of the file", async () => {
+    const file = dng([], plane(51), { stripByteCounts: [0xffffffff] });
+
+    expect(await decodeRawToFloat(file)).toEqual({ failure: "transient" });
   });
 });
 

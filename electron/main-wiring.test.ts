@@ -11,7 +11,8 @@
 // ipc/index.cjs, which runs here; main.cjs itself can't run under vitest, so the
 // rest of its wiring is read as text.
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -35,7 +36,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:setMaterial|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:setMaterial|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -170,6 +171,43 @@ describe("privileged channel wiring in main.cjs", () => {
   });
 });
 
+// The main process reads the recorded dev folder at the next launch, for the
+// network origins its manifests declare: only core may choose it.
+describe("dev folder channel", () => {
+  it("is guarded and handed out only on the privileged bridge", () => {
+    expect(privilegedChannels()).toContain("devtools:sync-dev-folder");
+    const privilegedSurface = PRELOAD.slice(0, PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+    expect(registrations(privilegedSurface, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toContain(
+      "devtools:sync-dev-folder",
+    );
+  });
+
+  it("records an absolute folder and refuses anything else", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sl-dev-folder-"));
+    try {
+      const file = join(dir, "dev-folder.json");
+      const { handler } = entry("devtools:sync-dev-folder", {
+        devFolderFile: () => file,
+        extensionConnectHosts: () => [],
+      });
+      await expect(handler(NO_EVENT, "Extensions")).rejects.toThrow("Bad folder");
+      await expect(handler(NO_EVENT, 42)).rejects.toThrow("Bad folder");
+      expect(existsSync(file)).toBe(false);
+      await expect(handler(NO_EVENT, dir)).resolves.toEqual({ pending: [] });
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ folder: dir });
+      await expect(handler(NO_EVENT, null)).resolves.toEqual({ pending: [] });
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the recorded folder before serving the first page", () => {
+    expect(MAIN).toMatch(/await loadLaunchHosts\(\);[\s\S]*?serveAppProtocol\(/);
+    expect(MAIN).not.toMatch(/listDevManifests\(readDevFolder\(/);
+  });
+});
+
 describe("Report an issue channels", () => {
   const handled = publicChannels();
   const invoked = registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf);
@@ -299,7 +337,7 @@ describe("GPU backend fallback", () => {
   // the cache the running copy depends on.
   it("caches the working backend only in the instance that holds the lock", () => {
     const lock = MAIN.indexOf("if (!app.requestSingleInstanceLock()) {");
-    const write = MAIN.search(/app\.whenReady\(\)\.then\(\(\) => \{\s*cacheWorkingBackend\(\);/);
+    const write = MAIN.search(/app\.whenReady\(\)\.then\(async \(\) => \{\s*cacheWorkingBackend\(\);/);
     expect(lock).toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(lock);
     expect(MAIN.match(/writeCache\(readyCache\(/g)).toHaveLength(1);

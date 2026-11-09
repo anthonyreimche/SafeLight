@@ -31,6 +31,7 @@ import {
   unpackSamples,
   type DevelopOptions,
 } from "./pixels";
+import { MAX_DECODE_PIXELS } from "./decode-limits";
 import { getLibRaw } from "./libraw";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
 import type { DecodeRequest } from "./decode-pool";
@@ -218,8 +219,11 @@ interface SensorPlane {
 // WhiteLevel leaves every sample within 2% of black.
 function readSensorPlane(reader: TiffReader, info: RawIfdInfo): SensorPlane | null {
   const { ifd, width, height, bitsPerSample } = info;
+  if (width * height > MAX_DECODE_PIXELS) return null;
   const strips = readStrips(reader, ifd);
-  if (!strips) return null;
+  // Short strips would unpack to a frame that is black past the data; the
+  // embedded preview shows the photo better.
+  if (!strips || strips.length < planeBytes(bitsPerSample, width, height)) return null;
   const samples = unpackPlane(strips, bitsPerSample, width, height, reader.le);
   if (samples.length < width * height) return null;
 
@@ -256,21 +260,30 @@ function readStrips(reader: TiffReader, ifd: Ifd): Uint8Array | null {
   if (!offsetsEntry || !countsEntry) return null;
 
   const offsets = reader.values(offsetsEntry);
-  const counts = reader.values(countsEntry);
+  const counts = reader.values(countsEntry, offsets.length);
+  if (counts.length < offsets.length) return null;
   const buf = reader.view.buffer;
-  const total = counts.reduce((a, b) => a + b, 0);
-  if (total <= 0) return null;
+  let total = 0;
+  for (let i = 0; i < offsets.length; i++) {
+    const start = reader.base + offsets[i];
+    if (start < 0 || start + counts[i] > buf.byteLength) return null;
+    total += counts[i];
+  }
+  if (total <= 0 || total > buf.byteLength) return null;
 
   const out = new Uint8Array(total);
   let pos = 0;
   for (let i = 0; i < offsets.length; i++) {
-    const start = reader.base + offsets[i];
-    const len = counts[i] ?? 0;
-    if (start < 0 || start + len > buf.byteLength) return null;
-    out.set(new Uint8Array(buf, start, len), pos);
-    pos += len;
+    out.set(new Uint8Array(buf, reader.base + offsets[i], counts[i]), pos);
+    pos += counts[i];
   }
   return out;
+}
+
+function planeBytes(bits: number, width: number, height: number): number {
+  return bits === 8 || bits === 16
+    ? (width * height * bits) / 8
+    : Math.ceil((width * bits) / 8) * height;
 }
 
 // Unpack the sensor plane. 8/16-bit samples read straight through; sub-byte

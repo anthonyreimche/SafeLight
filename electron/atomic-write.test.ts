@@ -14,7 +14,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createAtomicWriter } from "./atomic-write.cjs";
+import { createAtomicWriter, writeAtomicSync } from "./atomic-write.cjs";
 import { retry } from "./plugin-files.cjs";
 
 let dir: string;
@@ -325,5 +325,32 @@ describe("createAtomicWriter", () => {
     await Promise.all([first, second]);
 
     expect(await read(path.join(dir, "catalog.json"))).toBe("2");
+  });
+});
+
+describe("writeAtomicSync", () => {
+  it("writes the text to a new file and creates the directory", () => {
+    const file = path.join(dir, "nested", "state.json");
+    writeAtomicSync(file, "one");
+    expect(fs.readFileSync(file, "utf8")).toBe("one");
+  });
+
+  it("replaces an existing file's content and leaves no temp sibling", async () => {
+    const file = path.join(dir, "state.json");
+    fs.writeFileSync(file, "old");
+    writeAtomicSync(file, "new");
+    expect(fs.readFileSync(file, "utf8")).toBe("new");
+    expect(await leftovers()).toEqual([]);
+  });
+
+  it("keeps the old content and removes the temp file when the rename fails", async () => {
+    const file = path.join(dir, "state.json");
+    fs.writeFileSync(file, "old");
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    });
+    expect(() => writeAtomicSync(file, "new")).toThrow("busy");
+    expect(fs.readFileSync(file, "utf8")).toBe("old");
+    expect(await leftovers()).toEqual([]);
   });
 });

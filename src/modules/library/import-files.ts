@@ -9,7 +9,7 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useProjectStore } from "@/project/project-store";
+import { projectPassSignal, useProjectStore } from "@/project/project-store";
 import { nativeFs, nativePathOf } from "@/project/native-fs";
 import { fsErrorText } from "@/project/fs-errors";
 import { isNotFound } from "@/project/fs";
@@ -37,6 +37,8 @@ export type IngestResult = { name: string; id: string } | { name: string; error:
 
 /** The longest entry name taken: the temporary name beside it adds about 45. */
 const MAX_NAME_LENGTH = 200;
+
+const PROJECT_CLOSED = "The project was closed.";
 
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
@@ -152,6 +154,7 @@ async function ingestOne(
   segments: string[],
   file: IngestFile,
   keywords: readonly string[],
+  signal: AbortSignal,
 ): Promise<IngestResult> {
   const { name } = file;
   const fail = (error: string): IngestResult => ({ name, error });
@@ -186,6 +189,8 @@ async function ingestOne(
       folder,
       keywords: withKeywords(built, keywords),
     };
+    // The file stays: it is in the left project's folder, whose next scan takes it.
+    if (signal.aborted) return fail(PROJECT_CLOSED);
     await useCatalogStore.getState().addPhotos([photo]);
     return { name, id: photo.id };
   } catch (error) {
@@ -208,22 +213,25 @@ export function importFiles(
   if (!Array.isArray(files)) return Promise.resolve([]);
   const run = async (): Promise<IngestResult[]> => {
     const root = useProjectStore.getState().root;
+    const signal = projectPassSignal();
     const segments = folderSegments(options?.folder);
     const refuse = (error: string): IngestResult[] =>
       files.map((file) => ({ name: entryName(file), error }));
-    if (!root) return refuse("No project is open.");
+    if (!root || !signal) return refuse("No project is open.");
     if (!segments) return refuse("The folder must be a plain path inside the project.");
 
     const keywords = cleanKeywords(options?.keywords);
     const results: IngestResult[] = [];
     for (const file of files) {
       results.push(
-        isIngestFile(file)
-          ? await ingestOne(root, segments, file, keywords)
-          : { name: entryName(file), error: "Each file needs a name and its data as a Blob." },
+        signal.aborted
+          ? { name: entryName(file), error: PROJECT_CLOSED }
+          : isIngestFile(file)
+            ? await ingestOne(root, segments, file, keywords, signal)
+            : { name: entryName(file), error: "Each file needs a name and its data as a Blob." },
       );
     }
-    if (results.some((r) => "id" in r)) await useProjectStore.getState().refreshTree();
+    if (!signal.aborted && results.some((r) => "id" in r)) await useProjectStore.getState().refreshTree();
     return results;
   };
   const next = queue.then(run, run);

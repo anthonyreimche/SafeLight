@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { replacePlugin, settlePlugin, sweepPluginWork, retry } from "./plugin-files.cjs";
+import { replacePlugin, settlePlugin, sweepPluginWork, removePlugin, retry } from "./plugin-files.cjs";
 
 const ID = "acme.widget";
 
@@ -149,6 +149,33 @@ describe("sweepPluginWork", () => {
     expect(() =>
       sweepPluginWork({ pluginsDir, workDir: path.join(root, "nope") }),
     ).not.toThrow();
+  });
+});
+
+describe("removePlugin", () => {
+  it("waits for an update of the same extension that is under way", async () => {
+    await installV1();
+    const update = installV2();
+    await removePlugin({ pluginsDir, workDir, id: ID });
+    await update.catch(() => {});
+    expect(exists(pluginsDir, ID)).toBe(false);
+    expect(exists(workDir, ID)).toBe(false);
+  });
+
+  it("leaves no previous copy for the launch sweep to put back", async () => {
+    await installV1();
+    await installV2();
+    await removePlugin({ pluginsDir, workDir, id: ID });
+    sweepPluginWork({ pluginsDir, workDir });
+    expect(exists(pluginsDir, ID)).toBe(false);
+  });
+
+  it("leaves nothing for a late rollback to restore", async () => {
+    await installV1();
+    await installV2();
+    await removePlugin({ pluginsDir, workDir, id: ID });
+    expect(await settlePlugin({ pluginsDir, workDir, id: ID, outcome: "rollback" })).toBeNull();
+    expect(exists(pluginsDir, ID)).toBe(false);
   });
 });
 

@@ -576,11 +576,60 @@ describe("initKeybindings", () => {
     listeners[0](storageEvent("sl_keybindings_v1", '{"module.library":"L"}'));
     expect(getBinding("module.library")).toBe("L");
 
-    // Unrelated keys, clears and malformed payloads must leave bindings alone.
+    // Another key's change must leave bindings alone.
     listeners[0](storageEvent("sl_theme", '{"module.library":"Q"}'));
-    listeners[0](storageEvent("sl_keybindings_v1", null));
-    listeners[0](storageEvent("sl_keybindings_v1", "{not json"));
     expect(getBinding("module.library")).toBe("L");
+  });
+
+  it("falls back to the defaults when another window clears or corrupts the store", () => {
+    const listeners: Listener[] = [];
+    vi.stubGlobal("window", {
+      addEventListener: (_type: string, fn: Listener) => void listeners.push(fn),
+    });
+    initKeybindings();
+
+    for (const newValue of [null, "[1,2]", "null", "{not json"]) {
+      listeners[0](storageEvent("sl_keybindings_v1", '{"module.library":"L"}'));
+      expect(getBinding("module.library")).toBe("L");
+      listeners[0](storageEvent("sl_keybindings_v1", newValue));
+      expect(overrides()).toEqual({});
+      expect(getBinding("module.library")).toBe("G");
+    }
+  });
+
+  it("keeps only string combos from a payload written by another window", () => {
+    const listeners: Listener[] = [];
+    vi.stubGlobal("window", {
+      addEventListener: (_type: string, fn: Listener) => void listeners.push(fn),
+    });
+    initKeybindings();
+
+    listeners[0](storageEvent("sl_keybindings_v1", '{"a":5,"module.library":"L"}'));
+    expect(overrides()).toEqual({ "module.library": "L" });
+  });
+});
+
+describe("stored overrides at boot", () => {
+  async function bootWith(raw: string) {
+    vi.stubGlobal("localStorage", memoryStorage({ sl_keybindings_v1: raw }));
+    vi.resetModules();
+    return import("./keybindings-store");
+  }
+
+  it("treats a stored null as no overrides", async () => {
+    const mod = await bootWith("null");
+    expect(mod.getBinding("module.library")).toBe("G");
+    expect(mod.useKeybindings.getState().overrides).toEqual({});
+  });
+
+  it("treats a stored array as no overrides", async () => {
+    const mod = await bootWith("[1,2]");
+    expect(mod.useKeybindings.getState().overrides).toEqual({});
+  });
+
+  it("keeps only the string-valued entries", async () => {
+    const mod = await bootWith('{"a":5,"b":"Ctrl+K"}');
+    expect(mod.useKeybindings.getState().overrides).toEqual({ b: "Ctrl+K" });
   });
 });
 

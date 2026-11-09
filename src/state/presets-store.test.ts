@@ -344,6 +344,46 @@ describe("remove", () => {
   });
 });
 
+describe("malformed entries", () => {
+  const mixed =
+    '[null, {"id":"a","name":"Ok","params":{}}, {"id":"b","params":{}}, {"id":"c","name":"Bad","params":[]}, {"id":"d","name":"BadGroup","group":3,"params":{}}]';
+  const unreadableKeys = () =>
+    Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i) ?? "").filter((k) =>
+      k.startsWith(`${KEY}.unreadable-`),
+    );
+
+  it("keeps only well-formed presets and backs up the original text", async () => {
+    const { usePresetsStore } = await boot(mixed);
+
+    expect(usePresetsStore.getState().presets.map((p) => p.name)).toEqual(["Ok"]);
+    const [backup] = unreadableKeys();
+    expect(localStorage.getItem(backup)).toBe(mixed);
+  });
+
+  it("does not back up a clean list", async () => {
+    await boot(stored({ id: "a", name: "Punchy" }));
+    expect(unreadableKeys()).toEqual([]);
+  });
+
+  it("lets nextAvailableName run over what survived", async () => {
+    const { usePresetsStore, nextAvailableName } = await boot(mixed);
+    expect(nextAvailableName(usePresetsStore.getState().presets, "ok")).toBe("ok 2");
+  });
+
+  it("filters a list arriving from another window the same way", async () => {
+    const listeners: StorageListener[] = [];
+    vi.stubGlobal("window", {
+      addEventListener: (_type: string, fn: StorageListener) => void listeners.push(fn),
+    });
+    const mod = await boot();
+    mod.initPresets();
+
+    listeners[0]({ key: KEY, newValue: mixed } as unknown as StorageEvent);
+
+    expect(mod.usePresetsStore.getState().presets.map((p) => p.name)).toEqual(["Ok"]);
+  });
+});
+
 describe("initPresets", () => {
   function storageEvent(key: string, newValue: string | null): StorageEvent {
     return { key, newValue } as unknown as StorageEvent;

@@ -7,8 +7,8 @@
 // takes its colours from theme custom properties and re-reads them on a theme
 // change.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { Histogram } from "./Histogram";
 import { useThemeStore } from "@/extensions/themes";
 import type { HistogramData } from "@/rendering/histogram";
@@ -113,5 +113,49 @@ describe("histogram canvas colours", () => {
     document.documentElement.style.setProperty("--histogram-grid", "rgb(4, 5, 6)");
     render(<Histogram data={data} onAdjust={() => {}} />);
     expect(strokes).toContain("rgb(4, 5, 6)");
+  });
+});
+
+describe("histogram drag", () => {
+  type Adjust = NonNullable<React.ComponentProps<typeof Histogram>["onAdjust"]>;
+
+  const mount = () => {
+    const onAdjust = vi.fn<Adjust>();
+    const { container } = render(<Histogram data={data} onAdjust={onAdjust} />);
+    const canvas = container.querySelector("canvas");
+    if (!canvas) throw new Error("no canvas");
+    return { canvas, onAdjust };
+  };
+
+  const phases = (onAdjust: Mock<Adjust>) => onAdjust.mock.calls.map((c) => c[2]);
+
+  it("ends the edit at the last offset when the browser cancels the pointer", () => {
+    const { canvas, onAdjust } = mount();
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, clientX: 100, clientY: 40 });
+    const zone = onAdjust.mock.calls[0][0];
+    fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 130, clientY: 40 });
+    fireEvent.pointerCancel(canvas, { pointerId: 1, clientX: 0, clientY: 0 });
+    expect(onAdjust).toHaveBeenLastCalledWith(zone, 30, "end");
+
+    onAdjust.mockClear();
+    fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 160, clientY: 40 });
+    expect(phases(onAdjust)).not.toContain("move");
+  });
+
+  it("ends the edit when the canvas loses its pointer capture", () => {
+    const { canvas, onAdjust } = mount();
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, clientX: 100, clientY: 40 });
+    fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 90, clientY: 40 });
+    fireEvent.lostPointerCapture(canvas, { pointerId: 1 });
+    expect(phases(onAdjust)).toEqual(["start", "move", "end"]);
+    expect(onAdjust.mock.calls[2][1]).toBe(-10);
+  });
+
+  it("ends a released drag once, not again when the capture goes", () => {
+    const { canvas, onAdjust } = mount();
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, clientX: 100, clientY: 40 });
+    fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 120, clientY: 40 });
+    fireEvent.lostPointerCapture(canvas, { pointerId: 1 });
+    expect(phases(onAdjust).filter((p) => p === "end")).toHaveLength(1);
   });
 });

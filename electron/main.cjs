@@ -58,7 +58,7 @@ const {
   relaunchOptions,
 } = require("./gpu-backend.cjs");
 const { sweepPluginWork, retry } = require("./plugin-files.cjs");
-const { createAtomicWriter } = require("./atomic-write.cjs");
+const { createAtomicWriter, writeAtomicSync } = require("./atomic-write.cjs");
 const { argvPaths, createRequestOrder, openTargetFor, withoutPaths } = require("./os-open.cjs");
 const {
   listInstalledManifests,
@@ -175,8 +175,7 @@ const readCache = () => {
 const writeCache = (cache) => {
   if (!backendCache.file) return;
   try {
-    fs.mkdirSync(path.dirname(backendCache.file), { recursive: true });
-    fs.writeFileSync(backendCache.file, formatBackendCache(cache), "utf8");
+    writeAtomicSync(backendCache.file, formatBackendCache(cache));
     if (backendCache.legacy) fs.rmSync(backendCache.legacy, { force: true });
   } catch { /* non-fatal */ }
 };
@@ -337,13 +336,16 @@ app.commandLine.appendSwitch("disable-features", "Translate,MediaRouter,Optimiza
 // Malformed entries never reach the policy, so a manifest can't inject
 // 'unsafe-eval', a data: source, or a bare * into it.
 const galleryOrigins = galleryOriginsFrom(process.env);
-let launchHosts = null;
+let launchHosts = [];
+// Once per launch, before the first page is served. The dev folder is read
+// without blocking: it may sit on a slow or network drive.
+async function loadLaunchHosts() {
+  launchHosts = declaredConnectHosts([
+    ...listPlugins(),
+    ...(await listDevManifests(await readDevFolder(devFolderFile()))),
+  ]);
+}
 function extensionConnectHosts() {
-  if (!launchHosts)
-    launchHosts = declaredConnectHosts([
-      ...listPlugins(),
-      ...listDevManifests(readDevFolder(devFolderFile())),
-    ]);
   return launchHosts;
 }
 let cspCache = null;
@@ -616,7 +618,7 @@ function trackWindowState(win) {
       fullScreen: win.isFullScreen(),
     };
     try {
-      fs.writeFileSync(windowStateFile(), JSON.stringify(state));
+      writeAtomicSync(windowStateFile(), JSON.stringify(state));
     } catch {}
   };
   // Drags fire resize/move continuously; coalesce to one write per gesture on an
@@ -889,7 +891,7 @@ if (!app.requestSingleInstanceLock()) {
   // where they claim the key and the Edit roles serve text fields otherwise.
   const MAC_MENU = [{ role: "appMenu" }, { role: "editMenu" }, { role: "windowMenu" }];
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     cacheWorkingBackend();
     // macOS takes Cmd+Q and the text-field Edit shortcuts from the menu bar.
     Menu.setApplicationMenu(
@@ -920,6 +922,7 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionCheckHandler((_wc, permission) =>
       ALLOWED_PERMISSIONS.has(permission)
     );
+    await loadLaunchHosts();
     serveAppProtocol({ protocol, net, dist: DIST, pluginsDir, csp: appCSP });
     registerIpcChannels();
     createWindow();

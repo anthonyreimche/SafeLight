@@ -11,8 +11,9 @@
 // them. The enlarged view follows its URL, so a thumbnail failing can't swap it
 // for a different screenshot; if the enlarged image itself fails, it closes.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { suspendShortcuts } from "@/state/keybindings-store";
+import { trapTab } from "@/ui/focus-trap";
 
 export function Screenshots({ urls }: { urls: string[] }) {
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
@@ -32,19 +33,32 @@ export function Screenshots({ urls }: { urls: string[] }) {
     return suspendShortcuts();
   }, [isOpen]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const lastShot = useRef<string | null>(null);
+  lastShot.current = openShot ?? lastShot.current;
+
   useEffect(() => {
     if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenUrl(null);
-      else if (e.key === "ArrowRight") setOpenUrl(shown[(openIndex + 1) % shown.length]);
-      else if (e.key === "ArrowLeft") setOpenUrl(shown[(openIndex - 1 + shown.length) % shown.length]);
-      else return;
-      e.preventDefault();
-      e.stopPropagation();
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.focus();
+    return () => {
+      const thumb = Array.from(stripRef.current?.querySelectorAll<HTMLElement>("button") ?? []).find(
+        (b) => b.dataset.shot === lastShot.current,
+      );
+      (opener?.isConnected ? opener : thumb)?.focus();
     };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [isOpen, openIndex, shown]);
+  }, [isOpen]);
+
+  const onDialogKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    trapTab(e, dialogRef.current);
+    if (e.key === "Escape") setOpenUrl(null);
+    else if (e.key === "ArrowRight") setOpenUrl(shown[(openIndex + 1) % shown.length]);
+    else if (e.key === "ArrowLeft") setOpenUrl(shown[(openIndex - 1 + shown.length) % shown.length]);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   if (shown.length === 0) return null;
   const fail = (u: string) => {
@@ -54,10 +68,11 @@ export function Screenshots({ urls }: { urls: string[] }) {
 
   return (
     <div className="border-b border-border-subtle px-3 py-2">
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div ref={stripRef} className="flex gap-2 overflow-x-auto pb-1">
         {shown.map((u, i) => (
           <button
             key={u}
+            data-shot={u}
             onClick={() => setOpenUrl(u)}
             aria-label={`Enlarge screenshot ${i + 1}`}
             className="h-[120px] shrink-0 overflow-hidden rounded bg-surface-2"
@@ -75,9 +90,13 @@ export function Screenshots({ urls }: { urls: string[] }) {
       {openShot !== null && (
         <div
           role="dialog"
+          aria-modal="true"
           aria-label={`Screenshot ${openIndex + 1} of ${shown.length}`}
+          ref={dialogRef}
+          tabIndex={-1}
+          onKeyDown={onDialogKeyDown}
           onClick={() => setOpenUrl(null)}
-          className="absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-4"
+          className="absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-4 outline-none"
         >
           <img
             src={openShot}

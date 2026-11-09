@@ -117,6 +117,10 @@ export function projectPassSignal(): AbortSignal | undefined {
 // in-flight open whose generation no longer matches skips its finalization.
 let openGen = 0;
 
+/** Bumped by each tree refresh, so a walk that finishes after a later one started
+ *  leaves the later one's tree in place. */
+let treeRefreshSeq = 0;
+
 /** Whether the last open failed because the folder wasn't there; openRecent reads
  *  it to tell the banner which recent to offer removing. */
 let folderUnavailable = false;
@@ -711,8 +715,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   async refreshTree() {
     const root = get().root;
     if (!root) return;
-    const { tree } = await scanProject(root, isSupportedName);
-    set({ tree });
+    const gen = openGen;
+    const seq = ++treeRefreshSeq;
+    try {
+      const { tree } = await scanProject(root, isSupportedName);
+      if (gen === openGen && seq === treeRefreshSeq && get().root === root) set({ tree });
+    } catch (e) {
+      // The disk and catalogue work that asked for the refresh has already landed;
+      // the tree catches up on the next refresh or open.
+      console.warn("[project-store] folder tree refresh failed:", e);
+    }
   },
 }));
 
@@ -782,8 +794,21 @@ export function watchOsOpen(): void {
   const bridge = privilegedOsOpen();
   if (!bridge) return;
   const open = async () => {
-    const target = await bridge.take();
-    if (target) await useProjectStore.getState().openFromOs(target);
+    let target: NativeOpenTarget | null = null;
+    try {
+      target = await bridge.take();
+      if (target) await useProjectStore.getState().openFromOs(target);
+    } catch (e) {
+      console.error("[project] opening what the OS asked for failed:", e);
+      const folderName = target?.folder.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || target?.folder;
+      useProjectStore.setState({
+        openError: folderName
+          ? describeOpenError(e, folderName)
+          : "Couldn't open what was sent to Safelight. Try opening it again.",
+        openErrorReadOnly: false,
+        openErrorRecentId: null,
+      });
+    }
   };
   bridge.onRequest(() => void open());
   void open();

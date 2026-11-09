@@ -114,7 +114,7 @@ export function RenamePhotoDialog({
         </button>
         <button
           disabled={!canSave}
-          className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           onClick={submit}
         >
           Rename

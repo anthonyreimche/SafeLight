@@ -46,6 +46,10 @@
   --color-label-green: #27ae60;
   --color-label-blue: #3498db;
   --color-label-purple: #9b59b6;
+  /* Text on the dark scrim over photos (bg-black/50). The scrim is the same in
+     every theme, so this is too. */
+  --color-on-media: #f4f4f4;
+  --color-on-media-muted: #d0d0d0;
   --font-mono: "Afacad", system-ui, -apple-system, "Segoe UI", Roboto,
     sans-serif;
   --font-code: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",

@@ -204,6 +204,37 @@ describe("updateSettings", () => {
   });
 });
 
+// Whether and how Safelight updates itself and its extensions is the user's
+// call in Preferences; an extension writing settings can't change it.
+describe("updateSettingsFromExtension", () => {
+  it("drops the update policy keys and applies the rest", async () => {
+    const { updateSettingsFromExtension, getSettings, DEFAULT_SETTINGS } = await boot();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    updateSettingsFromExtension({
+      checkExtensionUpdates: !DEFAULT_SETTINGS.checkExtensionUpdates,
+      autoUpdateExtensions: !DEFAULT_SETTINGS.autoUpdateExtensions,
+      checkForUpdates: !DEFAULT_SETTINGS.checkForUpdates,
+      updateChannel: "all",
+      exportQuality: 60,
+    });
+    const s = getSettings();
+    expect(s.checkExtensionUpdates).toBe(DEFAULT_SETTINGS.checkExtensionUpdates);
+    expect(s.autoUpdateExtensions).toBe(DEFAULT_SETTINGS.autoUpdateExtensions);
+    expect(s.checkForUpdates).toBe(DEFAULT_SETTINGS.checkForUpdates);
+    expect(s.updateChannel).toBe(DEFAULT_SETTINGS.updateChannel);
+    expect(s.exportQuality).toBe(60);
+    expect(persisted().exportQuality).toBe(60);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("is what the extension API's appSettings.update calls", async () => {
+    const { readFileSync } = await import("node:fs");
+    const host = readFileSync(new URL("../extensions/host.tsx", import.meta.url), "utf8");
+    expect(host).toMatch(/appSettings: { update: updateSettingsFromExtension }/);
+  });
+});
+
 describe("resetSettings", () => {
   it("puts every preference back to its factory value and persists that", async () => {
     const { updateSettings, resetSettings, getSettings, DEFAULT_SETTINGS } = await boot(
@@ -309,6 +340,69 @@ describe("stepCanvasSurround", () => {
 
     expect(getSettings().canvasSurroundOverride).toBe(true);
     expect(dom.rootVars.get("--color-canvas-surround")).toBe("#686868");
+  });
+});
+
+describe("validation", () => {
+  it("keeps the interface scale inside its range, whatever was stored", async () => {
+    for (const bad of [0, -1, 50, "big", true]) {
+      const { getSettings, UI_SCALE_MIN, UI_SCALE_MAX } = await boot(JSON.stringify({ uiScale: bad }));
+      const scale = getSettings().uiScale;
+      expect(scale).toBeGreaterThanOrEqual(UI_SCALE_MIN);
+      expect(scale).toBeLessThanOrEqual(UI_SCALE_MAX);
+    }
+    expect((await boot('{"uiScale":0}')).getSettings().uiScale).toBe(1);
+    expect((await boot('{"uiScale":50}')).getSettings().uiScale).toBe(2);
+  });
+
+  it("replaces wrong-typed stored values with the defaults", async () => {
+    const { getSettings, DEFAULT_SETTINGS } = await boot(
+      JSON.stringify({ developMaxEdge: "x", reduceMotion: "yes", uiFont: 3, colorOverrides: [], exportPresets: {} }),
+    );
+    const s = getSettings();
+    expect(s.developMaxEdge).toBe(DEFAULT_SETTINGS.developMaxEdge);
+    expect(s.reduceMotion).toBe(false);
+    expect(s.uiFont).toBe("");
+    expect(s.colorOverrides).toEqual({});
+    expect(s.exportPresets).toEqual([]);
+  });
+
+  it("keeps a key from a newer build through a load and save", async () => {
+    const { updateSettings } = await boot(JSON.stringify({ fromTheFuture: { a: 1 } }));
+    updateSettings({ exportBundle: false });
+    expect(persisted()).toMatchObject({ fromTheFuture: { a: 1 }, exportBundle: false });
+  });
+
+  it("refuses wrong-typed and unknown keys in an update", async () => {
+    const { updateSettings, getSettings } = await boot();
+    updateSettings(JSON.parse('{"uiScale":"abc","thumbMaxEdge":"big","bogusKey":1}') as Partial<AppSettings>);
+    expect(getSettings().uiScale).toBe(1);
+    expect(getSettings().thumbMaxEdge).toBe(640);
+    expect(persisted()).not.toHaveProperty("bogusKey");
+    expect(getSettings()).not.toHaveProperty("bogusKey");
+  });
+
+  it("clamps an out-of-range scale in an update", async () => {
+    const { updateSettings, getSettings } = await boot();
+    updateSettings({ uiScale: 0.1 });
+    expect(getSettings().uiScale).toBe(0.8);
+    expect(dom.bodyStyle.zoom).toBe("0.8");
+    updateSettings({ uiScale: 0 });
+    expect(getSettings().uiScale).toBe(0.8);
+  });
+
+  it("accepts the shapes the extensions write", async () => {
+    const { updateSettings, getSettings } = await boot();
+    updateSettings({ exportLongEdge: 2048 });
+    expect(getSettings().exportLongEdge).toBe(2048);
+    updateSettings({ exportLongEdge: null });
+    expect(getSettings().exportLongEdge).toBeNull();
+    updateSettings({ exportLongEdge: -5 });
+    expect(getSettings().exportLongEdge).toBeNull();
+    const presets = [{ name: "Web" }] as unknown as AppSettings["exportPresets"];
+    updateSettings({ exportPresets: presets, colorOverrides: { dark: { "--color-accent": "#fff" } } });
+    expect(getSettings().exportPresets).toEqual(presets);
+    expect(getSettings().colorOverrides).toEqual({ dark: { "--color-accent": "#fff" } });
   });
 });
 

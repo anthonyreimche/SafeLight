@@ -17,7 +17,11 @@ const SOURCES_KEY = "sl_ext_sources";
 
 export const readSources = (): Record<string, string> => {
   try {
-    return JSON.parse(localStorage.getItem(SOURCES_KEY) ?? "{}");
+    const stored: unknown = JSON.parse(localStorage.getItem(SOURCES_KEY) ?? "{}");
+    if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return {};
+    return Object.fromEntries(
+      Object.entries(stored).filter((e): e is [string, string] => typeof e[1] === "string"),
+    );
   } catch {
     return {};
   }

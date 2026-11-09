@@ -89,11 +89,13 @@ import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 import { firstLogLine, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
+import { GPU_CRASH_LOG } from "@/rendering/gpu-crash-guard";
 import { useCallbackFailures } from "./guard";
 import { useStartFailures } from "./start-failures";
 import { getParamDescriptor } from "./param-registry";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
+import { mapLimit } from "@/project/fs";
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -113,8 +115,15 @@ async function photosUsing(extensionId: string): Promise<number> {
       if (!d) return key.startsWith(`${extensionId}.`) && value != null;
       return d.extensionId === extensionId && JSON.stringify(value) !== JSON.stringify(d.default);
     });
-  const edits = await Promise.all(useCatalogStore.getState().photos.map((p) => loadSavedEdit(p.id)));
-  return edits.filter((e) => usesIt(e.paramBag) || e.params.masks.some((m) => m.bag && usesIt(m.bag))).length;
+  const edits = await mapLimit(useCatalogStore.getState().photos, 8, async (p) => {
+    try {
+      return await loadSavedEdit(p.id);
+    } catch (e) {
+      console.warn(`Couldn't read the edit of ${p.id} to check for ${extensionId}:`, e);
+      return null;
+    }
+  });
+  return edits.filter((e) => e && (usesIt(e.paramBag) || e.params.masks.some((m) => m.bag && usesIt(m.bag)))).length;
 }
 
 /** Photos that use an extension render and export without its stages while
@@ -451,10 +460,10 @@ export function ExtensionManagerPanel() {
     list.find((m) => m.id === id)?.name ?? BUILTIN_EXTENSIONS.find((b) => b.id === id)?.name ?? id;
 
   const remove = async (id: string) => {
-    if (!(await confirmPhotosUsing(id, nameOf(id), true))) return;
-    setBusy(id);
     setMsg(null);
     try {
+      if (!(await confirmPhotosUsing(id, nameOf(id), true))) return;
+      setBusy(id);
       await uninstallPlugin(id);
       forgetSource(id);
       setMsg("Removed (files deleted).");
@@ -738,7 +747,7 @@ export function ExtensionManagerPanel() {
                       onClick={() => void updateAll(installable)}
                       disabled={busy !== null}
                       title="Update every extension listed here that can be updated"
-                      className="shrink-0 rounded bg-slider-fill px-3 py-1 font-medium text-white hover:opacity-90 disabled:opacity-40"
+                      className="shrink-0 rounded bg-slider-fill px-3 py-1 font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
                     >
                       {updatingAll
                         ? `Updating ${updatingAll.settled} of ${updatingAll.total}…`
@@ -1142,7 +1151,9 @@ function ExtensionRow({
         )}
         {stageFailures.map((f) => (
           <div key={f.stageId} className="truncate text-danger" title={f.log}>
-            {`Stage "${f.stageId}" failed to compile and is off: ${firstLogLine(f.log)}`}
+            {f.log === GPU_CRASH_LOG
+              ? `Stage "${f.stageId}" took the graphics driver down and is off. Turn the extension off and on to try it again.`
+              : `Stage "${f.stageId}" failed to compile and is off: ${firstLogLine(f.log)}`}
           </div>
         ))}
         {callbackFailure && (

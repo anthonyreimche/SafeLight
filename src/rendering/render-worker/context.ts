@@ -13,7 +13,7 @@ import type { ProcessingStageContribution, StageTextureData } from "@/extensions
 import type { ColorSpaceId, DisplaySpace } from "../color-space";
 import type { MonitorTransform } from "../display-profile";
 import type { WorkerRequest, WorkerResponse } from "../render-protocol";
-import type { QuarantinedStage, WebGLRenderer } from "../webgl/renderer";
+import type { QuarantinedStage, StageBuildEvent, WebGLRenderer } from "../webgl/renderer";
 
 export interface WorkerState {
   canvas: OffscreenCanvas | null;
@@ -140,6 +140,11 @@ export function showScreen(state: WorkerState, target: WebGLRenderer, shown: boo
 // What a renderer tells the window of each extension stage it quarantines.
 export function reportQuarantine(ctx: WorkerContext): (stage: QuarantinedStage) => void {
   return (stage) => ctx.respond({ type: "stageQuarantined", ...stage });
+}
+
+// What a renderer tells the window of each program build with extension stages.
+export function reportStageBuilds(ctx: WorkerContext): (event: StageBuildEvent) => void {
+  return (event) => ctx.respond({ type: "stageBuild", ...event });
 }
 
 // Builds the program a new renderer's first frame needs. An extension stage that

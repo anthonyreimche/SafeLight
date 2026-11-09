@@ -444,7 +444,7 @@ export function ExtensionDetail({
                   ? "The verified review covered an earlier version; this version is newer and has not been reviewed. Runs with full access — install at your own risk."
                   : "Not reviewed — third-party code that runs with full access to your photos, metadata and files. Install at your own risk."
             }
-            className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+            className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
           >
             {busy === repo
               ? "Installing…"
@@ -464,7 +464,7 @@ export function ExtensionDetail({
               <button
                 disabled={busy !== null}
                 onClick={() => onUpdate(id, repo)}
-                className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
               >
                 {busy === id ? "Updating…" : `Update to ${pendingUpdate.latestTag}`}
               </button>
@@ -488,7 +488,7 @@ export function ExtensionDetail({
                 <button
                   disabled={busy !== null}
                   onClick={() => onInstall(repo, switchTo)}
-                  className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                  className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
                 >
                   {busy === repo
                     ? "Installing…"

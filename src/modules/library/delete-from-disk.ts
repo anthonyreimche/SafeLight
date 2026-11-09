@@ -15,6 +15,10 @@ import { deleteCachedPreview, rawCacheKey } from "@/raw/raw-cache";
 import { SIDECAR_SUFFIX } from "@/project/folder-ops";
 import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 import { fsErrorText } from "@/project/fs-errors";
+import { projectPassSignal } from "@/project/project-store";
+
+/** Trashed photos taken out of the catalogue at a time. */
+const REMOVE_BATCH = 10;
 
 export interface DeleteFromDiskResult {
   /** Photos whose file went to the OS trash (and left the catalogue). */
@@ -40,62 +44,82 @@ export async function deletePhotosFromDisk(
   ids: string[],
 ): Promise<DeleteFromDiskResult> {
   const fs = nativeFs();
+  const signal = projectPassSignal();
   const idSet = new Set(ids);
   const targets = useCatalogStore
     .getState()
     .photos.filter((p) => idSet.has(p.id));
 
   const result: DeleteFromDiskResult = { deleted: 0, skippedCopies: 0, failed: [] };
-  const trashedIds: string[] = [];
+  const pending: string[] = [];
+  // In batches as it goes: once the project is left, the catalogue in the store
+  // is another project's, and the trashed photos stay in theirs as missing.
+  const flush = async () => {
+    if (pending.length === 0 || signal?.aborted) return;
+    // Removing a master also removes its virtual copies (withVirtualCopies).
+    await useCatalogStore.getState().removePhotos(pending.splice(0));
+  };
 
-  for (const photo of targets) {
-    if (photo.copyOf) {
-      result.skippedCopies++;
-      continue;
+  try {
+    for (const photo of targets) {
+      if (photo.copyOf) {
+        result.skippedCopies++;
+        continue;
+      }
+      if (signal?.aborted) {
+        result.failed.push({
+          filename: photo.filename,
+          message: "The project was closed before this photo was deleted.",
+        });
+        continue;
+      }
+      if (typeof fs?.trash !== "function") {
+        result.failed.push({
+          filename: photo.filename,
+          message: "Deleting from disk isn't available in this build.",
+        });
+        continue;
+      }
+      const path = nativePathOf(photo.fileHandle);
+      if (!path) {
+        result.failed.push({
+          filename: photo.filename,
+          message: "The file's location on disk is unknown.",
+        });
+        continue;
+      }
+      try {
+        await fs.trash(path);
+      } catch (e) {
+        console.error("[library] couldn't move to trash:", photo.filename, e);
+        result.failed.push({
+          filename: photo.filename,
+          message: fsErrorText(e, { target: "file" }),
+        });
+        continue;
+      }
+      pending.push(photo.id);
+      result.deleted++;
+      // Best-effort cleanup of what belongs to the file: its exported sidecar
+      // and its cached RAW decode. Neither failure should keep the removal back.
+      try {
+        const sidecar = `${path}${SIDECAR_SUFFIX}`;
+        if (await fs.exists(sidecar)) await fs.trash(sidecar);
+      } catch {
+        /* sidecar is gone or locked — the photo itself is already trashed */
+      }
+      try {
+        await deleteCachedPreview(
+          rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
+        );
+      } catch (e) {
+        console.warn("[library] couldn't drop the cached decode:", photo.filename, e);
+      }
+      if (pending.length >= REMOVE_BATCH) await flush();
     }
-    if (typeof fs?.trash !== "function") {
-      result.failed.push({
-        filename: photo.filename,
-        message: "Deleting from disk isn't available in this build.",
-      });
-      continue;
-    }
-    const path = nativePathOf(photo.fileHandle);
-    if (!path) {
-      result.failed.push({
-        filename: photo.filename,
-        message: "The file's location on disk is unknown.",
-      });
-      continue;
-    }
-    try {
-      await fs.trash(path);
-    } catch (e) {
-      console.error("[library] couldn't move to trash:", photo.filename, e);
-      result.failed.push({
-        filename: photo.filename,
-        message: fsErrorText(e, { target: "file" }),
-      });
-      continue;
-    }
-    // Best-effort cleanup of what belongs to the file: its exported sidecar
-    // and its cached RAW decode. Neither failure should keep the removal back.
-    try {
-      const sidecar = `${path}${SIDECAR_SUFFIX}`;
-      if (await fs.exists(sidecar)) await fs.trash(sidecar);
-    } catch {
-      /* sidecar is gone or locked — the photo itself is already trashed */
-    }
-    await deleteCachedPreview(
-      rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
-    );
-    trashedIds.push(photo.id);
-    result.deleted++;
+  } finally {
+    await flush();
   }
-
-  // Removing a master also removes its virtual copies (withVirtualCopies).
-  if (trashedIds.length > 0)
-    useCatalogStore.getState().removePhotos(trashedIds);
   return result;
 }
 

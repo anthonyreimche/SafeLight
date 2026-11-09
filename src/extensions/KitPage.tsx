@@ -77,7 +77,7 @@ export function KitPage({
           <button
             disabled={busy !== null || running}
             onClick={() => void installAll()}
-            className="shrink-0 rounded bg-slider-fill px-3 py-1 font-medium text-white hover:opacity-90 disabled:opacity-40"
+            className="shrink-0 rounded bg-slider-fill px-3 py-1 font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
           >
             {running ? "Installing…" : `Install all (${pending.length})`}
           </button>

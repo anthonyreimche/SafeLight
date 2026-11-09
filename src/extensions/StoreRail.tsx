@@ -116,7 +116,7 @@ export function StoreRail({
           >
             <span>{s}</span>
             {(badges[s] ?? 0) > 0 && (
-              <span className="rounded-full bg-slider-fill px-1.5 text-[9px] font-medium leading-[14px] text-white">
+              <span className="rounded-full bg-slider-fill px-1.5 text-[9px] font-medium leading-[14px] text-on-accent">
                 {badges[s]}
               </span>
             )}

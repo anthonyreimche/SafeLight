@@ -154,7 +154,7 @@ function ThumbnailImpl({
 
       {photo.keywords.length > 0 && (
         <div
-          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-text-secondary transition-opacity group-hover:opacity-0"
+          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-on-media-muted transition-opacity group-hover:opacity-0"
           title={photo.keywords.join(", ")}
         >
           <span aria-hidden="true">{"🏷"}</span>

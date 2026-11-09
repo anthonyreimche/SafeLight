@@ -95,6 +95,25 @@ export function applySavedTheme(): void {
   } catch {}
 }
 
+// When the active theme's extension is turned off or removed, its colours leave
+// the root for the default theme's. The saved choice is kept, so the loader's
+// applySavedTheme brings the theme back once its extension registers it again.
+useRegistry.subscribe((s, prev) => {
+  if (s.themes === prev.themes) return;
+  const { activeId } = useThemeStore.getState();
+  if (!Object.hasOwn(prev.themes, activeId) || Object.hasOwn(s.themes, activeId)) return;
+  const root = document.documentElement.style;
+  for (const k of appliedKeys) root.removeProperty(k);
+  appliedKeys = [];
+  const fallback = s.themes[DEFAULT_THEME];
+  if (fallback) {
+    appliedKeys = Object.keys(fallback.vars);
+    writeThemeVars(fallback);
+  }
+  useThemeStore.setState({ activeId: DEFAULT_THEME });
+  syncWindowMaterial();
+});
+
 export function initThemes(): void {
   applySavedTheme();
   window.addEventListener("storage", (e) => {

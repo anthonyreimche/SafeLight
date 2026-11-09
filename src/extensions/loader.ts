@@ -184,15 +184,20 @@ export async function setExtensionEnabled(
 
 /** Follow enable/disable made in other windows. Call once at boot. */
 export function initEnablement(): void {
+  const follow = (id: string, enabled: boolean) =>
+    queueEnablement(() => applyEnablement(id, enabled)).catch((e: unknown) => {
+      console.warn(
+        `[extensions] following ${enabled ? "enable" : "disable"} of ${id} from another window failed:`,
+        e,
+      );
+    });
   window.addEventListener("storage", (e) => {
     if (e.key !== DISABLED_KEY || e.newValue == null) return;
     const next = parseDisabled(e.newValue);
     const prev = useDisabledExtensions.getState().ids;
     useDisabledExtensions.setState({ ids: next });
-    for (const id of next.filter((x) => !prev.includes(x)))
-      void queueEnablement(() => applyEnablement(id, false));
-    for (const id of prev.filter((x) => !next.includes(x)))
-      void queueEnablement(() => applyEnablement(id, true));
+    for (const id of next.filter((x) => !prev.includes(x))) void follow(id, false);
+    for (const id of prev.filter((x) => !next.includes(x))) void follow(id, true);
   });
 }
 

@@ -37,6 +37,7 @@ import { failsEveryWrite, fsErrorText, mayFailEveryWrite } from "@/project/fs-er
 import { nativeFs, nativePathOf, readFileSlice } from "@/project/native-fs";
 import { listNames } from "@/project/fs";
 import { useCatalogStore } from "@/state/catalog-store";
+import { noteStageBuild, withoutCrashed } from "@/rendering/gpu-crash-guard";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
@@ -956,10 +957,11 @@ async function makeBatchRenderer(
   try {
     renderer = new WebGLRenderer(canvas, {
       highBitDepth: getSettings().highBitDepth,
-      stages: Object.values(useRegistry.getState().processingStages),
+      stages: withoutCrashed(Object.values(useRegistry.getState().processingStages)),
       pipeline: resolveDefaultPipeline(),
       derive: windowDerived,
       onStageQuarantined,
+      onStageBuild: noteStageBuild,
     });
     const saved = first
       ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)

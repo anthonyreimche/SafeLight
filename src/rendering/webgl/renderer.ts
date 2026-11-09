@@ -44,11 +44,14 @@ import { PrepassRunner, type PrepassFrame } from "./prepass-runner";
 import {
   ATTR_POS,
   ATTR_UV,
+  MAX_PROGRAMS,
   ProgramCache,
   createProgram,
   isolateFailingStages,
   type FailingStage,
   type PipelineProgram,
+  type ProgramBuilds,
+  type StageBuildOutcome,
 } from "./program-cache";
 import {
   PROBE_PX,
@@ -133,6 +136,11 @@ type SourceImage = ImageBitmap | LinearImage | Float16Source;
 
 type StageSet = ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
 const NO_STAGES: StageSet = [];
+
+/** A program build with extension stages in it, by "{id}:{signature}". */
+export type StageBuildEvent =
+  | { phase: "start"; stages: string[] }
+  | { phase: "end"; stages: string[]; outcome: StageBuildOutcome };
 
 // A stage injection and what it was built from: the ids of the registered
 // stages in it (a mask copy's stage's id for the copy), and the stages left
@@ -266,6 +274,10 @@ export interface WebGLRendererOpts {
   /** Told of each extension stage the renderer quarantines: once per stage,
    *  signature and process version. */
   onStageQuarantined?: (stage: QuarantinedStage) => void;
+  /** Told as each program with extension stages in it starts and stops building,
+   *  for the window to pin a build that takes the graphics driver down on its
+   *  stages (gpu-crash-guard.ts). */
+  onStageBuild?: (event: StageBuildEvent) => void;
   /** Leave a stage out of version 2 and later programs while its dormantWhen
    *  holds and no frame has needed it yet; once one does, it stays in for the
    *  renderer's life (dormantStages). For the live view's renderer: one that
@@ -529,11 +541,13 @@ export class WebGLRenderer {
     });
     this.samplerBudget = caps.textureUnits - DEVELOP_SAMPLERS;
     this.sources = new SourceCache(gl);
-    this.programs = new ProgramCache(gl);
+    const builds = opts?.onStageBuild ? this.stageBuilds(opts.onStageBuild) : undefined;
+    this.programs = new ProgramCache(gl, MAX_PROGRAMS, builds);
     this.readback = new Readback(gl, caps.colorBufferFloat, (vs, fs) => createProgram(gl, vs, fs, "a readback program"));
     this.prepass = new PrepassRunner(gl, caps.colorBufferFloat, {
       drawSplit: (index, srcTex, applyRetouch, target) => this.drawSplit(index, srcTex, applyRetouch, target),
       note: (path, note) => this.noteReducedPrecision(path, note),
+      builds,
     });
 
     this.setupQuad();
@@ -1444,6 +1458,25 @@ export class WebGLRenderer {
   private derivedFor(params: DevelopParams): Record<string, unknown> {
     if (!this.derive) throw new Error("setParams was handed no derived values, and this renderer has no derive");
     return this.derive(params, this.currentStages());
+  }
+
+  // Builds named by the keys of the extension stages in them; a build of
+  // Safelight's own stages alone says nothing.
+  private stageBuilds(report: (event: StageBuildEvent) => void): ProgramBuilds {
+    const keysOf = (ids: ReadonlySet<string>): string[] =>
+      this.currentStages()
+        .filter((s) => ids.has(s.id) && !isBuiltInStage(s))
+        .map((s) => `${s.id}:${stageSignature(s)}`);
+    return {
+      started: (ids) => {
+        const stages = keysOf(ids);
+        if (stages.length > 0) report({ phase: "start", stages });
+      },
+      ended: (ids, outcome) => {
+        const stages = keysOf(ids);
+        if (stages.length > 0) report({ phase: "end", stages, outcome });
+      },
+    };
   }
 
   private currentStages(): readonly ProcessingStageContribution[] {

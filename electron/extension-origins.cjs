@@ -46,6 +46,15 @@ function isOfficialOnlyId(id) {
   return lower === OFFICIAL_ID_PREFIX || lower.startsWith(`${OFFICIAL_ID_PREFIX}.`);
 }
 
+/** Whether "owner/repo" is an official extension's repository or one of its
+ *  aliases, compared without case. */
+function isOfficialRepo(repo) {
+  const named = String(repo).toLowerCase();
+  return OFFICIAL_EXTENSIONS.some((e) =>
+    [e.repo, ...(e.aliases || [])].some((r) => r.toLowerCase() === named)
+  );
+}
+
 /** Whether `m` is an official extension: official-extensions.json lists its id
  *  and it names that row's repository or one of its aliases. */
 function isOfficialManifest(m) {
@@ -102,21 +111,40 @@ function listInstalledManifests(pluginsDir) {
   return out;
 }
 
+async function readManifestAsync(dir) {
+  try {
+    const m = JSON.parse(await fs.promises.readFile(path.join(dir, "safelight.json"), "utf8"));
+    return validManifest(m) ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+async function subfoldersAsync(dir) {
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
 /** Dev-folder extensions. A folder with its own safelight.json is that one
  *  extension (the renderer loads just that one, valid or not); otherwise each
- *  immediate subfolder with a manifest is one, whatever the folder is called. */
-function listDevManifests(folder) {
+ *  immediate subfolder with a manifest is one, whatever the folder is called.
+ *  Read without blocking: the folder may sit on a slow or network drive. */
+async function listDevManifests(folder) {
   if (!folder) return [];
-  if (fs.existsSync(path.join(folder, "safelight.json"))) {
-    const root = readManifest(folder);
+  const rootManifest = path.join(folder, "safelight.json");
+  const hasRoot = await fs.promises.access(rootManifest).then(() => true, () => false);
+  if (hasRoot) {
+    const root = await readManifestAsync(folder);
     return root ? [root] : [];
   }
-  const out = [];
-  for (const name of subfolders(folder)) {
-    const m = readManifest(path.join(folder, name));
-    if (m) out.push(m);
-  }
-  return out;
+  const found = await Promise.all(
+    (await subfoldersAsync(folder)).map((name) => readManifestAsync(path.join(folder, name)))
+  );
+  return found.filter(Boolean);
 }
 
 /** Every well-formed HTTPS or wss origin the manifests declare, once each, in
@@ -140,26 +168,31 @@ function pendingConnectHosts(declared, allowed) {
   return declared.filter((h) => !have.has(h));
 }
 
+const isFolderPath = (v) => typeof v === "string" && v !== "" && path.isAbsolute(v);
+
 /** The dev folder the renderer last recorded in `file`, or null. */
-function readDevFolder(file) {
+async function readDevFolder(file) {
   try {
-    const v = JSON.parse(fs.readFileSync(file, "utf8")).folder;
-    return typeof v === "string" && v ? v : null;
+    const v = JSON.parse(await fs.promises.readFile(file, "utf8")).folder;
+    return isFolderPath(v) ? v : null;
   } catch {
     return null;
   }
 }
 
-/** Record the dev folder in `file`; null removes the record. */
-function writeDevFolder(file, folder) {
-  if (folder) fs.writeFileSync(file, JSON.stringify({ folder }));
-  else fs.rmSync(file, { force: true });
+/** Record the dev folder in `file`; null removes the record. Only an absolute
+ *  path is recorded: the next launch reads it before the first window. */
+async function writeDevFolder(file, folder) {
+  if (folder === null) return fs.promises.rm(file, { force: true });
+  if (!isFolderPath(folder)) throw new Error("Bad folder");
+  await fs.promises.writeFile(file, JSON.stringify({ folder }));
 }
 
 module.exports = {
   VALID_CONNECT_ORIGIN,
   isReservedExtensionId,
   isOfficialOnlyId,
+  isOfficialRepo,
   validManifest,
   listInstalledManifests,
   listDevManifests,

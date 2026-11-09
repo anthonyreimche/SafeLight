@@ -124,6 +124,49 @@ describe("TiffReader IFD traversal", () => {
 
     expect(reader.ifds.map((ifd) => widthOf(reader, ifd))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
+
+  it("gives up on a SubIFDs entry claiming a million distinct offsets", () => {
+    const offsets = 1_000_000;
+    const listAt = 8 + 2 + 12 + 4;
+    // Each offset lands on its own all-zero IFD: no entries, no next pointer.
+    const emptyAt = listAt + offsets * 4;
+    const buffer = new ArrayBuffer(emptyAt + offsets * 2 + 4);
+    const view = new DataView(buffer);
+    view.setUint16(0, 0x4949, false);
+    view.setUint16(2, 42, true);
+    view.setUint32(4, 8, true);
+    view.setUint16(8, 1, true);
+    view.setUint16(10, TIFF_TAG.SubIFDs, true);
+    view.setUint16(12, TYPE.LONG, true);
+    view.setUint32(14, offsets, true);
+    view.setUint32(18, listAt, true);
+    for (let i = 0; i < offsets; i++) view.setUint32(listAt + i * 4, emptyAt + i * 2, true);
+
+    const started = performance.now();
+    expect(() => new TiffReader(buffer)).toThrow();
+    expect(performance.now() - started).toBeLessThan(300);
+  });
+
+  it("gives up on an IFD chain longer than any camera writes", () => {
+    const specs: IfdSpec[] = Array.from({ length: 200 }, (_, i) => ({
+      fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, i)],
+      next: i + 1 < 200 ? i + 1 : undefined,
+    }));
+
+    expect(() => new TiffReader(buildTiff(specs))).toThrow();
+  });
+
+  it("still walks a chain and SubIFD set the size of a real RAW", () => {
+    const specs: IfdSpec[] = [
+      { fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, 0)], subIfds: [1, 2, 3], next: 4 },
+      { fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, 1)] },
+      { fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, 2)] },
+      { fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, 3)] },
+      { fields: [field(TIFF_TAG.ImageWidth, TYPE.SHORT, 4)] },
+    ];
+
+    expect(new TiffReader(buildTiff(specs)).ifds).toHaveLength(5);
+  });
 });
 
 describe("TiffReader values", () => {
@@ -204,6 +247,13 @@ describe("TiffReader values", () => {
     const reader = new TiffReader(full.slice(0, 16));
 
     expect(reader.ifds[0].size).toBe(0);
+  });
+
+  it("reads only as many values as it is asked for", () => {
+    const reader = new TiffReader(buildTiff([{ fields: [field(0x2002, TYPE.LONG, 10, 20, 30, 40)] }]));
+
+    expect(reader.values(entry(reader.ifds[0], 0x2002), 2)).toEqual([10, 20]);
+    expect(reader.first(reader.ifds[0].get(0x2002))).toBe(10);
   });
 
   it("returns undefined from first() for a missing entry", () => {

@@ -98,6 +98,14 @@ describe("reading settings", () => {
   });
 });
 
+describe("stored blobs that are not a plain object", () => {
+  it.each(["null", "[1,2]", "7", '"text"', "true"])("reads %s as empty", (raw) => {
+    storage.setItem(keyFor(EXT), raw);
+    expect(getExtSetting(EXT, "k", 3)).toBe(3);
+    expect(getAllExtSettings(EXT)).toEqual({});
+  });
+});
+
 describe("writing settings", () => {
   it("writes through to localStorage under the extension's own key", () => {
     setExtSetting(EXT, "strength", 0.8);
@@ -159,6 +167,22 @@ describe("change listeners", () => {
 
     expect(cb).not.toHaveBeenCalled();
     off();
+  });
+
+  it("keeps notifying and saving when one subscriber throws", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const b = vi.fn();
+    onExtSettingChange(EXT, () => {
+      throw new Error("boom");
+    });
+    onExtSettingChange(EXT, b);
+
+    expect(() => setExtSetting(EXT, "k", 1)).not.toThrow();
+
+    expect(b).toHaveBeenCalledWith("k", 1);
+    expect(JSON.parse(storage.getItem(keyFor(EXT)) ?? "null")).toEqual({ k: 1 });
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
   });
 
   it("stops notifying after unsubscribe, leaving other subscribers alone", () => {
@@ -251,6 +275,28 @@ describe("cross-window sync", () => {
 
     expect(() => fireStorage(keyFor(EXT), "{ not json")).not.toThrow();
     expect(useExtSettings.getState()[EXT]).toEqual({ strength: 0.8 });
+  });
+
+  it("treats a payload that is not an object as empty", () => {
+    for (const raw of ["null", "[1,2]", "7"]) {
+      expect(() => fireStorage(keyFor(EXT), raw)).not.toThrow();
+      expect(getExtSetting(EXT, "k", 3)).toBe(3);
+    }
+  });
+
+  it("notifies every changed key even when a subscriber throws", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const b = vi.fn();
+    onExtSettingChange(EXT, () => {
+      throw new Error("boom");
+    });
+    onExtSettingChange(EXT, b);
+
+    fireStorage(keyFor(EXT), JSON.stringify({ a: 1, b: 2 }));
+
+    expect(b).toHaveBeenCalledWith("a", 1);
+    expect(b).toHaveBeenCalledWith("b", 2);
+    error.mockRestore();
   });
 
   it("re-notifies for structurally identical object values", () => {

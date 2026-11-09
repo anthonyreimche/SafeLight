@@ -141,6 +141,21 @@ describe("catalogue hooks", () => {
     expect(console.warn).toHaveBeenCalledWith("[ext:acme.broken] onPhotoImport failed:", new Error("boom"));
   });
 
+  // Overrides are spread over the new catalogue record, so one that names the
+  // record's identity, file or preview would re-key it or point it elsewhere.
+  it("keep only the metadata an onPhotoImport result sets", async () => {
+    registerCatalogHooks("acme.broken", { id: "acme.broken.hooks", onPhotoImport: async () => JSON.parse('"abc"') });
+    await expect(emitPhotoImport(importCtx)).resolves.toBeNull();
+
+    registerCatalogHooks("acme.fine", {
+      id: "acme.fine.hooks",
+      onPhotoImport: async () => ({ id: "x", relPath: "y", thumbnailBlob: null, rating: 3, keywords: ["k"] }),
+    });
+    await expect(emitPhotoImport(importCtx)).resolves.toEqual({ rating: 3, keywords: ["k"] });
+    await emitPhotoImport(importCtx);
+    expect(vi.mocked(console.warn).mock.calls.filter(([m]) => String(m).includes("acme.fine"))).toHaveLength(1);
+  });
+
   // An import calls onPhotoImport once per photo, so an extension whose hook
   // hung once would otherwise cost every photo after it the whole wait.
   it("skip an extension's hooks once one timed out, until it registers them again", async () => {

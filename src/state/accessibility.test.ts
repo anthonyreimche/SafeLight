@@ -185,6 +185,29 @@ describe("colour layers", () => {
     expect(cssVar("--color-text-primary")).toBe("#000000");
   });
 
+  // The curve editor and histogram draw on canvas from these, so they need
+  // their own high-contrast values; the custom-colours UI doesn't list them.
+  it("gives the curve and histogram high-contrast colours at the theme's polarity", () => {
+    activateAccessibility();
+    updateSettings({ highContrast: true });
+    expect(cssVar("--curve-rgb")).toBe("#ffffff");
+    expect(cssVar("--histogram-label")).toBe("#ffffff");
+    applyTheme(LIGHT_THEME.id);
+    expect(cssVar("--curve-rgb")).toBe("#000000");
+    expect(cssVar("--histogram-label")).toBe("#000000");
+    expect(OVERRIDABLE_KEYS).not.toContain("--curve-rgb");
+  });
+
+  it("puts the theme's own chart colours back when high contrast is turned off", () => {
+    registerTheme("core", { ...LIGHT_THEME, vars: { ...LIGHT_THEME.vars, "--curve-rgb": "#2e2e2e" } });
+    applyTheme(LIGHT_THEME.id);
+    activateAccessibility();
+    updateSettings({ highContrast: true });
+    updateSettings({ highContrast: false });
+    expect(cssVar("--curve-rgb")).toBe("#2e2e2e");
+    expect(cssVar("--histogram-label")).toBe("");
+  });
+
   it("clears every overridable key when no theme is registered", () => {
     useRegistry.setState({ themes: {} });
     activateAccessibility();

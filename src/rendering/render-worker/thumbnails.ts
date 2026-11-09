@@ -15,6 +15,7 @@ import {
   THUMB_CACHE_FRACTION,
   messageOf,
   reportQuarantine,
+  reportStageBuilds,
   warmUp,
   type HandlersFor,
   type WorkerContext,
@@ -51,6 +52,7 @@ export function ensureThumbRenderer(
     pipeline: state.latestPipeline,
     stages: state.latestStages,
     onStageQuarantined: reportQuarantine(ctx),
+    onStageBuild: reportStageBuilds(ctx),
   });
   try {
     if (first) {

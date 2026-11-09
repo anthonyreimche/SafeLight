@@ -147,7 +147,8 @@ function createTrustList({ net, userData, fileWriter }) {
       writeTrustDisk(trustCache);
       return trustCache.list;
     } catch {
-      return trustCache ? trustCache.list : EMPTY_TRUST; // last-good (disk) or empty
+      // Never fetched: there is no blocklist to check, and the installer must know.
+      return trustCache ? trustCache.list : { ...EMPTY_TRUST, unchecked: true };
     }
   }
 

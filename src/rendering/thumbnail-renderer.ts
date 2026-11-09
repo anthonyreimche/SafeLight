@@ -13,6 +13,7 @@ import { getSettings } from "@/state/settings-store";
 import { windowFrameBag } from "./stage-bag";
 import { WebGLRenderer } from "./webgl/renderer";
 import { windowDerived } from "./window-derive";
+import { blameLostContext, noteStageBuild, withoutCrashed } from "./gpu-crash-guard";
 
 // The histogram renderer still runs on the main thread — it's lightweight
 // (256px) and uses thumbnail bitmaps that are already in memory.
@@ -89,15 +90,19 @@ async function getHistCtx(params: DevelopParams): Promise<Ctx | null> {
       // the session, across extensions turning on and off.
       const renderer = new WebGLRenderer(canvas, {
         highBitDepth: getSettings().highBitDepth,
-        stages: () => useRegistry.getState().processingStages,
+        stages: () => withoutCrashed(useRegistry.getState().processingStages),
         pipeline: resolvePipelineFor(null),
         derive: windowDerived,
+        onStageBuild: noteStageBuild,
       });
       const created: Ctx = { canvas, renderer };
       // A GPU reset kills the singleton's context; drop it so the next call
       // rebuilds instead of rendering into a dead renderer (histDead stays a
       // latch for what won't recover on retry: see endHistogram).
-      canvas.addEventListener("webglcontextlost", () => dropHistCtx(created));
+      canvas.addEventListener("webglcontextlost", () => {
+        blameLostContext();
+        dropHistCtx(created);
+      });
       histCtx = created;
       ctx = created;
     } catch (err) {

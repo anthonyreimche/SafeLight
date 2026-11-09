@@ -12,6 +12,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { getExtensionName } from "@/extensions/param-registry";
 import { useRegistry, type RegisteredProcessingStage } from "@/extensions/registry";
+import { GPU_CRASH_LOG, isCrashed } from "../gpu-crash-guard";
 import type { QuarantinedStage } from "../webgl/renderer";
 import { stageSignature } from "../webgl/stage-injection";
 
@@ -28,6 +29,27 @@ export function recordStageFailure(stage: QuarantinedStage): void {
  *  stage, tries each stage again and reports those that still fail. */
 export function forgetStageFailures(): void {
   useStageFailures.setState({}, true);
+}
+
+/** Lists each registered stage the GPU crash guard leaves out, and drops the
+ *  listing of one it no longer does. Renderers never build such a stage, so
+ *  nothing else reports it. */
+export function syncCrashFailures(stages: Stages): void {
+  const current = useStageFailures.getState();
+  const next: Record<string, QuarantinedStage> = { ...current };
+  let changed = false;
+  for (const [id, failure] of Object.entries(current)) {
+    const stage = stages[id];
+    if (failure.log !== GPU_CRASH_LOG || (stage && isCrashed(stage))) continue;
+    delete next[id];
+    changed = true;
+  }
+  for (const stage of Object.values(stages)) {
+    if (!isCrashed(stage) || current[stage.id]?.log === GPU_CRASH_LOG) continue;
+    next[stage.id] = { stageId: stage.id, signature: stageSignature(stage), log: GPU_CRASH_LOG };
+    changed = true;
+  }
+  if (changed) useStageFailures.setState(next, true);
 }
 
 /** The failures of `extensionId`'s stages that still stand: each stage is
@@ -60,5 +82,8 @@ export function firstLogLine(log: string): string {
 export function stageFailureText(stage: QuarantinedStage, stages: Stages): string {
   const owner = stages[stage.stageId];
   const name = owner ? getExtensionName(owner.extensionId) : stage.stageId;
+  if (stage.log === GPU_CRASH_LOG) {
+    return `${name}: stage "${stage.stageId}" took the graphics driver down, so it is off until it changes or the extension is turned off and on`;
+  }
   return `${name}: stage "${stage.stageId}" failed to compile and is off until it changes (${firstLogLine(stage.log)})`;
 }

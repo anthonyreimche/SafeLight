@@ -35,10 +35,13 @@ const fakeFs = {
   pickDirectory: vi.fn(),
 };
 
-const stubNative = (devtools: object) =>
+// What an extension can reach: it must never be the way the folder is recorded.
+const publicSync = vi.fn<(folder: string | null) => Promise<{ pending: string[] }>>();
+
+const stubNative = () =>
   vi.stubGlobal("safelightNative", {
-    claimPrivileged: () => ({ fs: fakeFs, updates: {} }),
-    devtools,
+    claimPrivileged: () => ({ fs: fakeFs, updates: {}, devtools: { syncDevFolder: sync } }),
+    devtools: { syncDevFolder: publicSync },
   });
 
 beforeEach(() => {
@@ -48,7 +51,8 @@ beforeEach(() => {
   fakeFs.exists.mockReset();
   fakeFs.list.mockReset();
   fakeFs.read.mockReset();
-  stubNative({ syncDevFolder: sync });
+  publicSync.mockReset();
+  stubNative();
   useDevFolder.setState({ folder: null, items: [], scanning: false, error: null, pendingOrigins: [] });
 });
 
@@ -93,12 +97,11 @@ describe("dev folder network origins", () => {
     expect(useDevFolder.getState().pendingOrigins).toEqual([]);
   });
 
-  it("leaves an older desktop build without the bridge alone", async () => {
-    stubNative({});
+  it("records the folder through the privileged bridge only", async () => {
     setDevFolder(FOLDER);
     initDevFolder();
-    await vi.waitFor(() => expect(useDevFolder.getState().scanning).toBe(false));
-    expect(useDevFolder.getState().pendingOrigins).toEqual([]);
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledWith(FOLDER));
+    expect(publicSync).not.toHaveBeenCalled();
   });
 });
 

@@ -25,6 +25,7 @@ class FakeWorker {
   onmessageerror: (() => void) | null = null;
   readonly delivered: CacheRequest[] = [];
   readonly transfers: Transferable[][] = [];
+  terminated = false;
 
   constructor() {
     FakeWorker.last = this;
@@ -38,6 +39,10 @@ class FakeWorker {
       throw new DOMException("The handle could not be cloned.", "DataCloneError");
     this.delivered.push(msg);
     this.transfers.push(transfer);
+  }
+
+  terminate(): void {
+    this.terminated = true;
   }
 }
 
@@ -126,6 +131,48 @@ describe("setCacheDirOnWorker when the worker is gone", () => {
     FakeWorker.last?.onerror?.({ message: "boom" } as ErrorEvent);
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a worker that replaces a failed one", () => {
+  async function respawned(first: FakeWorker | null): Promise<FakeWorker> {
+    await vi.waitFor(() => expect(FakeWorker.last).not.toBe(first));
+    const next = FakeWorker.last;
+    if (!next) throw new Error("no worker");
+    return next;
+  }
+
+  // Otherwise every request after a crash lands in the no-project scope: reads
+  // miss and writes go to a space every project shares.
+  it("is pointed at the project's folder before it serves anything", async () => {
+    h.fs = new MemoryFs("D:/A/.safelight/raw");
+    const { nativeDirectoryHandle, setCacheDirOnWorker, workerReadCachedPreview } = await load();
+    setCacheDirOnWorker(nativeDirectoryHandle("D:/A/.safelight/raw"));
+    await delivered();
+    const first = FakeWorker.last;
+
+    first?.onerror?.({ message: "boom" } as ErrorEvent);
+    void workerReadCachedPreview("k", false);
+    const next = await respawned(first);
+
+    expect(first?.terminated).toBe(true);
+    await vi.waitFor(() => expect(next.delivered).toHaveLength(2));
+    expect(next.delivered[0]).toEqual({ cmd: "setCacheDir", dir: null, scope: "D:/A/.safelight/raw" });
+    expect(next.delivered[1]).toMatchObject({ cmd: "read", key: "k" });
+  });
+
+  it("gets nothing extra when no folder was ever set", async () => {
+    const { workerReadCachedPreview } = await load();
+    workerReadCachedPreview("a", false).catch(() => {});
+    await delivered();
+    const first = FakeWorker.last;
+
+    first?.onerror?.({ message: "boom" } as ErrorEvent);
+    void workerReadCachedPreview("k", false);
+    const next = await respawned(first);
+
+    await vi.waitFor(() => expect(next.delivered.length).toBeGreaterThan(0));
+    expect(next.delivered[0]).toMatchObject({ cmd: "read", key: "k" });
   });
 });
 

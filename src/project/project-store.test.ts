@@ -14,6 +14,7 @@ import type { CatalogPhoto, EditState } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import type { CatalogHooksContribution, NativeOsOpenBridge } from "@/extensions/types";
 import { CatalogUnreadableError } from "./catalog-errors";
+import type { FolderNode } from "./folder-node";
 
 const h = vi.hoisted(() => ({
   open: vi.fn(),
@@ -43,9 +44,13 @@ const h = vi.hoisted(() => ({
   setThumbnailLoader: vi.fn<(read: unknown, opts?: { onEvict?: (ids: string[]) => void }) => number>(() => 1),
   /** The recent projects' paths, newest first. */
   recents: [] as string[],
+  /** Fails the next read of the recent projects when set. */
+  recentsError: null as Error | null,
   /** The handle a recent card resolves to, and the removals asked of the list. */
   recentHandle: null as null | { name: string },
   removeRecent: vi.fn(async (_id: string) => {}),
+  /** The folder walk a tree refresh runs. */
+  scan: vi.fn<typeof import("./scan").scanProject>(),
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedOsOpen: () => h.osOpen }));
@@ -60,6 +65,7 @@ vi.mock("@/modules/library/import-photos", () => ({
   preDecodeRawsForCache: async () => {},
   readPendingMetadata: async () => {},
   repairMissingPreviews: async () => {},
+  isSupportedName: () => true,
 }));
 vi.mock("./project-storage", () => ({
   ProjectStorage: { open: h.open },
@@ -74,8 +80,16 @@ vi.mock("./recent", () => ({
   getLastProject: async () => null,
   recentHandle: () => h.recentHandle,
   removeRecentProject: (id: string) => h.removeRecent(id),
-  listRecentProjects: async () =>
-    h.recents.map((path, i) => ({ id: path, name: path, path, handle: null, openedAt: -i, cover: null })),
+  listRecentProjects: async () => {
+    const error = h.recentsError;
+    h.recentsError = null;
+    if (error) throw error;
+    return h.recents.map((path, i) => ({ id: path, name: path, path, handle: null, openedAt: -i, cover: null }));
+  },
+}));
+vi.mock("./scan", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./scan")>()),
+  scanProject: h.scan,
 }));
 vi.mock("@/raw/raw-cache", () => ({ setRawCacheDir: () => {} }));
 vi.mock("@/state/thumbnail-loader", () => ({
@@ -187,8 +201,10 @@ beforeEach(async () => {
   h.requestThumbnail.mockClear();
   h.setThumbnailLoader.mockClear();
   h.recents = [];
+  h.recentsError = null;
   h.recentHandle = null;
   h.removeRecent.mockClear();
+  h.scan.mockReset();
   vi.stubGlobal("window", {
     addEventListener: (type: string, listener: () => void) => {
       if (type === "beforeunload") h.unload.push(listener);
@@ -451,6 +467,78 @@ describe("the folder tree while a project opens", () => {
     expect(useProjectStore.getState()).toMatchObject({ name: "B", tree: null });
     finish();
     await opening;
+  });
+});
+
+describe("refreshing the folder tree", () => {
+  const tree = (name: string): FolderNode => ({ name, path: "", children: [], count: 0 });
+  const scanned = (found: FolderNode) => ({
+    files: [],
+    tree: found,
+    sidecars: new Set<string>(),
+    unreadable: [],
+    skipped: {},
+  });
+
+  /** The next refresh's walk, which the test lands with the tree it found. */
+  function heldScan(): (found: FolderNode) => void {
+    let land: (found: FolderNode) => void = () => {};
+    h.scan.mockImplementationOnce(
+      () => new Promise((resolve) => (land = (found) => resolve(scanned(found)))),
+    );
+    return (found) => land(found);
+  }
+
+  it("keeps the next project's tree when the last project's walk lands late", async () => {
+    await openA();
+    const land = heldScan();
+    const refreshing = useProjectStore.getState().refreshTree();
+    const treeOfB = tree("B");
+    h.open.mockImplementationOnce(async () => ({ ...opened(projectStorage()), tree: treeOfB }));
+    await openProject("B");
+
+    land(tree("A"));
+    await refreshing;
+
+    expect(useProjectStore.getState().tree).toBe(treeOfB);
+  });
+
+  it("installs no tree once the project it walked has closed", async () => {
+    await openA();
+    const land = heldScan();
+    const refreshing = useProjectStore.getState().refreshTree();
+    useProjectStore.getState().closeProject();
+
+    land(tree("A"));
+    await refreshing;
+
+    expect(useProjectStore.getState().tree).toBeNull();
+  });
+
+  it("keeps the latest refresh's tree when an earlier walk lands after it", async () => {
+    await openA();
+    const land = heldScan();
+    const first = useProjectStore.getState().refreshTree();
+    const latest = tree("latest");
+    h.scan.mockResolvedValueOnce(scanned(latest));
+    await useProjectStore.getState().refreshTree();
+
+    land(tree("earlier"));
+    await first;
+
+    expect(useProjectStore.getState().tree).toBe(latest);
+  });
+
+  it("settles and keeps the tree when the walk fails", async () => {
+    await openA();
+    const kept = tree("A");
+    useProjectStore.setState({ tree: kept });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    h.scan.mockRejectedValueOnce(new Error("drive gone"));
+
+    await expect(useProjectStore.getState().refreshTree()).resolves.toBeUndefined();
+
+    expect(useProjectStore.getState().tree).toBe(kept);
   });
 });
 
@@ -873,6 +961,51 @@ describe("watching for what the OS hands the app", () => {
     };
     return { osOpen, request: () => request() };
   }
+
+  it("puts a request it couldn't take on the error banner", async () => {
+    const { osOpen } = bridge([]);
+    vi.mocked(osOpen.take).mockRejectedValueOnce(new Error("bridge closed"));
+    h.osOpen = osOpen;
+
+    const { watchOsOpen } = await import("./project-store");
+    watchOsOpen();
+    await settle();
+
+    expect(useProjectStore.getState().openError).toBe(
+      "Couldn't open what was sent to Safelight. Try opening it again.",
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      "[project] opening what the OS asked for failed:",
+      expect.any(Error),
+    );
+  });
+
+  it("puts a failure before the open on the banner and still opens the next request", async () => {
+    const { osOpen, request } = bridge([
+      { folder: "/photos/trip", file: null },
+      { folder: "/photos/later", file: null },
+    ]);
+    h.osOpen = osOpen;
+    h.recentsError = new Error("recents unreadable");
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, []);
+      return opened(s);
+    });
+
+    const { watchOsOpen } = await import("./project-store");
+    watchOsOpen();
+    await settle();
+
+    expect(useProjectStore.getState().openError).toMatch(/^Couldn't open “trip”/);
+    expect(h.open).not.toHaveBeenCalled();
+
+    request();
+    await settle();
+
+    expect(useProjectStore.getState().name).toBe("later");
+    expect(useProjectStore.getState().openError).toBeNull();
+  });
 
   it("opens what was waiting when the window came up", async () => {
     const { osOpen } = bridge([{ folder: "/photos/trip", file: null }]);

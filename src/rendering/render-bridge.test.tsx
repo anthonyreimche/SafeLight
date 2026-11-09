@@ -47,6 +47,7 @@ import type { SourceSample } from "./source-sample";
 import { setSourcePixels, sourcePixels } from "./source-pixels";
 import { stageSignature } from "./webgl/stage-injection";
 import { stageFailuresOf, useStageFailures } from "./render-bridge/stage-failures";
+import { forgetCrashesOf } from "./gpu-crash-guard";
 import { setExtensionName } from "@/extensions/param-registry";
 
 const gpu = vi.hoisted(() => ({
@@ -3948,7 +3949,10 @@ describe("RenderBridge stage quarantine", () => {
       worker.posted.filter((m): m is Extract<WorkerRequest, { cmd: "setStages" }> => m.cmd === "setStages");
 
     beforeEach(() => localStorage.clear());
-    afterEach(() => localStorage.clear());
+    afterEach(() => {
+      forgetCrashesOf([BROKEN.id]);
+      localStorage.clear();
+    });
 
     it("names the extension, records the failure, and sends the stage no more", () => {
       const bridge = new RenderBridge();

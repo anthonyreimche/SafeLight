@@ -16,6 +16,7 @@ import { useRegistry } from "@/extensions/registry";
 import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 import { useDevelopStore } from "@/state/develop-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { focusInitialMenuItem, handleMenuKeyDown } from "@/ui/menu-keys";
 
 function choose(id: string | null) {
   const dev = useDevelopStore.getState();
@@ -30,15 +31,23 @@ export function DisplayTransformControl() {
   const pick = useDevelopStore((s) => s.params.displayTransform);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const closeToTrigger = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
 
   // Close the menu on outside click or Escape.
   useEffect(() => {
     if (!open) return;
+    focusInitialMenuItem(menuRef.current);
     const onDown = (e: PointerEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     window.addEventListener("pointerdown", onDown, true);
-    const popEsc = pushEscapeHandler(() => setOpen(false));
+    const popEsc = pushEscapeHandler(closeToTrigger);
     return () => {
       window.removeEventListener("pointerdown", onDown, true);
       popEsc();
@@ -71,7 +80,7 @@ export function DisplayTransformControl() {
       title={title}
       onClick={() => {
         choose(id);
-        setOpen(false);
+        closeToTrigger();
       }}
       className={`whitespace-nowrap rounded px-2 py-1 text-left text-[11px] leading-none ${
         checked
@@ -86,6 +95,7 @@ export function DisplayTransformControl() {
   return (
     <div ref={rootRef} className="relative flex items-center">
       <button
+        ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
         title="Display transform for this photo — how scene-linear data is tone-mapped for display"
         aria-label="Choose display transform"
@@ -103,7 +113,9 @@ export function DisplayTransformControl() {
 
       {open && (
         <div
+          ref={menuRef}
           role="menu"
+          onKeyDown={(e) => handleMenuKeyDown(menuRef.current, e, "vertical")}
           className="absolute bottom-full left-1/2 mb-1.5 flex min-w-[120px] -translate-x-1/2 flex-col gap-0.5 rounded border border-border bg-surface-2 p-1 shadow-lg"
         >
           {item(

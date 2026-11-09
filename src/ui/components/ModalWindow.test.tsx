@@ -10,6 +10,7 @@ import { useState } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { updateSettings } from "@/state/settings-store";
 import { ModalWindow } from "./ModalWindow.tsx";
 
 const dialog = () => screen.getByRole("dialog");
@@ -230,6 +231,76 @@ describe("ModalWindow dragging", () => {
     fireEvent.pointerMove(bar, { pointerId: 1, clientX: 400, clientY: 400 });
 
     expect(dialog().style.transform).toBe("translate(30px, 40px)");
+  });
+});
+
+// A titlebar dragged past the viewport edge can't be grabbed again, so the
+// drag keeps the whole bar on screen. jsdom has no layout, so the box's
+// on-screen rect is stubbed; its viewport is 1024×768.
+describe("ModalWindow dragging near the viewport edge", () => {
+  afterEach(() => {
+    updateSettings({ uiScale: 1 });
+    vi.restoreAllMocks();
+  });
+
+  const placeBox = (left: number, top: number, width: number, height: number) =>
+    vi.spyOn(dialog(), "getBoundingClientRect").mockReturnValue({
+      x: left,
+      y: top,
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      toJSON: () => ({}),
+    });
+
+  const dragBy = async (dx: number, dy: number) => {
+    const user = userEvent.setup();
+    const bar = titlebar("Preferences");
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: bar, coords: { clientX: 500, clientY: 160 } },
+      { target: bar, coords: { clientX: 500 + dx, clientY: 160 + dy } },
+      { keys: "[/MouseLeft]", target: bar, coords: { clientX: 500 + dx, clientY: 160 + dy } },
+    ]);
+  };
+
+  const renderWindow = () =>
+    render(
+      <ModalWindow title="Preferences" onClose={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+
+  it("stops at the top-left corner", async () => {
+    renderWindow();
+    placeBox(200, 150, 400, 300);
+    await dragBy(-1000, -1000);
+    expect(dialog().style.transform).toBe("translate(-200px, -150px)");
+  });
+
+  it("stops at the right edge with the titlebar still showing at the bottom", async () => {
+    renderWindow();
+    placeBox(200, 150, 400, 300);
+    await dragBy(2000, 2000);
+    // Right edge at 1024; top at 768 − the 38 px titlebar.
+    expect(dialog().style.transform).toBe("translate(424px, 580px)");
+  });
+
+  it("keeps the left edge on screen when the window is wider than the viewport", async () => {
+    renderWindow();
+    placeBox(100, 150, 1200, 300);
+    await dragBy(-50, 0);
+    expect(dialog().style.transform).toBe("translate(-100px, 0px)");
+  });
+
+  it("clamps in layout px under the UI-scale zoom", async () => {
+    updateSettings({ uiScale: 1.25 });
+    renderWindow();
+    placeBox(200, 150, 400, 300);
+    await dragBy(-1000, -1000);
+    expect(dialog().style.transform).toBe("translate(-160px, -120px)");
   });
 });
 

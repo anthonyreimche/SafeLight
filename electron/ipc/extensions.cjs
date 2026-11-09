@@ -25,7 +25,7 @@ const { selfInstallMethod, updateSupport } = require("../self-update.cjs");
  *     fetchTrustList(force: boolean): Promise<unknown>,
  *     kits: { get(force: boolean): Promise<unknown> },
  *     storeVocabulary(): Promise<unknown>,
- *     uninstallPlugin(id: unknown): void,
+ *     uninstallPlugin(id: unknown): Promise<void>,
  *   },
  *   listPlugins: () => unknown[],
  *   installReleaseOnce: (repo: string, tag: string) => Promise<void>,

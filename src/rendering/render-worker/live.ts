@@ -16,6 +16,7 @@ import {
   bindLiveView,
   messageOf,
   reportQuarantine,
+  reportStageBuilds,
   showScreen,
   warmUp,
   type HandlersFor,
@@ -154,6 +155,7 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           pipeline: state.latestPipeline,
           stages: state.latestStages,
           onStageQuarantined: reportQuarantine(ctx),
+          onStageBuild: reportStageBuilds(ctx),
         });
         // Only the develop renderer answers readSourceSample; the thumb renderer
         // would cut a sample from every thumbnail for nothing.

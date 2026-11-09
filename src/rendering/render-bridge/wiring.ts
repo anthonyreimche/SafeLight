@@ -11,6 +11,7 @@ import { activeMonitorTransform, useDisplayProfile } from "../display-profile-st
 import { currentDisplaySpace, subscribeDisplaySpace } from "../display-space";
 import type { MonitorTransform } from "../display-profile";
 import type { DisplaySpace } from "../color-space";
+import { forgetCrashesOf, withoutCrashed } from "../gpu-crash-guard";
 
 /** What the app-wide state feeds into the shared bridge (RenderBridge). */
 interface WiredBridge {
@@ -220,6 +221,8 @@ function releaseStageTextures(stageIds: readonly string[]): void {
   }
 }
 onStagesReleased(releaseStageTextures);
+// Turning an extension off and on tries the stages the crash guard blamed again.
+onStagesReleased(forgetCrashesOf);
 
 /** The current stage-texture bag (qualified key → data). Returned by reference;
  *  callers must not mutate. Used by the export pipeline to seed its own renderer
@@ -230,9 +233,10 @@ export function getStageTextures(): Record<string, StageTextureData> {
 }
 
 /** The registered stages as the render worker takes them: without `derive`,
- *  which runs in the window (frameStageBag) and can't be posted. */
+ *  which runs in the window (frameStageBag) and can't be posted, and without
+ *  those that took the graphics driver down (gpu-crash-guard.ts). */
 export function stagesForWorker(): ProcessingStageContribution[] {
-  return Object.values(useRegistry.getState().processingStages).map((stage) => {
+  return Object.values(withoutCrashed(useRegistry.getState().processingStages)).map((stage) => {
     const { derive, ...sent } = stage;
     return derive ? sent : stage;
   });

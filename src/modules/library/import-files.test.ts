@@ -7,10 +7,15 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
 import { fsaDirectoryHandle, MemoryFs } from "@/project/memory-fs.test-support";
 
-const h = vi.hoisted(() => ({ bridge: null as unknown }));
+const h = vi.hoisted(() => ({ bridge: null as unknown, project: null as AbortController | null }));
 
 vi.mock("@/native/privileged", () => ({
   privilegedFs: () => h.bridge,
+}));
+
+vi.mock("@/project/project-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/project/project-store")>()),
+  projectPassSignal: () => h.project?.signal,
 }));
 
 vi.mock("./import-record", () => ({
@@ -44,6 +49,7 @@ function openProject(mode: "fsa" | "native" = "fsa") {
   fs = new MemoryFs("/proj");
   h.bridge = mode === "native" ? fs : null;
   refreshTree = vi.fn(async (): Promise<void> => {});
+  h.project = new AbortController();
   useProjectStore.setState({
     root: mode === "native" ? nativeDirectoryHandle("/proj") : fsaDirectoryHandle(fs, "/proj"),
     refreshTree,
@@ -231,6 +237,43 @@ describe("importFiles", () => {
     expect(r).toEqual({ name: "n.jpg", id: "id-n.jpg" });
     expect(fs.tree()).toEqual(["/proj/in/n.jpg"]);
     expect(fs.writeCount("/proj/in/n.jpg")).toBe(0);
+  });
+
+  it("stops at a project switch and adds nothing to the next project's catalogue", async () => {
+    const { importPhoto } = await import("./import-record");
+    const switched = h.project!;
+    const imported = vi.mocked(importPhoto).getMockImplementation()!;
+    vi.mocked(importPhoto).mockImplementationOnce(async (fh, dir) => {
+      switched.abort();
+      return imported(fh, dir);
+    });
+    const realAdd = useCatalogStore.getState().addPhotos;
+    const addedWhileOpen: boolean[] = [];
+    useCatalogStore.setState({
+      addPhotos: async (photos) => {
+        addedWhileOpen.push(!switched.signal.aborted);
+        return realAdd(photos);
+      },
+    });
+    try {
+      const results = await importFiles(["s0.jpg", "s1.jpg", "s2.jpg"].map((name) => ({ name, data: jpeg() })));
+      expect(results[1]).toEqual({ name: "s1.jpg", error: "The project was closed." });
+      expect(results[2]).toEqual({ name: "s2.jpg", error: "The project was closed." });
+      expect(addedWhileOpen.length).toBeLessThanOrEqual(1);
+      expect(addedWhileOpen.every(Boolean)).toBe(true);
+      expect(useCatalogStore.getState().photos.map((p) => p.id)).not.toContain("id-s1.jpg");
+      expect(fs.tree()).toEqual(["/proj/s0.jpg"]);
+      expect(refreshTree).not.toHaveBeenCalled();
+    } finally {
+      useCatalogStore.setState({ addPhotos: realAdd });
+    }
+  });
+
+  it("refuses when the open project has no passes signal", async () => {
+    h.project = null;
+    const [r] = await importFiles([{ name: "a.jpg", data: jpeg() }]);
+    expect(r).toEqual({ name: "a.jpg", error: "No project is open." });
+    expect(fs.tree()).toEqual([]);
   });
 
   it("serializes overlapping calls", async () => {

@@ -107,9 +107,19 @@ function registerAppScheme(protocol) {
   ]);
 }
 
+// The URL parser leaves a malformed escape (a lone "%", "%E0%A4%A") undecoded.
+function decodePath(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
 function resolveRequestPath(dist, urlPath) {
   // Strip query/hash, decode, and join under dist without escaping it.
-  const clean = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
+  const clean = decodePath(urlPath.split("?")[0].split("#")[0]);
+  if (clean === null) return null;
   const rel = path.normalize(clean).replace(/^(\.\.[/\\])+/, "");
   let filePath = path.join(dist, rel);
   if (!contains(dist, filePath)) filePath = path.join(dist, "index.html");
@@ -133,9 +143,9 @@ function serveAppProtocol({ protocol, net, dist, pluginsDir, csp }) {
     // origin (/__plugins__/<id>/...), so dynamic import works under COOP/COEP
     // without any CORS dance.
     if (url.pathname.startsWith("/__plugins__/")) {
-      const rel = path
-        .normalize(decodeURIComponent(url.pathname.slice("/__plugins__/".length)))
-        .replace(/^([/\\]|\.\.[/\\])+/, "");
+      const decoded = decodePath(url.pathname.slice("/__plugins__/".length));
+      if (decoded === null) return new Response("Bad request", { status: 400 });
+      const rel = path.normalize(decoded).replace(/^([/\\]|\.\.[/\\])+/, "");
       const filePath = path.join(pluginsDir(), rel);
       if (!contains(pluginsDir(), filePath) || !fs.existsSync(filePath)) {
         return new Response("Not found", { status: 404 });
@@ -149,6 +159,7 @@ function serveAppProtocol({ protocol, net, dist, pluginsDir, csp }) {
     }
 
     let filePath = resolveRequestPath(dist, url.pathname || "/");
+    if (filePath === null) return new Response("Bad request", { status: 400 });
 
     // Directory or missing file: serve index.html so SPA routes resolve.
     try {

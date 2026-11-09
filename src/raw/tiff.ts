@@ -67,6 +67,12 @@ export interface TiffEntry {
 
 export type Ifd = Map<number, TiffEntry>;
 
+// Far above what any camera writes (a NEF or DNG holds about ten IFDs and at
+// most a handful of SubIFDs); a damaged count past these would otherwise have
+// the reader parse millions of IFDs.
+const MAX_IFDS = 64;
+const MAX_SUB_IFDS = 16;
+
 export class TiffReader {
   readonly view: DataView;
   readonly le: boolean; // little-endian
@@ -100,6 +106,7 @@ export class TiffReader {
       seen.add(at);
       const abs = this.base + at;
       if (abs < 0 || abs + 2 > this.view.byteLength) return;
+      if (this.ifds.length >= MAX_IFDS) throw new Error(`More than ${MAX_IFDS} TIFF IFDs`);
 
       const count = this.u16(abs);
       const ifd: Ifd = new Map();
@@ -119,6 +126,7 @@ export class TiffReader {
 
       const sub = ifd.get(TIFF_TAG.SubIFDs);
       if (sub) {
+        if (sub.count > MAX_SUB_IFDS) throw new Error(`More than ${MAX_SUB_IFDS} SubIFDs in one IFD`);
         for (const off of this.values(sub)) {
           this.collect(off, seen, depth + 1);
         }
@@ -136,13 +144,15 @@ export class TiffReader {
     return size <= 4 ? e.valueOffset : this.base + this.u32(e.valueOffset);
   }
 
-  // Read all numeric values of an entry (RATIONAL collapses to a ratio).
-  values(e: TiffEntry): number[] {
+  // Read the numeric values of an entry, at most `limit` of them (RATIONAL
+  // collapses to a ratio).
+  values(e: TiffEntry, limit = e.count): number[] {
     const sz = TYPE_SIZE[e.type] ?? 1;
     const start = this.dataOffset(e);
     const out: number[] = [];
     const v = this.view;
-    for (let i = 0; i < e.count; i++) {
+    const n = Math.min(e.count, limit);
+    for (let i = 0; i < n; i++) {
       const p = start + i * sz;
       if (p + sz > v.byteLength) break;
       switch (e.type) {
@@ -192,7 +202,7 @@ export class TiffReader {
 
   first(e: TiffEntry | undefined): number | undefined {
     if (!e) return undefined;
-    return this.values(e)[0];
+    return this.values(e, 1)[0];
   }
 
   ascii(e: TiffEntry | undefined): string | undefined {

@@ -1005,6 +1005,57 @@ describe.each(BUILDS)("a catalogue that can't be used as saved ($label)", (cfg) 
     expect(backupText(p)).toBe(text);
   });
 
+  it.each([
+    ["photos that aren't a list", { photos: null }],
+    ["edits that aren't a list", { edits: "none" }],
+    ["no photo it can open", { photos: [{ relPath: "a.jpg" }] }],
+  ])("restores from the backup a catalogue holding %s, keeping it aside", async (_l, body) => {
+    // Opened as it was, it imported every file again as new, and its first save
+    // replaced catalog.json.
+    const { p, saved, text } = await savedProject();
+    p.fs.put(`${p.slPath}/catalog.bak.json`, text);
+    const damaged = JSON.stringify({ ...(JSON.parse(text) as StoredCatalog), ...body });
+    p.fs.put(`${p.slPath}/catalog.json`, damaged);
+
+    const opened = await open(p);
+
+    const kept = keptCopies(p);
+    expect(kept.map((copy) => copy.text)).toEqual([damaged]);
+    expect(ids(opened.photos)).toEqual(saved);
+    expect(opened.newPhotos).toEqual([]);
+    expect(opened.recovered).toEqual({ from: "backup", kept: kept[0].name });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(backupText(p)).toBe(text);
+  });
+
+  it("opens a catalogue with only some entries it can't open as it is", async () => {
+    const { p, saved, text } = await savedProject();
+    p.fs.put(`${p.slPath}/catalog.bak.json`, text);
+    const stored = JSON.parse(text) as StoredCatalog;
+    const partial = JSON.stringify({ ...stored, photos: [stored.photos[0], { relPath: "b.jpg" }] });
+    p.fs.put(`${p.slPath}/catalog.json`, partial);
+
+    const opened = await open(p);
+
+    expect(opened.recovered).toBeNull();
+    expect(keptCopies(p).map((copy) => copy.text)).toEqual([partial]);
+    expect(ids(opened.photos)).toContain(saved[0]);
+    expect(opened.newPhotos).toHaveLength(2);
+  });
+
+  it("opens what is left of a damaged catalogue when its backup is no better", async () => {
+    const { p, saved, text } = await savedProject();
+    const stored = JSON.parse(text) as StoredCatalog;
+    p.fs.put(`${p.slPath}/catalog.bak.json`, JSON.stringify({ ...stored, photos: null }));
+    p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify({ ...stored, edits: "none" }));
+
+    const opened = await open(p);
+
+    expect(opened.recovered).toBeNull();
+    expect(ids(opened.photos)).toEqual(saved);
+    expect(opened.newPhotos).toEqual([]);
+  });
+
   it("keeps the newest three damaged catalogues and three damaged backups, no more", async () => {
     const p = mount(cfg, FILES);
     const stamp = (n: number) => `2026-01-0${n}T00-00-00-000Z`;
@@ -3054,6 +3105,118 @@ describe("sidecar adoption", () => {
 
     expect(opened.photos[0]).toMatchObject({ rating: 1, keywords: ["from-xmp"] });
   });
+
+  it("leaves out an extension's import metadata catalog.json can't hold, keeping the photo", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({ safelightSidecar: 1, info: { rating: 4 } }),
+    );
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const override = { rating: 1, fromXmp: cycle };
+    h.importOverride = override;
+
+    const opened = await open(p);
+    await opened.storage.flush();
+
+    expect(rels(opened.photos)).toEqual(["a.jpg"]);
+    expect(opened.photos[0].rating).toBe(4);
+    expect(catalog(p)?.photos.map((photo) => photo.rating)).toEqual([4]);
+  });
+
+  it.each([
+    [9999, 2],
+    [-5, 0],
+  ])("adopts a develop map's cursor of %i on three snapshots as %i", async (cursor, adopted) => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const snapshot = (label: string) => ({ timestamp: 1, label, params: {} });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({
+        safelightSidecar: 1,
+        maps: { stack: [snapshot("One"), snapshot("Two"), snapshot("Three")], currentIndex: cursor },
+      }),
+    );
+
+    const opened = await open(p);
+
+    expect((await opened.storage.getEditState(opened.photos[0].id))?.currentIndex).toBe(adopted);
+  });
+
+  it("adopts no develop map with no snapshots", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({ safelightSidecar: 1, maps: { stack: [], currentIndex: 0 } }),
+    );
+
+    const opened = await open(p);
+
+    expect(await opened.storage.getEditState(opened.photos[0].id)).toBeUndefined();
+  });
+});
+
+describe("a record catalog.json can't hold", () => {
+  // Stored, one value JSON can't write (a BigInt, a cycle, a getter that throws)
+  // failed every later save of the whole file, so nothing after it reached the disk.
+  const cfg = BUILDS[1];
+
+  async function saved() {
+    const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
+    const { storage, photos } = await open(p);
+    await storage.flush();
+    return { p, storage, photos };
+  }
+
+  const withBag = (photoId: string, label: string, paramBag: Record<string, unknown>) => {
+    const state = edit(photoId, label);
+    return { ...state, stack: [{ ...state.stack[0], paramBag }] };
+  };
+
+  it("refuses an edit holding a BigInt, keeps the one before and saves what follows", async () => {
+    const { p, storage, photos } = await saved();
+    const [a, b] = photos;
+    await storage.putEditState(edit(a.id, "Before"));
+
+    await expect(storage.putEditState(withBag(a.id, "Bad", { "x.y": 10n }))).rejects.toThrow(a.id);
+    await storage.putPhoto({ ...b, rating: 3 });
+    await storage.flush();
+
+    const onDisk = JSON.parse(catalogText(p) ?? "") as StoredCatalog;
+    expect(onDisk.photos.find((photo) => photo.id === b.id)?.rating).toBe(3);
+    expect(labelsOnDisk(p)).toEqual({ [a.id]: "Before" });
+    expect((await storage.getEditState(a.id))?.stack[0].label).toBe("Before");
+  });
+
+  it("stores and saves the other edits of a batch, then names the one refused", async () => {
+    const { p, storage, photos } = await saved();
+    const [a, b] = photos;
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+
+    const putting = storage.putEditStates([
+      withBag(a.id, "Bad", { "x.y": cycle }),
+      withBag(b.id, "Good", { "x.y": 0.5 }),
+    ]);
+
+    await expect(putting).rejects.toThrow(a.id);
+    await expect(putting).rejects.not.toThrow(b.id);
+    expect(labelsOnDisk(p)).toEqual({ [b.id]: "Good" });
+    expect(catalog(p)?.edits[0].stack[0].paramBag).toEqual({ "x.y": 0.5 });
+  });
+
+  it("refuses a photo record holding a BigInt and keeps the one held", async () => {
+    const { p, storage, photos } = await saved();
+    const [a, b] = photos;
+    const bad = { ...a, rating: 5, decoded: 10n };
+
+    await expect(storage.putPhotos([bad, { ...b, rating: 2 }])).rejects.toThrow(a.id);
+    await storage.flush();
+
+    expect(storage.heldPhoto(a.id)?.rating).toBe(0);
+    expect(catalog(p)?.photos.map((photo) => photo.rating)).toEqual([0, 2]);
+  });
 });
 
 describe("catalogue writes", () => {
@@ -3543,10 +3706,13 @@ describe("a save that fails", () => {
   it("says a catalogue is too large to save, and tries again only when asked", async () => {
     const { p, storage, photos, statuses } = await saved();
     const before = catalogWrites(p);
+    // Written alone (key ""), as the storage checks a record it takes, the edit fits;
+    // only the whole catalogue is too long.
     const huge = {
       ...edit(photos[0].id, "Huge"),
-      toJSON: (): never => {
-        throw new RangeError("Invalid string length");
+      toJSON: (key: string): EditState => {
+        if (key !== "") throw new RangeError("Invalid string length");
+        return edit(photos[0].id, "Huge");
       },
     };
 

@@ -82,9 +82,11 @@ export async function buildPreviewBlob(
     // already oriented the pixels, subtract the EXIF portion so we don't rotate
     // twice — mirrors the load path.
     const { bake } = bakeFor(photo, oriented);
-    const blob = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
-    bitmap.close();
-    return blob;
+    try {
+      return await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
+    } finally {
+      bitmap.close();
+    }
   } catch {
     return null;
   }
@@ -312,13 +314,19 @@ export async function buildPhoto(
   // the decoder already oriented the pixels (libraw), else the EXIF orientation.
   const bake = oriented ? 0 : orientationToRotation(exif.orientation);
 
-  const thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
-  const thumbUrl = URL.createObjectURL(thumb);
+  let thumb: Blob;
+  let thumbUrl: string;
+  let width: number;
+  let height: number;
+  try {
+    thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
+    thumbUrl = URL.createObjectURL(thumb);
 
-  // Nothing manual has been applied at import.
-  const { width, height } = catalogSize(rawMeta?.frame, 0, decoded, bake);
-
-  bitmap.close();
+    // Nothing manual has been applied at import.
+    ({ width, height } = catalogSize(rawMeta?.frame, 0, decoded, bake));
+  } finally {
+    bitmap.close();
+  }
   return {
     ...base,
     thumbnailBlob: thumb,

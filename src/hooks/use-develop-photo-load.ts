@@ -363,7 +363,12 @@ export function useDevelopPhotoLoad({
       void prefetch();
     };
 
-    run();
+    run().catch((e) => {
+      if (cancelled) return;
+      console.error("[develop] couldn't show photo", photo.id, e);
+      setCantShow("Can't show this photo.");
+      setLoading(false);
+    });
     return () => {
       cancelled = true;
       abort.abort();

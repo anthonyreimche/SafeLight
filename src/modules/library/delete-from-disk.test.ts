@@ -14,6 +14,11 @@ const h = vi.hoisted(() => ({
   exists: vi.fn(async (_p: string): Promise<boolean> => false),
   deleteCachedPreview: vi.fn(async (_k: string): Promise<void> => {}),
   bridge: null as Partial<NativeFsBridge> | null,
+  project: null as AbortController | null,
+}));
+
+vi.mock("@/project/project-store", () => ({
+  projectPassSignal: () => h.project?.signal,
 }));
 
 vi.mock("@/project/native-fs", () => ({
@@ -56,11 +61,12 @@ function fakePhoto(
 
 beforeEach(() => {
   h.photos = [];
-  h.removePhotos.mockClear();
+  h.removePhotos.mockReset();
   h.trash.mockClear().mockResolvedValue(undefined);
   h.exists.mockClear().mockResolvedValue(false);
   h.deleteCachedPreview.mockClear();
   h.bridge = { trash: h.trash, exists: h.exists };
+  h.project = new AbortController();
 });
 
 describe("diskTrashAvailable", () => {
@@ -137,6 +143,45 @@ describe("deletePhotosFromDisk", () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF", { rotation: 90 })];
     await deletePhotosFromDisk(["a"]);
     expect(h.deleteCachedPreview).toHaveBeenCalledWith("a.NEF|25000000|90");
+  });
+
+  it("removes trashed photos from the catalogue in batches as it goes, each once", async () => {
+    h.photos = Array.from({ length: 25 }, (_, i) => fakePhoto(`p${i}`, `D:/pics/p${i}.NEF`));
+    const trashedAtRemoval: number[] = [];
+    h.removePhotos.mockImplementation(() => void trashedAtRemoval.push(h.trash.mock.calls.length));
+    const r = await deletePhotosFromDisk(h.photos.map((p) => p.id));
+    expect(r.deleted).toBe(25);
+    expect(trashedAtRemoval[0]).toBeLessThan(25);
+    const removed = h.removePhotos.mock.calls.flatMap(([ids]: string[][]) => ids);
+    expect(removed.sort()).toEqual(h.photos.map((p) => p.id).sort());
+  });
+
+  it("stops at a project switch and touches no other catalogue", async () => {
+    h.photos = ["a", "b", "c", "d", "e"].map((id) => fakePhoto(id, `D:/pics/${id}.NEF`));
+    const project = h.project!;
+    h.trash.mockImplementation(async () => {
+      if (h.trash.mock.calls.length === 3) project.abort();
+    });
+    const removedWhileOpen: boolean[] = [];
+    h.removePhotos.mockImplementation(() => void removedWhileOpen.push(!project.signal.aborted));
+    const r = await deletePhotosFromDisk(["a", "b", "c", "d", "e"]);
+    expect(h.trash).toHaveBeenCalledTimes(3);
+    expect(r.failed).toEqual(
+      ["d", "e"].map((id) => ({
+        filename: `${id}.NEF`,
+        message: "The project was closed before this photo was deleted.",
+      })),
+    );
+    expect(removedWhileOpen.every(Boolean)).toBe(true);
+  });
+
+  it("counts and removes a trashed photo whose cleanup throws, and goes on", async () => {
+    h.photos = ["a", "b", "c"].map((id) => fakePhoto(id, `D:/pics/${id}.NEF`));
+    h.deleteCachedPreview.mockRejectedValueOnce(new Error("cache folder gone"));
+    const r = await deletePhotosFromDisk(["a", "b", "c"]);
+    expect(h.trash).toHaveBeenCalledTimes(3);
+    expect(r).toMatchObject({ deleted: 3, failed: [] });
+    expect(h.removePhotos.mock.calls.flatMap(([ids]: string[][]) => ids)).toEqual(["a", "b", "c"]);
   });
 
   it("reports every photo as failed when the bridge is unavailable", async () => {

@@ -12,7 +12,7 @@ import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { SCRATCH_UNIT, allocateInto, created, workingFormat, type TexFormat } from "./gl-resources";
 import { simpleHash } from "./hash";
 import { passDraws, stageDraws } from "./pass-draws";
-import { createProgram, withProcessVersion } from "./program-cache";
+import { buildOutcome, createProgram, withProcessVersion, type ProgramBuilds } from "./program-cache";
 import type { ProcessVersion } from "./shaders";
 import { isDormant, paramIsActive } from "./stage-coverage";
 import {
@@ -84,6 +84,8 @@ export interface PrepassHost {
   ): void;
   /** Says once what a path loses on this GPU. */
   note(path: "prepass" | "stage-results", note: string): void;
+  /** Told as each pass program starts and stops building. */
+  builds?: ProgramBuilds;
 }
 
 export class PrepassRunner {
@@ -342,7 +344,16 @@ export class PrepassRunner {
   private passProgram(key: string, owner: string, name: string, fragmentSource: string, bindings: ContributedBinding[]) {
     let e = this.passPrograms.get(key);
     if (e) return e;
-    const program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource, name);
+    const stageIds = new Set([owner]);
+    this.host.builds?.started(stageIds);
+    let program: WebGLProgram;
+    try {
+      program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource, name);
+    } catch (err) {
+      this.host.builds?.ended(stageIds, buildOutcome(err));
+      throw err;
+    }
+    this.host.builds?.ended(stageIds, "built");
     const gl = this.gl;
     const locs: Record<string, WebGLUniformLocation | null> = {};
     for (const n of [

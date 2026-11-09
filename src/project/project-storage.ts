@@ -50,6 +50,7 @@ import {
   type EditState,
   type StoredPhoto,
 } from "@/catalog/types";
+import { historyCursor } from "@/catalog/history-cursor";
 import type { CatalogStorage } from "@/catalog/storage";
 import type { LoadedPreview } from "@/state/thumbnail-loader";
 import {
@@ -170,6 +171,35 @@ export function onSaveStatus(listener: SaveStatusListener): () => void {
 function saveFailureReason(error: unknown): string {
   if (error instanceof RangeError) return "the catalogue is too large to save as one file";
   return fsErrorText(error);
+}
+
+/** The records catalog.json can hold (`saved` is a record as it is written), and an
+ *  error naming the others, each logged. A value JSON can't write (a BigInt, a
+ *  cycle, a getter that throws), which an extension can set, would fail every
+ *  later save of the whole file, so a record holding one never enters a copy. */
+function savable<T>(
+  records: readonly T[],
+  what: string,
+  idOf: (record: T) => string,
+  saved: (record: T) => unknown = (record) => record,
+): { records: T[]; refused: Error | null } {
+  const kept: T[] = [];
+  const refused: string[] = [];
+  for (const record of records) {
+    try {
+      JSON.stringify(saved(record));
+      kept.push(record);
+    } catch (error) {
+      const id = idOf(record);
+      refused.push(id);
+      console.error(`[project] the ${what} of ${id} can't be saved, so it isn't stored:`, error);
+    }
+  }
+  return {
+    records: kept,
+    refused:
+      refused.length > 0 ? new Error(`the ${what} of ${refused.join(", ")} can't be saved`) : null,
+  };
 }
 
 /** The storages whose window has left their catalogue while they may still write it
@@ -559,14 +589,11 @@ export class ProjectStorage implements CatalogStorage {
               if (sc && sc.safelightSidecar === 1) {
                 const info = sc.info ?? {};
                 Object.assign(photo, adoptSidecar(info));
-                if (sc.maps && Array.isArray(sc.maps.stack)) {
+                if (sc.maps && Array.isArray(sc.maps.stack) && sc.maps.stack.length > 0) {
                   const adopted = openableEdit({
                     photoId: photo.id,
                     stack: sc.maps.stack,
-                    currentIndex:
-                      typeof sc.maps.currentIndex === "number"
-                        ? sc.maps.currentIndex
-                        : sc.maps.stack.length - 1,
+                    currentIndex: historyCursor(sc.maps.currentIndex, sc.maps.stack.length),
                   });
                   if (adopted) {
                     storage.changedEdits.add(photo.id);
@@ -587,7 +614,11 @@ export class ProjectStorage implements CatalogStorage {
               dir: f.parent,
               fileName: f.handle.name,
             });
-            if (ov) photo = { ...photo, ...ov };
+            if (ov) {
+              const merged = { ...photo, ...ov };
+              const { refused } = savable([merged], "import metadata", () => f.path, storedPhoto);
+              if (!refused) photo = merged;
+            }
           } catch {
             /* extension import failed — ignore */
           }
@@ -862,8 +893,17 @@ export class ProjectStorage implements CatalogStorage {
    *  the record held is stamped as changed now (see change-stamps). Resolves once
    *  the previews are written or have failed: a preview that can't be written
    *  doesn't fail the records. With `lazy` the catalogue save waits for the bulk
-   *  delay (see scheduleSave); the message to the other windows doesn't. */
+   *  delay (see scheduleSave); the message to the other windows doesn't. A record
+   *  catalog.json can't hold (savable) is not stored, the one held before it stays,
+   *  and once the rest are stored this rejects naming its photo. */
   async putPhotos(photos: CatalogPhoto[], options?: { lazy?: boolean }): Promise<void> {
+    const { records, refused } = savable(photos, "photo record", (photo) => photo.id, storedPhoto);
+    await this.storePhotos(records, options);
+    if (refused) throw refused;
+  }
+
+  /** putPhotos for the records catalog.json can hold. */
+  private async storePhotos(photos: CatalogPhoto[], options?: { lazy?: boolean }): Promise<void> {
     const since = Date.now();
     const stored = photos.filter((photo) => !this.removedIds.has(photo.id));
     if (stored.length === 0) return;
@@ -1177,8 +1217,17 @@ export class ProjectStorage implements CatalogStorage {
   }
 
   /** putEditState for a batch: every state is stored before the one save, so a bulk
-   *  action costs one whole-file write instead of one per photo. */
+   *  action costs one whole-file write instead of one per photo. A state catalog.json
+   *  can't hold (savable) is not stored, the one held before it stays, and once the
+   *  rest are saved this rejects naming its photo. */
   async putEditStates(editStates: EditState[]): Promise<void> {
+    const { records, refused } = savable(editStates, "edit", (editState) => editState.photoId);
+    await this.storeEditStates(records);
+    if (refused) throw refused;
+  }
+
+  /** putEditStates for the states catalog.json can hold. */
+  private async storeEditStates(editStates: EditState[]): Promise<void> {
     const since = Date.now();
     const stored = editStates.filter((editState) => !this.removedIds.has(editState.photoId));
     if (stored.length === 0) return;

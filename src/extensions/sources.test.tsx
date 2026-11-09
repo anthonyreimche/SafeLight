@@ -6,7 +6,7 @@
 // Where auto-update looks for an installed extension's next release.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { rememberSource, updateRepoFor } from "./sources";
+import { readSources, rememberSource, repoFor, updateRepoFor } from "./sources";
 import type { ExtensionManifest } from "./types";
 
 const manifest = (id: string, repository?: string): ExtensionManifest => ({
@@ -18,6 +18,27 @@ const manifest = (id: string, repository?: string): ExtensionManifest => ({
 });
 
 afterEach(() => localStorage.clear());
+
+describe("stored sources that are not a string map", () => {
+  it("reads a stored null as empty and still falls back to the declared repository", () => {
+    localStorage.setItem("sl_ext_sources", "null");
+    expect(readSources()).toEqual({});
+    expect(repoFor(manifest("acme.widget", "acme/widget"))).toBe("acme/widget");
+    expect(repoFor(manifest("acme.widget"))).toBeNull();
+  });
+
+  it("reads an array or a number as empty", () => {
+    localStorage.setItem("sl_ext_sources", "[1,2]");
+    expect(readSources()).toEqual({});
+    localStorage.setItem("sl_ext_sources", "7");
+    expect(readSources()).toEqual({});
+  });
+
+  it("keeps only the entries whose value is a string", () => {
+    localStorage.setItem("sl_ext_sources", JSON.stringify({ "x.y": 5, "a.b": "Owner/Repo" }));
+    expect(readSources()).toEqual({ "a.b": "Owner/Repo" });
+  });
+});
 
 describe("updateRepoFor", () => {
   it("updates an official extension from the repository core lists for it", () => {

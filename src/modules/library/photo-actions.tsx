@@ -19,7 +19,7 @@ import { CopySettingsDialog } from "./CopySettingsDialog";
 import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { useGridMenuItems } from "@/extensions/registry";
 import { guardCallback } from "@/extensions/guard";
-import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
+import { exportPhotoDataReport, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
 import { removeFromCatalog } from "./use-culling-shortcuts";
 import { visibleStack, visibleStackMembers } from "./photo-navigation";
@@ -97,10 +97,25 @@ export function usePhotoActions(): PhotoActions {
 
   const handleExportData = useCallback(async (ids: string[]) => {
     if (ids.length === 0) return;
-    const n = await exportPhotoData(ids);
+    const photos = `photo${ids.length === 1 ? "" : "s"}`;
+    let report = { written: 0, failed: ids.length };
+    try {
+      report = await exportPhotoDataReport(ids);
+    } catch (e) {
+      console.error("[photo-actions] export data failed:", e);
+    }
+    const { written, failed } = report;
+    const wrote = `Wrote ${written} sidecar file${written === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected ${photos}.`;
+    const guidance =
+      "Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.";
     await alertDialog({
       title: "Export data",
-      message: `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
+      message:
+        failed === 0
+          ? `${wrote} ${guidance}`
+          : written === 0
+            ? `Couldn't write the sidecar file${failed === 1 ? "" : "s"} next to the selected ${photos}. Check that the folder isn't read-only or full, then try again.`
+            : `${wrote} Couldn't write ${failed}. ${guidance}`,
     });
   }, []);
 

@@ -26,7 +26,7 @@ export const Slot = memo(function Slot({ name, fallback = null }: { name: SlotNa
         <ErrorBoundary
           key={boundaryKey(id, C)}
           what={`Slot item "${id}"`}
-          className="text-[11px] text-red-400"
+          className="text-[11px] text-danger"
         >
           <C />
         </ErrorBoundary>

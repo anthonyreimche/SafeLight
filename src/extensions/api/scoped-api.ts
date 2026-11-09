@@ -284,7 +284,9 @@ export interface SafelightAPI {
   };
   /** Write the app's Preferences (`useSettings` reads them). The change is
    *  saved and its side effects run (UI scale, reduced motion …), which a raw
-   *  `useSettings.setState` does not do. */
+   *  `useSettings.setState` does not do. The update settings
+   *  (`checkExtensionUpdates`, `autoUpdateExtensions`, `checkForUpdates`,
+   *  `updateChannel`) only change in Preferences: they are ignored here. */
   appSettings: {
     update(patch: Partial<AppSettings>): void;
   };

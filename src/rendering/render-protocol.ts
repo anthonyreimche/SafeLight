@@ -9,7 +9,7 @@
 import type { CropRect, DevelopParams, Mask } from "@/catalog/types";
 import type { BrushTipContribution, ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
-import type { ProbePoint, QuarantinedStage } from "./webgl/renderer";
+import type { ProbePoint, QuarantinedStage, StageBuildEvent } from "./webgl/renderer";
 import type { CapturePoint, FloatFrame } from "./float-frame";
 import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
 import type { HistogramData } from "./histogram";
@@ -298,4 +298,7 @@ export type WorkerResponse =
   // with it, and draws without it until it is registered again changed. Once per
   // stage, signature and process version, and renderer.
   | ({ type: "stageQuarantined" } & QuarantinedStage)
+  // A renderer started or ended building a program with these extension stages
+  // in it: the window's crash guard pins a lost context on a build in hand.
+  | ({ type: "stageBuild" } & StageBuildEvent)
   | { type: "error"; message: string };

@@ -62,6 +62,25 @@ interface Submitted {
   exit: ProgramExit | undefined;
 }
 
+/** How a program build ended: built, failed with the driver's log (a compile or
+ *  link error the quarantine can name), or suspect: failed with no log, which is
+ *  the driver failing rather than the GLSL (Direct3D 11 losing the context over a
+ *  shader it can't take). */
+export type StageBuildOutcome = "built" | "failed" | "suspect";
+
+/** Told as each program starts and stops building, with the ids of the stages in
+ *  it, so a build that takes the graphics driver down can be pinned on them. */
+export interface ProgramBuilds {
+  started(stageIds: ReadonlySet<string>): void;
+  ended(stageIds: ReadonlySet<string>, outcome: StageBuildOutcome): void;
+}
+
+/** The outcome of a build that threw `err`. */
+export function buildOutcome(err: unknown): Exclude<StageBuildOutcome, "built"> {
+  const message = err instanceof Error ? err.message : "";
+  return /^(?:Shader compile|Program link) failed:\s*$/.test(message) ? "suspect" : "failed";
+}
+
 // More signatures than this for one stage id inside the window is a stage
 // re-registering itself with new GLSL, compiling a program every time.
 const CHURN_SIGNATURES = 8;
@@ -85,11 +104,13 @@ export class ProgramCache {
   private submitted = new Map<string, Submitted>();
   // KHR_parallel_shader_compile, which says when a build is done without waiting for it.
   private readonly parallel: KHR_parallel_shader_compile | null;
+  private readonly builds: ProgramBuilds | undefined;
 
-  constructor(gl: WebGL2RenderingContext, maxPrograms = MAX_PROGRAMS) {
+  constructor(gl: WebGL2RenderingContext, maxPrograms = MAX_PROGRAMS, builds?: ProgramBuilds) {
     this.gl = gl;
     this.maxPrograms = maxPrograms;
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
+    this.builds = builds;
   }
 
   /** Start building the entry entryFor would build for these, without waiting for
@@ -111,6 +132,7 @@ export class ProgramCache {
       if (this.submitted.size < MAX_SUBMITTED) break;
       this.letGo(oldest, s);
     }
+    this.builds?.started(stageIds);
     const build = submitProgram(this.gl, VERTEX_SHADER, developSource(p, built, variant, exit), developName(p, stageIds));
     this.submitted.set(key, { build, p, built, variant, stageIds, exit });
     return true;
@@ -156,6 +178,7 @@ export class ProgramCache {
 
   private letGo(key: string, s: Submitted): void {
     this.submitted.delete(key);
+    this.builds?.ended(s.stageIds, "failed");
     const gl = this.gl;
     gl.deleteShader(s.build.vs);
     gl.deleteShader(s.build.fs);
@@ -261,17 +284,15 @@ export class ProgramCache {
     exit: ProgramExit | undefined,
     submitted?: SubmittedProgram,
   ): PipelineProgram {
+    let program: WebGLProgram;
+    if (!submitted) this.builds?.started(stageIds);
     try {
-      const program = submitted
+      program = submitted
         ? finishProgram(this.gl, submitted)
         : createProgram(this.gl, VERTEX_SHADER, developSource(p, built, variant, exit), developName(p, stageIds));
-      return {
-        program,
-        uniforms: uniformLocations(this.gl, program, built, p.bindings ?? []),
-        skipBase: p.skipBaseCurve,
-        skipShoulder: p.skipToneShoulder,
-      };
+      this.builds?.ended(stageIds, "built");
     } catch (err) {
+      this.builds?.ended(stageIds, buildOutcome(err));
       if (!p.glsl) throw err; // built-in must compile
       // Said only once the built-in builds: when it doesn't either, the stages are
       // at fault, not the transform.
@@ -279,6 +300,12 @@ export class ProgramCache {
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
       return fallback;
     }
+    return {
+      program,
+      uniforms: uniformLocations(this.gl, program, built, p.bindings ?? []),
+      skipBase: p.skipBaseCurve,
+      skipShoulder: p.skipToneShoulder,
+    };
   }
 
   // Delete the programs, and forget the failures, built from a stage that isn't

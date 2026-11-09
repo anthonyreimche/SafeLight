@@ -48,7 +48,7 @@ function ReleaseActions({
     return (
       <button
         onClick={() => openUrl(release.releasesUrl)}
-        className={`${className} shrink-0 rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-white hover:opacity-90`}
+        className={`${className} shrink-0 rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-on-accent hover:opacity-90`}
       >
         Open release page
       </button>
@@ -83,7 +83,7 @@ function ReleaseActions({
                   },
                 );
               }}
-              className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-white hover:opacity-90"
+              className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-on-accent hover:opacity-90"
             >
               Download
             </button>

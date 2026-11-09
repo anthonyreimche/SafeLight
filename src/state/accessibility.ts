@@ -75,6 +75,48 @@ const HC_LIGHT: Record<string, string> = {
   "--color-slider-fill": "#5a5a5a",
 };
 
+// The curve editor's and histogram's canvas colours. High contrast sets them
+// too, but they aren't overridable: the custom-colours UI lists HC_KEYS only.
+const HC_CHART_DARK: Record<string, string> = {
+  "--curve-rgb": "#ffffff",
+  "--curve-grid": "#4a4a4a",
+  "--curve-identity": "#6a6a6a",
+  "--curve-ring": "#d0d0d0",
+  "--curve-ring-focused": "#ffffff",
+  "--curve-point": "#ffffff",
+  "--histogram-curve": "rgba(255,255,255,0.95)",
+  "--histogram-grid": "rgba(255,255,255,0.25)",
+  "--histogram-zone": "rgba(255,255,255,0.12)",
+  "--histogram-label": "#ffffff",
+  "--histogram-clip-shadow": "rgb(120,160,255)",
+  "--histogram-clip-highlight": "rgb(255,110,110)",
+  "--histogram-clip-shadow-active": "rgb(170,200,255)",
+  "--histogram-clip-highlight-active": "rgb(255,170,170)",
+  "--histogram-clip-shadow-bg": "rgba(80,120,255,0.45)",
+  "--histogram-clip-highlight-bg": "rgba(255,70,70,0.45)",
+};
+
+const HC_CHART_LIGHT: Record<string, string> = {
+  "--curve-rgb": "#000000",
+  "--curve-grid": "#9a9a9a",
+  "--curve-identity": "#7a7a7a",
+  "--curve-ring": "#343434",
+  "--curve-ring-focused": "#000000",
+  "--curve-point": "#000000",
+  "--histogram-curve": "rgba(0,0,0,0.9)",
+  "--histogram-grid": "rgba(0,0,0,0.3)",
+  "--histogram-zone": "rgba(0,0,0,0.12)",
+  "--histogram-label": "#000000",
+  "--histogram-clip-shadow": "rgb(0,30,170)",
+  "--histogram-clip-highlight": "rgb(160,0,0)",
+  "--histogram-clip-shadow-active": "rgb(0,20,120)",
+  "--histogram-clip-highlight-active": "rgb(120,0,0)",
+  "--histogram-clip-shadow-bg": "rgba(0,40,255,0.2)",
+  "--histogram-clip-highlight-bg": "rgba(255,0,0,0.2)",
+};
+
+const CHART_KEYS = Object.keys(HC_CHART_DARK);
+
 /** The active theme's vars, or undefined if none is registered/applied yet. */
 function activeThemeVars(): Record<string, string> | undefined {
   const id = useThemeStore.getState().activeId;
@@ -87,7 +129,9 @@ function activeThemeVars(): Record<string, string> | undefined {
 function highContrastPalette(): Record<string, string> {
   const id = useThemeStore.getState().activeId;
   const theme = useRegistry.getState().themes[id];
-  return theme?.colorScheme === "light" ? HC_LIGHT : HC_DARK;
+  return theme?.colorScheme === "light"
+    ? { ...HC_LIGHT, ...HC_CHART_LIGHT }
+    : { ...HC_DARK, ...HC_CHART_DARK };
 }
 
 // The overridable colour tokens are exactly HC_KEYS (surfaces, borders, text
@@ -109,6 +153,11 @@ function applyColorLayers(
   for (const k of OVERRIDABLE_KEYS) {
     const base = hc ? hc[k] : themeVars?.[k];
     const val = overrides[k] ?? base;
+    if (val != null) root.setProperty(k, val);
+    else root.removeProperty(k);
+  }
+  for (const k of CHART_KEYS) {
+    const val = hc ? hc[k] : themeVars?.[k];
     if (val != null) root.setProperty(k, val);
     else root.removeProperty(k);
   }

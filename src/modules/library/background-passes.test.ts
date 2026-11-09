@@ -146,6 +146,8 @@ vi.mock("@/state/catalog-store", () => ({
 }));
 
 import {
+  buildPhoto,
+  buildPreviewBlob,
   preDecodeRawsForCache,
   rebuildThumbnails,
   reimportPhotos,
@@ -514,5 +516,67 @@ describe("importing photos again for a project the user has left", () => {
 
     expect(h.floatDecodes).toEqual([{ signal: project.signal, targetEdge: 768 }]);
     expect(h.metadataReads).toEqual([{ signal: project.signal }]);
+  });
+});
+
+// The decoded bitmap is the whole frame: one left to the garbage collector across
+// a rebuild of the catalogue holds that much memory per photo.
+describe("a preview whose thumbnail can't be built", () => {
+  beforeEach(() => {
+    h.whileThumbnailing = () => {
+      throw new Error("out of memory");
+    };
+  });
+
+  it("lets go of the decoded bitmap in the repair", async () => {
+    await repairMissingPreviews(unrepaired(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap in a rebuild", async () => {
+    await rebuildThumbnails(raws(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap in a re-import", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await reimportPhotos(raws(1));
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap of a preview built on demand", async () => {
+    expect(await buildPreviewBlob(raws(1)[0])).toBeNull();
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+
+  it("lets go of the decoded bitmap at import", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const file = await raws(1)[0].fileHandle!.getFile();
+
+    await expect(buildPhoto(file, null, null)).rejects.toThrow("out of memory");
+
+    expect(h.bitmapsClosed).toBe(1);
+  });
+});
+
+describe("a preview whose save fails", () => {
+  it("lets go of the preview's URL", async () => {
+    const revoked: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:thumb",
+      revokeObjectURL: (url: string) => void revoked.push(url),
+    });
+    h.whileSaving = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+
+    await rebuildThumbnails(raws(1));
+
+    expect(revoked).toEqual(["blob:thumb"]);
   });
 });

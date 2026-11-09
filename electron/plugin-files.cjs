@@ -136,6 +136,19 @@ async function finish({ pluginsDir, workDir, id, outcome }) {
  *  (a first install that failed to start), in which case nothing remains. */
 const settlePlugin = (args) => serialized(args.id, () => finish(args));
 
+async function removeInstall({ pluginsDir, workDir, id }) {
+  const d = layout(pluginsDir, workDir, id);
+  // Work area first: a prev left behind by a failure part-way would be put back
+  // over the deleted install by the next sweep or a late rollback.
+  await fsp.rm(d.work, RM);
+  await retry(() => fsp.rm(d.install, RM));
+  if (fs.existsSync(d.install)) throw new Error("Could not delete extension files");
+}
+
+/** Delete plugins/<id> and any update of it waiting to be settled, after any
+ *  install, update or settle of that id already under way. */
+const removePlugin = (args) => serialized(args.id, () => removeInstall(args));
+
 /** Startup only, before any renderer exists. A prev still in the work area
  *  belongs to an update that was never settled — the new bundle's activation
  *  was never confirmed — so the previous version goes back and the work area is
@@ -156,4 +169,4 @@ function sweepPluginWork({ pluginsDir, workDir }) {
   }
 }
 
-module.exports = { replacePlugin, settlePlugin, sweepPluginWork, retry, contains };
+module.exports = { replacePlugin, settlePlugin, removePlugin, sweepPluginWork, retry, contains };

@@ -19,7 +19,7 @@ export function DevToolsWindowHost() {
   if (panel) {
     const Panel = panel.component;
     return (
-      <ErrorBoundary what={`Panel "${DEVTOOLS_PANEL_ID}"`} className="p-3 text-[11px] text-red-400">
+      <ErrorBoundary what={`Panel "${DEVTOOLS_PANEL_ID}"`} className="p-3 text-[11px] text-danger">
         <Panel />
       </ErrorBoundary>
     );

@@ -60,7 +60,12 @@ async function storeOnCurrent(
     if (current.previewEdit !== undefined) changed.previewEdit = undefined;
   }
   const updated: CatalogPhoto = { ...current, ...changed };
-  await catalogStorage().putPhoto(updated, save); // writes the preview + persists
+  try {
+    await catalogStorage().putPhoto(updated, save); // writes the preview + persists
+  } catch (error) {
+    if (changed.thumbnailUrl) URL.revokeObjectURL(changed.thumbnailUrl);
+    throw error;
+  }
   if (!photoById(useCatalogStore.getState().photos, photo.id)) {
     if (changed.thumbnailUrl) URL.revokeObjectURL(changed.thumbnailUrl);
     return null;
@@ -117,9 +122,15 @@ export async function repairMissingPreviews(
       // decoder pre-oriented the pixels, subtract the EXIF portion so only the
       // manual rotation is baked.
       const { rotation, manual, bake } = bakeFor(photo, oriented);
-      const thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
-      const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake);
-      bitmap.close();
+      let thumb: Blob;
+      let width: number;
+      let height: number;
+      try {
+        thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
+        ({ width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake));
+      } finally {
+        bitmap.close();
+      }
       if (signal?.aborted) return;
 
       const updated = await storeOnCurrent(photo, {
@@ -281,9 +292,15 @@ export async function rebuildThumbnails(
         // a rebuild changes pixels, not orientation. Bake only what this decode
         // hasn't already applied — subtract the EXIF portion when pre-oriented.
         const { rotation, manual, bake } = bakeFor(photo, oriented);
-        const thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
-        const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake);
-        bitmap.close();
+        let thumb: Blob;
+        let width: number;
+        let height: number;
+        try {
+          thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
+          ({ width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake));
+        } finally {
+          bitmap.close();
+        }
         if (signal?.aborted) return;
 
         const updated = await storeOnCurrent(photo, {
@@ -416,9 +433,15 @@ export async function reimportPhotos(
       );
       const rotation = normalizeRotation(manual + orientationToRotation(exif.orientation));
       const bake = bakeRotation(rotation, exif.orientation, oriented);
-      const thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
-      const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake);
-      bitmap.close();
+      let thumb: Blob;
+      let width: number;
+      let height: number;
+      try {
+        thumb = await createThumbnail(bitmap, bake, getSettings().thumbMaxEdge);
+        ({ width, height } = catalogSize(rawMeta?.frame, manual, decoded, bake));
+      } finally {
+        bitmap.close();
+      }
       if (signal?.aborted) break;
 
       const updated = await storeOnCurrent(photo, {

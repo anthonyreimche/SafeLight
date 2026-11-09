@@ -39,6 +39,9 @@ const DEFAULT_BOX =
 
 const MAXIMIZED_BOX = "flex h-full w-full flex-col overflow-hidden bg-surface-1";
 
+// Layout height of the titlebar (its h-[38px] class).
+const TITLEBAR_PX = 38;
+
 const isControl = (target: EventTarget) =>
   !!(target as HTMLElement).closest("input,button,a,select,textarea");
 
@@ -88,20 +91,33 @@ export function ModalWindow({
   // layout px, so divide deltas by uiScale to track the pointer 1:1 (mirrors
   // frame-point.ts).
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const moveRef = useRef<{ sx: number; sy: number; bx: number; by: number } | null>(null);
+  const moveRef = useRef<{
+    sx: number;
+    sy: number;
+    bx: number;
+    by: number;
+    rect: DOMRect;
+  } | null>(null);
   // A maximized window has nowhere to move; the offset is kept for Restore.
   const onTitleDown = (e: React.PointerEvent) => {
     // Leave interactive titlebar controls (search box, close ×) to themselves.
-    if (maximized || isControl(e.target)) return;
+    if (maximized || isControl(e.target) || !boxRef.current) return;
     e.preventDefault();
-    moveRef.current = { sx: e.clientX, sy: e.clientY, bx: pos.x, by: pos.y };
+    const rect = boxRef.current.getBoundingClientRect();
+    moveRef.current = { sx: e.clientX, sy: e.clientY, bx: pos.x, by: pos.y, rect };
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   };
+  // The titlebar is the only handle, so the drag stops (in visual px, like the
+  // rect) before any of it leaves the viewport; left and top win when the box
+  // is bigger than the window.
   const onTitleMove = (e: React.PointerEvent) => {
     const m = moveRef.current;
     if (!m) return;
     const z = getSettings().uiScale || 1;
-    setPos({ x: m.bx + (e.clientX - m.sx) / z, y: m.by + (e.clientY - m.sy) / z });
+    const { left, right, top } = m.rect;
+    const dx = Math.max(-left, Math.min(window.innerWidth - right, e.clientX - m.sx));
+    const dy = Math.max(-top, Math.min(window.innerHeight - TITLEBAR_PX * z - top, e.clientY - m.sy));
+    setPos({ x: m.bx + dx / z, y: m.by + dy / z });
   };
   const onTitleUp = (e: React.PointerEvent) => {
     if (!moveRef.current) return;
