@@ -243,7 +243,11 @@ export class ProgramCache {
       this.programStages.delete(key);
       over--;
     }
-    // A fallback entry shares the built-in entry's program under another key.
+    this.deleteUnshared(released);
+  }
+
+  // A fallback entry shares the built-in entry's program under another key.
+  private deleteUnshared(released: Set<WebGLProgram>): void {
     for (const e of this.programs.values()) released.delete(e.program);
     for (const program of released) this.gl.deleteProgram(program);
   }
@@ -324,9 +328,7 @@ export class ProgramCache {
       this.failedBuilds.delete(key);
       this.programStages.delete(key);
     }
-    // A fallback entry shares the built-in entry's program under another key.
-    for (const e of this.programs.values()) released.delete(e.program);
-    for (const program of released) this.gl.deleteProgram(program);
+    this.deleteUnshared(released);
   }
 
   dispose(): void {
@@ -360,7 +362,7 @@ const developName = (p: ResolvedPipeline, stageIds: ReadonlySet<string>): string
 
 // The most builds one failure may spend finding the stages it comes from: each is
 // a whole develop program's compile.
-export const MAX_ISOLATION_BUILDS = 12;
+const MAX_ISOLATION_BUILDS = 12;
 
 export interface FailingStage<T> {
   stage: T;
@@ -425,7 +427,7 @@ export function isolateFailingStages<T>(
 
 /** A program whose compile and link were asked of the driver and not yet waited
  *  on: the driver works on it while the caller goes on (finishProgram). */
-export interface SubmittedProgram {
+interface SubmittedProgram {
   program: WebGLProgram;
   vs: WebGLShader;
   fs: WebGLShader;
@@ -438,7 +440,7 @@ export interface SubmittedProgram {
 /** Ask the driver to build a program from `vsSrc` and `fsSrc` without waiting for
  *  it: nothing reads a status until finishProgram. `name` says which program it
  *  is in the slow-build warning. */
-export function submitProgram(
+function submitProgram(
   gl: WebGL2RenderingContext,
   vsSrc: string,
   fsSrc: string,
@@ -461,7 +463,7 @@ export function submitProgram(
  *  it failed with: a shader's compile log, else the link log. Warns when the
  *  wait from `since` takes longer than SLOW_BUILD_MS. Either way the shaders
  *  are let go, and a failed program with them. */
-export function finishProgram(
+function finishProgram(
   gl: WebGL2RenderingContext,
   submitted: SubmittedProgram,
   since = performance.now(),
@@ -586,14 +588,10 @@ function uniformLocations(
   for (const name of names) {
     u[name] = gl.getUniformLocation(program, name);
   }
-  // Extension-contributed stage uniforms, keyed by qualified key so render()
-  // can resolve location + value together from the param bag.
-  for (const b of built.bindings) {
-    u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
-  }
-  // The display transform's params or derived uniforms, keyed by the bag key
-  // each binds from.
-  for (const b of transformBindings) {
+  // Extension-contributed stage uniforms, then the display transform's params or
+  // derived uniforms, keyed by the bag key each binds from, so render() can
+  // resolve location + value together from the param bag.
+  for (const b of [...built.bindings, ...transformBindings]) {
     u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
   }
   for (const ms of built.maskSlots) u[ms.glslName] = gl.getUniformLocation(program, ms.glslName);

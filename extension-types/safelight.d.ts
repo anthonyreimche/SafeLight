@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.2.2. GPL-3.0-only.
+// Safelight 3.2.3. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -778,6 +778,10 @@ declare const MASKABLE_PHASES: readonly ProcessingPhase[];
  *    vec3 readSource(vec2 uv); // the decoded source at uv, as a `reads: "source"` stage's
  *                              // first read gets it, on any draw and whatever the stage
  *                              // reads (since 3.2.0)
+ *    vec3 fetchInput(ivec2 texel); // the stage's input texel, linearized and in the stage's
+ *                              // space, on any draw; texels outside the frame clamp to its
+ *                              // edge. A source at another size than the passes is resampled
+ *                              // once and stored at the pass format (since 3.2.3)
  *    float luma(vec3); vec3 srgbToLinear(vec3);
  *    vec3 linearToSrgb(vec3);  // display encode: clips to 0..1
  *    vec3 linearToSrgbU(vec3); // same curve, clamps below 0 only; keeps values above 1.0
@@ -823,6 +827,16 @@ export interface StagePass {
      *  each change a small part of the frame, this saves reading the rest
      *  (since 3.2.2). */
     region?: string;
+    /** Keeps the state after this pass, so a later frame of the live view can
+     *  start from it. The stage resumes from the last kept pass whose inputs are
+     *  unchanged: the source, the size, the process version, the image upstream
+     *  for `reads: "current"`, the programs, uniform values and draw counts of
+     *  that pass and every pass before it, and whether any later pass draws. As
+     *  long as each pass's region follows its rule, a resumed frame gives
+     *  exactly the result a full run gives. Each kept pass, in each mask copy,
+     *  holds a full-size target while the photo is open; a pass that nothing
+     *  draws after keeps nothing. Exports and thumbnails keep none (since 3.2.3). */
+    keep?: boolean;
 }
 
 /** The values a processing stage receives and hands back (see
@@ -3454,11 +3468,13 @@ export interface ExportResult {
     /** True when the caller's signal ended the batch before every photo was
      *  tried. `exported` counts what was done by then. */
     cancelled?: true;
-    /** Why the batch ended early on a failure that every later write would meet
-     *  too (a full disk, a read-only folder), worded for the user. */
+    /** Why the batch ended early on a failure that every later photo would meet
+     *  too (a full disk, a read-only folder, a graphics driver that stopped),
+     *  worded for the user. */
     stopped?: string;
-    /** Count of the exported photos drawn without an extension stage whose
-     *  shader failed to build during the batch, so its effect is missing. */
+    /** Count of the exported photos drawn without an extension's effect because
+     *  it couldn't run on this graphics card: its shader failed to build during
+     *  the batch, or it got no texture unit or layer. */
     withoutStages?: number;
 }
 

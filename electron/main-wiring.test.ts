@@ -648,3 +648,13 @@ describe("opening paths from the OS", () => {
     expect(pkg.build.files).toContain("electron/os-open.cjs");
   });
 });
+
+// Under software rendering or a Wayland session Chromium may never paint a
+// hidden window, so ready-to-show alone left Safelight with no window at all.
+describe("window reveal", () => {
+  it("shows every window through revealWhenReady, never on ready-to-show alone", () => {
+    expect(MAIN).not.toMatch(/\.once\("ready-to-show"/);
+    expect(MAIN).toMatch(/revealWhenReady\(win, \(\) => \{/);
+    expect(MAIN).toMatch(/revealWhenReady\(childWin, \(\) => childWin\.show\(\)\)/);
+  });
+});

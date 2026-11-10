@@ -23,6 +23,9 @@ export interface WorkerState {
   thumbCanvas: OffscreenCanvas | null;
   thumbRenderer: WebGLRenderer | null;
   latestStages: ProcessingStageContribution[];
+  // Every stage draw the window has said finished on this machine, for a renderer
+  // made after the setStages that said so.
+  confirmedDraws: Set<string>;
   latestPipeline: ResolvedPipeline;
   // Generic param bag for extension-contributed stage uniforms. Persisted so a
   // newly-created thumb renderer inherits it; the renderer keeps its own copy.
@@ -72,6 +75,7 @@ export function initialState(): WorkerState {
     thumbCanvas: null,
     thumbRenderer: null,
     latestStages: [],
+    confirmedDraws: new Set(),
     latestPipeline: BUILTIN_RESOLVED,
     latestParamBag: {},
     latestStageTextures: {},

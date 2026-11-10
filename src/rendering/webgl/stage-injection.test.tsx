@@ -414,6 +414,71 @@ describe("a four-channel pass", () => {
   });
 });
 
+// ANGLE on D3D11 marks every `if` around a loop that reaches an implicit-
+// derivative op [flatten], so a pass that calls fetchPrev4 in a loop ran every
+// branch on every draw. The helpers a four-channel pass gets reach none: they
+// read with texelFetch, or textureGrad with the pass texel as the gradient.
+describe("the helpers a four-channel pass gets", () => {
+  const GRADIENT_OP = /\b(?:texture|textureProj|textureOffset|textureProjOffset|dFdx|dFdy|fwidth)\s*\(/;
+  const SAMPLING_OP = /\btexture\w*\s*\(|\btexelFetch\w*\s*\(/g;
+  const ALLOWED_SAMPLING = new Set(["texelFetch", "textureGrad", "textureLod", "textureSize"]);
+
+  /** Every function the source defines, by name, with its body. */
+  function functionsOf(source: string): Map<string, string> {
+    const out = new Map<string, string>();
+    const head = /\b(?:void|float|int|bool|[iu]?vec[234]|mat[234])\s+(\w+)\s*\([^)]*\)\s*\{/g;
+    for (let m = head.exec(source); m; m = head.exec(source)) {
+      let depth = 1;
+      let i = m.index + m[0].length;
+      for (; i < source.length && depth > 0; i++) depth += source[i] === "{" ? 1 : source[i] === "}" ? -1 : 0;
+      out.set(m[1], source.slice(m.index + m[0].length, i - 1));
+    }
+    return out;
+  }
+
+  /** Whether `name`'s body, or any function it calls, has a gradient op. */
+  function reachesGradient(fns: Map<string, string>, name: string, seen = new Set<string>()): boolean {
+    const body = fns.get(name);
+    if (body === undefined || seen.has(name)) return false;
+    seen.add(name);
+    if (GRADIENT_OP.test(body)) return true;
+    return [...body.matchAll(/\b(\w+)\s*\(/g)].some(([, callee]) => callee !== name && reachesGradient(fns, callee, seen));
+  }
+
+  const sources = (space?: StageSpace) =>
+    buildStageInjection([
+      flagged({
+        ...(space ? { space } : {}),
+        passes: [{ channels: 4, glsl: "c.rgb += fetchInput(ivec2(gl_FragCoord.xy));" }, { channels: 4, glsl: "c.a = 0.5;" }],
+      }),
+    ]).prepass[0];
+
+  it.each([undefined, { encoding: "perceptual" as const, primaries: "rec2020" as const }])(
+    "reach no gradient op from the first draw's read (space %o)",
+    (space) => {
+      const built = sources(space);
+      for (const source of [...built.passes.map((p) => p.fragmentSource), built.inputSource ?? ""]) {
+        const fns = functionsOf(source);
+        for (const helper of ["fetchPrev4", "readPrev4", "main"]) {
+          expect(fns.has(helper), helper).toBe(true);
+          expect(reachesGradient(fns, helper), helper).toBe(false);
+        }
+        if (fns.has("fetchInput")) expect(reachesGradient(fns, "fetchInput"), "fetchInput").toBe(false);
+        for (const name of ["fetchPrev4", "readPrev4", "fetchInput"]) {
+          for (const [op] of (fns.get(name) ?? "").matchAll(SAMPLING_OP)) {
+            expect(ALLOWED_SAMPLING.has(op.replace(/\s*\($/, "")), `${name}: ${op}`).toBe(true);
+          }
+        }
+      }
+    },
+  );
+
+  it("take the pass texel as the gradient of the first draw's sample", () => {
+    const [pass] = sources().passes;
+    expect(pass.fragmentSource).toContain("textureGrad(uPrevPass, uv, vec2(uTexel.x, 0.0), vec2(0.0, uTexel.y))");
+  });
+});
+
 // A pass that names its region gets a vertex program of its own, which places
 // the draw's quad over that region; every other pass draws the whole frame with
 // the shared one.
@@ -450,6 +515,84 @@ describe("a pass's region", () => {
 
   it("declares integers at the fragment program's precision, so shared uniforms link", () => {
     expect(pass({ region: "return ivec4(0);" }).vertexSource).toContain("precision mediump int;");
+  });
+});
+
+// fetchInput reads the stage's input exactly, on any draw. Only a pass that
+// names it gets its samplers and the flag, so every other pass program keeps
+// its text, and only a stage with such a pass gets a program to draw its input.
+describe("fetchInput in a pass", () => {
+  const FETCH = "c = fetchInput(ivec2(gl_FragCoord.xy));";
+  const PLAIN: StagePass = { glsl: "c = readPrev(vUv);" };
+  const stageOf = (passes: StagePass[], over: Partial<ProcessingStageContribution> = {}) =>
+    buildStageInjection([flagged({ passes, ...over })]).prepass[0];
+
+  it("is declared only where a pass names it", () => {
+    const [plain, fetcher] = stageOf([PLAIN, { glsl: FETCH }]).passes;
+    expect(plain.fetchesInput).toBeUndefined();
+    expect(plain.fragmentSource).not.toContain("fetchInput");
+    expect(plain.fragmentSource).not.toContain("uInputImage");
+    expect(plain.fragmentSource).not.toContain("uSourceImage");
+    expect(fetcher.fetchesInput).toBe(true);
+    expect(fetcher.fragmentSource).toContain("uniform sampler2D uSourceImage;");
+    expect(fetcher.fragmentSource).toContain("uniform sampler2D uInputImage;");
+    expect(fetcher.fragmentSource).toContain("uniform bool uInputIsSource;");
+    expect(fetcher.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+  });
+
+  it("leaves a pass that doesn't name it as it was", () => {
+    expect(stageOf([PLAIN, { glsl: FETCH }]).passes[0].fragmentSource).toBe(stageOf([PLAIN]).passes[0].fragmentSource);
+  });
+
+  it("is declared for a helper that names it", () => {
+    const helpers = "vec3 inputAt(ivec2 t) { return fetchInput(t); }";
+    const [pass] = stageOf([{ glsl: "c = inputAt(ivec2(0));", helpers }]).passes;
+    expect(pass.fetchesInput).toBe(true);
+    expect(pass.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+  });
+
+  it("shares the source sampler with readSource", () => {
+    const [pass] = stageOf([{ glsl: `${FETCH} c += readSource(vUv);` }]).passes;
+    expect(pass.fragmentSource.split("uniform sampler2D uSourceImage;").length - 1).toBe(1);
+    expect(pass.fragmentSource).toContain("vec3 readSource(vec2 uv) {");
+    expect(pass.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+  });
+
+  it("converts the source into the stage's space, as the first read does", () => {
+    const [pass] = stageOf([{ glsl: FETCH }], { space: { encoding: "perceptual" } }).passes;
+    expect(pass.fragmentSource).toContain("slEncodePerceptual(toLin(texelFetch(uSourceImage,");
+  });
+
+  it("gives the stage a program that draws its input as its first draw reads it", () => {
+    expect(stageOf([PLAIN]).inputSource).toBeUndefined();
+    const three = stageOf([PLAIN, { glsl: FETCH }]).inputSource ?? "";
+    expect(three).toContain("vec3 c = uPrevRaw ? readPrev(vUv)");
+    expect(three).not.toContain("fetchInput");
+    const four = stageOf([{ glsl: "c.a = 1.0;", channels: 4 }, { glsl: FETCH }]).inputSource ?? "";
+    expect(four).toContain("vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));");
+  });
+
+  it("is declared in a region's vertex program too", () => {
+    const [pass] = stageOf([{ glsl: FETCH, region: "return ivec4(0, 0, 4, 4);" }]).passes;
+    expect(pass.vertexSource).toContain("vec3 fetchInput(ivec2 texel) {");
+  });
+});
+
+// A kept pass reaches the runner as a flag on its pass; its program is the
+// same as without it.
+describe("a kept pass", () => {
+  const stageOf = (keep?: boolean) =>
+    buildStageInjection([
+      flagged({ passes: [{ glsl: "c *= 2.0;", ...(keep === undefined ? {} : { keep }) }, { glsl: "c *= 3.0;" }] }),
+    ]).prepass[0];
+
+  it("carries keep to the runner", () => {
+    expect(stageOf(true).passes.map((p) => p.keep)).toEqual([true, undefined]);
+    expect(stageOf(false).passes.map((p) => p.keep)).toEqual([undefined, undefined]);
+  });
+
+  it("compiles as it would without it", () => {
+    expect(stageOf(true).passes.map((p) => p.fragmentSource)).toEqual(stageOf().passes.map((p) => p.fragmentSource));
   });
 });
 

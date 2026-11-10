@@ -20,7 +20,7 @@ import {
   type UniformDeclaration,
 } from "./types";
 
-export interface StageContractCheck {
+interface StageContractCheck {
   /** Why the stage can't be registered, or null. */
   error: string | null;
   /** Why `reads: "current"` will be ignored, or null. */
@@ -114,6 +114,16 @@ function isvReads(source: unknown): string[] {
   return [...source.replace(GLSL_COMMENT, " ").matchAll(ISV_REFERENCE)].map((m) => m[1]);
 }
 
+/** The stage's passes that are objects, with their index; plain JavaScript may hand over anything else. */
+function* eachPass(c: ProcessingStageContribution): Generator<[number, Record<string, unknown>]> {
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return;
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    yield [index, pass as Record<string, unknown>];
+  }
+}
+
 /** Why the stage reads an inter-stage variable it doesn't list, or a pass reads
  *  one at all, or null. A read the stage doesn't list works while another stage
  *  produces the variable and fails the whole develop program once that stage
@@ -131,11 +141,8 @@ function isvReferenceError(c: ProcessingStageContribution): string | null {
     const name = isvReads(source).find((n) => !listed.has(n));
     if (name !== undefined) return `${where} reads isv_${name} but neither produces nor consumes "${name}"`;
   }
-  const passes: unknown = c.passes;
-  if (!Array.isArray(passes)) return null;
-  for (const [index, pass] of (passes as unknown[]).entries()) {
-    if (typeof pass !== "object" || pass === null) continue;
-    const { glsl, helpers } = pass as Record<string, unknown>;
+  for (const [index, pass] of eachPass(c)) {
+    const { glsl, helpers } = pass;
     const [name] = [...isvReads(glsl), ...isvReads(helpers)];
     if (name !== undefined) return `passes[${index}] reads isv_${name}; inter-stage variables are not visible to passes`;
   }
@@ -144,13 +151,10 @@ function isvReferenceError(c: ProcessingStageContribution): string | null {
 
 /** Why a pass's bag-driven draw count can't be honoured, or null. */
 function passCountError(c: ProcessingStageContribution): string | null {
-  const passes: unknown = c.passes;
-  if (!Array.isArray(passes)) return null;
   const stageUniforms: unknown = c.uniforms;
   const inline = Array.isArray(stageUniforms) ? (stageUniforms as UniformDeclaration[]) : [];
-  for (const [index, pass] of (passes as unknown[]).entries()) {
-    if (typeof pass !== "object" || pass === null) continue;
-    const { iterations, uniforms } = pass as Record<string, unknown>;
+  for (const [index, pass] of eachPass(c)) {
+    const { iterations, uniforms } = pass;
     if (iterations === undefined || typeof iterations === "number") continue;
     const at = `passes[${index}].iterations`;
     if (typeof iterations !== "object" || iterations === null) return `${at} must be a number or { key, max }`;
@@ -172,11 +176,8 @@ function passCountError(c: ProcessingStageContribution): string | null {
 
 /** Why a pass's `channels` can't be built, or null. */
 function passChannelsError(c: ProcessingStageContribution): string | null {
-  const passes: unknown = c.passes;
-  if (!Array.isArray(passes)) return null;
-  for (const [index, pass] of (passes as unknown[]).entries()) {
-    if (typeof pass !== "object" || pass === null) continue;
-    const { channels } = pass as Record<string, unknown>;
+  for (const [index, pass] of eachPass(c)) {
+    const { channels } = pass;
     if (channels !== undefined && channels !== 3 && channels !== 4) return `passes[${index}].channels must be 3 or 4, got ${formatValue(channels)}`;
   }
   return null;
@@ -184,13 +185,19 @@ function passChannelsError(c: ProcessingStageContribution): string | null {
 
 /** Why a pass's `region` can't be built, or null. */
 function passRegionError(c: ProcessingStageContribution): string | null {
-  const passes: unknown = c.passes;
-  if (!Array.isArray(passes)) return null;
-  for (const [index, pass] of (passes as unknown[]).entries()) {
-    if (typeof pass !== "object" || pass === null) continue;
-    const { region } = pass as Record<string, unknown>;
+  for (const [index, pass] of eachPass(c)) {
+    const { region } = pass;
     if (region !== undefined && (typeof region !== "string" || region.trim() === ""))
       return `passes[${index}].region must be GLSL text, got ${formatValue(region)}`;
+  }
+  return null;
+}
+
+/** Why a pass's `keep` can't be built, or null. */
+function passKeepError(c: ProcessingStageContribution): string | null {
+  for (const [index, pass] of eachPass(c)) {
+    const { keep } = pass;
+    if (keep !== undefined && typeof keep !== "boolean") return `passes[${index}].keep must be true or false, got ${formatValue(keep)}`;
   }
   return null;
 }
@@ -199,12 +206,9 @@ function passRegionError(c: ProcessingStageContribution): string | null {
  *  count that isn't finite becomes 1). They stay registrable: refusing them
  *  would stop an extension written before the bound from loading. */
 function fixedCountWarnings(c: ProcessingStageContribution, stagePrefix: string): string[] {
-  const passes: unknown = c.passes;
-  if (!Array.isArray(passes)) return [];
   const warnings: string[] = [];
-  for (const [index, pass] of (passes as unknown[]).entries()) {
-    if (typeof pass !== "object" || pass === null) continue;
-    const { iterations } = pass as Record<string, unknown>;
+  for (const [index, pass] of eachPass(c)) {
+    const { iterations } = pass;
     if (typeof iterations !== "number") continue;
     if (Number.isFinite(iterations) && iterations >= 1 && iterations <= MAX_PASS_DRAWS) continue;
     warnings.push(
@@ -212,6 +216,51 @@ function fixedCountWarnings(c: ProcessingStageContribution, stagePrefix: string)
     );
   }
   return warnings;
+}
+
+const FRAGMENT_ONLY = ["gl_FragCoord", "discard", "dFdx", "dFdy", "fwidth"];
+const CONST_ARRAY = /\bconst\s+(?:\w+\s+)*\w+\s*\[/;
+
+function withoutComments(source: unknown): string {
+  return typeof source === "string" ? source.replace(GLSL_COMMENT, " ") : "";
+}
+
+/** A region pass's helpers and region also compile into the vertex program that
+ *  places the region, where the fragment-only built-ins don't exist. The stage
+ *  stays registrable; the build is what fails. */
+function regionBuiltinWarnings(c: ProcessingStageContribution, stagePrefix: string): string[] {
+  const warnings: string[] = [];
+  for (const [index, pass] of eachPass(c)) {
+    const { region, helpers } = pass;
+    if (typeof region !== "string") continue;
+    const text = `${withoutComments(helpers)}\n${withoutComments(region)}`;
+    const found = FRAGMENT_ONLY.filter((name) => new RegExp(`\\b${name}\\b`).test(text));
+    if (found.length === 0) continue;
+    warnings.push(
+      `${stagePrefix}: passes[${index}] uses ${found.join(", ")} in its helpers or region, which also compile ` +
+        `into the vertex program that places the region, where that built-in doesn't exist, so the stage will fail to build`,
+    );
+  }
+  return warnings;
+}
+
+/** Direct3D 11 copies a constant array into every pixel's scratch memory on
+ *  every draw. */
+function constArrayWarnings(c: ProcessingStageContribution, stagePrefix: string): string[] {
+  const texts: [string, unknown][] = [
+    ["glsl", c.glsl],
+    ["helpers", c.helpers],
+  ];
+  for (const [index, pass] of eachPass(c)) {
+    const { glsl, helpers, region } = pass;
+    texts.push([`passes[${index}].glsl`, glsl], [`passes[${index}].helpers`, helpers], [`passes[${index}].region`, region]);
+  }
+  return texts
+    .filter(([, source]) => CONST_ARRAY.test(withoutComments(source)))
+    .map(
+      ([where]) =>
+        `${stagePrefix}: ${where} declares a constant array, which Direct3D 11 copies into every pixel's scratch memory on every draw; compute the values in the shader or pass them as a uniform array`,
+    );
 }
 
 const UNARRAYABLE: ReadonlySet<string> = new Set(["mat3", "mat4", "sampler2D"]);
@@ -388,17 +437,16 @@ export function checkStageContract(
     if (reads !== "current")
       warnings.push(`${stagePrefix}: readsCurrentFrom only applies with reads "current", so it is ignored`);
   }
-  const interStage = interStageError(c);
-  if (interStage) return fail(interStage);
-  const isvReference = isvReferenceError(c);
-  if (isvReference) return fail(isvReference);
-  const passCount = passCountError(c);
-  if (passCount) return fail(passCount);
-  const passChannels = passChannelsError(c);
-  if (passChannels) return fail(passChannels);
-  const passRegion = passRegionError(c);
-  if (passRegion) return fail(passRegion);
+  const contractError =
+    interStageError(c) ??
+    isvReferenceError(c) ??
+    passCountError(c) ??
+    passChannelsError(c) ??
+    passRegionError(c) ??
+    passKeepError(c);
+  if (contractError) return fail(contractError);
   warnings.push(...fixedCountWarnings(c, stagePrefix));
+  warnings.push(...regionBuiltinWarnings(c, stagePrefix), ...constArrayWarnings(c, stagePrefix));
 
   let readsIgnored: string | null = null;
   if (reads === "current") {

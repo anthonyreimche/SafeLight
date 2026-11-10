@@ -66,15 +66,24 @@ export function created<T>(object: T | null): T {
   return object;
 }
 
-/** Empties the error queue, so the next getError reads only what follows. */
+// Contexts whose queue held an OUT_OF_MEMORY that drainErrors emptied and no
+// ranOutOfMemory has reported since: a drain in the middle of a frame (a target
+// allocation's) must not hide what came before it from the check after it.
+const unreported = new WeakSet<WebGL2RenderingContext>();
+
+/** Empties the error queue, so the next getError reads only what follows. An
+ *  OUT_OF_MEMORY it empties is still told by the next ranOutOfMemory. */
 export function drainErrors(gl: WebGL2RenderingContext): void {
-  while (gl.getError() !== gl.NO_ERROR) { /* one flag per error code */ }
+  for (let error = gl.getError(); error !== gl.NO_ERROR; error = gl.getError()) {
+    if (error === gl.OUT_OF_MEMORY) unreported.add(gl);
+  }
 }
 
-// Empties the error queue and says whether it held OUT_OF_MEMORY. Other errors
-// a frame raises (a stage's stray uniform call, say) don't stop an export.
+// Empties the error queue and says whether it held OUT_OF_MEMORY, or a drain
+// since the last call did. Other errors a frame raises (a stage's stray uniform
+// call, say) don't stop an export.
 export function ranOutOfMemory(gl: WebGL2RenderingContext): boolean {
-  let outOfMemory = false;
+  let outOfMemory = unreported.delete(gl);
   for (let error = gl.getError(); error !== gl.NO_ERROR; error = gl.getError()) {
     if (error === gl.OUT_OF_MEMORY) outOfMemory = true;
   }
@@ -160,7 +169,8 @@ export function allocateTarget(
 // An allocation the driver refuses (out of memory, say) raises an error rather
 // than leaving the framebuffer incomplete, so the queue is emptied first to
 // read only the allocation's, and read even for an incomplete target, which
-// would otherwise leave its error for the next reader.
+// would otherwise leave its error for the next reader. It starts an export or a
+// capture, so what came before it is theirs to forget.
 export function allocateChecked(
   gl: WebGL2RenderingContext,
   internalFormat: number,
@@ -168,7 +178,7 @@ export function allocateChecked(
   w: number,
   h: number,
 ): { target: ColourTarget; ok: boolean } {
-  drainErrors(gl);
+  ranOutOfMemory(gl);
   const target = allocateTarget(gl, internalFormat, type, w, h);
   return { target, ok: gl.getError() === gl.NO_ERROR && target.complete };
 }

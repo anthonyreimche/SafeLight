@@ -59,6 +59,7 @@ export class StageResultLayers {
   private depth = 0;
   // The source epoch the layers were last reserved under.
   private epoch = 0;
+  private gen = 0;
   private readFbo: WebGLFramebuffer | null = null;
   private drawFbo: WebGLFramebuffer | null = null;
   private standIn: WebGLTexture | null = null;
@@ -114,6 +115,12 @@ export class StageResultLayers {
     return true;
   }
 
+  /** Changes whenever the layers are dropped, so what was drawn into them is
+   *  gone; a growth that copies them keeps it. */
+  get generation(): number {
+    return this.gen;
+  }
+
   layer(id: string): number {
     return this.layers.get(id) ?? -1;
   }
@@ -122,19 +129,6 @@ export class StageResultLayers {
    *  so the sampler always points at a complete texture. */
   texture(): WebGLTexture {
     return this.tex ?? this.ensureStandIn();
-  }
-
-  /** Copies the `w`×`h` result in `from` into `id`'s layer. */
-  write(id: string, from: WebGLFramebuffer, w: number, h: number): void {
-    const layer = this.layers.get(id);
-    if (layer === undefined || !this.tex) throw new Error(`stage '${id}' holds no result layer`);
-    const gl = this.gl;
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, from);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer("draw"));
-    gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.tex, 0, layer);
-    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
   }
 
   /** A framebuffer drawing into `id`'s layer, for a pass to render its result
@@ -175,6 +169,7 @@ export class StageResultLayers {
     this.h = 0;
     this.depth = 0;
     this.layers = new Map();
+    this.gen++;
   }
 
   private framebuffer(which: "read" | "draw"): WebGLFramebuffer {

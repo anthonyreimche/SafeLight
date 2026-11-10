@@ -567,6 +567,15 @@ describe("toggling a panel from the View menu", () => {
     close();
   });
 
+  it("marks the floating window with the sl-floating-panel styling hook", () => {
+    panel("ext.notes");
+    const { close, view } = boot();
+
+    act(() => toggleDockPanelFloating("ext.notes"));
+    expect(view.container.querySelectorAll(".sl-floating-panel")).toHaveLength(1);
+    close();
+  });
+
   it("pins the window to the workspace centre until it's dragged", () => {
     panel("ext.notes");
     const { close, view } = boot();

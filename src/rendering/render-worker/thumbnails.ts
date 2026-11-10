@@ -33,16 +33,27 @@ interface ThumbRenderRequest {
   contributedParams?: Record<string, unknown>;
   pipeline: ResolvedPipeline;
   float?: Pick<FloatFrame, "point" | "space">;
+  preview?: boolean;
+}
+
+// A grid preview takes the stages the live view has awake, so the photo being
+// edited is drawn by the program the live view draws it with, not by one built
+// for every installed stage while the live view waits. Another photo's preview
+// that needs more wakes them all at once (wakeTogether). A frame that carries
+// data (a headless or float frame) gets every stage.
+function wakeFor(ctx: WorkerContext, tr: WebGLRenderer, preview: boolean): void {
+  if (preview) tr.wakeStages(ctx.state.renderer?.awakeStages ?? []);
+  else tr.wakeAllStages();
 }
 
 // `first` is the request that creates the renderer. Its program is built here, with
-// that photo's version and display transform, so a renderer that can't build at all
-// fails the request and is not kept, instead of failing every frame after it. An
-// upload creates one with no photo to go by (`first` is absent): it builds the
-// current version under the pipeline and stages the worker holds.
+// that photo's version, display transform and stage values, so a renderer that can't
+// build at all fails the request and is not kept, instead of failing every frame
+// after it. An upload creates one with no photo to go by (`first` is absent): it
+// builds the current version under the pipeline, stages and values the worker holds.
 export function ensureThumbRenderer(
   ctx: WorkerContext,
-  first?: Pick<ThumbRenderRequest, "params" | "pipeline">,
+  first?: Pick<ThumbRenderRequest, "params" | "pipeline" | "contributedParams" | "preview">,
 ): WebGLRenderer {
   const { state } = ctx;
   if (state.thumbRenderer) return state.thumbRenderer;
@@ -51,10 +62,16 @@ export function ensureThumbRenderer(
     highBitDepth: false,
     pipeline: state.latestPipeline,
     stages: state.latestStages,
+    confirmedDraws: [...state.confirmedDraws],
+    skipDormantStages: true,
+    wakeTogether: true,
     onStageQuarantined: reportQuarantine(ctx),
     onStageBuild: reportStageBuilds(ctx),
   });
+  const ownBag = first?.contributedParams;
   try {
+    ctx.setBag(created, ownBag ?? state.latestParamBag);
+    wakeFor(ctx, created, first ? first.preview === true : true);
     if (first) {
       withPipeline(created, first.pipeline, state.latestPipeline, () =>
         warmUp(created, first.params.processVersion),
@@ -77,7 +94,7 @@ export function ensureThumbRenderer(
   state.thumbCanvas = canvas;
   state.thumbRenderer = created;
   if (state.cacheBudgetBytes > 0) created.setCacheBudget(state.cacheBudgetBytes * THUMB_CACHE_FRACTION);
-  ctx.setBag(created, state.latestParamBag);
+  if (ownBag !== undefined) ctx.setBag(created, state.latestParamBag);
   created.setStageTextures(state.latestStageTextures);
   return created;
 }
@@ -99,6 +116,7 @@ function finishThumbRender(ctx: WorkerContext, tr: WebGLRenderer, msg: ThumbRend
   tr.setParams(msg.params, msg.derived);
   const bag = msg.contributedParams;
   if (bag !== undefined) ctx.setBag(tr, bag);
+  wakeFor(ctx, tr, msg.preview === true);
   const { float } = msg;
   let read: ReturnType<WebGLRenderer["readFloatFrame"]> = null;
   // Restore the global bag even if the draw throws, or a failed render leaves the

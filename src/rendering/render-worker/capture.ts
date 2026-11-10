@@ -95,7 +95,8 @@ export function captureHandlers(ctx: WorkerContext): HandlersFor<CaptureCmd> {
           return target.transferToImageBitmap();
         });
         respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
-      } catch {
+      } catch (err) {
+        console.error("[render-worker] capture failed:", err);
         blankCapture(msg.reqId);
       }
     },

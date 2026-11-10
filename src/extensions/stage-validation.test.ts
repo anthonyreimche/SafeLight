@@ -510,6 +510,121 @@ describe("a pass's region", () => {
   });
 });
 
+// keep is a flag; anything else is a mistake the author should hear about.
+describe("a pass's keep", () => {
+  it.each([true, false, undefined])("accepts %s", (keep) => {
+    expect(checkStageContract(withFields({ passes: [{ glsl: "", keep }] })).error).toBeNull();
+  });
+
+  it.each([1, "true", null])("refuses %o", (keep) => {
+    const stage = withFields({ passes: [{ glsl: "" }, { glsl: "", keep }] });
+    expect(checkStageContract(stage).error).toMatch(/passes\[1\]\.keep must be true or false/);
+  });
+});
+
+// A region pass's helpers compile into the vertex program as well, where the
+// fragment-only built-ins don't exist; the stage registers, the build fails.
+describe("fragment-only built-ins in a region pass", () => {
+  const withPass = (pass: Record<string, unknown>) =>
+    checkStageContract(withFields({ passes: [{ glsl: "" }, { glsl: "", ...pass }] }));
+
+  it("warns for a built-in in the region, naming the stage, the pass and the identifier", () => {
+    const check = withPass({ region: "return ivec4(ivec2(gl_FragCoord.xy), 1, 1);" });
+    expect(check.error).toBeNull();
+    expect(check.warnings).toHaveLength(1);
+    expect(check.warnings[0]).toMatch(/^stage "acme\.stage": passes\[1\] uses gl_FragCoord /);
+    expect(check.warnings[0]).toContain("vertex program");
+  });
+
+  it.each(["gl_FragCoord", "discard", "dFdx", "dFdy", "fwidth"])("warns for %s in the helpers", (name) => {
+    const check = withPass({ region: "return ivec4(0);", helpers: `float h(float x) { return ${name}(x); }` });
+    expect(check.warnings).toContainEqual(expect.stringContaining(`passes[1] uses ${name} `));
+  });
+
+  it("makes one warning per pass and lists each identifier once", () => {
+    const check = withPass({
+      region: "return ivec4(int(fwidth(1.0)));",
+      helpers: "void h() { discard; } float g() { return dFdx(1.0) + dFdx(2.0); }",
+    });
+    expect(check.warnings).toHaveLength(1);
+    expect(check.warnings[0]).toContain("discard, dFdx, fwidth");
+  });
+
+  it("stays quiet for gl_FragCoord in the fragment body", () => {
+    const check = withPass({ region: "return ivec4(0);", glsl: "c *= gl_FragCoord.x; if (c.r < 0.) discard;" });
+    expect(check.warnings).toEqual([]);
+  });
+
+  it("stays quiet for a pass without a region", () => {
+    const check = withPass({ helpers: "float h() { return dFdx(1.0); }" });
+    expect(check.warnings).toEqual([]);
+  });
+
+  it("stays quiet for identifiers in comments or inside longer names", () => {
+    const check = withPass({
+      region: "// gl_FragCoord is not here\nreturn ivec4(0); /* discard */",
+      helpers: "float my_discard() { return 1.0; } float dFdxy = 1.0;",
+    });
+    expect(check.warnings).toEqual([]);
+  });
+});
+
+// A constant array is copied into every pixel's scratch memory on Direct3D 11.
+describe("constant arrays", () => {
+  const stageWith = (fields: Record<string, unknown>) => checkStageContract(withFields(fields));
+
+  it.each([
+    "const float k[5] = float[5](1., 2., 3., 4., 5.);",
+    "const vec3 w[3] = vec3[](vec3(1.), vec3(2.), vec3(3.));",
+    "const float[5] k = float[5](1., 2., 3., 4., 5.);",
+    "const highp float k[2] = float[](1., 2.);",
+  ])("warns for %s in a pass's glsl", (decl) => {
+    const check = stageWith({ passes: [{ glsl: decl }] });
+    expect(check.error).toBeNull();
+    expect(check.warnings).toHaveLength(1);
+    expect(check.warnings[0]).toMatch(/^stage "acme\.stage": passes\[0\]\.glsl declares a constant array/);
+    expect(check.warnings[0]).toContain("scratch memory");
+  });
+
+  it("warns in the stage's glsl, the stage's helpers, a pass's helpers and a pass's region", () => {
+    const decl = "const float k[2] = float[](1., 2.);";
+    expect(stageWith({ glsl: decl }).warnings).toContainEqual(expect.stringContaining("glsl declares a constant array"));
+    expect(stageWith({ helpers: decl }).warnings).toContainEqual(expect.stringContaining("helpers declares"));
+    expect(stageWith({ passes: [{ glsl: "", helpers: decl }] }).warnings).toContainEqual(
+      expect.stringContaining("passes[0].helpers declares"),
+    );
+    expect(stageWith({ passes: [{ glsl: "", region: `${decl} return ivec4(0);` }] }).warnings).toContainEqual(
+      expect.stringContaining("passes[0].region declares"),
+    );
+  });
+
+  it("makes one warning for each text that has one", () => {
+    const decl = "const float k[2] = float[](1., 2.); const float m[2] = float[](3., 4.);";
+    expect(stageWith({ passes: [{ glsl: decl }] }).warnings).toHaveLength(1);
+  });
+
+  it.each([
+    "uniform float uK[5];",
+    "float k[5] = float[5](1., 2., 3., 4., 5.);",
+    "const float x = 1.0;",
+    "const float x = k[2];",
+    "float y = sum(float[](1., 2.));",
+    "float constant[2] = float[](1., 2.); float my_const = 1.0;",
+    "// const float k[2] = float[](1., 2.);\n/* const float m[2] */",
+  ])("stays quiet for %s", (text) => {
+    const check = stageWith({ glsl: text, passes: [{ glsl: text }] });
+    expect(check.warnings).toEqual([]);
+  });
+
+  it("still validates a stage that has only these warnings", () => {
+    const check = stageWith({
+      passes: [{ glsl: "const float k[2] = float[](1., 2.);", region: "return ivec4(gl_FragCoord);" }],
+    });
+    expect(check.error).toBeNull();
+    expect(check.warnings.length).toBeGreaterThan(0);
+  });
+});
+
 // The ordering reads `after` as a list of stage ids and ignores anything else, so
 // a value it can't use is a warning: the author would otherwise get no effect and
 // no word about it.

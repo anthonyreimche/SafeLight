@@ -184,6 +184,88 @@ describe("a dormant stage on the live renderer", () => {
   });
 });
 
+const THREE = ["a", "b", "c"].map((name): ProcessingStageContribution => ({ ...GAIN, id: `dormant-${name}.test` }));
+const [A, B, C] = THREE.map((stage) => stage.id);
+const TOGETHER: WebGLRendererOpts = { ...LIVE, wakeTogether: true };
+const gains = (byId: Record<string, number>) =>
+  Object.fromEntries(Object.entries(byId).map(([id, value]) => [`${id}.gain`, value]));
+
+// The thumbnail renderer's policy: the stages it is handed, or all of them.
+describe("a renderer that wakes its stages together", () => {
+  const frame = (r: WebGLRenderer, byId: Record<string, number>) => {
+    r.setImage(SOURCE);
+    r.setParams(v2());
+    r.setContributedParams(gains(byId));
+    r.render();
+  };
+
+  it("says which stages its frames have needed", () => {
+    withRenderer({ stages: THREE, ...LIVE }, (r) => {
+      frame(r, { [B]: 2 });
+      expect(r.awakeStages).toEqual([B]);
+    });
+  });
+
+  it("leaves out what it wasn't handed while a frame needs only what it was", () => {
+    withRenderer({ stages: THREE, ...TOGETHER }, (r) => {
+      r.wakeStages([A]);
+      frame(r, { [A]: 2 });
+      expect(r.dormantStages).toEqual([B, C]);
+    });
+  });
+
+  it("puts every stage in when a frame needs one it wasn't handed, and keeps them in", () => {
+    withRenderer({ stages: THREE, ...TOGETHER }, (r) => {
+      r.wakeStages([A]);
+      frame(r, { [B]: 2 });
+      expect(r.dormantStages).toEqual([]);
+      frame(r, {});
+      expect(r.dormantStages).toEqual([]);
+    });
+  });
+
+  it("puts every stage in when told to", () => {
+    withRenderer({ stages: THREE, ...TOGETHER }, (r) => {
+      r.wakeAllStages();
+      frame(r, {});
+      expect(r.dormantStages).toEqual([]);
+    });
+  });
+
+  // The same text is what lets the graphics driver's program cache answer the
+  // thumbnail renderer's build, instead of compiling every stage beside the live view.
+  it.each([true, false])("builds the live view's program text once handed its awake stages (high bit depth %s)", (highBitDepth) => {
+    const developText = (opts: WebGLRendererOpts, handed: readonly string[] | null) => {
+      let awake: readonly string[] = [];
+      const sources = fragmentSources(() =>
+        withRenderer({ stages: THREE, ...opts }, (r) => {
+          if (handed) r.wakeStages(handed);
+          frame(r, { [A]: 2 });
+          awake = r.awakeStages;
+        }),
+      );
+      const develop = sources.filter((s) => s.includes(`#define SL_PROCESS_VERSION ${CURRENT_PROCESS_VERSION}\n`));
+      expect(develop).toHaveLength(1);
+      return { text: develop[0], awake };
+    };
+    const live = developText({ ...LIVE, highBitDepth }, null);
+    const thumbnail = developText({ ...TOGETHER, highBitDepth: false }, live.awake);
+    expect(live.awake).toEqual([A]);
+    expect(thumbnail.text).toBe(live.text);
+    expect(thumbnail.text).not.toBe(developText({ pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: false }, null).text);
+  });
+
+  it("leaves them out again once the stages change", () => {
+    withRenderer({ stages: THREE, ...TOGETHER }, (r) => {
+      r.wakeAllStages();
+      frame(r, {});
+      r.setStages([...THREE]);
+      frame(r, {});
+      expect(r.dormantStages).toEqual([A, B, C]);
+    });
+  });
+});
+
 describe("a dormant stage's mask copies", () => {
   // Columns 0-3 sit left of the mask's step at u = 0.5, columns 4-7 right of it.
   const OUTSIDE = 1;

@@ -264,6 +264,7 @@ Themes recolour, stylesheets reshape. A [`StylesheetContribution`](contributions
 | `.sl-slider-marker` | Value marker on gradient (HSL) tracks |
 | `.sl-slider` | Native `<input type="range">` (style its `::-webkit-slider-thumb` / `::-moz-range-thumb`) |
 | `input[type="checkbox"]`, `input[type="text"]`, `input[inputmode="decimal"]`, `input[type="number"]`, `textarea` | Native fields |
+| `.sl-floating-panel` | A dock panel floated over the workspace (3.2.2) |
 
 ```css
 .sl-slider-thumb { display: block; width: 12px; height: 12px; border-radius: 50%;

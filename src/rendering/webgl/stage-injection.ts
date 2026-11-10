@@ -362,6 +362,29 @@ function sourceRead(space: StageSpace | undefined, texel: string): string {
  *  runner binds at the scratch unit. */
 export const SOURCE_IMAGE_UNIFORM = "uSourceImage";
 
+/** The sampler fetchInput reads while the stage's input isn't the source as
+ *  uploaded (INPUT_IS_SOURCE_UNIFORM false): the input the runner drew. */
+export const INPUT_IMAGE_UNIFORM = "uInputImage";
+export const INPUT_IS_SOURCE_UNIFORM = "uInputIsSource";
+
+/** A pass's fetchInput. From the source, a pass texel maps to the source texel
+ *  it falls in, which is itself at the pass size the runner draws the input at
+ *  otherwise; only a GPU without float render targets reads another size here. */
+function fetchInputGlsl(space: StageSpace | undefined): string {
+  const fetched = sourceRead(space, `texelFetch(${SOURCE_IMAGE_UNIFORM}, t, 0).rgb`);
+  return `uniform sampler2D ${INPUT_IMAGE_UNIFORM}; // the stage's input, drawn at pass size
+uniform bool ${INPUT_IS_SOURCE_UNIFORM};
+vec3 fetchInput(ivec2 texel) {
+  if (${INPUT_IS_SOURCE_UNIFORM}) {
+    vec2 pass = floor(1.0 / uTexel + 0.5);
+    vec2 size = vec2(textureSize(${SOURCE_IMAGE_UNIFORM}, 0));
+    ivec2 t = ivec2((vec2(clamp(texel, ivec2(0), ivec2(pass) - 1)) + 0.5) * size / pass);
+    return ${fetched};
+  }
+  return texelFetch(${INPUT_IMAGE_UNIFORM}, clamp(texel, ivec2(0), textureSize(${INPUT_IMAGE_UNIFORM}, 0) - 1), 0).rgb;
+}`;
+}
+
 /** A pass whose draw count comes from the bag (StagePass.iterations `{ key, max }`). */
 export interface DrawCountBinding {
   /** "{stageId}.{key}", the bag entry the count is read from. */
@@ -381,6 +404,10 @@ export interface PrepassPass {
   /** Set when the count comes from the bag; passDraws() resolves it per frame. */
   drawCount?: DrawCountBinding;
   bindings: ContributedBinding[];
+  /** The pass names fetchInput, so its draws need the stage's input. */
+  fetchesInput?: true;
+  /** The state after the pass is checkpointed (StagePass.keep). */
+  keep?: true;
 }
 
 /** Where a split stops the develop program. "decode": among the decode and
@@ -416,6 +443,9 @@ export interface PrepassStage {
   passesOf?: string;
   /** The stage's dormantWhen (dormantRule): its passes don't run while it holds. */
   dormant?: DormantRule;
+  /** Set when a pass fetches the input: the program that draws the source at
+   *  pass size as the first draw reads it, for a source of another size. */
+  inputSource?: string;
 }
 
 /** The uniform holding a mask copy's coverage slot (its mask's index, or -1
@@ -469,7 +499,7 @@ function buildPassPrograms(
   pass: StagePass,
   space: StageSpace | undefined,
   prefixId = stageId,
-): { fragmentSource: string; vertexSource?: string; bindings: ContributedBinding[] } {
+): { fragmentSource: string; vertexSource?: string; bindings: ContributedBinding[]; fetchesInput: boolean } {
   const uPfx = uniformPrefix(prefixId);
   const hPfx = helperPrefix(prefixId);
   const uniforms = pass.uniforms ?? [];
@@ -489,18 +519,23 @@ function buildPassPrograms(
   // (v1-identity.test.tsx) pins the prelude every older pass gets, and none of
   // those name them.
   const named = body + helpers + (region ?? "");
-  const readSource = /\breadSource\b/.test(named)
-    ? `\nuniform sampler2D ${SOURCE_IMAGE_UNIFORM}; // the decoded source, whatever the stage reads\n` +
-      `vec3 readSource(vec2 uv) { return ${sourceRead(space, `texture(${SOURCE_IMAGE_UNIFORM}, uv).rgb`)}; }`
-    : "";
+  const readsSource = /\breadSource\b/.test(named);
+  const fetchesInput = /\bfetchInput\b/.test(named);
+  const sourceSampler = `\nuniform sampler2D ${SOURCE_IMAGE_UNIFORM}; // the decoded source, whatever the stage reads\n`;
+  const readSource =
+    (readsSource ? sourceSampler + `vec3 readSource(vec2 uv) { return ${sourceRead(space, `texture(${SOURCE_IMAGE_UNIFORM}, uv).rgb`)}; }` : "") +
+    (fetchesInput ? (readsSource ? "\n" : sourceSampler) + fetchInputGlsl(space) : "");
   // Every draw after the first starts from its own texel fetched exactly: a
   // filtered read at vUv can mix in a trace of the neighbours (SwiftShader
   // does), which a long chain compounds. The stage's input may be the source
   // at another size, so the first draw still samples it. A four-channel pass
-  // also stores its alpha (StagePass.channels).
+  // also stores its alpha (StagePass.channels). Its reads take the pass texel
+  // as their gradient, the level texture() picks for a read that follows the
+  // fragment, and use no implicit-derivative op: ANGLE on D3D11 flattens every
+  // branch around a loop that reaches one, so each draw would run them all.
   const four = pass.channels === 4;
   const readPrev4 = four
-    ? `\nvec4 readPrev4(vec2 uv) {\n  vec4 s = texture(uPrevPass, uv);\n  return uPrevRaw ? vec4(${sourceRead(space, "s.rgb")}, 1.0) : s;\n}` +
+    ? `\nvec4 readPrev4(vec2 uv) {\n  vec4 s = textureGrad(uPrevPass, uv, vec2(uTexel.x, 0.0), vec2(0.0, uTexel.y));\n  return uPrevRaw ? vec4(${sourceRead(space, "s.rgb")}, 1.0) : s;\n}` +
       `\nvec4 fetchPrev4(ivec2 texel) {\n  return uPrevRaw ? readPrev4((vec2(texel) + 0.5) * uTexel) : texelFetch(uPrevPass, texel, 0);\n}`
     : "";
   const declarations = `${uniformDecls}
@@ -520,7 +555,7 @@ ${body}
   fragColor = ${four ? "c" : "vec4(c, 1.0)"};
 }
 `;
-  if (region === undefined) return { fragmentSource, bindings };
+  if (region === undefined) return { fragmentSource, bindings, fetchesInput };
   // The fragment program's integers are mediump by default; a uniform both
   // programs declare must agree, or the program doesn't link.
   const vertexSource = `#version 300 es
@@ -546,7 +581,7 @@ void main() {
   gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
 }
 `;
-  return { fragmentSource, vertexSource, bindings };
+  return { fragmentSource, vertexSource, bindings, fetchesInput };
 }
 
 export interface BuiltStageInjection {
@@ -590,7 +625,10 @@ export function stageSignature(s: ProcessingStageContribution): string {
   );
 }
 
-const dormantRules = new WeakMap<ProcessingStageContribution, DormantRule | null>();
+/** A stage as builds and draws report it, and the GPU crash guard keeps it: "{id}:{signature}". */
+export const stageKey = (s: ProcessingStageContribution): string => `${s.id}:${stageSignature(s)}`;
+
+const dormantRules =new WeakMap<ProcessingStageContribution, DormantRule | null>();
 
 /** The stage's dormantWhen as the bindings its values are read through, under
  *  the stage's own id, so a mask copy's rule reads its mask's values. Null for
@@ -1061,9 +1099,16 @@ function declarePrepass(
       ...(built.vertexSource === undefined ? {} : { vertexSource: built.vertexSource }),
       bindings: built.bindings,
       ...passCount(s, p),
+      ...(built.fetchesInput ? { fetchesInput: true as const } : {}),
+      ...(p.keep === true ? { keep: true as const } : {}),
     };
   });
   const dormant = dormantRule(s);
+  // The input drawn as the first draw reads it: an empty pass of the first
+  // pass's channel count.
+  const input = passes.some((p) => p.fetchesInput)
+    ? buildPassPrograms(s.id, { glsl: "", ...(stagePasses[0].channels === 4 ? { channels: 4 } : {}) }, s.space, passesOf)
+    : undefined;
   declared.prepass.push({
     stageId: s.id,
     resultUniform,
@@ -1072,6 +1117,7 @@ function declarePrepass(
     ...(layerUniform ? { layerUniform } : {}),
     ...(passesOf ? { passesOf } : {}),
     ...(dormant ? { dormant } : {}),
+    ...(input ? { inputSource: input.fragmentSource } : {}),
   });
   if (!layerUniform) return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
   return (
@@ -1166,7 +1212,7 @@ export function buildStageInjection(
     },
     // Signed as registered, not as this version's text, so the sig is the
     // same for every variant.
-    sig: ordered.map((s) => `${s.id}:${stageSignature(registered.get(s.id) ?? s)}`).join("|"),
+    sig: ordered.map((s) => stageKey(registered.get(s.id) ?? s)).join("|"),
     bindings: declared.bindings,
     textureBindings: declared.textureBindings,
     prepass: declared.prepass,

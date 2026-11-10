@@ -95,11 +95,13 @@ export interface ExportResult {
   /** True when the caller's signal ended the batch before every photo was
    *  tried. `exported` counts what was done by then. */
   cancelled?: true;
-  /** Why the batch ended early on a failure that every later write would meet
-   *  too (a full disk, a read-only folder), worded for the user. */
+  /** Why the batch ended early on a failure that every later photo would meet
+   *  too (a full disk, a read-only folder, a graphics driver that stopped),
+   *  worded for the user. */
   stopped?: string;
-  /** Count of the exported photos drawn without an extension stage whose
-   *  shader failed to build during the batch, so its effect is missing. */
+  /** Count of the exported photos drawn without an extension's effect because
+   *  it couldn't run on this graphics card: its shader failed to build during
+   *  the batch, or it got no texture unit or layer. */
   withoutStages?: number;
 }
 

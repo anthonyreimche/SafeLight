@@ -271,5 +271,6 @@ function renderFromSource(
     maxEdge,
     quality: 0.8,
     contributedParams: paramBag,
+    preview: true,
   });
 }

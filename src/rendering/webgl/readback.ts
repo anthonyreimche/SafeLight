@@ -77,14 +77,20 @@ export function probePatch(live: Roi, u: number, v: number, bufferW: number, buf
 }
 
 /** The mean of a probe's patch, each channel of each pixel taken through
- *  `linear` before the average, so the patch is averaged in linear light. */
-export function probeMean(raw: Float32Array, linear: (c: number) => number): [number, number, number] {
-  const mean = (ch: number): number => {
-    let sum = 0;
-    for (let i = ch; i < raw.length; i += 4) sum += linear(raw[i]);
-    return sum / (PROBE_PX * PROBE_PX);
-  };
-  return [mean(0), mean(1), mean(2)];
+ *  `linear` before the average, so the patch is averaged in linear light.
+ *  A pixel with a non-finite channel is left out, so one bad texel doesn't
+ *  poison the reading; null when none is finite. */
+export function probeMean(raw: Float32Array, linear: (c: number) => number): [number, number, number] | null {
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i + 2 < raw.length; i += 4) {
+    const pr = linear(raw[i]), pg = linear(raw[i + 1]), pb = linear(raw[i + 2]);
+    if (!Number.isFinite(pr) || !Number.isFinite(pg) || !Number.isFinite(pb)) continue;
+    r += pr;
+    g += pg;
+    b += pb;
+    count++;
+  }
+  return count > 0 ? [r / count, g / count, b / count] : null;
 }
 
 /** The size Upright's downscale of an image of `aspect` is drawn at: `size`

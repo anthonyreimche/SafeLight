@@ -13,7 +13,7 @@ import { getSettings } from "@/state/settings-store";
 import { windowFrameBag } from "./stage-bag";
 import { WebGLRenderer } from "./webgl/renderer";
 import { windowDerived } from "./window-derive";
-import { blameLostContext, noteStageBuild, withoutCrashed } from "./gpu-crash-guard";
+import { blameLostContext, confirmedDrawsOf, noteStageBuild, withoutCrashed } from "./gpu-crash-guard";
 
 // The histogram renderer still runs on the main thread — it's lightweight
 // (256px) and uses thumbnail bitmaps that are already in memory.
@@ -94,6 +94,8 @@ async function getHistCtx(params: DevelopParams): Promise<Ctx | null> {
         pipeline: resolvePipelineFor(null),
         derive: windowDerived,
         onStageBuild: noteStageBuild,
+        // A stage registered later is waited on once, as on a renderer told nothing.
+        confirmedDraws: confirmedDrawsOf(Object.values(useRegistry.getState().processingStages)),
       });
       const created: Ctx = { canvas, renderer };
       // A GPU reset kills the singleton's context; drop it so the next call
