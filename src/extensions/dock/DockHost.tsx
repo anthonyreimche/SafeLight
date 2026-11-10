@@ -312,7 +312,7 @@ const FloatingPanel = memo(function FloatingPanel({ id }: { id: string }) {
   return (
     <div
       onPointerDown={() => bringToFront(id)}
-      className="absolute flex flex-col overflow-hidden rounded border border-border bg-surface-1 shadow-2xl"
+      className="sl-floating-panel absolute flex flex-col overflow-hidden rounded border border-border bg-surface-1 shadow-2xl"
       style={{ ...placement, width: pos.width, zIndex: 30 + Math.max(z, 0) }}
     >
       <PanelHeader id={id} />

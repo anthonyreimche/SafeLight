@@ -48,7 +48,8 @@ function drawnWith(stages: ProcessingStageContribution[]): StageBuildEvent[] {
   } finally {
     console.error = logError;
   }
-  return events;
+  // Draws are covered by stage-draw-events.webgl.test.ts.
+  return events.filter((e) => e.phase === "start" || e.phase === "end");
 }
 
 describe("a renderer's stage build events", () => {

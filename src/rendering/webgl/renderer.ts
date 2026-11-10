@@ -40,7 +40,7 @@ import {
   type UploadedSource,
 } from "./source-cache";
 import { PatchedSource } from "./patched-source";
-import { PrepassRunner, type PrepassFrame } from "./prepass-runner";
+import { PrepassRunner, drawCost, readOnePixel, settleQueuedDraws, type PrepassFrame, type StageDraws } from "./prepass-runner";
 import {
   ATTR_POS,
   ATTR_UV,
@@ -67,6 +67,7 @@ import {
   RESULT_ARRAY_UNIFORM,
   buildStageInjection,
   dormantRule,
+  stageKey,
   stageSignature,
   type BuiltStageInjection,
   type ContributedBinding,
@@ -137,10 +138,15 @@ type SourceImage = ImageBitmap | LinearImage | Float16Source;
 type StageSet = ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
 const NO_STAGES: StageSet = [];
 
-/** A program build with extension stages in it, by "{id}:{signature}". */
+/** A program build with extension stages in it, by stageKey, or the first draws
+ *  with them at a cost (drawCost) this renderer hasn't drawn them at. A draw ends
+ *  once a read of what it drew returns, and never on a context it lost;
+ *  `drawn` is false for draws that stopped short without losing it. */
 export type StageBuildEvent =
   | { phase: "start"; stages: string[] }
-  | { phase: "end"; stages: string[]; outcome: StageBuildOutcome };
+  | { phase: "end"; stages: string[]; outcome: StageBuildOutcome }
+  | { phase: "drawStart"; stages: string[]; cost: string }
+  | { phase: "drawEnd"; stages: string[]; cost: string; drawn: boolean };
 
 // A stage injection and what it was built from: the ids of the registered
 // stages in it (a mask copy's stage's id for the copy), and the stages left
@@ -271,6 +277,11 @@ export interface WebGLRendererOpts {
    *  which exports and thumbnails need: they draw one frame. A redirected
    *  frame (a capture or a probe) is never limited. */
   maskCopyPrepassesPerFrame?: number;
+  /** Whether kept passes (StagePass.keep) leave checkpoints, which a frame of
+   *  the same photo resumes from. Only the live view draws a photo again;
+   *  exports and thumbnails draw each once, so they leave this off (the
+   *  default) and spend no memory on them. */
+  keepPassCheckpoints?: boolean;
   /** Told of each extension stage the renderer quarantines: once per stage,
    *  signature and process version. */
   onStageQuarantined?: (stage: QuarantinedStage) => void;
@@ -278,12 +289,20 @@ export interface WebGLRendererOpts {
    *  for the window to pin a build that takes the graphics driver down on its
    *  stages (gpu-crash-guard.ts). */
   onStageBuild?: (event: StageBuildEvent) => void;
+  /** Stage draws that finished on this machine before, as "key|cost"
+   *  (confirmedDrawsOf): not waited on or said again, as if drawn here. */
+  confirmedDraws?: readonly string[];
   /** Leave a stage out of version 2 and later programs while its dormantWhen
    *  holds and no frame has needed it yet; once one does, it stays in for the
    *  renderer's life (dormantStages). For the live view's renderer: one that
    *  draws many photos once each (thumbnails, exports) would build a program
    *  for each set of stages its photos need. Defaults to off. */
   skipDormantStages?: boolean;
+  /** With skipDormantStages, for a renderer that draws many photos: a frame
+   *  that needs a stage still left out puts every stage in at once, until the
+   *  stages change. It then builds the program of the stages it was handed
+   *  (wakeStages) and the full one, never one for each photo's set. */
+  wakeTogether?: boolean;
 }
 
 export class WebGLRenderer {
@@ -388,8 +407,10 @@ export class WebGLRenderer {
   private coreNRStandsIn = false;
   // Tokens for the split part of a reads-current stage's prepass signature.
   private splitTokens = new SplitTokens();
-  // Bumped whenever the active source texture is swapped (setImage / bindSource).
+  // The drawn source's epoch, which signs its prepass results (showSource),
+  // and the last epoch handed out.
   private sourceEpoch = 0;
+  private sourceEpochs = 0;
   private params: DevelopParams | null = null;
   private asShotTemperature = 6500;
   private showClipping = 0;
@@ -484,6 +505,8 @@ export class WebGLRenderer {
   // skipDormantStages: the ids of the stages a frame has needed, which no later
   // frame leaves out, and those the program in use was built without.
   private readonly skipDormant: boolean;
+  private readonly wakeTogether: boolean;
+  private allAwake = false;
   private readonly awake = new Set<string>();
   // Stages a prewarm hint named together, by id: one waking wakes the rest, so
   // the program it needs is the one the hint built.
@@ -497,6 +520,16 @@ export class WebGLRenderer {
   // The ids of the stage set the last stage was quarantined from.
   private quarantinedFrom: ReadonlySet<string> = new Set();
   private readonly onStageQuarantined: ((stage: QuarantinedStage) => void) | undefined;
+  // onStageBuild, which draws are reported to as well as builds.
+  private readonly reportStage: ((event: StageBuildEvent) => void) | undefined;
+  // The keys of the extension stages, by id, for the stage source they were read from.
+  private keysMemo: { source: StageSet; keys: ReadonlyMap<string, string> } | null = null;
+  // The stage draws this renderer has seen finish, as "key|cost", and the costs
+  // each develop program's own draw has finished at: a draw is waited on once.
+  private readonly drawnStages = new Set<string>();
+  private readonly drawnPrograms = new WeakMap<WebGLProgram, Set<string>>();
+  // The ids of the stages the program in use was built from.
+  private programStageIds: ReadonlySet<string> = new Set();
 
   // The GPU-resident source cache (source-cache.ts).
   private readonly sources: SourceCache;
@@ -532,6 +565,7 @@ export class WebGLRenderer {
     this.maskCopyPrepassesPerFrame = opts?.maskCopyPrepassesPerFrame ?? Infinity;
     this.onStageQuarantined = opts?.onStageQuarantined;
     this.skipDormant = opts?.skipDormantStages ?? false;
+    this.wakeTogether = opts?.wakeTogether ?? false;
 
     const caps = readCaps(gl, { norm16: opts?.highBitDepth ?? true });
     this.caps = caps;
@@ -541,6 +575,8 @@ export class WebGLRenderer {
     });
     this.samplerBudget = caps.textureUnits - DEVELOP_SAMPLERS;
     this.sources = new SourceCache(gl);
+    this.reportStage = opts?.onStageBuild;
+    this.confirmDraws(opts?.confirmedDraws ?? []);
     const builds = opts?.onStageBuild ? this.stageBuilds(opts.onStageBuild) : undefined;
     this.programs = new ProgramCache(gl, MAX_PROGRAMS, builds);
     this.readback = new Readback(gl, caps.colorBufferFloat, (vs, fs) => createProgram(gl, vs, fs, "a readback program"));
@@ -548,7 +584,8 @@ export class WebGLRenderer {
       drawSplit: (index, srcTex, applyRetouch, target) => this.drawSplit(index, srcTex, applyRetouch, target),
       note: (path, note) => this.noteReducedPrecision(path, note),
       builds,
-    });
+      draws: opts?.onStageBuild ? this.stageDraws(opts.onStageBuild) : undefined,
+    }, { checkpoints: opts?.keepPassCheckpoints ?? false });
 
     this.setupQuad();
 
@@ -608,6 +645,28 @@ export class WebGLRenderer {
     return this.dormantIds;
   }
 
+  /** The stages this renderer's frames have needed, or it was handed
+   *  (skipDormantStages): what another renderer drawing the same photo takes
+   *  to build the same program. */
+  get awakeStages(): readonly string[] {
+    return [...this.awake];
+  }
+
+  /** Takes `stageIds` as needed from now on, as a frame needing them would. */
+  wakeStages(stageIds: readonly string[]): void {
+    for (const id of stageIds) this.awake.add(id);
+  }
+
+  /** Puts every stage in, until the stages change: for a frame that must be
+   *  drawn by the full program whatever its values. */
+  wakeAllStages(): void {
+    this.allAwake = true;
+  }
+
+  private get imageAspect(): number {
+    return this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+  }
+
   // 1x1 transparent default so a coverage sampler is always valid even with no
   // brush items present.
   private initCoverageTexture(tex: WebGLTexture) {
@@ -627,7 +686,7 @@ export class WebGLRenderer {
     items: CoverageItem[],
     prevSig: string,
   ): { sig: string; channelOf: Record<string, number> } {
-    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+    const aspect = this.imageAspect;
     const sig = coverageSignature(items, aspect);
     if (sig === prevSig) return { sig, channelOf: this.maskChannelOf };
     const baked = this.maskBaker.bake(items, aspect);
@@ -731,7 +790,7 @@ export class WebGLRenderer {
     if (!entry) {
       entry = {
         inputs: new CoverageInputs(),
-        data: { data: new Uint8Array(4), width: 1, height: 1, format: "rgba8", version: ++this.atlasVersion },
+        data: this.emptyPaint(),
         sig: "",
       };
       this.atlases.set(qk, entry);
@@ -741,14 +800,14 @@ export class WebGLRenderer {
     const items = atlasItems(value);
     const inputs = [this.imageWidth, this.imageHeight, brushTipsGeneration(), ...items.flatMap((i) => [i.id, i.dabs])];
     held.inputs.bakeIfChanged(inputs, () => {
-      const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+      const aspect = this.imageAspect;
       const sig = coverageSignature(items, aspect);
       if (sig === held.sig) return;
       const baked = bakeCoverage(items, aspect);
       held.sig = sig;
       held.data = baked
         ? { data: baked.data, width: baked.size, height: baked.size, format: "rgba8", version: ++this.atlasVersion }
-        : { data: new Uint8Array(4), width: 1, height: 1, format: "rgba8", version: ++this.atlasVersion };
+        : this.emptyPaint();
     });
     return held;
   }
@@ -763,7 +822,7 @@ export class WebGLRenderer {
     }
     const held = entry;
     held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, brushTipsGeneration(), value], () => {
-      const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+      const aspect = this.imageAspect;
       const baked = held.baker.bake(paintLayersFromValue(value), aspect);
       if (baked !== null && baked === held.baked) return;
       held.baked = baked;
@@ -813,6 +872,11 @@ export class WebGLRenderer {
     return this.caps.maxTextureSize;
   }
 
+  /** Whether the GL context is lost: every frame drawn since reads back blank. */
+  get contextLost(): boolean {
+    return this.gl.isContextLost();
+  }
+
   setImage(
     image: SourceImage,
     maxEdge: number = MAX_EDGE,
@@ -830,9 +894,9 @@ export class WebGLRenderer {
   }
 
   // Uploads `image` into a texture of its own and returns it with the state it
-  // is drawn with. Nothing drawn changes: no source epoch, canvas size or
-  // texture binding, so a neighbour decoded ahead leaves the open photo and its
-  // prepass results as they were.
+  // is drawn with, under an epoch of its own. Nothing drawn changes: no source
+  // epoch, canvas size or texture binding, so a neighbour decoded ahead leaves
+  // the open photo and its prepass results as they were.
   private buildSource(
     image: SourceImage,
     maxEdge: number,
@@ -848,7 +912,7 @@ export class WebGLRenderer {
       const source = "kind" in image
         ? this.uploadLinear(image, maxEdge, isFallbackPreview, capFloat16)
         : this.uploadBitmap(image, maxEdge, isFallbackPreview);
-      return { tex, ...source };
+      return { tex, ...source, epoch: ++this.sourceEpochs };
     } catch (err) {
       gl.deleteTexture(tex);
       throw err;
@@ -874,7 +938,7 @@ export class WebGLRenderer {
     maxEdge: number,
     isFallbackPreview: boolean,
     capFloat16: boolean,
-  ): Omit<UploadedSource, "tex"> {
+  ): Omit<UploadedSource, "tex" | "epoch"> {
     const gl = this.gl;
     const fromCache = image.kind === "float16";
     // Bound the working texture to the develop cap. The live RAW decode is
@@ -924,7 +988,7 @@ export class WebGLRenderer {
   // 8-bit sRGB bitmap path. Cap the upload to the develop edge (and never
   // above the GL max texture size) so an oversized bitmap can't fail
   // texImage2D into a black frame — the float path caps the same way.
-  private uploadBitmap(image: ImageBitmap, maxEdge: number, isFallbackPreview: boolean): Omit<UploadedSource, "tex"> {
+  private uploadBitmap(image: ImageBitmap, maxEdge: number, isFallbackPreview: boolean): Omit<UploadedSource, "tex" | "epoch"> {
     const gl = this.gl;
     const cap = Math.min(maxEdge, this.maxTextureEdge);
     const capped = capDrawableToEdge(image, image.width, image.height, cap);
@@ -987,7 +1051,12 @@ export class WebGLRenderer {
 
   // Draws from now on with `source`'s texture and state, under `maxEdge`.
   private showSource(source: UploadedSource, maxEdge: number): void {
-    this.sourceEpoch++;
+    // The same source shown again keeps its epoch, so its prepass results stay
+    // cache hits. Coming back to it from another takes a fresh one: results
+    // dropped in between (a shared-array layer, say) may still carry its old
+    // signature.
+    if (source.epoch !== this.sourceEpoch) source.epoch = ++this.sourceEpochs;
+    this.sourceEpoch = source.epoch;
     this.imageWidth = source.width;
     this.imageHeight = source.height;
     this.maxEdge = maxEdge;
@@ -1069,8 +1138,6 @@ export class WebGLRenderer {
       this.sourceFullWidth = fullWidth;
       this.sourceFullHeight = fullHeight;
       this.sourceSample = sample;
-      // Prepass results are keyed by the epoch, and were drawn with the old uSourceSize.
-      this.sourceEpoch++;
     }
     this.sources.evict();
     return true;
@@ -1307,8 +1374,10 @@ export class WebGLRenderer {
 
   setStages(stages: ProcessingStageContribution[]) {
     this.stageSource = () => stages;
+    this.allAwake = false;
     this.injectionMemo = null;
     this.patchMemo = null;
+    this.keysMemo = null;
     // Copies taken from the set would miss an edit made to this array in place.
     this.copiesMemo = null;
   }
@@ -1463,20 +1532,102 @@ export class WebGLRenderer {
   // Builds named by the keys of the extension stages in them; a build of
   // Safelight's own stages alone says nothing.
   private stageBuilds(report: (event: StageBuildEvent) => void): ProgramBuilds {
-    const keysOf = (ids: ReadonlySet<string>): string[] =>
-      this.currentStages()
-        .filter((s) => ids.has(s.id) && !isBuiltInStage(s))
-        .map((s) => `${s.id}:${stageSignature(s)}`);
     return {
       started: (ids) => {
-        const stages = keysOf(ids);
+        const stages = this.keysOf(ids);
         if (stages.length > 0) report({ phase: "start", stages });
       },
       ended: (ids, outcome) => {
-        const stages = keysOf(ids);
+        const stages = this.keysOf(ids);
         if (stages.length > 0) report({ phase: "end", stages, outcome });
       },
     };
+  }
+
+  // A stage's first draws at each cost are waited on; Safelight's own stages
+  // have no key and never are.
+  private stageDraws(report: (event: StageBuildEvent) => void): StageDraws {
+    return {
+      started: (stageId, cost) => {
+        const key = this.stageKeys().get(stageId);
+        if (key === undefined || this.drawnStages.has(`${key}|${cost}`) || this.gl.isContextLost()) return false;
+        settleQueuedDraws(this.gl);
+        if (this.gl.isContextLost()) return false;
+        report({ phase: "drawStart", stages: [key], cost });
+        return true;
+      },
+      ended: (stageId, cost, drawn) => {
+        const key = this.stageKeys().get(stageId);
+        if (key === undefined) return;
+        if (drawn) this.drawnStages.add(`${key}|${cost}`);
+        report({ phase: "drawEnd", stages: [key], cost, drawn });
+      },
+    };
+  }
+
+  /** Takes stage draws, as "key|cost", as finished on this machine: they are
+   *  not waited on or said again (WebGLRendererOpts.confirmedDraws). */
+  confirmDraws(entries: readonly string[]): void {
+    for (const entry of entries) this.drawnStages.add(entry);
+  }
+
+  /** The keys of the extension stages among `ids`. */
+  private keysOf(ids: ReadonlySet<string>): string[] {
+    const keys: string[] = [];
+    for (const [id, key] of this.stageKeys()) if (ids.has(id)) keys.push(key);
+    return keys;
+  }
+
+  private stageKeys(): ReadonlyMap<string, string> {
+    const source = this.stageSource();
+    if (this.keysMemo?.source === source) return this.keysMemo.keys;
+    const keys = new Map<string, string>();
+    for (const s of this.currentStages()) if (!isBuiltInStage(s)) keys.set(s.id, stageKey(s));
+    this.keysMemo = { source, keys };
+    return keys;
+  }
+
+  // The frame's develop draw into its target. The first a program makes at each
+  // size is waited on, with the extension stages in it said before and after,
+  // so a draw that takes the graphics driver down is pinned on them.
+  private drawOutput(srcTex: WebGLTexture, applyRetouch: boolean): void {
+    const target = this.outputTarget();
+    const report = this.reportStage;
+    const program = this.developProgram();
+    const cost = drawCost(target.w, target.h);
+    const drawn = this.drawnPrograms.get(program);
+    if (!report || drawn?.has(cost) || this.gl.isContextLost()) {
+      this.drawDevelop(srcTex, applyRetouch, target);
+      return;
+    }
+    const stages = this.keysOf(this.programStageIds);
+    // Stages that each finished a develop draw this size, in whatever program,
+    // are not waited on again in a new one.
+    if (stages.length > 0 && stages.every((key) => this.drawnStages.has(`${key}|${cost}`))) {
+      this.drawnPrograms.set(program, (drawn ?? new Set<string>()).add(cost));
+      this.drawDevelop(srcTex, applyRetouch, target);
+      return;
+    }
+    if (stages.length > 0) {
+      settleQueuedDraws(this.gl);
+      if (this.gl.isContextLost()) {
+        this.drawDevelop(srcTex, applyRetouch, target);
+        return;
+      }
+      report({ phase: "drawStart", stages, cost });
+    }
+    let confirmed = false;
+    try {
+      this.drawDevelop(srcTex, applyRetouch, target);
+      // The canvas reads as 8-bit; a redirect's target says what it reads as. A
+      // target it can't read confirms nothing, and is waited on again next time.
+      confirmed = stages.length === 0 || readOnePixel(this.gl, target.fbo === null ? this.gl.UNSIGNED_BYTE : undefined);
+    } finally {
+      if (stages.length > 0 && !this.gl.isContextLost()) report({ phase: "drawEnd", stages, cost, drawn: confirmed });
+    }
+    if (!confirmed) return;
+    this.drawnPrograms.set(program, (drawn ?? new Set<string>()).add(cost));
+    for (const key of stages) this.drawnStages.add(`${key}|${cost}`);
   }
 
   private currentStages(): readonly ProcessingStageContribution[] {
@@ -1590,13 +1741,13 @@ export class WebGLRenderer {
     p: ResolvedPipeline,
     variant: ShaderVariant,
     exit: ProgramExit | undefined,
-  ): { entry: PipelineProgram; built: BuiltStageInjection; dropped: string[]; dormant: readonly string[] } {
+  ): { entry: PipelineProgram; stages: ProgramStages; dropped: string[] } {
     for (;;) {
       let stages = this.stageInjection(variant);
       let failure: unknown;
       try {
         const entry = this.programs.entryFor(p, stages.built, variant, stages.ids, exit);
-        return { entry, built: stages.built, dropped: [], dormant: stages.dormant };
+        return { entry, stages, dropped: [] };
       } catch (err) {
         failure = err;
       }
@@ -1605,7 +1756,7 @@ export class WebGLRenderer {
         stages = this.stageInjection(variant, false);
         try {
           const entry = this.programs.entryFor(p, stages.built, variant, stages.ids, exit);
-          return { entry, built: stages.built, dropped: [...copies.slots.keys()], dormant: stages.dormant };
+          return { entry, stages, dropped: [...copies.slots.keys()] };
         } catch (err) {
           failure = err;
         }
@@ -1650,7 +1801,7 @@ export class WebGLRenderer {
     bag: Record<string, unknown>,
     hinted?: ReadonlySet<string>,
   ): { stages: readonly ProcessingStageContribution[]; dormant: string[] } {
-    if (!this.skipDormant || !variant.fullInfo) return { stages, dormant: [] };
+    if (!this.skipDormant || this.allAwake || !variant.fullInfo) return { stages, dormant: [] };
     const asleep = new Set<string>();
     for (const s of stages) {
       if (this.awake.has(s.id)) continue;
@@ -1659,6 +1810,10 @@ export class WebGLRenderer {
       if (isDormant(rule, bag)) {
         asleep.add(s.id);
         continue;
+      }
+      if (this.wakeTogether) {
+        this.allAwake = true;
+        return { stages, dormant: [] };
       }
       this.wake(s.id);
       if (isMaskInstance(s)) this.wake(s.instanceOf);
@@ -1732,9 +1887,10 @@ export class WebGLRenderer {
     // Dropped mask copies are named by the overflow notice.
     const chosen = this.developEntry(p, variant, exit);
     const e = chosen.entry;
-    built = chosen.built;
+    built = chosen.stages.built;
     this.droppedCopies = chosen.dropped;
-    this.dormantIds = chosen.dormant;
+    this.dormantIds = chosen.stages.dormant;
+    this.programStageIds = chosen.stages.ids;
     this.programs.setCurrent(e);
     // A stage-set change invalidates the pass programs and prepass results of
     // the stages it changed (stageSetChanged), and every split. No process
@@ -1851,22 +2007,12 @@ export class WebGLRenderer {
     const vp = this.redirect?.probe?.roi ?? this.roi;
     gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
 
-
-    // Version 2 skips these tools at identity. Version 1 programs have no
-    // such uniforms, and GL ignores a null location.
-
-
     // Extension-contributed stage uniforms, driven by the generic param bag.
     // Uniforms persist on the program, so binding here once (before the draw
     // passes below) covers both the single-pass and retouch two-pass paths.
     const bag = this.frameBag();
-    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
-    for (const b of this.contributedBindings) {
-      const loc = u[b.qualifiedKey];
-      if (loc == null) continue;
-      const value = b.space === "image" ? imageSpaceValue(bag, b, aspect) : boundValue(bag, b);
-      bindUniformByType(gl, loc, b.glslType, value, b.length);
-    }
+    const aspect = this.imageAspect;
+    this.bindContributed(this.contributedBindings, bag);
     for (const b of this.transformBindings) {
       const loc = u[b.qualifiedKey];
       if (loc == null) continue;
@@ -1946,6 +2092,7 @@ export class WebGLRenderer {
       this.prepass.run(
         this.prepassFrame(
           developed,
+          { w: devW, h: devH },
           `e${this.sourceEpoch}|p${patch.sig}` +
             `|${variantKey(this.variant)}:${this.patchedSource.format}`,
           false,
@@ -1955,13 +2102,14 @@ export class WebGLRenderer {
       if (this.quarantineFailedPasses()) return this.render(options);
       // Pass 2 -> develop from the patched copy (now the spot is already gone,
       // so texture/clarity/sharpening can't invert it). Retouch off this pass.
-      this.drawDevelop(developed, false, this.outputTarget());
+      this.drawOutput(developed, false);
     } else {
       // No retouch (or no offscreen target): single pass. The in-shader retouch
       // is the fallback when the framebuffer can't be created.
-      this.prepass.run(this.prepassFrame(this.imageTexture, `e${this.sourceEpoch}`, hasRetouch, p));
+      const imageSize = { w: this.imageWidth, h: this.imageHeight };
+      this.prepass.run(this.prepassFrame(this.imageTexture, imageSize, `e${this.sourceEpoch}`, hasRetouch, p));
       if (this.quarantineFailedPasses()) return this.render(options);
-      this.drawDevelop(this.imageTexture, hasRetouch, this.outputTarget());
+      this.drawOutput(this.imageTexture, hasRetouch);
     }
   }
 
@@ -2243,15 +2391,19 @@ export class WebGLRenderer {
 
     // Restore the real transform and crop, then the rest of the frame's state.
     const bag = this.frameBag();
-    const imgAspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
-    for (const b of geometry) {
-      const loc = u[b.qualifiedKey];
-      if (loc == null) continue;
-      const value = b.space === "image" ? imageSpaceValue(bag, b, imgAspect) : boundValue(bag, b);
-      bindUniformByType(gl, loc, b.glslType, value, b.length);
-    }
+    this.bindContributed(geometry, bag);
     this.bindFrameState();
     return { data, w, h };
+  }
+
+  private bindContributed(bindings: readonly ContributedBinding[], bag: Record<string, unknown>): void {
+    const aspect = this.imageAspect;
+    for (const b of bindings) {
+      const loc = this.uniforms[b.qualifiedKey];
+      if (loc == null) continue;
+      const value = b.space === "image" ? imageSpaceValue(bag, b, aspect) : boundValue(bag, b);
+      bindUniformByType(this.gl, loc, b.glslType, value, b.length);
+    }
   }
 
   // ── Multi-pass prepass framework ────────────────────────────────────────
@@ -2260,6 +2412,7 @@ export class WebGLRenderer {
   // capture or a probe) is never limited in the mask copies it runs.
   private prepassFrame(
     srcTex: WebGLTexture,
+    srcSize: { w: number; h: number },
     srcSig: string,
     applyRetouch: boolean,
     params: DevelopParams,
@@ -2301,6 +2454,8 @@ export class WebGLRenderer {
       isFallbackPreview: this.isFallbackPreview,
       sourceWidth: this.sourceFullWidth,
       sourceHeight: this.sourceFullHeight,
+      srcW: srcSize.w,
+      srcH: srcSize.h,
     };
   }
 

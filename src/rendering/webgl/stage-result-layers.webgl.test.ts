@@ -65,6 +65,22 @@ function filled(
   };
 }
 
+/** Copies the `size`² result in `from` into `id`'s layer. */
+function writeLayer(
+  gl: WebGL2RenderingContext,
+  layers: StageResultLayers,
+  id: string,
+  from: WebGLFramebuffer,
+  size: number,
+): void {
+  const to = layers.target(id);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, from);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, to);
+  gl.blitFramebuffer(0, 0, size, size, 0, 0, size, size, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+}
+
 /** The red channel of texel (`texel`, `texel`) of layer `layer` of `tex`. */
 function readLayer(
   gl: WebGL2RenderingContext,
@@ -177,8 +193,8 @@ describe("StageResultLayers", () => {
     const half = filled(gl, 0.5);
     try {
       expect(layers.reserve(["a", "b"], 4, 4, 1)).toBe(true);
-      layers.write("a", quarter.fbo, 4, 4);
-      layers.write("b", half.fbo, 4, 4);
+      writeLayer(gl, layers, "a", quarter.fbo, 4);
+      writeLayer(gl, layers, "b", half.fbo, 4);
       expect(readLayer(gl, layers.texture(), layers.layer("a"))).toBe(0.25);
       expect(readLayer(gl, layers.texture(), layers.layer("b"))).toBe(0.5);
       expect(layers.layer("never.test")).toBe(-1);
@@ -195,7 +211,7 @@ describe("StageResultLayers", () => {
     const quarter = filled(gl, 0.25);
     try {
       layers.reserve(["a"], 4, 4, 1);
-      layers.write("a", quarter.fbo, 4, 4);
+      writeLayer(gl, layers, "a", quarter.fbo, 4);
       expect(layers.reserve(["a", "b"], 4, 4, 1)).toBe(true);
       expect(layers.layer("b")).toBe(1);
       expect(readLayer(gl, layers.texture(), layers.layer("a"))).toBe(0.25);
@@ -229,7 +245,7 @@ describe("StageResultLayers", () => {
     try {
       layers.reserve(["a"], 4, 4, 1);
       expect(layers.reserve(["a"], 8, 8, 1)).toBe(true);
-      layers.write("a", half.fbo, 8, 8);
+      writeLayer(gl, layers, "a", half.fbo, 8);
       expect(readLayer(gl, layers.texture(), layers.layer("a"), 7)).toBe(0.5);
     } finally {
       layers.dispose();
@@ -245,7 +261,7 @@ describe("StageResultLayers", () => {
     const quarter = filled(gl, 0.25);
     try {
       layers.reserve(["a", "b"], 4, 4, 1);
-      layers.write("a", quarter.fbo, 4, 4);
+      writeLayer(gl, layers, "a", quarter.fbo, 4);
       expect(layers.reserve(["b"], 4, 4, 2)).toBe(true);
       expect(layers.layer("a")).toBe(-1);
       expect(readLayer(gl, layers.texture(), layers.layer("b"))).toBe(0);
@@ -325,7 +341,7 @@ describe("StageResultLayers", () => {
     try {
       const layers = new StageResultLayers(gl, true);
       layers.reserve(["a"], 4, 4, 1);
-      layers.write("a", quarter.fbo, 4, 4);
+      writeLayer(gl, layers, "a", quarter.fbo, 4);
       layers.reserve(["a", "b"], 4, 4, 1);
       layers.release(new Set());
       expect(tally.live).toEqual(NO_LIVE_OBJECTS);

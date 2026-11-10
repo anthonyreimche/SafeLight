@@ -145,6 +145,9 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           // The live view spreads many masks' prepasses over a few frames; the
           // thumbnail renderer draws each frame complete.
           maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES,
+          // Only the live view draws a photo again, so only it keeps the
+          // state after kept passes to resume from.
+          keepPassCheckpoints: true,
           // Only the live view leaves dormant stages out; the thumbnail renderer
           // draws every photo with one program.
           skipDormantStages: true,
@@ -154,6 +157,7 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           // fall back to the built-in pipeline with no extension stages.
           pipeline: state.latestPipeline,
           stages: state.latestStages,
+          confirmedDraws: [...state.confirmedDraws],
           onStageQuarantined: reportQuarantine(ctx),
           onStageBuild: reportStageBuilds(ctx),
         });
@@ -236,6 +240,10 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
 
     setStages(msg) {
       state.latestStages = msg.stages;
+      const confirmed = msg.confirmedDraws ?? [];
+      for (const entry of confirmed) state.confirmedDraws.add(entry);
+      state.renderer?.confirmDraws(confirmed);
+      state.thumbRenderer?.confirmDraws(confirmed);
       state.renderer?.setStages(msg.stages);
       state.thumbRenderer?.setStages(msg.stages);
     },
@@ -314,8 +322,12 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
       const { renderer } = state;
       if (!renderer || state.awaitingSource) return;
       bindLiveView(ctx, renderer);
-      const histogram = renderer.computeHistogram(!!msg.wantExtended);
-      respond({ type: "histogram", histogram });
+      try {
+        const histogram = renderer.computeHistogram(!!msg.wantExtended);
+        respond({ type: "histogram", histogram });
+      } catch (err) {
+        respond({ type: "histogramError", message: `histogram failed: ${messageOf(err)}` });
+      }
     },
   };
   return handlers;

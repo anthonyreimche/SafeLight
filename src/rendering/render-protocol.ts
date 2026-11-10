@@ -43,6 +43,10 @@ export interface ThumbRenderBase {
   // headless/batch render of a photo other than the live develop one uses its
   // OWN stage params instead of the active photo's.
   contributedParams?: Record<string, unknown>;
+  // A grid preview of an edit. It is drawn as the live view draws the photo,
+  // without the stages at rest on it (dormantWhen), so it can differ from the
+  // full program's frame by a half-float step. Any other frame gets every stage.
+  preview?: boolean;
 }
 
 /** A thumbnail render's output options on top of ThumbRenderBase. */
@@ -174,7 +178,9 @@ export type WorkerRequest =
   | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
   | { cmd: "setSharpenViz"; mode: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
-  | { cmd: "setStages"; stages: ProcessingStageContribution[] }
+  // With the draws of those stages that finished on this machine before, as
+  // "key|cost" (confirmedDrawsOf), which the renderers then don't wait on.
+  | { cmd: "setStages"; stages: ProcessingStageContribution[]; confirmedDraws?: string[] }
   // The stages the window expects the photo to need soon (a panel opened or hovered,
   // a control focused): the develop renderer starts building the program that wakes
   // those of them that are dormant (ProcessingStageContribution.dormantWhen).

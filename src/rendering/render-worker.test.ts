@@ -136,7 +136,24 @@ const { FakeRenderer } = vi.hoisted(() => {
       FakeRenderer.instances.push(this);
     }
 
+    /** The stages its frames have needed (skipDormantStages). */
+    awakeStages: string[] = [];
+    /** Each wakeStages and wakeAllStages call, prepared program and render, in order. */
+    waking: string[] = [];
+    /** The bag it held as each program was prepared. */
+    preparedWith: (Record<string, unknown> | null)[] = [];
+
+    wakeStages(stageIds: readonly string[]) {
+      this.waking.push(`wake:${stageIds.join(",")}`);
+    }
+
+    wakeAllStages() {
+      this.waking.push("wake all");
+    }
+
     prepareProgram(version: number) {
+      this.waking.push("prepare");
+      this.preparedWith.push(this.contributedParams);
       this.prepared.push({ version, pipeline: this.pipeline });
       if (FakeRenderer.prepareError) throw FakeRenderer.prepareError;
     }
@@ -176,6 +193,13 @@ const { FakeRenderer } = vi.hoisted(() => {
     }
 
     setStages(_stages: ProcessingStageContribution[]) {}
+
+    /** The entries of each confirmDraws call. */
+    confirmed: string[][] = [];
+
+    confirmDraws(entries: readonly string[]) {
+      this.confirmed.push([...entries]);
+    }
 
     /** The ids of each prewarmStages call. */
     prewarmed: string[][] = [];
@@ -336,6 +360,7 @@ const { FakeRenderer } = vi.hoisted(() => {
 
     render(options?: { viewOverlays?: boolean }) {
       this.calls.push("render");
+      this.waking.push("render");
       this.renderedWith.push(this.monitorTransform);
       this.renderedIn.push(this.displaySpace);
       this.renderedProof.push(this.proofSpace);
@@ -539,6 +564,18 @@ describe("render-worker init recovery", () => {
     expect(posted.at(-1)).toMatchObject({ type: "ready" });
   });
 
+  it("hands the develop renderer the stage draws the window says finished, made before or after them", () => {
+    const stages: ProcessingStageContribution[] = [
+      { id: "ext.stage", name: "Stage", phase: "tone-map", glsl: "color *= 1.0;", uniforms: [] },
+    ];
+    send({ cmd: "setStages", stages, confirmedDraws: ["ext.stage:abc|a5d2"] });
+    send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
+    const created = FakeRenderer.instances[0];
+    expect(created.opts).toMatchObject({ confirmedDraws: ["ext.stage:abc|a5d2"] });
+    send({ cmd: "setStages", stages, confirmedDraws: ["ext.stage:abc|a6d2"] });
+    expect(created.confirmed).toEqual([["ext.stage:abc|a6d2"]]);
+  });
+
   it("leaves a renderer that was sent no params without any", () => {
     send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
     expect(FakeRenderer.instances[0].paramsSeen).toEqual([]);
@@ -733,6 +770,16 @@ describe("render-worker develop program warm-up", () => {
     expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "start", stages: ["ext.film:abc"] });
     onStageBuild?.({ phase: "end", stages: ["ext.film:abc"], outcome: "built" });
     expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "end", stages: ["ext.film:abc"], outcome: "built" });
+  });
+
+  // And a draw that does, though its shaders built.
+  it("tells the window of each first stage draw the develop renderer starts and ends", () => {
+    send(INIT);
+    const { onStageBuild } = FakeRenderer.instances[0].opts as WebGLRendererOpts;
+    onStageBuild?.({ phase: "drawStart", stages: ["ext.film:abc"], cost: "a11d3" });
+    expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "drawStart", stages: ["ext.film:abc"], cost: "a11d3" });
+    onStageBuild?.({ phase: "drawEnd", stages: ["ext.film:abc"], cost: "a11d3", drawn: true });
+    expect(posted.at(-1)).toEqual({ type: "stageBuild", phase: "drawEnd", stages: ["ext.film:abc"], cost: "a11d3", drawn: true });
   });
 
   it("tells the window of each stage build the thumbnail renderer starts", () => {
@@ -1022,6 +1069,15 @@ describe("render-worker frames", () => {
     expect(posted[1]).toMatchObject({ message: expect.stringContaining("readPixels failed") });
     expect(handedOut).toHaveLength(1);
     expect(handedOut[0].closed).toBe(false);
+  });
+
+  it("answers a histogramError, and no generic error, when a standalone histogram throws", () => {
+    send(INIT);
+    posted = [];
+    FakeRenderer.histogramError = new Error("readPixels failed");
+    send({ cmd: "computeHistogram" });
+    expect(posted.map((m) => m.type)).toEqual(["histogramError"]);
+    expect(posted[0]).toMatchObject({ message: expect.stringContaining("readPixels failed") });
   });
 
   it("answers each render of a run once, by its seq, in order", () => {
@@ -1339,18 +1395,60 @@ function thumbnail(over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnail"
   return request;
 }
 
-// Only the live view leaves dormant stages out (dormantWhen), and only it hears
-// which stages the window expects to need soon.
+// Both renderers leave dormant stages out (dormantWhen). The thumbnail one draws
+// many photos, so it takes the live view's awake stages for a grid preview and
+// every stage for anything else. Only the live view hears which stages the
+// window expects to need soon.
 describe("render-worker dormant stages", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
 
-  it("skips dormant stages on the develop renderer, not the thumbnail one", async () => {
+  it("skips dormant stages on both renderers, the thumbnail one waking its stages together", async () => {
     send(INIT);
     send(thumbnail());
     await Promise.resolve();
     const [develop, thumbs] = FakeRenderer.instances;
     expect(develop.opts).toMatchObject({ skipDormantStages: true });
-    expect(thumbs.opts).not.toMatchObject({ skipDormantStages: true });
+    expect(develop.opts).not.toMatchObject({ wakeTogether: true });
+    expect(thumbs.opts).toMatchObject({ skipDormantStages: true, wakeTogether: true });
+  });
+
+  it("hands a grid preview's renderer the live view's awake stages before each program and draw", async () => {
+    send(INIT);
+    FakeRenderer.instances[0].awakeStages = ["acme.grain"];
+    send(thumbnail({ preview: true }));
+    send(thumbnail({ preview: true, requestId: "t2" }));
+    await Promise.resolve();
+    expect(FakeRenderer.instances[1].waking).toEqual([
+      "wake:acme.grain",
+      "prepare",
+      "wake:acme.grain",
+      "render",
+      "wake:acme.grain",
+      "render",
+    ]);
+  });
+
+  it("wakes every stage for a frame that isn't a grid preview", async () => {
+    send(INIT);
+    FakeRenderer.instances[0].awakeStages = ["acme.grain"];
+    send(thumbnail());
+    await Promise.resolve();
+    expect(FakeRenderer.instances[1].waking).toEqual(["wake all", "prepare", "wake all", "render"]);
+  });
+
+  it("prepares the thumbnail renderer's first program with the request's bag", async () => {
+    send(INIT);
+    send(thumbnail({ preview: true, contributedParams: { "acme.grain.amount": 1 } }));
+    await Promise.resolve();
+    expect(FakeRenderer.instances[1].preparedWith).toEqual([{ "acme.grain.amount": 1 }]);
+  });
+
+  it("hands the thumbnail renderer the stage draws the window said finished before it was made", async () => {
+    send({ cmd: "setStages", stages: [], confirmedDraws: ["ext.stage:abc|a5d2"] });
+    send(INIT);
+    send(thumbnail());
+    await Promise.resolve();
+    expect(FakeRenderer.instances[1].opts).toMatchObject({ confirmedDraws: ["ext.stage:abc|a5d2"] });
   });
 
   it("hands a prewarm hint to the develop renderer", () => {
@@ -1477,9 +1575,10 @@ describe("render-worker contributed params", () => {
       const [live, thumb] = FakeRenderer.instances;
       const merged = live.contributedParams;
       expect(merged).toEqual({ "a.gain": 2, "a.cov": dabs(0.2) });
-      expect(thumb.contributedSeen).toEqual([base, own, base, merged, ownLater, merged]);
-      expect(thumb.contributedSeen[2]).toBe(base);
-      expect(thumb.contributedSeen[5]).toBe(merged);
+      // Its first program is prepared with the request's own bag, then it holds the worker's again.
+      expect(thumb.contributedSeen).toEqual([own, base, own, base, merged, ownLater, merged]);
+      expect(thumb.contributedSeen[3]).toBe(base);
+      expect(thumb.contributedSeen[6]).toBe(merged);
       expect(thumb.contributedParams).toBe(merged);
       expect(posted.filter((msg) => msg.type === "thumbnailError")).toEqual([]);
     });
@@ -1529,6 +1628,18 @@ describe("render-worker contributed params", () => {
       FakeRenderer.renderError = null;
       expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 9 });
       expect(develop().contributedParams).toEqual({ "a.gain": 1 });
+    });
+
+    it("logs the error when the render throws, and still answers the blank capture", () => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      send(INIT);
+      const failure = new Error("Shader compile failed: boom");
+      FakeRenderer.renderError = failure;
+      send({ cmd: "capture", derived: {}, reqId: 10, params: PARAMS, pipeline: BUILTIN_RESOLVED });
+      FakeRenderer.renderError = null;
+      expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 10 });
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(logged).toHaveBeenCalledWith("[render-worker] capture failed:", failure);
     });
   });
 });

@@ -36,6 +36,7 @@ import {
 import {
   GPU_CRASH_LOG,
   blameLostContext,
+  confirmedDrawsOf,
   noteStageBuild,
   settleLeftoverBuild,
   stageKey,
@@ -757,7 +758,7 @@ export class RenderBridge {
     if ([...this.postedStageIds].some((id) => !ids.has(id))) forgetStageFailures();
     syncCrashFailures(useRegistry.getState().processingStages);
     this.postedStageIds = ids;
-    this.post({ cmd: "setStages", stages });
+    this.post({ cmd: "setStages", stages, confirmedDraws: confirmedDrawsOf(stages) });
   }
 
   /** Re-send the processing stages the registry holds now, and the live

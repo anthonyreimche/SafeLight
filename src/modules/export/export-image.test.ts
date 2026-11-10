@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecodedImage } from "@/catalog/load-image";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from "@/catalog/types";
-import type { ExportFrame, ExportProcessorContext } from "@/extensions/types";
+import type { ExportFrame, ExportProcessorContext, ProcessingStageContribution } from "@/extensions/types";
 import { buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 import type { ExportPixels, ExportPixelsOptions, ExportTarget, Sharpen } from "@/rendering/webgl/export-draw";
@@ -45,8 +45,15 @@ const h = vi.hoisted(() => {
     static floatCapture: { data: Float32Array; width: number; height: number } | null = null;
     /** The image (counted from 1) whose upload quarantines an extension stage, or null for none. */
     static quarantineAtImage: number | null = null;
+    /** The image (counted from 1) whose first draw loses the WebGL context, or null for none. */
+    static loseContextAtImage: number | null = null;
+    /** The image (counted from 1) drawn without a stage that got no texture unit, or null for none. */
+    static overflowAtImage: number | null = null;
 
     pipeline: unknown = null;
+    /** Each setImage call's image and long-edge cap. */
+    uploads: { image: unknown; maxEdge: number }[] = [];
+    private lost = false;
     /** Each prepareProgram call: its version, and the pipeline the renderer held. */
     prepared: { version: number; pipeline: unknown }[] = [];
     disposed = false;
@@ -61,7 +68,10 @@ const h = vi.hoisted(() => {
     gpuSharpened: Sharpen[] = [];
 
     images = 0;
-    readonly opts: { onStageQuarantined?: (stage: { stageId: string; signature: string; log: string }) => void };
+    readonly opts: {
+      onStageQuarantined?: (stage: { stageId: string; signature: string; log: string }) => void;
+      confirmedDraws?: readonly string[];
+    };
 
     constructor(_canvas: unknown, opts: FakeRenderer["opts"] = {}) {
       if (FakeRenderer.createError) throw FakeRenderer.createError;
@@ -100,32 +110,46 @@ const h = vi.hoisted(() => {
     setContributedParams(bag: Record<string, unknown>) {
       this.contributed.push(bag);
     }
-    setImage() {
+    setImage(image: unknown, maxEdge: number) {
       events.push("setImage");
+      this.uploads.push({ image, maxEdge });
       if (++this.images === FakeRenderer.quarantineAtImage)
         this.opts.onStageQuarantined?.({ stageId: "ext.film", signature: "abc", log: "syntax error" });
+    }
+    get contextLost(): boolean {
+      return this.lost;
+    }
+    get overflowedStages(): readonly string[] {
+      return this.images === FakeRenderer.overflowAtImage ? ["x"] : [];
+    }
+    private draw(): void {
+      if (this.images === FakeRenderer.loseContextAtImage) this.lost = true;
     }
     signedOutputFor(params: DevelopParams): boolean {
       return Math.min(params.processVersion, FakeRenderer.newestVersion) >= 3;
     }
     render() {
       this.draws.push("render");
+      this.draw();
     }
     renderSharpened(sharpen: Sharpen): boolean {
       this.draws.push("renderSharpened");
       this.gpuSharpened.push(sharpen);
-      return FakeRenderer.gpuSharpens;
+      this.draw();
+      return FakeRenderer.gpuSharpens && !this.lost;
     }
     exportPixels(opts: ExportPixelsOptions = {}): ExportPixels | null {
       this.draws.push("exportPixels");
       this.exportOptions.push(opts);
+      this.draw();
       const next = FakeRenderer.exportTargets.shift();
       const target = next === undefined ? "float32" : next;
-      return target && { data: exportCodes.slice(), width: 2, height: 1, target };
+      return this.lost ? null : target && { data: exportCodes.slice(), width: 2, height: 1, target };
     }
     captureFloatFrame() {
       this.draws.push("captureFloatFrame");
-      return FakeRenderer.floatCapture;
+      this.draw();
+      return this.lost ? null : FakeRenderer.floatCapture;
     }
 
     dispose() {
@@ -137,6 +161,10 @@ const h = vi.hoisted(() => {
     events,
     /** The 8-bit encode steps, in order: "canvasToBlob:<type>", "embedColorProfile". */
     encodes: [] as string[],
+    /** The crop every photo's geometry reports, or null for the edit's own. */
+    cropRegion: null as { x: number; y: number; width: number; height: number } | null,
+    /** Whether embedColorProfile hands back its input untagged, as for a container it can't read. */
+    embedFails: false,
     /** The ids of the decoded bitmaps a batch of several photos closed, in order. */
     closed: [] as string[],
     /** How long, in ms, decoding a photo id takes; none decodes at once. */
@@ -157,6 +185,8 @@ const h = vi.hoisted(() => {
     decoded: new Map<string, DecodedImage>(),
     /** The stage params a photo id's saved edit carries. */
     bags: new Map<string, Record<string, unknown>>(),
+    /** Registered processing stages, by id. */
+    stages: {} as Record<string, ProcessingStageContribution>,
     /** Registered export processors, by id. */
     processors: {} as Record<
       string,
@@ -183,6 +213,11 @@ const h = vi.hoisted(() => {
 
 vi.mock("@/rendering/webgl/renderer", () => ({ WebGLRenderer: h.FakeRenderer }));
 vi.mock("@/rendering/render-bridge", () => ({ getStageTextures: () => ({}) }));
+const blameLostContext = vi.hoisted(() => vi.fn((): string[] => []));
+vi.mock("@/rendering/gpu-crash-guard", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/rendering/gpu-crash-guard")>()),
+  blameLostContext,
+}));
 vi.mock("@/catalog/load-image", () => ({
   loadPhotoImage: async (photo: CatalogPhoto) => {
     h.events.push(`decode:${photo.id}`);
@@ -211,7 +246,7 @@ vi.mock("@/extensions/transform-derive", () => ({
 vi.mock("@/extensions/registry", () => ({
   useRegistry: {
     getState: () => ({
-      processingStages: {},
+      processingStages: h.stages,
       exportProcessors: h.processors,
       filenameTemplates: {},
     }),
@@ -223,9 +258,18 @@ vi.mock("@/rendering/color-space", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/rendering/color-space")>();
   return {
     ...actual,
-    embedColorProfile: (blob: Blob, id: ColorSpaceId) => {
+    embedColorProfile: async (blob: Blob, id: ColorSpaceId) => {
       h.encodes.push("embedColorProfile");
-      return actual.embedColorProfile(blob, id);
+      return h.embedFails ? blob : actual.embedColorProfile(blob, id);
+    },
+  };
+});
+vi.mock("@/rendering/photo-geometry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/rendering/photo-geometry")>();
+  return {
+    photoGeometry: (params: DevelopParams, aspect: number) => {
+      const geometry = actual.photoGeometry(params, aspect);
+      return h.cropRegion ? { ...geometry, region: h.cropRegion } : geometry;
     },
   };
 });
@@ -256,6 +300,7 @@ import {
   type RenderPhotosOptions,
 } from "./export-image";
 import { GRAPHICS_UNAVAILABLE, useGraphics } from "@/state/graphics-store";
+import { noteDrawEnded, stageKey } from "@/rendering/gpu-crash-guard";
 
 const SETTINGS: ExportSettings = {
   format: "image/jpeg",
@@ -316,7 +361,12 @@ beforeEach(() => {
   h.FakeRenderer.gpuSharpens = true;
   h.FakeRenderer.floatCapture = { data: new Float32Array(8).fill(0.5), width: 2, height: 1 };
   h.FakeRenderer.quarantineAtImage = null;
+  h.FakeRenderer.loseContextAtImage = null;
+  h.FakeRenderer.overflowAtImage = null;
   h.FakeRenderer.driverBuildMs = 0;
+  blameLostContext.mockClear();
+  h.cropRegion = null;
+  h.embedFails = false;
   h.nativeFs = null;
   h.catalog = [];
   h.cpuSharpened.length = 0;
@@ -330,6 +380,7 @@ beforeEach(() => {
   h.decoded.clear();
   h.bags.clear();
   for (const id of Object.keys(h.processors)) delete h.processors[id];
+  for (const id of Object.keys(h.stages)) delete h.stages[id];
   vi.stubGlobal("document", { createElement: () => ({}) });
 });
 
@@ -363,6 +414,16 @@ describe("a batch's develop program", () => {
     const v = LEGACY_PROCESS_VERSION;
     expect(h.events).toEqual([`submit:${v}`, "decode:a", `built:${v}`, `prepare:${v}`, "decode:b"]);
     expect(renderer.disposed).toBe(true);
+  });
+
+  it("doesn't wait on the stage draws that finished on this machine before", async () => {
+    const film: ProcessingStageContribution = { id: "ext.film", name: "Film", phase: "effects", glsl: "c = c;", uniforms: [] };
+    h.stages[film.id] = film;
+    const key = stageKey(film);
+    noteDrawEnded([key], "a11d3", true);
+    h.edits.set("a", CURRENT);
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(h.FakeRenderer.instances[0].opts.confirmedDraws).toEqual([`${key}|a11d3`]);
   });
 
   it("fails a rendered batch up front, drawing nothing, when the stock program can't build", async () => {
@@ -1105,6 +1166,63 @@ describe("a rendered batch", () => {
       expect(result.withoutStages).toBeUndefined();
     });
 
+    it("counts a photo drawn without a stage that got no texture unit", async () => {
+      h.FakeRenderer.overflowAtImage = 2;
+      const result = await exportPhotos(batch(), FOLDER, undefined, folder);
+      expect(result.exported).toBe(4);
+      expect(result.withoutStages).toBe(1);
+    });
+
+    // The export's own canvas never gets its context back: every later frame
+    // would come out blank.
+    describe("when the graphics driver stops while photo 2 of 3 is drawn", () => {
+      const three = () => batch().slice(0, 3);
+      const LOST = "the graphics driver reset";
+
+      beforeEach(() => {
+        h.FakeRenderer.loseContextAtImage = 2;
+      });
+
+      it("fails that photo, writes nothing for it and stops the batch", async () => {
+        const result = await exportPhotos(three(), FOLDER, undefined, folder);
+        expect(result.exported).toBe(1);
+        expect(result.failures).toEqual([{ filename: "b.RAF", reason: LOST }]);
+        expect(result.stopped).toBe(LOST);
+        expect(written).toEqual(["a.jpg"]);
+        expect(h.events.filter((e) => e === "setImage")).toHaveLength(2);
+        expect(exportStatus(result)).toBe(`Stopped: ${LOST}, after exporting 1 photo.`);
+      });
+
+      it("leaves a file it would have replaced as it was", async () => {
+        const created: string[] = [];
+        const holding = {
+          getFileHandle: async (name: string, opts?: { create?: boolean }) => {
+            if (opts?.create) created.push(name);
+            else if (name !== "b.jpg") throw new DOMException("none", "NotFoundError");
+            return { createWritable: async () => ({ write: async () => undefined, close: async () => undefined }) };
+          },
+        } as unknown as FileSystemDirectoryHandle;
+        const result = await exportPhotos(three(), { ...FOLDER, ifExists: "replace" }, undefined, holding);
+        expect(result.stopped).toBe(LOST);
+        expect(created).toEqual(["a.jpg"]);
+      });
+
+      it("renders no more photos of a headless render", async () => {
+        const out = await renderPhotosToBlobs(three(), SETTINGS);
+        expect(out.map((r) => r.blob === null)).toEqual([false, true, true]);
+        expect(h.events.filter((e) => e === "setImage")).toHaveLength(2);
+      });
+
+      // So the stage whose draw or build was in hand is left out of the next attempt.
+      it("pins the lost context on the stages in hand, once", async () => {
+        await exportPhotos(three(), FOLDER, undefined, folder);
+        expect(blameLostContext).toHaveBeenCalledTimes(1);
+        blameLostContext.mockClear();
+        await renderPhotosToBlobs(three(), SETTINGS);
+        expect(blameLostContext).toHaveBeenCalledTimes(1);
+      });
+    });
+
     describe("stops on a failure that every later write would meet", () => {
       it.each([
         ["ENOSPC: no space left on device", "the disk is full"],
@@ -1447,6 +1565,32 @@ describe("a rendered batch", () => {
       expect(seen[0]).not.toHaveProperty(hidden);
   });
 
+  // The upload caps a float decode and a bitmap to the long edge it is given, so
+  // a crop needs that edge raised to keep the asked-for pixels inside it. The
+  // cached half-size float16 uploads at its stored size, which the edge only caps
+  // on output.
+  describe("cropped to a quarter of the frame at a 2048 px long edge", () => {
+    const EDGE_2048: ExportSettings = { ...SETTINGS, longEdge: 2048 };
+    const sources: [string, DecodedImage, number][] = [
+      ["a float decode", { kind: "float", data: new Float32Array(0), width: 6000, height: 4000 }, 4096],
+      ["a bitmap", { kind: "bitmap", bitmap: { width: 6000, height: 4000, close: () => undefined } as unknown as ImageBitmap }, 4096],
+      ["the cached float16", { kind: "float16", data: new Uint16Array(0), width: 3000, height: 2000 }, 2048],
+    ];
+
+    it.each(sources)("uploads %s capped to the edge the crop needs", async (_, image, maxEdge) => {
+      h.cropRegion = { x: 0, y: 0, width: 0.5, height: 0.5 };
+      h.decoded.set("a", image);
+      await renderPhotosToBlobs([photo("a")], EDGE_2048);
+      expect(h.FakeRenderer.instances[0].uploads.map((u) => u.maxEdge)).toEqual([maxEdge]);
+    });
+
+    it.each(sources)("uploads %s uncropped capped to the long edge", async (_, image) => {
+      h.decoded.set("a", image);
+      await renderPhotosToBlobs([photo("a")], EDGE_2048);
+      expect(h.FakeRenderer.instances[0].uploads.map((u) => u.maxEdge)).toEqual([2048]);
+    });
+  });
+
   it("names a file by the type a processor turned it into", async () => {
     h.processors.avif = {
       id: "avif",
@@ -1588,6 +1732,33 @@ describe("an export by process version", () => {
     expect(blob?.type).toBe("image/tiff");
     expect(renderer.draws).toEqual(["exportPixels", "renderSharpened"]);
     expect(h.cpuSharpened).toEqual([]);
+  });
+
+  it.each([
+    ["version 3", V3],
+    ["version 2", V2],
+  ])("fails a %s 16-bit export whose context was lost, rather than falling back to 8-bit", async (_, params) => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    h.FakeRenderer.loseContextAtImage = 1;
+    const result = await exportPhotos(photos(["p", params]), TIFF16, undefined, folder);
+    expect(result).toMatchObject({
+      exported: 0,
+      degradedTo8Bit: 0,
+      failures: [{ filename: "p.RAF", reason: "the graphics driver reset" }],
+    });
+    expect(warned).not.toHaveBeenCalled();
+  });
+
+  // Untagged, a wide-gamut file reads as sRGB in most apps, its colours dulled.
+  it("warns once per export when a colour profile can't be embedded", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    h.embedFails = true;
+    const result = await exportPhotos(photos(["p", V3], ["q", V3]), { ...JPEG, colorSpace: "adobe-rgb" }, undefined, folder);
+    expect(result.exported).toBe(2);
+    expect(warned).toHaveBeenCalledTimes(1);
+    const message = warned.mock.calls[0].join(" ");
+    expect(message).toContain('"p.RAF"');
+    expect(message).toContain("adobe-rgb");
   });
 
   it("exports a version 2 photo as it always has", async () => {
@@ -2295,7 +2466,7 @@ describe("the export status line", () => {
 
   it("says how many photos are missing an extension's effect", () => {
     expect(exportStatus(result({ withoutStages: 2 }))).toBe(
-      "Exported 3 photos. 2 exported without an extension's effect (its shader failed to build).",
+      "Exported 3 photos. 2 exported without an extension's effect (it couldn't run on this graphics card).",
     );
   });
 

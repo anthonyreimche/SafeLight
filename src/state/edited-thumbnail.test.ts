@@ -24,6 +24,7 @@ interface ThumbRenderOpts {
   maxEdge: number;
   quality?: number;
   contributedParams?: Record<string, unknown>;
+  preview?: boolean;
 }
 
 const bridge = vi.hoisted(() => ({
@@ -178,6 +179,7 @@ describe("rendering from the resident source", () => {
     expect(opts.params.exposure).toBe(1);
     expect(opts.asShotTemperature).toBe(5000);
     expect(opts.maxEdge).toBe(THUMB_MAX_EDGE);
+    expect(opts.preview).toBe(true);
     expect(opts.contributedParams).toEqual({ "ext.stage.k": 3, ...denoiseBag(params(1)) });
 
     expect(written).toHaveLength(1);

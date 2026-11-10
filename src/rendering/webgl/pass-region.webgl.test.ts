@@ -84,6 +84,12 @@ describe("a pass's region", () => {
     expect(greys(drawn)).toEqual(greys(counted("q.x < 6 ? 5 : 3")));
   });
 
+  it("can read the previous draw to decide", () => {
+    const region = "float v = readPrev(vec2(0.5)).r; return ivec4(0, 0, 4, v >= 0.0 ? 1 << 20 : 0);";
+    const drawn = stage([{ channels: 4, iterations: 5, glsl: COUNT, region }]);
+    expect(greys(drawn)).toEqual(greys(counted("q.x < 4 ? 5 : 3")));
+  });
+
   it("counts the stage's draws, not the pass's", () => {
     const drawn = stage([
       { channels: 4, iterations: 2, glsl: COUNT },

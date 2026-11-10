@@ -37,7 +37,7 @@ import { failsEveryWrite, fsErrorText, mayFailEveryWrite } from "@/project/fs-er
 import { nativeFs, nativePathOf, readFileSlice } from "@/project/native-fs";
 import { listNames } from "@/project/fs";
 import { useCatalogStore } from "@/state/catalog-store";
-import { noteStageBuild, withoutCrashed } from "@/rendering/gpu-crash-guard";
+import { blameLostContext, confirmedDrawsOf, noteStageBuild, withoutCrashed } from "@/rendering/gpu-crash-guard";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
@@ -114,16 +114,25 @@ export interface ExportResult {
   /** True when the caller's signal ended the batch before every photo was
    *  tried. `exported` counts what was done by then. */
   cancelled?: true;
-  /** Why the batch ended early on a failure that every later write would meet
-   *  too (a full disk, a read-only folder), worded for the user. */
+  /** Why the batch ended early on a failure that every later photo would meet
+   *  too (a full disk, a read-only folder, a graphics driver that stopped),
+   *  worded for the user. */
   stopped?: string;
-  /** Count of the exported photos drawn without an extension stage whose
-   *  shader failed to build during the batch, so its effect is missing. */
+  /** Count of the exported photos drawn without an extension's effect because
+   *  it couldn't run on this graphics card: its shader failed to build during
+   *  the batch, or it got no texture unit or layer. */
   withoutStages?: number;
 }
 
 function errorReason(e: unknown): string {
   return fsErrorText(e);
+}
+
+const CONTEXT_LOST = "the graphics driver reset";
+
+// A lost context draws and reads back blank frames, which must never be written.
+function failIfContextLost(renderer: WebGLRenderer): void {
+  if (renderer.contextLost) throw new Error(CONTEXT_LOST);
 }
 
 /** The Export panel's line on a finished batch: how many photos it exported,
@@ -143,7 +152,7 @@ export function exportStatus(result: ExportResult): string {
     msg += ` ${result.reducedPrecision} exported at reduced 16-bit precision (device can't render full precision).`;
   }
   if (result.withoutStages) {
-    msg += ` ${result.withoutStages} exported without an extension's effect (its shader failed to build).`;
+    msg += ` ${result.withoutStages} exported without an extension's effect (it couldn't run on this graphics card).`;
   }
   if (result.zipFellBack) {
     msg += " ZIP exceeded 4 GiB; delivered as individual files.";
@@ -625,6 +634,15 @@ interface RenderOneResult {
   reducedPrecision: boolean;
   /** Why no blob was rendered, worded for the user, where that is known. */
   failure?: string;
+  /** The file was meant to carry a colour profile that couldn't be embedded. */
+  unprofiled?: boolean;
+}
+
+// Untagged, a wide-gamut file reads as sRGB in most apps, its colours dulled.
+function warnUnprofiled(photo: CatalogPhoto, colorSpace: ColorSpaceId): void {
+  console.warn(
+    `[safelight] the ${colorSpace} colour profile couldn't be embedded in the export of "${photo.filename}"; it was written untagged, so most apps will read it as sRGB. Later files in this export may be untagged too.`,
+  );
 }
 
 // Where the EXIF reader stops looking; reading more of the original, over the
@@ -829,13 +847,13 @@ async function renderOne(
       0.01,
     );
     const requestEdge = settings.longEdge ?? Math.max(w, h);
-    // Float sources are downsampled to maxEdge at upload, so a cropped export
-    // must inflate the cap to keep enough pixels inside the crop (bounded by
-    // the native size and the GPU's texture limit). Bitmap/float16 sources
-    // upload at native size — for them maxEdge is purely the output cap, and
-    // inflating it would overshoot the requested long edge.
+    // Float and bitmap sources are downsampled to maxEdge at upload, so a
+    // cropped export must inflate the cap to keep enough pixels inside the crop
+    // (bounded by the native size and the GPU's texture limit). The cached
+    // float16 uploads at its stored size; for it maxEdge is purely the output
+    // cap, and inflating it would overshoot the requested long edge.
     const maxEdge =
-      image.kind === "float"
+      image.kind !== "float16"
         ? Math.min(
             Math.ceil(requestEdge / cropFrac),
             Math.max(w, h),
@@ -878,6 +896,7 @@ async function renderOne(
     let degradedTo8Bit = false;
     if (asks16Bit(settings)) {
       const rendered = render16Bit(renderer, signedOutput, sharpen);
+      failIfContextLost(renderer);
       if (rendered) {
         const pixelProcessors = processorsWith("processPixels", run);
         const frame = await runPixelProcessors(pixelProcessors, rendered, colorSpace, 16, run);
@@ -901,23 +920,28 @@ async function renderOne(
     // nothing when it can't, so the frame is drawn then.
     const sharpenedOnGpu = signedOutput && sharpen !== undefined && renderer.renderSharpened(sharpen);
     if (!sharpenedOnGpu) renderer.render();
+    failIfContextLost(renderer);
     const drawn = sharpen && !sharpenedOnGpu
       ? applyOutputSharpening(canvas, sharpen.amount, sharpen.radius)
       : canvas;
     const hooked = await hookDrawn(drawn, processorsWith("processPixels", run), colorSpace, run);
+    failIfContextLost(renderer);
     const { width, height } = hooked ?? drawn;
     const exifIfds = exifFor(width, height);
     if (settings.format === "image/tiff") {
-      const tiff = tiffBlob(hooked ?? readCanvas(drawn), 8, colorSpace, exifIfds);
-      const blob = await runProcessors(tiff, run);
+      const pixels = hooked ?? readCanvas(drawn);
+      failIfContextLost(renderer);
+      const blob = await runProcessors(tiffBlob(pixels, 8, colorSpace, exifIfds), run);
       return { blob, width, height, degradedTo8Bit, reducedPrecision: false };
     }
     const raw = await canvasToBlob(hooked ? canvasOf(hooked) : drawn, settings.format, settings.quality);
+    failIfContextLost(renderer);
     if (!raw) return { blob: null, width: 0, height: 0, degradedTo8Bit, reducedPrecision: false };
     const profiled = await embedColorProfile(raw, colorSpace);
+    const unprofiled = colorSpace !== "srgb" && profiled === raw;
     const tagged = exifIfds ? await embedExif(profiled, serializeExifTiff(exifIfds)) : profiled;
     const blob = await runProcessors(tagged, run);
-    return { blob, width, height, degradedTo8Bit, reducedPrecision: false };
+    return { blob, width, height, degradedTo8Bit, reducedPrecision: false, unprofiled };
   } finally {
     bitmap?.close();
   }
@@ -955,13 +979,15 @@ async function makeBatchRenderer(
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer | null = null;
   try {
+    const stages = withoutCrashed(Object.values(useRegistry.getState().processingStages));
     renderer = new WebGLRenderer(canvas, {
       highBitDepth: getSettings().highBitDepth,
-      stages: withoutCrashed(Object.values(useRegistry.getState().processingStages)),
+      stages,
       pipeline: resolveDefaultPipeline(),
       derive: windowDerived,
       onStageQuarantined,
       onStageBuild: noteStageBuild,
+      confirmedDraws: confirmedDrawsOf(stages),
     });
     const saved = first
       ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
@@ -1065,6 +1091,7 @@ export async function renderPhotosToBlobs(
   const { renderer, canvas } = made;
   const procSettings = settings.processorSettings ?? {};
   const out: RenderedPhoto[] = [];
+  let warnedUnprofiled = false;
   try {
     for (let i = 0; i < photos.length; i++) {
       if (options?.signal?.aborted) break;
@@ -1074,7 +1101,12 @@ export async function renderPhotosToBlobs(
       let height = 0;
       try {
         const prepared = await ahead.take(i);
-        ({ blob, width, height } = await renderOne(renderer, canvas, photo, prepared, settings, procSettings, options?.paramBag, options?.processors !== false));
+        const r = await renderOne(renderer, canvas, photo, prepared, settings, procSettings, options?.paramBag, options?.processors !== false);
+        ({ blob, width, height } = r);
+        if (r.unprofiled && !warnedUnprofiled) {
+          warnedUnprofiled = true;
+          warnUnprofiled(photo, settings.colorSpace ?? "srgb");
+        }
       } catch {
         blob = null;
       }
@@ -1085,6 +1117,11 @@ export async function renderPhotosToBlobs(
         height: blob ? height : 0,
       });
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
+      if (renderer.contextLost) {
+        blameLostContext();
+        for (const rest of photos.slice(i + 1)) out.push({ photo: rest, blob: null, width: 0, height: 0 });
+        break;
+      }
     }
   } finally {
     ahead.release();
@@ -1142,6 +1179,7 @@ export async function exportPhotos(
   let degradedTo8Bit = 0;
   let reducedPrecision = 0;
   let withoutStages = 0;
+  let warnedUnprofiled = false;
   const replace = (settings.ifExists ?? getSettings().exportIfExists) === "replace";
 
   const procSettings = settings.processorSettings ?? {};
@@ -1173,14 +1211,22 @@ export async function exportPhotos(
       try {
         const prepared = await ahead.take(i);
         const r = await renderOne(renderer, canvas, photo, prepared, settings, procSettings);
-        drawnWithout = quarantined.size > 0;
+        drawnWithout = quarantined.size > 0 || renderer.overflowedStages.length > 0;
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
         if (r.reducedPrecision) reducedPrecision++;
+        if (r.unprofiled && !warnedUnprofiled) {
+          warnedUnprofiled = true;
+          warnUnprofiled(photo, settings.colorSpace ?? "srgb");
+        }
         renderReason = r.failure;
       } catch (e) {
         blob = null;
         renderReason = errorReason(e);
+        if (renderer.contextLost) {
+          stopped = CONTEXT_LOST;
+          blameLostContext();
+        }
       }
       if (blob) {
         const ext = exportExtension(settings.format, blob.type);

@@ -3975,6 +3975,22 @@ describe("RenderBridge stage quarantine", () => {
       bridge.dispose();
     });
 
+    it("tells the worker the stage's draws that finished, with the stages", () => {
+      const bridge = new RenderBridge();
+      bridge.setOnError(() => undefined);
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      worker.reply({ type: "ready", pipelineFloat: true });
+      const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
+      worker.reply({ type: "stageBuild", phase: "drawStart", stages: [key], cost: "a5d2" });
+      worker.reply({ type: "stageBuild", phase: "drawEnd", stages: [key], cost: "a5d2", drawn: true });
+      bridge.syncStages();
+      const posted = setStagesPosted(worker).at(-1);
+      expect(posted?.stages.map((s) => s.id)).toContain(BROKEN.id);
+      expect(posted?.confirmedDraws).toContain(`${key}|a5d2`);
+      bridge.dispose();
+    });
+
     it("keeps naming the stage once the worker's renderer is made again", () => {
       const bridge = new RenderBridge();
       bridge.setOnError(() => undefined);
@@ -3998,6 +4014,41 @@ describe("RenderBridge stage quarantine", () => {
       const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
       worker.reply({ type: "stageBuild", phase: "start", stages: [key] });
       worker.reply({ type: "stageBuild", phase: "end", stages: [key], outcome: "built" });
+      worker.reply({ type: "contextLost" });
+
+      expect(errors).toEqual([]);
+      expect(failuresOfAcme()).toEqual([]);
+      bridge.dispose();
+    });
+
+    // A stage that built here can still draw long enough for the driver to reset.
+    it("names a stage whose draw was in hand, though it had built", () => {
+      const bridge = new RenderBridge();
+      const errors: string[] = [];
+      bridge.setOnError((message) => errors.push(message));
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
+      worker.reply({ type: "stageBuild", phase: "start", stages: [key] });
+      worker.reply({ type: "stageBuild", phase: "end", stages: [key], outcome: "built" });
+      worker.reply({ type: "stageBuild", phase: "drawStart", stages: [key], cost: "a11d3" });
+      worker.reply({ type: "contextLost" });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("Acme Film");
+      expect(failuresOfAcme().map((f) => f.stageId)).toEqual(["acme.film"]);
+      bridge.dispose();
+    });
+
+    it("blames nothing for a stage whose draw ended", () => {
+      const bridge = new RenderBridge();
+      const errors: string[] = [];
+      bridge.setOnError((message) => errors.push(message));
+      bridge.init(16, 16);
+      const worker = FakeWorker.instances[0];
+      const key = `${BROKEN.id}:${stageSignature(BROKEN)}`;
+      worker.reply({ type: "stageBuild", phase: "drawStart", stages: [key], cost: "a11d3" });
+      worker.reply({ type: "stageBuild", phase: "drawEnd", stages: [key], cost: "a11d3", drawn: true });
       worker.reply({ type: "contextLost" });
 
       expect(errors).toEqual([]);

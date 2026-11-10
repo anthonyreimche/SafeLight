@@ -73,6 +73,7 @@ const {
   guardPrivileged,
 } = require("./window-policy.cjs");
 const { effectiveMinimum, fitToWorkArea } = require("./window-bounds.cjs");
+const { revealWhenReady } = require("./window-reveal.cjs");
 const {
   SAFELIGHT_REPO,
   downloadVerified,
@@ -739,7 +740,7 @@ function createWindow() {
   // Restore maximize/full screen here rather than via constructor options:
   // acting on a still-hidden window makes some platforms surface it early,
   // which is the black first frame `show: false` exists to avoid.
-  win.once("ready-to-show", () => {
+  revealWhenReady(win, () => {
     if (state.fullScreen) win.setFullScreen(true);
     else if (state.maximized) win.maximize();
     win.show();
@@ -831,7 +832,7 @@ if (!app.requestSingleInstanceLock()) {
     // Children open hidden (show: false above) to avoid a black first frame;
     // whichever window opened them shows them once painted.
     contents.on("did-create-window", (childWin) => {
-      childWin.once("ready-to-show", () => childWin.show());
+      revealWhenReady(childWin, () => childWin.show());
     });
     contents.on("will-navigate", (event, url) => {
       if (navigationAllowed(url)) return;

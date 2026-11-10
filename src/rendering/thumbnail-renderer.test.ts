@@ -45,7 +45,10 @@ const h = vi.hoisted(() => {
     /** Each setContributedParams call's bag. */
     contributed: Record<string, unknown>[] = [];
 
-    constructor() {
+    readonly opts: { confirmedDraws?: readonly string[] };
+
+    constructor(_canvas: unknown, opts: FakeRenderer["opts"] = {}) {
+      this.opts = opts;
       FakeRenderer.instances.push(this);
     }
 
@@ -220,6 +223,19 @@ describe("renderPhotoHistogram without a loaded thumbnail", () => {
 // The histogram draws the saved edit as Develop does: the photo's own stage bag
 // under the built-in denoiser's entries, which come from the Detail panel's
 // params, with its transform's derived uniforms.
+describe("renderPhotoHistogram's renderer", () => {
+  it("doesn't wait on the stage draws that finished on this machine before", async () => {
+    const { registerProcessingStage } = await import("@/extensions/registry");
+    const guard = await import("./gpu-crash-guard");
+    const film = { id: "acme.film", name: "Film", phase: "effects" as const, glsl: "c = c;", uniforms: [] };
+    registerProcessingStage("acme", film);
+    const key = guard.stageKey(film);
+    guard.noteDrawEnded([key], "a11d3", true);
+    await renderPhotoHistogram(photo(), normalizeParams({}));
+    expect(h.FakeRenderer.instances[0].opts.confirmedDraws).toContain(`${key}|a11d3`);
+  });
+});
+
 describe("renderPhotoHistogram's stage bag", () => {
   const NR = normalizeParams({ processVersion: CURRENT_PROCESS_VERSION, luminanceNR: 40, colorNR: 0 });
 

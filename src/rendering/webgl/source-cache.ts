@@ -59,6 +59,9 @@ export interface SourceEntry {
   // cache-hit render doesn't inherit a stale cap from the previously-active
   // source (which sized the output wrong — the export-bug class).
   maxEdge: number;
+  // The source epoch its prepass results are signed with (WebGLRenderer).
+  // Stamped at upload, so a re-upload under the same key is a new source.
+  epoch: number;
   bytes: number;
   lastUsed: number;
 }
@@ -315,19 +318,27 @@ export function capFloatToEdge(
   return { data: out, width: w, height: h };
 }
 
+function canvas2d(w: number, h: number): {
+  canvas: HTMLCanvasElement | OffscreenCanvas;
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+} {
+  const canvas: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(w, h);
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+  return { canvas, ctx };
+}
+
 export function downsampleDrawable(img: TexImageSource, W: number, H: number): SourceFill {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
   const h = Math.max(1, Math.round(H * scale));
-  const c: HTMLCanvasElement | OffscreenCanvas =
-    typeof document !== "undefined"
-      ? document.createElement("canvas")
-      : new OffscreenCanvas(w, h);
-  c.width = w; c.height = h;
-  const ctx = c.getContext("2d") as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
+  const { ctx } = canvas2d(w, h);
   if (!ctx) return { data: new Uint8ClampedArray(w * h * 4), w, h };
   ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
   return { data: ctx.getImageData(0, 0, w, h).data, w, h };
@@ -350,16 +361,8 @@ export function capDrawableToEdge(
   if (scale >= 1) return { source: img, width: W, height: H };
   const w = Math.max(1, Math.round(W * scale));
   const h = Math.max(1, Math.round(H * scale));
-  const c: HTMLCanvasElement | OffscreenCanvas =
-    typeof document !== "undefined"
-      ? document.createElement("canvas")
-      : new OffscreenCanvas(w, h);
-  c.width = w; c.height = h;
-  const ctx = c.getContext("2d") as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
+  const { canvas, ctx } = canvas2d(w, h);
   if (!ctx) return { source: img, width: W, height: H };
   ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
-  return { source: c, width: w, height: h };
+  return { source: canvas, width: w, height: h };
 }
