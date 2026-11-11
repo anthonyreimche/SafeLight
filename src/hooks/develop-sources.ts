@@ -10,6 +10,7 @@
 import type { RefObject } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { onCacheEntryFilled } from "@/catalog/cache-events";
+import { convertedTargetEdge } from "@/catalog/input-profiles";
 import { loadPhotoImage, photoSourceKey, refreshStaleSource } from "@/catalog/load-image";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import type { RenderBridge } from "@/rendering/render-bridge";
@@ -66,7 +67,9 @@ function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage)
     keys = new Set();
     staleSources.set(bridge, keys);
   }
-  if (image.kind === "float16" && !image.sample) keys.add(key);
+  // A display-referred source (a non-RAW photo through its input profile) has
+  // no sample to wait for: no RAW cache entry stands behind it.
+  if (image.kind === "float16" && !image.sample && !image.displayReferred) keys.add(key);
   else keys.delete(key);
 }
 
@@ -160,7 +163,12 @@ export async function prefetchNeighbors(
     if (cancelled()) return;
     // The develop renderer keeps the native sample (render-worker.ts), and a
     // neighbour bound later restores what was uploaded, so ask for it now.
-    const image = await loadPhotoImage(np, { background: true, signal, sample: true });
+    const image = await loadPhotoImage(np, {
+      background: true,
+      signal,
+      sample: true,
+      ...convertedTargetEdge(np, maxEdge),
+    });
     if (cancelled()) {
       if (image?.kind === "bitmap") image.bitmap.close();
       return;

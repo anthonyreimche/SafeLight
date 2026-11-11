@@ -530,6 +530,19 @@ describe("source ladder", () => {
       { background: true },
     );
   });
+
+  // A converted non-RAW frame is averaged down in the worker; a RAW's decode and
+  // cache entry are left at full size.
+  it("asks a non-RAW photo's load for no more than the thumb source's edge", async () => {
+    catalog.photos = [photo({ filename: "IMG_1.JPG" })];
+    bridge.renderThumbnailFromSource.mockResolvedValue(null);
+    regenerateEditedThumbnail(PHOTO_ID, params(1), 5000);
+    await settle();
+    expect(decode).toHaveBeenCalledWith(
+      expect.objectContaining({ id: PHOTO_ID }),
+      { background: true, targetEdge: 1280 },
+    );
+  });
 });
 
 describe("a preview the load fell back on", () => {

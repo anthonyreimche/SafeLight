@@ -1537,3 +1537,34 @@ describe("stacks", () => {
     expect(stackOf(state().photos, "c")).toBeNull();
   });
 });
+
+describe("input profiles", () => {
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+  });
+
+  it("stores a token on the photos named, and writes them through", async () => {
+    await state().setInputProfile(["a", "c", "ghost"], "assign:p3");
+
+    expect(state().photos.map((p) => p.inputProfile)).toEqual(["assign:p3", undefined, "assign:p3"]);
+    expect(store.rows.get("c")).toMatchObject({ inputProfile: "assign:p3" });
+    expect(store.rows.has("b")).toBe(false);
+  });
+
+  it("clears it with null", async () => {
+    await state().setInputProfile(["a", "b"], "embedded");
+    await state().setInputProfile(["a"], null);
+
+    expect(state().photos[0]).not.toHaveProperty("inputProfile");
+    expect(state().photos[1].inputProfile).toBe("embedded");
+    expect(store.rows.get("a")?.inputProfile).toBeUndefined();
+  });
+
+  it("names no photo in its broadcast, like any other metadata", async () => {
+    await state().setInputProfile(["a"], "embedded");
+
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", origin: "test-window" } },
+    ]);
+  });
+});

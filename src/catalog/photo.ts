@@ -67,6 +67,10 @@ export interface CatalogPhoto {
    *  members, so the cover is resolved, not read: the lowest id of the marked
    *  members, else the first member in order (stackCoverId). */
   stackCover?: true;
+  /** The input profile extension's token for how this non-RAW photo is read
+   *  (api.catalog.setInputProfile). Opaque to core, which only keys the
+   *  photo's converted source by it. */
+  inputProfile?: string;
 }
 
 /** A grid preview as a loader returns it, with the edit it shows. `previewEdit` is

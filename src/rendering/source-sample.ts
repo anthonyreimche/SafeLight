@@ -46,6 +46,11 @@ export interface Float16Source {
   sample?: StoredSample;
   baselineExposure?: number;
   baselineShadows?: number;
+  /** A non-RAW photo read through its input profile (load-image.ts), not a
+   *  RAW cache entry: display-referred, already toned, so it takes no base
+   *  curve, camera baseline or highlight reconstruction, has no sample, and
+   *  is capped to the render edge like a live decode. */
+  displayReferred?: true;
 }
 
 /** The centre of the frame, up to SOURCE_SAMPLE_EDGE on each side (a side

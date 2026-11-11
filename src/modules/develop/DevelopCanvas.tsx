@@ -381,7 +381,8 @@ export function DevelopCanvas({
           default; interactive children opt back in via pointerEvents. While a
           zoom-gesture key (Ctrl/⌘/Space) is held, the whole subtree is forced
           click-through so pan/zoom underneath works under ANY extension overlay
-          — the global passthrough trait, so extensions don't each re-implement it. */}
+          — the global passthrough trait, so extensions don't each re-implement it.
+          A held canvas tool's overlay stacks above this layer (ViewportImage). */}
       <DevelopOverlayProvider value={overlayState}>
         <div
           className={

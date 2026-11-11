@@ -665,8 +665,9 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *                              // A radius in source pixels scales to pass texels by
  *                              // max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y).
  *    uniform bool uSrcLinear;  // true while the source is a scene-linear float decode
- *                              // (a RAW); false for camera-rendered bitmaps and the
- *                              // camera preview shown before the RAW decodes
+ *                              // (a RAW); false for camera-rendered bitmaps, photos read
+ *                              // through an input profile (registerInputProfiles) and
+ *                              // the camera preview shown before the RAW decodes
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    vec3 readSource(vec2 uv); // the decoded source at uv, as a `reads: "source"` stage's
  *                              // first read gets it, on any draw and whatever the stage

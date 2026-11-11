@@ -18,6 +18,9 @@ import type { DecodeVerdict } from "@/raw/accept-decode";
 import type { DecodedImage } from "./load-image";
 import type { CachedPreview } from "@/raw/cache-encode";
 import type { StoredSample } from "@/rendering/source-sample";
+import type { HalfFrame, ProfileJob } from "@/raw/profile-frame";
+import type { FramePriority } from "@/raw/frame-bridge";
+import type { InputTransform } from "@/extensions/api/develop";
 
 const h = vi.hoisted(() => ({
   cached: null as CachedPreview | null,
@@ -162,7 +165,27 @@ vi.mock("@/state/catalog-store", () => ({
   useCatalogStore: { getState: () => ({ photos: h.catalog }) },
 }));
 
-import { loadPhotoBitmap, loadPhotoImage, refreshStaleSource } from "./load-image";
+const conversions = vi.hoisted(() => ({
+  jobs: [] as { job: ProfileJob; priority?: FramePriority }[],
+  answer: (job: ProfileJob): Promise<HalfFrame> =>
+    Promise.resolve({
+      data: new Uint16Array(4 * 6),
+      width: job.turn === 90 ? 2 : 3,
+      height: job.turn === 90 ? 3 : 2,
+      fullWidth: job.turn === 90 ? 2 : 3,
+      fullHeight: job.turn === 90 ? 3 : 2,
+    }),
+}));
+
+vi.mock("@/raw/frame-bridge", () => ({
+  convertInputFrame: (job: ProfileJob, priority?: FramePriority) => {
+    conversions.jobs.push({ job, priority });
+    return conversions.answer(job);
+  },
+}));
+
+import { loadPhotoBitmap, loadPhotoImage, photoSourceKey, refreshStaleSource } from "./load-image";
+import { dropInputProfiles, inputProfileRevision, registerInputProfiles } from "./input-profiles";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -1440,5 +1463,146 @@ describe("loadPhotoBitmap falling back to the stored thumbnail", () => {
 
   it("returns null when there is no original and no thumbnail", async () => {
     expect(await loadPhotoBitmap(rawPhoto({ fileHandle: null }))).toBeNull();
+  });
+});
+
+const SRGB_LIKE: InputTransform = {
+  trc: [Float32Array.from([0, 1]), Float32Array.from([0, 1]), Float32Array.from([0, 1])],
+  toRec709: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+};
+
+describe("loadPhotoImage reading a non-RAW photo through its input profile", () => {
+  const resolve = vi.fn<(photo: unknown, file: Blob) => Promise<InputTransform | null>>();
+
+  beforeEach(() => {
+    conversions.jobs = [];
+    conversions.answer = (job) =>
+      Promise.resolve({
+        data: new Uint16Array(4 * 6),
+        width: job.turn === 90 ? 2 : 3,
+        height: job.turn === 90 ? 3 : 2,
+        fullWidth: job.turn === 90 ? 40 : 60,
+        fullHeight: job.turn === 90 ? 60 : 40,
+      });
+    resolve.mockReset();
+    resolve.mockResolvedValue(SRGB_LIKE);
+    registerInputProfiles("ext.profiles", { resolve });
+  });
+
+  afterEach(() => dropInputProfiles("ext.profiles"));
+
+  it("reads the original once", async () => {
+    dropInputProfiles("ext.profiles");
+
+    await loadPhotoImage(photoOf("IMG_0001.JPG"));
+
+    expect(h.fileReads).toBe(1);
+  });
+
+  it("hands over the converted frame as display-referred halves", async () => {
+    const photo = photoOf("IMG_0001.JPG", { inputProfile: "assign:p3" });
+
+    const image = await loadPhotoImage(photo);
+
+    expect(image).toEqual({
+      kind: "float16",
+      data: expect.any(Uint16Array),
+      width: 3,
+      height: 2,
+      fullWidth: 60,
+      fullHeight: 40,
+      displayReferred: true,
+    });
+    expect(resolve).toHaveBeenCalledWith(
+      { id: "p1", filename: "IMG_0001.JPG", inputProfile: "assign:p3" },
+      expect.any(File),
+    );
+    expect(h.fileReads).toBe(1);
+    expect(h.bitmapRequests).toEqual([]);
+  });
+
+  it("asks the worker for the photo's turn, the caller's edge and its priority", async () => {
+    const signal = new AbortController().signal;
+
+    const image = await loadPhotoImage(photoOf("IMG_0001.JPG", { rotation: 90 }), {
+      background: true,
+      signal,
+      targetEdge: 1280,
+    });
+
+    expect(image).toMatchObject({ width: 2, height: 3 });
+    const [{ job, priority }] = conversions.jobs;
+    expect(job).toMatchObject({ decoder: "browser", transform: SRGB_LIKE, turn: 90, targetEdge: 1280 });
+    expect(job.source).toBeInstanceOf(Blob);
+    expect(priority).toEqual({ background: true, signal });
+  });
+
+  it("decodes a TIFF and a netpbm file with their own decoders, from the file itself", async () => {
+    await loadPhotoImage(photoOf("SCAN.TIF"));
+    await loadPhotoImage(photoOf("LOGO.PPM"));
+
+    expect(conversions.jobs.map(({ job }) => [job.decoder, (job.source as File).name])).toEqual([
+      ["tiff", "SCAN.TIF"],
+      ["netpbm", "LOGO.PPM"],
+    ]);
+    expect(h.plainDecoders).toEqual([]);
+  });
+
+  it("leaves the photo to the browser when the resolver answers null", async () => {
+    resolve.mockResolvedValue(null);
+
+    const image = await loadPhotoImage(photoOf("IMG_0001.JPG"));
+
+    expect(image).toMatchObject({ kind: "bitmap", bitmap: { width: 6000, height: 4000 } });
+    expect(conversions.jobs).toEqual([]);
+    expect(h.fileReads).toBe(1);
+  });
+
+  it("falls back to the browser's decode, not the stored thumbnail, when the conversion fails", async () => {
+    conversions.answer = () => Promise.reject(new Error("the file could not be decoded"));
+
+    const image = await loadPhotoImage(photoOf("IMG_0001.JPG", { thumbnailBlob: storedThumbnail }));
+
+    expect(image).toEqual({ kind: "bitmap", bitmap: expect.objectContaining({ width: 6000, height: 4000 }) });
+    expect(h.fileReads).toBe(1);
+  });
+
+  it("resolves null for a load abandoned while the resolver answered", async () => {
+    const gone = new AbortController();
+    resolve.mockImplementation(async () => {
+      gone.abort();
+      return SRGB_LIKE;
+    });
+
+    expect(await loadPhotoImage(photoOf("IMG_0001.JPG"), { signal: gone.signal })).toBeNull();
+    expect(conversions.jobs).toEqual([]);
+  });
+
+  it("never asks about a RAW", async () => {
+    await loadPhotoImage(rawPhoto());
+
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe("photoSourceKey", () => {
+  afterEach(() => dropInputProfiles("ext.profiles"));
+
+  it("keys a RAW by its id and rotation alone, whatever its token and the resolver", () => {
+    registerInputProfiles("ext.profiles", { resolve: async () => null });
+
+    expect(photoSourceKey(rawPhoto({ id: "r1", rotation: 90, inputProfile: "assign:p3" }))).toBe("r1:90");
+  });
+
+  it("keys a non-RAW photo by the resolver's revision and its token too", () => {
+    const jpeg = photoOf("IMG_0001.JPG", { id: "j1", rotation: 180 });
+    const before = photoSourceKey(jpeg);
+    registerInputProfiles("ext.profiles", { resolve: async () => null });
+    const after = photoSourceKey(jpeg);
+    const tokened = photoSourceKey({ ...jpeg, inputProfile: "assign:p3" });
+
+    expect(before).toBe("j1:180");
+    expect(after).toBe(`j1:180:in${inputProfileRevision()}:`);
+    expect(new Set([before, after, tokened]).size).toBe(3);
   });
 });

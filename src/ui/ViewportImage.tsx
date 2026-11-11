@@ -128,6 +128,8 @@ const ZOOM_MS = 150; // a zoom eases from the view on screen to its target
 // Wheel input under this per frame (a trackpad pinch, precision scrolling) streams
 // its own motion, so it zooms at once.
 const WHEEL_EASE_MIN = 50;
+// The overlay's z-index: over the host's unstacked layers, under its notices.
+const TOOL_OVERLAY_LEVEL = 1;
 
 /** Width in px of the colour-assessment mat for a viewport of `frameW`×`frameH`,
  *  `assessBorder` being its share of the smaller side. */
@@ -805,11 +807,14 @@ function ViewportImageView({
       />
 
       {/* While a zoom-gesture key is held, the overlay turns click-through so
-          the pointer drives pan/zoom instead of the mask/heal tool. */}
+          the pointer drives pan/zoom instead of the mask/heal tool. It stacks
+          above the layers the host lays over the viewport after it, so none of
+          them covers the tool or takes its pointer. */}
       {overlay && (
         <div
           className="absolute inset-0"
           style={{
+            zIndex: TOOL_OVERLAY_LEVEL,
             pointerEvents: overlayZoomable && zoomGesture ? "none" : undefined,
           }}
         >

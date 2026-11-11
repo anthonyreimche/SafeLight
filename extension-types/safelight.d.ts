@@ -73,6 +73,10 @@ export interface CatalogPhoto {
      *  members, so the cover is resolved, not read: the lowest id of the marked
      *  members, else the first member in order (stackCoverId). */
     stackCover?: true;
+    /** The input profile extension's token for how this non-RAW photo is read
+     *  (api.catalog.setInputProfile). Opaque to core, which only keys the
+     *  photo's converted source by it. */
+    inputProfile?: string;
 }
 
 /** A photo record as catalog.json stores it. The live file handles, the preview
@@ -772,8 +776,9 @@ declare const MASKABLE_PHASES: readonly ProcessingPhase[];
  *                              // A radius in source pixels scales to pass texels by
  *                              // max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y).
  *    uniform bool uSrcLinear;  // true while the source is a scene-linear float decode
- *                              // (a RAW); false for camera-rendered bitmaps and the
- *                              // camera preview shown before the RAW decodes
+ *                              // (a RAW); false for camera-rendered bitmaps, photos read
+ *                              // through an input profile (registerInputProfiles) and
+ *                              // the camera preview shown before the RAW decodes
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    vec3 readSource(vec2 uv); // the decoded source at uv, as a `reads: "source"` stage's
  *                              // first read gets it, on any draw and whatever the stage
@@ -1658,7 +1663,8 @@ export interface SafelightAPI {
          *  Rec.709 with white balance applied and before the baseline tone and
          *  every edit; `x` and `y` place it in the decoded frame of `sourceWidth`
          *  × `sourceHeight`. Null while no photo is open, between photos, for a
-         *  bitmap (JPEG, TIFF, HEIF), for the camera preview shown before the RAW
+         *  bitmap (JPEG, TIFF, HEIF) and for one read through its input profile
+         *  (registerInputProfiles), for the camera preview shown before the RAW
          *  decodes, for a stored preview standing in for the photo, and for a cache
          *  entry written before 3.1.0 until its rewrite lands, a few seconds after
          *  the open: wait for `useDevelopStore().sourceSize.native` before asking.
@@ -1742,6 +1748,22 @@ export interface SafelightAPI {
          *  you hold replaces it; another extension's id is refused. Dropped when
          *  the extension stops. Needs Safelight 3.2.1. */
         registerBrushTip(tip: BrushTipContribution): void;
+        /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
+         *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
+         *  transform and hands it the original's bytes; core reads the file's
+         *  8-bit codes without colour management and applies the transform with
+         *  nothing clipped, so colour outside sRGB arrives as negative channels.
+         *  A null answer, a throw, an answer later than 3 s or an invalid
+         *  transform leaves the photo to the browser's decode (sRGB). Develop,
+         *  exports, headless renders and edited thumbnails use it; the Library's
+         *  plain previews don't. One extension holds it: another's is refused
+         *  with a warning, and registering again replaces your own. Dropped when
+         *  the extension stops. Needs Safelight 3.2.3. */
+        registerInputProfiles(resolver: InputProfileResolver): void;
+        /** Your resolver's answers changed with no photo's token changing (a
+         *  setting, a profile added or removed): photos converted before load
+         *  again. Only the resolver's owner may call it. Needs Safelight 3.2.3. */
+        invalidateInputProfiles(): void;
         /** React hook: the panels that can be added to a mask, in their order.
          *  Needs Safelight 3.2.0. */
         useMaskPanels(): MaskPanelEntry[];
@@ -1903,6 +1925,13 @@ export interface SafelightAPI {
         /** Take the photos out of their stacks. A stack left with one photo is no
          *  stack. */
         clearStack(ids: string[]): Promise<void>;
+        /** Store `token` as the photos' `inputProfile`, or with null clear it:
+         *  what your InputProfileResolver is handed for them. Opaque to core;
+         *  synced between windows and written like a rating (no undo entry). The
+         *  photos load again in Develop, and edited thumbnails are drawn again.
+         *  Only the extension holding the input profile resolver may call it;
+         *  any other call is rejected. Needs Safelight 3.2.3. */
+        setInputProfile(ids: string[], token: string | null): Promise<void>;
         /** The stack photo `id` belongs to among all the catalogue's photos: its
          *  id, its members in catalogue order and its cover (the marked member with
          *  the lowest id, else the first member). Null for a photo in no stack. */
@@ -2436,6 +2465,10 @@ export interface CatalogState {
     }) => Promise<void>;
     /** Take the photos out of their stacks. */
     clearStack: (ids: string[]) => Promise<void>;
+    /** Store an input profile token on the photos, or with null clear it. Call
+     *  api.catalog.setInputProfile instead: it checks that you hold the
+     *  resolver, and draws edited thumbnails again. Needs Safelight 3.2.3. */
+    setInputProfile: (ids: string[], token: string | null) => Promise<void>;
     setRating: (id: string, rating: number) => Promise<void>;
     setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
     setFlag: (id: string, flag: FlagStatus) => Promise<void>;
@@ -4243,6 +4276,35 @@ export interface AutoAdjust {
     tone: () => Promise<void>;
 }
 
+/** How a non-RAW photo's 8-bit codes become linear Rec.709
+ *  (api.develop.registerInputProfiles). Nothing is clamped, so a colour
+ *  outside sRGB arrives as negative channels, as it does from a RAW. */
+export interface InputTransform {
+    /** Encoded [0, 1] to linear, one table a channel (red, green, blue), each
+     *  2 to 65536 finite samples at even steps, all three the same length. A
+     *  code between two samples is interpolated linearly. */
+    trc: [Float32Array, Float32Array, Float32Array];
+    /** Profile-linear RGB to linear Rec.709 (D65), row-major: 9 finite numbers. */
+    toRec709: number[];
+}
+
+/** The photo an InputProfileResolver is asked about. */
+export interface InputProfilePhoto {
+    id: string;
+    filename: string;
+    /** The token api.catalog.setInputProfile stored for it, if any. */
+    inputProfile?: string;
+}
+
+/** The one extension that turns non-RAW photos into linear Rec.709
+ *  (api.develop.registerInputProfiles). */
+export interface InputProfileResolver {
+    /** The transform for `photo`, whose original is `file`; null leaves the
+     *  photo to the browser's own decode (sRGB, as without a resolver). A
+     *  throw, an answer later than 3 s or an invalid transform counts as null. */
+    resolve(photo: InputProfilePhoto, file: Blob): Promise<InputTransform | null>;
+}
+
 // src/rendering/source-sample.ts
 
 export interface SourceSample {
@@ -4679,7 +4741,7 @@ export interface FolderNode {
  *  storage's origin, which orders two changes stamped at the same time. */
 export type ChangeStamp = [at: number, by: string];
 
-export type PhotoGroup = "location" | "shape" | "file" | "rating" | "colorLabel" | "flag" | "keywords" | "decodeError" | "copyName" | "stack" | "created";
+export type PhotoGroup = "location" | "shape" | "file" | "rating" | "colorLabel" | "flag" | "keywords" | "decodeError" | "copyName" | "stack" | "inputProfile" | "created";
 
 /** A photo record's stamps, by group. */
 export type PhotoStamps = Partial<Record<PhotoGroup, ChangeStamp>>;

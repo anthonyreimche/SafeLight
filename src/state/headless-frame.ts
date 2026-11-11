@@ -20,6 +20,7 @@ import type { SourceImage, ThumbRequest } from "@/rendering/render-protocol";
 import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
+import { convertedTargetEdge } from "@/catalog/input-profiles";
 import { useCatalogStore } from "./catalog-store";
 import { showsEdit, standsForPhoto } from "./fallback-rules";
 
@@ -133,7 +134,10 @@ async function measure<T>(
   //    Auto's convergence, a sampler on a timer), and a RAW libraw gave no answer
   //    for is then passed over (null) instead of decoded again on every call.
   if (!frame) {
-    const decoded = await loadPhotoImage(photo, { background: true });
+    const decoded = await loadPhotoImage(photo, {
+      background: true,
+      ...convertedTargetEdge(photo, THUMB_SOURCE_MAX_EDGE),
+    });
     if (decoded?.kind === "bitmap" && showsEdit(decoded)) {
       decoded.bitmap.close();
       return null;

@@ -38,7 +38,10 @@ import {
   type DecodeMarker,
 } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
+import { convertInputFrame } from "@/raw/frame-bridge";
+import type { CodeDecoder } from "@/raw/profile-frame";
 import { hasCameraMatch, learnedMatch, rememberLearned, type DecodeLearned } from "./decode-learned";
+import { inputProfileKey, resolveInputTransform } from "./input-profiles";
 
 /** What a load settled on in place of the photo's own pixels, and why. */
 export interface Fallback {
@@ -83,9 +86,11 @@ const NOT_DECODED: Shortfall = { unsupported: false, timedOut: false };
 // Stable key for a photo's decoded source pixels, used by the GPU source cache.
 // Develop edits are parameters (not pixels), so only identity + baked rotation
 // change the decoded buffer. A rotation change re-decodes under a new key; the old
-// entry ages out via LRU.
+// entry ages out via LRU. A non-RAW photo's pixels also depend on how its input
+// profile is read (input-profiles.ts), which a RAW's never do.
 export function photoSourceKey(photo: CatalogPhoto): string {
-  return `${photo.id}:${photo.rotation ?? 0}`;
+  const key = `${photo.id}:${photo.rotation ?? 0}`;
+  return isRawFile({ name: photo.filename } as File) ? key : key + inputProfileKey(photo);
 }
 
 export interface LoadImageOptions {
@@ -116,7 +121,8 @@ export interface LoadImageOptions {
   // renders and exports leave it off.
   sample?: boolean;
   // The long edge, in pixels, the caller renders from. A RAW whose half size
-  // still reaches it is decoded at half size (see DecodeRequest.targetEdge).
+  // still reaches it is decoded at half size (see DecodeRequest.targetEdge),
+  // and a non-RAW photo read through its input profile is averaged down to it.
   // Default: full size. A load that writes the RAW cache must stay full size:
   // the entry's centre sample is read as native resolution.
   targetEdge?: number;
@@ -225,7 +231,8 @@ function completeUnlessMarked(
 }
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
-// on the sensor's real data); otherwise fall back to the 8-bit bitmap path.
+// on the sensor's real data), and for any other photo its input profile's
+// conversion when the resolver gives one; otherwise the 8-bit bitmap path.
 export async function loadPhotoImage(
   photo: CatalogPhoto,
   opts?: LoadImageOptions,
@@ -271,11 +278,15 @@ export async function loadPhotoImage(
   if (signal?.aborted) return null;
 
   let shortfall = NOT_DECODED;
+  // A non-RAW original, read once here for the resolver and kept for the
+  // bitmap path below.
+  let original: File | null = null;
   if (photo.fileHandle && (await verifyPermission(photo.fileHandle))) {
     try {
       const file = await photo.fileHandle.getFile();
       if (signal?.aborted) return null;
-      if (isRaw) {
+      if (!isRaw) original = file;
+      else {
         // Such a RAW goes straight to its camera preview: the decode would only
         // fail again.
         const unsupported = await unsupportedLookup;
@@ -400,9 +411,13 @@ export async function loadPhotoImage(
       // fall through to the bitmap path
     }
   }
-  // The bitmap path reads the original again and decodes a RAW outside the pool.
   if (signal?.aborted) return null;
-  const loaded = await loadBitmap(photo);
+  if (original) {
+    const converted = await convertedImage(photo, original, opts);
+    if (converted || signal?.aborted) return converted;
+  }
+  // The bitmap path reads a RAW's original again and decodes it outside the pool.
+  const loaded = await loadBitmap(photo, opts, original);
   if (!loaded) return null;
   const { bitmap, fallback } = loaded;
   return fallback
@@ -450,12 +465,71 @@ export async function loadPhotoBitmap(
   return (await loadBitmap(photo))?.bitmap ?? null;
 }
 
-async function loadBitmap(photo: CatalogPhoto): Promise<LoadedBitmap | null> {
-  let read = false;
-  if (photo.fileHandle && (await verifyPermission(photo.fileHandle))) {
+/** Which decoder reads a non-RAW file's own codes (profile-frame.ts). */
+function codeDecoderFor(file: File): CodeDecoder {
+  if (isNetpbmName(file.name)) return "netpbm";
+  return isTiffName(file.name) ? "tiff" : "browser";
+}
+
+/** A non-RAW photo read through the input profile resolver's transform, as
+ *  display-referred linear halves; null when there is no transform for it, or
+ *  when anything after the resolve fails, which leaves the photo to the
+ *  browser's decode (and nothing else: the original is still there). */
+async function convertedImage(
+  photo: CatalogPhoto,
+  file: File,
+  opts: LoadImageOptions | undefined,
+): Promise<Float16Source | null> {
+  const transform = await resolveInputTransform(photo, file);
+  if (!transform || opts?.signal?.aborted) return null;
+  try {
+    const decoder = codeDecoderFor(file);
+    const frame = await convertInputFrame(
+      {
+        source: decoder === "browser" ? await sensorNativeImage(file) : file,
+        decoder,
+        transform,
+        turn: photo.rotation ?? 0,
+        ...(opts?.targetEdge ? { targetEdge: opts.targetEdge } : {}),
+      },
+      { background: opts?.background, signal: opts?.signal },
+    );
+    return {
+      kind: "float16",
+      data: frame.data,
+      width: frame.width,
+      height: frame.height,
+      fullWidth: frame.fullWidth,
+      fullHeight: frame.fullHeight,
+      displayReferred: true,
+    };
+  } catch (e) {
+    if (!opts?.signal?.aborted) console.warn("[load] input profile conversion failed; decoding as sRGB:", e);
+    return null;
+  }
+}
+
+/** The photo's original, or null when it can't be read. */
+async function readOriginal(photo: CatalogPhoto): Promise<File | null> {
+  if (!photo.fileHandle || !(await verifyPermission(photo.fileHandle))) return null;
+  try {
+    return await photo.fileHandle.getFile();
+  } catch {
+    return null;
+  }
+}
+
+/** `held`: the original, already read by the caller. */
+async function loadBitmap(
+  photo: CatalogPhoto,
+  opts?: LoadImageOptions,
+  held: File | null = null,
+): Promise<LoadedBitmap | null> {
+  const file = held ?? (await readOriginal(photo));
+  const read = file !== null;
+  if (opts?.signal?.aborted) return null;
+  if (file) {
     try {
-      const file = await photo.fileHandle.getFile();
-      read = true;
       let raw: ImageBitmap | null = null;
       let decoderOriented = false;
       // True when `raw` is an embedded camera preview (sensor-native, no own

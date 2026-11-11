@@ -169,6 +169,8 @@ probeMaskColour(u, v): Promise<[r, g, b] | null>;  // 3.2.0
 showMaskCoverage(maskId: string | null): void;     // 3.2.0
 setViewValues(values: Record<string, unknown> | null): void; // 3.2.1
 registerBrushTip(tip: BrushTipContribution): void; // 3.2.1: { id, label, alpha: { width, height, data: Uint8Array } }
+registerInputProfiles(resolver: InputProfileResolver): void; // 3.2.3: { resolve(photo, file) }
+invalidateInputProfiles(): void;                   // 3.2.3
 useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
 useOlderProcessing(): boolean;                     // 3.2.0
 autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a Promise<void>
@@ -180,13 +182,28 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 - `useParamScope` lets one component serve as a panel's `component` and its `mask.component` (`maskId` is null outside a mask). Call `commit(label)` at the end of a gesture.
 - `setCanvasCursor` takes a cursor id, a [`CursorContribution`](contributions.md#cursorcontribution) or raw CSS. The highest `priority` wins (default 10). Call the returned release function when your tool deactivates.
 - `setPickDrag` holds the canvas's pick-drag tool, an on-image drag that starts from a colour (HSL's target tool). While you hold it, a press on the image calls `onPress(point)` at once, with the point in the canvas's pixels. If your tool has `onDown`, it then gets `onDown(rgb, point)` with the colour the view shows there (sRGB, 0 to 1) once that is read, then `onMove(point)` and `onUp()`; a press released before the colour is read starts no drag. Every handler is optional. Holding Ctrl, Cmd or Space pans instead, and Escape lets go of the tool. The last extension to set a tool holds it; `setPickDrag(null)` lets go of yours only, and stopping your extension lets go too. `usePickDragHeld` re-renders when yours is taken or dropped, for a pressed button.
-- `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). The overlay re-renders when the view moves or what it subscribes to changes, not on every edit, so select what it draws with `useDevelopStore((s) => …)` rather than reading `getState()` while rendering. Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held (`"brush.larger"` and so on) and returns whether it took one; core acts on those it didn't. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped.
+- `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). It stacks above every `develop-canvas-overlay` component, so no other extension's overlay covers the tool or takes its pointer. The overlay re-renders when the view moves or what it subscribes to changes, not on every edit, so select what it draws with `useDevelopStore((s) => …)` rather than reading `getState()` while rendering. Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held (`"brush.larger"` and so on) and returns whether it took one; core acts on those it didn't. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped.
 - `readDevelopedPixels` reads the open photo's developed frame of the whole image, before the crop and transform, as RGBA8 rows from the top with its long edge at `edge` px (Upright detects lines in it).
 - `sourcePixels` is a small 8-bit sRGB copy of the open photo's source (RGBA8 rows from the top, about 1024 px on its long edge), for searches of the image itself (Heal's source pick). It is `null` before the first frame. `onSourcePixels` calls you with each new one: another photo, or a new decode.
 - `probeMaskColour` reads the colour a mask's colour range compares at a point of the live frame buffer (0 to 1 across `useDevelopOverlay` `rect`): scene-linear, before the display transform.
 - `showMaskCoverage` tints a mask's coverage over the image, fading in and out, or with `null` none: the mask a masking panel points at.
 - `setViewValues` gives the live view values for your own stages' params and textures, by qualified key (`"{stageId}.{key}"`), drawn over the photo's own: feedback that is not part of the edit, such as Paint Layers tinting the layer you hover. They are never saved, undone, exported or drawn in thumbnails. Each call replaces your last set, `null` clears it, keys of other extensions' stages are ignored, and holding your panel's preview off drops them. They are cleared when your extension stops.
 - `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back.
+- `registerInputProfiles` lets one extension read non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) through their colour profiles. Each load of such a photo calls `resolve(photo, file)` with `{ id, filename, inputProfile }` and the original as a `Blob`. Answer an `InputTransform` (below) or `null`. Core then decodes the file's 8-bit codes without colour management, puts each channel through its `trc` table and the three through `toRec709`, and clamps nothing. Colour outside sRGB arrives as negative channels, as it does from a RAW. Develop, exports, headless renders and edited thumbnails use the result; the Library's plain grid previews stay the browser's.
+  - `null`, a throw, an answer later than 3 s or an invalid transform leaves the photo to the browser's decode, which converts to sRGB as before. So does a decode or conversion that fails afterwards.
+  - One extension holds the resolver. Another's is refused with a warning naming the holder. Registering again replaces your own, and it is dropped when your extension stops.
+  - Safelight remembers the last extension that registered one. While the app starts, a non-RAW photo opened in Develop waits for that extension to register, for at most 3 s, if it is installed and turned on. Without one, no photo waits.
+  - The converted photo renders display-referred: no base curve, no camera baseline and no clipped-highlight reconstruction. Texture, Clarity and noise reduction treat it as a linear source, so it differs slightly from the same file on the browser's path.
+  - Call `invalidateInputProfiles` when your answers change with no photo's token changing: a setting, or a profile added or removed. Converted photos load again and their edited thumbnails are drawn again.
+
+```ts
+interface InputTransform {
+  trc: [Float32Array, Float32Array, Float32Array]; // encoded [0, 1] to linear, 2 to 65536 samples at even steps, all the same length
+  toRec709: number[];                              // profile-linear RGB to linear Rec.709 (D65), row-major, 9 numbers
+}
+```
+
+  A code `c` is read at `p = c / 255 * (n - 1)`, interpolated linearly between the samples around it. Every sample and matrix entry must be finite.
 - `useMaskPanels` lists the panels that can be added to a mask (`PanelContribution.mask`), in their `order` then by title. `extensionParams` is true for one that owns an extension's params, which run inside the mask only at the current processing. Draw one inside `components.MaskScope`; the develop store's `seedMaskPanelValues` and `clearMaskPanelValues` set or clear its values when it is added or removed.
 - `probe` reads the colour the canvas shows at a point in its pixels (sRGB, 0 to 1) from the live frame, or `null` with no frame.
 - `autoAdjust` runs core's Auto White Balance, the white-balance eyedropper at a canvas point, or Auto Tone to convergence, then commits one undo step. Each needs the frame's histogram (`useDevelopStore` `histogram`) and does nothing without one, and only one runs at a time. Pair `whiteBalanceAt` with `setPickDrag`: call it from `onPress` with the point.
@@ -290,6 +307,7 @@ readPreview(photoId): Promise<Blob | null>;        // read a grid preview, keep 
 setStack(ids, opts?: { cover?: string }): Promise<void>; // 3.2.1: group as one stack
 clearStack(ids): Promise<void>;                    // 3.2.1: take out of their stacks
 stackOf(id): { stackId; ids; cover } | null;       // 3.2.1
+setInputProfile(ids, token: string | null): Promise<void>; // 3.2.3: the resolver's owner only
 ```
 
 **Notes**
@@ -310,6 +328,11 @@ stackOf(id): { stackId; ids; cover } | null;       // 3.2.1
 - Stacking is catalogue data, like a rating: it syncs between windows and has no undo step.
 - `stackOf` gives a photo's stack among all photos, filters ignored, or `null`.
 - `api.ui.Thumbnail` and `PhotoListRow` draw the stack badge, so a surface built from them needs no change.
+
+**Input profiles (3.2.3).** `setInputProfile` stores an opaque token on photos as `CatalogPhoto.inputProfile`, or with `null` clears it. Your resolver gets it back in `resolve`. Only the extension holding the input profile resolver (`api.develop.registerInputProfiles`) may call it; any other call is rejected.
+
+- It is catalogue data, like a rating: it syncs between windows and has no undo step.
+- A photo whose token changes loads again in Develop, and its edited thumbnail is drawn again. A RAW's token changes nothing core draws.
 
 ## `api.library`
 

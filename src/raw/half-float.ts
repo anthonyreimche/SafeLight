@@ -20,7 +20,9 @@ const F32_HALF_MIN_NORMAL_BITS = 0x38800000;
 const f32 = new Float32Array(1);
 const u32 = new Uint32Array(f32.buffer);
 
-function halfBits(v: number): number {
+/** One value's binary16 bit pattern, as encodeHalf gives it: for code that
+ *  writes halves one at a time instead of converting a whole frame. */
+export function halfBits(v: number): number {
   f32[0] = v;
   const bits = u32[0];
   const sign = (bits >>> 16) & 0x8000;

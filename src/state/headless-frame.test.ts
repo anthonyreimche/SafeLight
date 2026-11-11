@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   decoded: null as DecodedImage | null,
   decodes: 0,
   /** Loads the photo: by default `decoded`, counting a decode each time. */
-  load: null as ((opts?: { background?: boolean }) => DecodedImage | null) | null,
+  load: null as ((opts?: { background?: boolean; targetEdge?: number }) => DecodedImage | null) | null,
   asyncRenders: 0,
   /** The as-shot temperature each render from the resident source was given. */
   sourceTemperatures: [] as number[],
@@ -62,7 +62,7 @@ vi.mock("@/rendering/render-bridge", () => ({
   }),
 }));
 vi.mock("@/catalog/load-image", () => ({
-  loadPhotoImage: async (_photo: CatalogPhoto, opts?: { background?: boolean }) => {
+  loadPhotoImage: async (_photo: CatalogPhoto, opts?: { background?: boolean; targetEdge?: number }) => {
     if (h.load) return h.load(opts);
     h.decodes++;
     return h.decoded;
@@ -140,6 +140,20 @@ describe("measuring a photo off-screen", () => {
     for (let i = 0; i < 5; i++) await measure();
 
     expect(h.decodes).toBe(1);
+  });
+
+  it("asks a non-RAW photo's load for no more than the source it uploads, and a RAW's for all of it", async () => {
+    const asked: ({ background?: boolean; targetEdge?: number } | undefined)[] = [];
+    h.load = (opts) => {
+      asked.push(opts);
+      return null;
+    };
+    h.photos = [{ ...fixture(ID), filename: "IMG_1.JPG" }, { ...fixture("r"), filename: "IMG_2.NEF" }];
+
+    await measure();
+    await renderPhotoFrame("r", normalizeParams({ exposure: 1 }));
+
+    expect(asked).toEqual([{ background: true, targetEdge: 1280 }, { background: true }]);
   });
 
   it("keeps a full decode as the photo's source", async () => {

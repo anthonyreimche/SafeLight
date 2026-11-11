@@ -262,6 +262,9 @@ interface CatalogState {
   setStack: (ids: string[], opts?: { cover?: string }) => Promise<void>;
   /** Take the photos out of their stacks. */
   clearStack: (ids: string[]) => Promise<void>;
+  /** Store the input profile extension's token on the photos, or with null
+   *  clear it. Catalogue metadata like a rating: no undo entry. */
+  setInputProfile: (ids: string[], token: string | null) => Promise<void>;
 
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
@@ -720,6 +723,12 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       commit(ids, (p) => {
         if (p.stackId === undefined && p.stackCover === undefined) return p;
         const { stackId: _id, stackCover: _cover, ...rest } = p;
+        return rest;
+      }),
+    setInputProfile: (ids, token) =>
+      commit(ids, (p) => {
+        if (token !== null) return { ...p, inputProfile: token };
+        const { inputProfile: _token, ...rest } = p;
         return rest;
       }),
 

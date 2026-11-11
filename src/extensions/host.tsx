@@ -91,6 +91,8 @@ import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develo
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
 import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
 import { registerBrushTip } from "@/rendering/brush-tip-registry";
+import { inputProfileOwner, invalidateInputProfiles, registerInputProfiles } from "@/catalog/input-profiles";
+import { setInputProfiles, watchInputProfiles } from "@/state/input-profile-redraw";
 import { useMaskPanels } from "@/modules/develop/mask-panels";
 import {
   exportPhotos,
@@ -416,6 +418,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
       showMaskCoverage,
       registerBrushTip: (tip) => registerBrushTip(extensionId, tip),
+      registerInputProfiles: (resolver) => registerInputProfiles(extensionId, resolver),
+      invalidateInputProfiles: () => invalidateInputProfiles(extensionId),
       setViewValues: (values) =>
         setStageViewValues(
           extensionId,
@@ -490,6 +494,19 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useActivePhoto,
       setStack: (ids, opts) => useCatalogStore.getState().setStack(ids, opts),
       clearStack: (ids) => useCatalogStore.getState().clearStack(ids),
+      setInputProfile: async (ids, token) => {
+        const owner = inputProfileOwner();
+        if (owner !== extensionId) {
+          throw new Error(
+            owner
+              ? `setInputProfile: ${owner} holds the input profile resolver, and only it may set tokens`
+              : "setInputProfile: register an input profile resolver before setting tokens",
+          );
+        }
+        if (!Array.isArray(ids)) throw new Error("setInputProfile: ids must be an array of photo ids");
+        if (token !== null && typeof token !== "string") throw new Error("setInputProfile: the token must be a string or null");
+        await setInputProfiles(ids, token);
+      },
       stackOf: (id) => stackOf(useCatalogStore.getState().photos, id),
       photoDisplayName,
       exportPhotoData,
@@ -562,6 +579,8 @@ export function initExtensionHost(): void {
   initPipelines();
   initDockLayouts();
   initStagePrewarm();
+  // One window redraws the edited thumbnails a resolver change leaves stale.
+  if (windowRole() === "main") watchInputProfiles();
   // Load external plugins, then quietly check them for updates (and auto-update
   // if the user opted in). The check is gated on a setting and rate-limited.
   void loadExternalPlugins().then(() => {

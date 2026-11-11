@@ -156,3 +156,20 @@ describe("stacks", () => {
     expect(stackCoverId(inWindowB)).toBe("p1");
   });
 });
+
+describe("input profiles", () => {
+  it("puts inputProfile in a group of its own", () => {
+    expect(changedGroups(record(), record({ inputProfile: "assign:p3" }))).toEqual(["inputProfile"]);
+  });
+
+  it("takes another window's newer token and keeps this window's newer rating", () => {
+    const merged = mergePhoto(
+      record({ rating: 4 }),
+      { rating: [9, "a"], inputProfile: [1, "a"] },
+      record({ rating: 1, inputProfile: "assign:p3" }),
+      { rating: [2, "b"], inputProfile: [5, "b"] },
+    );
+    expect(merged.record).toMatchObject({ rating: 4, inputProfile: "assign:p3" });
+    expect(merged.stamps.inputProfile).toEqual([5, "b"]);
+  });
+});

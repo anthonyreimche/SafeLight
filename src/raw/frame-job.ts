@@ -12,6 +12,7 @@
 
 import { normalizeRotation } from "@/catalog/orient";
 import { encodeCacheEntry, type EncodedEntry } from "./cache-encode";
+import type { HalfFrame, ProfileJob } from "./profile-frame";
 
 export interface FrameJob {
   /** libraw's processed samples, `stride` to a pixel, row-major. */
@@ -34,13 +35,18 @@ export type FrameResult =
   | { rejected: string }
   | { data: Float32Array<ArrayBuffer>; width: number; height: number; entry?: EncodedEntry };
 
-export type FrameRequest =
+/** The requests answered as they arrive; a "profile" one decodes its file
+ *  first, so profile-frame.ts answers it. */
+export type SyncFrameRequest =
   | { id: number; op: "build"; job: FrameJob }
   | { id: number; op: "srgb8"; data: Float32Array };
+
+export type FrameRequest = SyncFrameRequest | { id: number; op: "profile"; job: ProfileJob };
 
 export type FrameReply =
   | { id: number; op: "build"; result: FrameResult }
   | { id: number; op: "srgb8"; bytes: Uint8ClampedArray<ArrayBuffer> }
+  | { id: number; op: "profile"; frame: HalfFrame }
   | { id: number; op: "error"; message: string };
 
 // dcraw's gamma_curve() for its default transfer (power 0.45, toe slope 4.5:
@@ -100,7 +106,7 @@ export const SRGB_FROM_ACES = invert3(ACES_FROM_SRGB);
 
 /** Where a source pixel (x, y) lands in the turned frame, as float offsets:
  *  `base + x * dx + y * dy`. */
-function placement(width: number, height: number, turn: number) {
+export function placement(width: number, height: number, turn: number) {
   switch (turn) {
     case 90: return { base: 4 * (height - 1), dx: 4 * height, dy: -4 };
     case 180: return { base: 4 * (width * height - 1), dx: -4, dy: -4 * width };
@@ -187,7 +193,7 @@ export function toSrgb8(data: Float32Array): Uint8ClampedArray<ArrayBuffer> {
 }
 
 /** One message of the frame worker: its reply, and the buffers that go with it. */
-export function handleFrameRequest(req: FrameRequest): { reply: FrameReply; transfer: Transferable[] } {
+export function handleFrameRequest(req: SyncFrameRequest): { reply: FrameReply; transfer: Transferable[] } {
   try {
     if (req.op === "srgb8") {
       const bytes = toSrgb8(req.data);

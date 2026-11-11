@@ -48,6 +48,7 @@ import { ACCESSIBILITY_ACTIVE_KEY, useKeyboardCanvasEditing } from "@/state/acce
 import { useTitleBarOverlay } from "@/ui/window-chrome";
 import { DevFolderControls } from "./devtools/DevFolderControls";
 import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
+import { inputProfileOwner, inputProfileRevision } from "@/catalog/input-profiles";
 
 class SilentChannel {
   postMessage(): void {}
@@ -452,5 +453,61 @@ describe("api.devtools", () => {
     expect(result.current.open).toEqual({ photoId: null, version: 2 });
     expect(result.current.rows.some((r) => r.kind === "output")).toBe(true);
     expect(result.current.screen).toEqual({ space: "srgb", profile: null });
+  });
+});
+
+describe("input profiles", () => {
+  const resolver = { resolve: async () => null };
+  const owner = () => makeScopedAPI("ext.profiles");
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    useCatalogStore.setState({
+      photos: [{ id: "a", filename: "A.JPG" } as CatalogPhoto, { id: "b", filename: "B.PNG" } as CatalogPhoto],
+    });
+    setCatalogStorage({ putPhotos: async () => {} } as unknown as CatalogStorage);
+  });
+
+  afterEach(() => {
+    unregisterExtension("ext.profiles");
+    unregisterExtension("ext.other");
+  });
+
+  it("holds the resolver for the extension that registers it, until it stops", () => {
+    owner().develop.registerInputProfiles(resolver);
+    expect(inputProfileOwner()).toBe("ext.profiles");
+
+    makeScopedAPI("ext.other").develop.registerInputProfiles(resolver);
+    expect(inputProfileOwner()).toBe("ext.profiles");
+
+    unregisterExtension("ext.profiles");
+    expect(inputProfileOwner()).toBeNull();
+  });
+
+  it("moves the revision when the owner invalidates", () => {
+    owner().develop.registerInputProfiles(resolver);
+    const before = inputProfileRevision();
+
+    owner().develop.invalidateInputProfiles();
+
+    expect(inputProfileRevision()).toBe(before + 1);
+  });
+
+  it("lets the owner store a token on photos", async () => {
+    owner().develop.registerInputProfiles(resolver);
+
+    await owner().catalog.setInputProfile(["a"], "assign:p3");
+
+    expect(useCatalogStore.getState().photos.map((p) => p.inputProfile)).toEqual(["assign:p3", undefined]);
+  });
+
+  it("refuses a token from any other extension", async () => {
+    owner().develop.registerInputProfiles(resolver);
+
+    await expect(makeScopedAPI("ext.other").catalog.setInputProfile(["a"], "embedded")).rejects.toThrow(
+      /ext\.profiles/,
+    );
+    await expect(makeScopedAPI("ext.other").catalog.setInputProfile(["a"], null)).rejects.toThrow();
+    expect(useCatalogStore.getState().photos[0].inputProfile).toBeUndefined();
   });
 });

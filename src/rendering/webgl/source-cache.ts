@@ -10,7 +10,7 @@
 // pinned. Also the source upload's own helpers: the caps that bound a texture
 // to the develop edge, the hand-built float mip chain and the search image.
 
-import { halfToFloat32, halfToFloatTable } from "@/raw/half-float";
+import { halfToFloatTable } from "@/raw/half-float";
 import type { StoredSample } from "@/rendering/source-sample";
 import { created, setSampling } from "./gl-resources";
 
@@ -48,6 +48,10 @@ export interface SourceEntry {
   baselineGain: number;
   baselineShadows: number;
   isFallbackPreview: boolean;
+  // Linear but display-referred (a non-RAW photo read through its input
+  // profile): its highlights were rendered, not clipped by a sensor, so
+  // clipped-highlight reconstruction stays off.
+  displayReferred: boolean;
   // The decoded frame's size before the upload cap, and the native-resolution
   // centre of a live float decode or of the cache entry a float16 source came
   // from (source-sample.ts); null for anything else.
@@ -271,15 +275,39 @@ export function uploadFloatMips(gl: WebGL2RenderingContext, data: Float32Array |
 
 /** capFloatToEdge for a cached preview's halves: kept as they are when they
  *  fit, so neither the upload nor the search image converts them; otherwise
- *  their floats, averaged down as a decode's are. */
+ *  their floats, averaged down as a decode's are, bit for bit. Each half is
+ *  read through the half → float table where it sits, so the whole frame is
+ *  never expanded to floats first (16 B/px for a full-size source). */
 export function capHalfToEdge(
   data: Uint16Array,
   W: number,
   H: number,
   maxEdge: number,
 ): { data: Float32Array | Uint16Array; width: number; height: number } {
-  if (Math.min(1, maxEdge / Math.max(W, H)) >= 1) return { data, width: W, height: H };
-  return capFloatToEdge(halfToFloat32(data), W, H, maxEdge);
+  const scale = Math.min(1, maxEdge / Math.max(W, H));
+  if (scale >= 1) return { data, width: W, height: H };
+  const float = halfToFloatTable();
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const out = new Float32Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy0 = Math.floor((y * H) / h);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
+    for (let x = 0; x < w; x++) {
+      const sx0 = Math.floor((x * W) / w);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const si = (sy * W + sx) * 4;
+          r += float[data[si]]; g += float[data[si + 1]]; b += float[data[si + 2]]; a += float[data[si + 3]]; n++;
+        }
+      }
+      const di = (y * w + x) * 4;
+      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = a / n;
+    }
+  }
+  return { data: out, width: w, height: h };
 }
 
 // Box-average a linear Float32 RGBA image down so its long edge ≤ maxEdge.

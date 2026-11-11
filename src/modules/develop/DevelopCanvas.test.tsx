@@ -154,6 +154,39 @@ describe("DevelopCanvas overlays", () => {
   });
 });
 
+// A held canvas tool has the canvas: an extension's overlay may not cover the
+// tool's own (a crop box under another extension's picture of the photo), nor
+// take the pointer from it.
+describe("DevelopCanvas's canvas tool among canvas-overlay extensions", () => {
+  const ExtOverlay = () => <div data-testid="ext-overlay" />;
+  const ToolOverlay = () => <div data-testid="tool-overlay" />;
+
+  /** The z-index `el` stacks at among the canvas's layers: that of its
+   *  outermost ancestor carrying one, 0 without. */
+  const stackLevel = (el: HTMLElement, root: HTMLElement): number => {
+    let level = 0;
+    for (let p: HTMLElement | null = el; p && p !== root; p = p.parentElement) {
+      if (p.style.zIndex !== "") level = Number(p.style.zIndex);
+    }
+    return level;
+  };
+
+  beforeEach(() => {
+    registerSlot("acme.overlay", { id: "acme.overlay.cover", slot: "develop-canvas-overlay", component: ExtOverlay });
+  });
+
+  it.each([
+    ["that locks the view (crop mode)", false],
+    ["that leaves zoom and pan (a brush)", true],
+  ])("stacks the overlay of a tool %s above the canvas-overlay extensions", (_label, zoomable) => {
+    const { container } = render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => setCanvasTool("acme.tool", { overlay: ToolOverlay, zoomable }));
+    const tool = screen.getByTestId("tool-overlay");
+    const ext = screen.getByTestId("ext-overlay");
+    expect(stackLevel(tool, container)).toBeGreaterThan(stackLevel(ext, container));
+  });
+});
+
 // The viewport draws again only when what it is handed changes, not each time the
 // canvas around it does.
 describe("DevelopCanvas's viewport", () => {

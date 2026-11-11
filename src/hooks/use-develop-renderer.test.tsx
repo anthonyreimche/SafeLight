@@ -35,6 +35,7 @@ import {
   useRunningPlugins,
 } from "@/extensions/loader";
 import { setExtensionName } from "@/extensions/param-registry";
+import { dropInputProfiles, registerInputProfiles } from "@/catalog/input-profiles";
 import { forgetCallbackFailures } from "@/extensions/guard";
 import { NO_FILTER } from "@/modules/library/visible-photos";
 import {
@@ -591,11 +592,15 @@ describe("useDevelopRenderer opening a photo", () => {
   });
 
   describe("while the essentials its edit needs are still loading", () => {
+    // These photos are JPEGs, which also wait for an input profile resolver until
+    // one registers: one has, so only the essentials hold them.
     beforeEach(() => {
       useExternalPluginsSettled.setState({ settled: false });
       useRunningPlugins.setState({ ids: [] });
+      registerInputProfiles("ext.profiles", { resolve: async () => null });
     });
     afterEach(() => {
+      dropInputProfiles("ext.profiles");
       useRunningPlugins.setState({ ids: [] });
       useDisabledExtensions.setState({ ids: [] });
       useInstalledPlugins.setState({ ids: null });
@@ -716,6 +721,21 @@ describe("useDevelopRenderer opening a photo", () => {
     expect(useDevelopStore.getState().histogram).toBeNull();
     expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
     expect(status?.tier).not.toBe("final");
+  });
+
+  // The renderer caps a converted non-RAW source to the develop edge anyway; a RAW's
+  // decode stays full size, as the RAW cache needs.
+  it("asks a non-RAW photo's load for no more than the develop edge", async () => {
+    await open(photo());
+    const opened = vi.mocked(loadPhotoImage).mock.calls.find(([p]) => p.id === "next");
+    expect(opened?.[1]?.targetEdge).toBe(useSettings.getState().developMaxEdge);
+  });
+
+  it("asks a RAW's load for all of it", async () => {
+    await open(photo({ filename: "next.nef", relPath: "next.nef" }));
+    const opened = vi.mocked(loadPhotoImage).mock.calls.find(([p]) => p.id === "next");
+    expect(opened?.[1]).toBeDefined();
+    expect(opened?.[1]).not.toHaveProperty("targetEdge");
   });
 
   it("prefetches the neighbours the grid shows, past photos an extension filters out", async () => {
