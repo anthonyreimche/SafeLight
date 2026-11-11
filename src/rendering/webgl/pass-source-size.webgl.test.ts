@@ -114,6 +114,22 @@ describe("uSourceSize and uSrcLinear in a pass", () => {
     const want = frameWith(expected(W / 2000, H / 2000, 0.9), (r) => r.setImage(SMALL, CAP));
     expectSame(got, want);
   });
+
+  // A photo read through its input profile is camera-rendered: a pass doing a
+  // RAW's work on uSrcLinear (capture sharpening, sensor denoise) leaves it alone.
+  it("read a display-referred source's decoded size, and a non-linear source", () => {
+    const converted = { ...CACHED, sample: undefined, displayReferred: true as const };
+    const got = frameWith(PROBE, (r) => r.setImage(converted, CAP));
+    const want = frameWith(expected(W / 2000, H / 2000, 0.1), (r) => r.setImage(SMALL, CAP));
+    expectSame(got, want);
+  });
+
+  it("read a display-referred source's linear values as they are", () => {
+    const reader: ProcessingStageContribution = { ...PROBE, id: "test.readSource", passes: [{ glsl: "c = readSource(vUv);" }] };
+    const converted = { ...CACHED, sample: undefined, displayReferred: true as const };
+    const got = frameWith(reader, (r) => r.setImage(converted, CAP));
+    expectSame(got, frameWith(expected(0.2, 0.2, 0.2), (r) => r.setImage(SMALL, CAP)));
+  });
 });
 
 describe("readSourceSample", () => {

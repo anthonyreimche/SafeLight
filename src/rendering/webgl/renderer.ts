@@ -459,6 +459,7 @@ export class WebGLRenderer {
   private proofSpace: ColorSpaceId | null = null;
   private readonly canTagBuffer: boolean;
   private linear = false;
+  private displayReferred = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
   // The source camera maker's exposure offset as a gain, which version 2 and
@@ -933,6 +934,9 @@ export class WebGLRenderer {
   // A cached develop preview (float16) holds the same scene-linear values as
   // half floats, so it rides this path too and renders like the fresh decode.
   // Its halves are uploaded and searched as they are unless the cap shrinks it.
+  // A non-RAW photo read through its input profile comes as halves too, but
+  // display-referred: already toned, and as large as its file, so it is capped
+  // like a live decode and takes no base curve, baseline or sample.
   private uploadLinear(
     image: LinearImage | Float16Source,
     maxEdge: number,
@@ -940,7 +944,8 @@ export class WebGLRenderer {
     capFloat16: boolean,
   ): Omit<UploadedSource, "tex" | "epoch"> {
     const gl = this.gl;
-    const fromCache = image.kind === "float16";
+    const displayReferred = image.kind === "float16" && image.displayReferred === true;
+    const fromCache = image.kind === "float16" && !displayReferred;
     // Bound the working texture to the develop cap. The live RAW decode is
     // full sensor resolution; uploading it whole (plus the hand-built mip
     // chain and heal pass) is what exhausted memory on low-RAM machines. The
@@ -953,7 +958,7 @@ export class WebGLRenderer {
       image.kind === "float16"
         ? capHalfToEdge(image.data, image.width, image.height, cap)
         : capFloatToEdge(image.data, image.width, image.height, cap);
-    const fallback = fromCache ? false : (image.isFallbackPreview ?? isFallbackPreview);
+    const fallback = image.kind === "float16" ? false : (image.isFallbackPreview ?? isFallbackPreview);
     uploadFloatMips(gl, fimg.data, fimg.width, fimg.height);
     this.checkSourceUpload();
     return {
@@ -961,11 +966,12 @@ export class WebGLRenderer {
       height: fimg.height,
       // Texture holds true linear scene values, so the shader must NOT sRGB-decode.
       linear: true,
+      displayReferred,
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
-      applyBaseCurve: !fallback,
-      baselineGain: 2 ** (image.baselineExposure ?? 0),
-      baselineShadows: image.baselineShadows ?? 0,
+      applyBaseCurve: !fallback && !displayReferred,
+      baselineGain: displayReferred ? 1 : 2 ** (image.baselineExposure ?? 0),
+      baselineShadows: displayReferred ? 0 : (image.baselineShadows ?? 0),
       isFallbackPreview: fallback,
       fullWidth: image.kind === "float16" ? image.fullWidth ?? image.width : image.width,
       fullHeight: image.kind === "float16" ? image.fullHeight ?? image.height : image.height,
@@ -974,7 +980,7 @@ export class WebGLRenderer {
       // entry has none). The camera preview is a JPEG and has none either. Only
       // a renderer asked to keep it pays for it.
       sample:
-        !this.keepSourceSample || fallback
+        !this.keepSourceSample || fallback || displayReferred
           ? null
           : image.kind === "float16"
             ? image.sample ?? null
@@ -1006,6 +1012,7 @@ export class WebGLRenderer {
       width: capped.width,
       height: capped.height,
       linear: false,
+      displayReferred: false,
       // Camera-rendered bitmaps already carry a tone curve.
       applyBaseCurve: false,
       baselineGain: 1,
@@ -1061,6 +1068,7 @@ export class WebGLRenderer {
     this.imageHeight = source.height;
     this.maxEdge = maxEdge;
     this.linear = source.linear;
+    this.displayReferred = source.displayReferred;
     this.applyBaseCurve = source.applyBaseCurve;
     this.baselineGain = source.baselineGain;
     this.baselineShadows = source.baselineShadows;
@@ -2002,7 +2010,9 @@ export class WebGLRenderer {
     gl.uniform1f(u.uColorNRDetail, p.colorNRDetail);
     gl.uniform1f(u.uColorNRSmooth, p.colorNRSmoothness);
     gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
-    gl.uniform1f(u.uClipThreshold, this.linear ? 0.98 : 0.0);
+    // A display-referred source's highlights were rendered, not clipped by a
+    // sensor: nothing to reconstruct.
+    gl.uniform1f(u.uClipThreshold, this.linear && !this.displayReferred ? 0.98 : 0.0);
 
     const vp = this.redirect?.probe?.roi ?? this.roi;
     gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
@@ -2450,8 +2460,11 @@ export class WebGLRenderer {
       copyBudget: this.redirect ? Infinity : this.maskCopyPrepassesPerFrame,
       epoch: this.sourceEpoch,
       processVersion: this.variant.version,
-      linear: this.linear,
-      isFallbackPreview: this.isFallbackPreview,
+      // A display-referred source is camera-rendered: passes see uSrcLinear off,
+      // as for a bitmap, and the fallback flag has toLin take its linear values as
+      // they are, so no pass text has to change.
+      linear: this.linear && !this.displayReferred,
+      isFallbackPreview: this.isFallbackPreview || this.displayReferred,
       sourceWidth: this.sourceFullWidth,
       sourceHeight: this.sourceFullHeight,
       srcW: srcSize.w,

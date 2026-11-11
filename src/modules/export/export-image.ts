@@ -851,9 +851,11 @@ async function renderOne(
     // cropped export must inflate the cap to keep enough pixels inside the crop
     // (bounded by the native size and the GPU's texture limit). The cached
     // float16 uploads at its stored size; for it maxEdge is purely the output
-    // cap, and inflating it would overshoot the requested long edge.
+    // cap, and inflating it would overshoot the requested long edge. A
+    // display-referred float16 (a non-RAW photo through its input profile) is
+    // full size and capped at upload, as a float decode is.
     const maxEdge =
-      image.kind !== "float16"
+      image.kind !== "float16" || image.displayReferred
         ? Math.min(
             Math.ceil(requestEdge / cropFrac),
             Math.max(w, h),

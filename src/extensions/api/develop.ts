@@ -134,3 +134,32 @@ export interface AutoAdjust {
   whiteBalanceAt: (point: CanvasPoint) => Promise<void>;
   tone: () => Promise<void>;
 }
+
+/** How a non-RAW photo's 8-bit codes become linear Rec.709
+ *  (api.develop.registerInputProfiles). Nothing is clamped, so a colour
+ *  outside sRGB arrives as negative channels, as it does from a RAW. */
+export interface InputTransform {
+  /** Encoded [0, 1] to linear, one table a channel (red, green, blue), each
+   *  2 to 65536 finite samples at even steps, all three the same length. A
+   *  code between two samples is interpolated linearly. */
+  trc: [Float32Array, Float32Array, Float32Array];
+  /** Profile-linear RGB to linear Rec.709 (D65), row-major: 9 finite numbers. */
+  toRec709: number[];
+}
+
+/** The photo an InputProfileResolver is asked about. */
+export interface InputProfilePhoto {
+  id: string;
+  filename: string;
+  /** The token api.catalog.setInputProfile stored for it, if any. */
+  inputProfile?: string;
+}
+
+/** The one extension that turns non-RAW photos into linear Rec.709
+ *  (api.develop.registerInputProfiles). */
+export interface InputProfileResolver {
+  /** The transform for `photo`, whose original is `file`; null leaves the
+   *  photo to the browser's own decode (sRGB, as without a resolver). A
+   *  throw, an answer later than 3 s or an invalid transform counts as null. */
+  resolve(photo: InputProfilePhoto, file: Blob): Promise<InputTransform | null>;
+}

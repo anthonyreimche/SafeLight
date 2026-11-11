@@ -3,7 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The main thread's side of frame-worker.ts. A decode's pixel work (frame-job.ts)
+// The main thread's side of frame-worker.ts. A decode's pixel work (frame-job.ts,
+// and profile-frame.ts for a non-RAW photo read through its input profile)
 // goes to a small pool of dedicated workers, its buffers transferred each way, so
 // no loop over a frame's pixels and no copy of the frame runs here. Not the cache
 // worker, which serializes gzip and serves Develop's reads, and not the libraw
@@ -17,6 +18,7 @@ import {
   type FrameRequest,
   type FrameResult,
 } from "./frame-job";
+import { answerFrameRequest, type HalfFrame, type ProfileJob } from "./profile-frame";
 
 const POOL_SIZE = 2;
 // Background work (Cache all, the import pass) leaves one worker free for the
@@ -79,7 +81,9 @@ function stop(worker: Worker): void {
 }
 
 function runInline(task: Task): void {
-  task.settle(handleFrameRequest(task.request).reply);
+  const { request } = task;
+  if (request.op === "profile") void answerFrameRequest(request).then(({ reply }) => task.settle(reply));
+  else task.settle(handleFrameRequest(request).reply);
 }
 
 // What the workers still hold is lost with them (its buffers were transferred);
@@ -213,4 +217,17 @@ export async function encodeSrgb8(
   if (error) throw error;
   if (reply.op !== "srgb8") throw new Error("the frame worker answered another request");
   return reply.bytes;
+}
+
+/** A non-RAW photo read through its input profile (profile-frame.ts): its
+ *  file decoded without colour management, its codes through the transform,
+ *  averaged down to `job.targetEdge` and turned, as halves, off the main
+ *  thread. The file and transform are copied to the worker, not handed over:
+ *  the resolver may keep the transform. */
+export async function convertInputFrame(job: ProfileJob, priority?: FramePriority): Promise<HalfFrame> {
+  const reply = await submit((id) => ({ id, op: "profile", job }), [], priority);
+  const error = failure(reply);
+  if (error) throw error;
+  if (reply.op !== "profile") throw new Error("the frame worker answered another request");
+  return reply.frame;
 }

@@ -74,13 +74,15 @@ describe("a cached half-float source", () => {
     expect(halfToFloat32).not.toHaveBeenCalled();
   });
 
-  it("uploads from its floats when it is capped smaller", () => {
+  // The cap averages its halves where they sit (capHalfToEdge), so the whole
+  // frame is never converted to floats first.
+  it("uploads its averaged floats when it is capped smaller, converting no whole frame", () => {
     const source = cached();
     const uploads = halfFloatUploads(() =>
       withRenderer(undefined, (renderer) => renderer.uploadSource("k", source, 8, false, true, true)),
     );
     expect(uploads.find((u) => u.level === 0)?.type).toBe(glHarness().gl.FLOAT);
-    expect(halfToFloat32).toHaveBeenCalledWith(source.data);
+    expect(halfToFloat32).not.toHaveBeenCalledWith(source.data);
   });
 
   it("holds what its floats held, at every level", () => {

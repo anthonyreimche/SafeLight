@@ -1575,6 +1575,12 @@ describe("a rendered batch", () => {
       ["a float decode", { kind: "float", data: new Float32Array(0), width: 6000, height: 4000 }, 4096],
       ["a bitmap", { kind: "bitmap", bitmap: { width: 6000, height: 4000, close: () => undefined } as unknown as ImageBitmap }, 4096],
       ["the cached float16", { kind: "float16", data: new Uint16Array(0), width: 3000, height: 2000 }, 2048],
+      // A non-RAW photo read through its input profile is full size, and capped at upload.
+      [
+        "a display-referred float16",
+        { kind: "float16", data: new Uint16Array(0), width: 6000, height: 4000, displayReferred: true },
+        4096,
+      ],
     ];
 
     it.each(sources)("uploads %s capped to the edge the crop needs", async (_, image, maxEdge) => {

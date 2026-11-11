@@ -7,10 +7,18 @@
 // loads, then the GPU source cache if it still holds the photo, else the decode (its
 // camera preview first), and the neighbours decoded ahead afterwards.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
+import {
+  convertedTargetEdge,
+  expectedInputProfileOwner,
+  inputProfileOwner,
+  inputProfileRevision,
+  onInputProfilesChanged,
+} from "@/catalog/input-profiles";
+import { isRawFile } from "@/raw/raw-preview";
 import type { RenderBridge } from "@/rendering/render-bridge";
 import type { Float16Source } from "@/rendering/source-sample";
 import { missingAdjustments } from "@/extensions/essential-params";
@@ -38,7 +46,8 @@ import { storedPicture, type DevelopPicture } from "./use-develop-picture";
 
 export const NO_STAGES: readonly string[] = [];
 
-/** The longest the first frame waits for the essentials its edit needs. */
+/** The longest the first frame waits for the essentials its edit needs, or a
+ *  non-RAW photo for the extension that may read its input profile. */
 const ESSENTIALS_WAIT_MS = 3000;
 
 export interface PhotoLoadArgs {
@@ -90,6 +99,10 @@ export function useDevelopPhotoLoad({
   holdEditedPreview: (bitmap: ImageBitmap | null) => void;
 } {
   const { present, clearPicture, isShowing, beginPhoto } = picture;
+  // A non-RAW photo's source key follows the input profile resolver's revision,
+  // so the view renders, and loads the photo again, as it moves.
+  useSyncExternalStore(onInputProfilesChanged, inputProfileRevision);
+  const sourceKey = photo ? photoSourceKey(photo) : undefined;
 
   // An edited photo's stored preview, its original out of reach (Fallback
   // "stored-edited"), shows the edit it was rendered with, so it is never a source: an
@@ -181,6 +194,14 @@ export function useDevelopPhotoLoad({
       const installed = useInstalledPlugins.getState().ids;
       const awaited = (id: string) =>
         !running.includes(id) && !isExtensionDisabled(id) && (installed === null || installed.includes(id));
+      // Read before its input profile resolver registers, a non-RAW photo would
+      // open as sRGB and be kept on the GPU under the key it had before. Only the
+      // extension that held the resolver last is waited for, so a photo never
+      // waits when none is installed; once one has registered none is to come.
+      const expected = expectedInputProfileOwner();
+      if (!isRawFile({ name: photo.filename } as File) && inputProfileOwner() === null && expected && awaited(expected)) {
+        return true;
+      }
       const asShot = photo.exif.colorTemperature ?? st.asShotTemperature;
       return missingAdjustments(st.params, (id) => !awaited(id), asShot).length > 0;
     };
@@ -196,6 +217,7 @@ export function useDevelopPhotoLoad({
           useRunningPlugins.subscribe(check),
           useDisabledExtensions.subscribe(check),
           useInstalledPlugins.subscribe(check),
+          onInputProfilesChanged(check),
         ];
         const cap = setTimeout(() => stopEssentials(), ESSENTIALS_WAIT_MS);
         stopEssentials = () => {
@@ -320,6 +342,9 @@ export function useDevelopPhotoLoad({
         signal: abort.signal,
         // For api.develop.readSourceSample on a photo served from the RAW cache.
         sample: true,
+        // The renderer caps a converted non-RAW source to the develop edge: it
+        // is averaged down in the frame worker instead of crossing at full size.
+        ...convertedTargetEdge(photo, getSettings().developMaxEdge),
       });
       if (cancelled) {
         if (image?.kind === "bitmap") image.bitmap.close();
@@ -376,8 +401,9 @@ export function useDevelopPhotoLoad({
       endWait();
       stopEssentials();
     };
+    // A turn moves the key too, so it loads once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photo?.id, fileAccessNonce]);
+  }, [photo?.id, sourceKey, fileAccessNonce]);
 
   return { holdEditedPreview };
 }

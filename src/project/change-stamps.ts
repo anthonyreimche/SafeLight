@@ -29,6 +29,7 @@ export type PhotoGroup =
   | "decodeError"
   | "copyName"
   | "stack"
+  | "inputProfile"
   | "created";
 
 /** The fields of a photo record a stamp covers: all but its id and the
@@ -62,6 +63,7 @@ const GROUP_OF: Record<StampedField, PhotoGroup> = {
   copyName: "copyName",
   stackId: "stack",
   stackCover: "stack",
+  inputProfile: "inputProfile",
   copyOf: "created",
   dateImported: "created",
 };

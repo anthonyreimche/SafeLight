@@ -163,7 +163,7 @@ interface SlotContribution {
 | `library-toolbar` | The Library toolbar |
 | `library-subbar` | A full-width bar below it, shown only when used |
 | `develop-toolbar` | The Develop status bar, left of the zoom controls |
-| `develop-canvas-overlay` | A click-through layer over the Develop canvas (see [`api.develop`](stores.md#apidevelop)) |
+| `develop-canvas-overlay` | A click-through layer over the Develop canvas, under a held canvas tool's overlay (see [`api.develop`](stores.md#apidevelop)) |
 | `develop-detail` | The Detail panel's Noise Reduction area. **Replaces** the built-in sliders |
 
 `api.unregisterSlot(id)` removes a slot contribution, e.g. a denoiser's `develop-detail` controls when it is off, so the built-in sliders return.

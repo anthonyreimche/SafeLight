@@ -74,4 +74,20 @@ describe("capHalfToEdge", () => {
     expect(got.data).toBeInstanceOf(Float32Array);
     expect(bits(got.data)).toEqual(bits(want.data));
   });
+
+  it.each([[37, 23, 16], [23, 37, 16], [301, 199, 64], [64, 3, 10], [9, 9, 1], [1000, 7, 333]])(
+    "averages a %i × %i source down to %i from its halves in place, bit for bit",
+    (w, h, edge) => {
+      const halves = cachedHalves(w * h, w * 131 + h * 7 + edge);
+      const want = capFloatToEdge(halfToFloat32(halves), w, h, edge);
+      vi.mocked(halfToFloat32).mockClear();
+
+      const got = capHalfToEdge(halves, w, h, edge);
+
+      expect(halfToFloat32).not.toHaveBeenCalled();
+      expect([got.width, got.height]).toEqual([want.width, want.height]);
+      expect(got.data).toBeInstanceOf(Float32Array);
+      expect(bits(got.data)).toEqual(bits(want.data));
+    },
+  );
 });

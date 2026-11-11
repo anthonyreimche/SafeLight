@@ -221,6 +221,10 @@ export interface CatalogState {
   setStack: (ids: string[], opts?: { cover?: string }) => Promise<void>;
   /** Take the photos out of their stacks. */
   clearStack: (ids: string[]) => Promise<void>;
+  /** Store an input profile token on the photos, or with null clear it. Call
+   *  api.catalog.setInputProfile instead: it checks that you hold the
+   *  resolver, and draws edited thumbnails again. Needs Safelight 3.2.3. */
+  setInputProfile: (ids: string[], token: string | null) => Promise<void>;
 
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;

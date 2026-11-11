@@ -51,6 +51,7 @@ import type {
   DevelopedPixels,
   FloatCaptureOptions,
   FloatFrame,
+  InputProfileResolver,
   LiveFloatCaptureOptions,
   MaskPanelEntry,
   MaskParamScope,
@@ -498,7 +499,8 @@ export interface SafelightAPI {
      *  Rec.709 with white balance applied and before the baseline tone and
      *  every edit; `x` and `y` place it in the decoded frame of `sourceWidth`
      *  × `sourceHeight`. Null while no photo is open, between photos, for a
-     *  bitmap (JPEG, TIFF, HEIF), for the camera preview shown before the RAW
+     *  bitmap (JPEG, TIFF, HEIF) and for one read through its input profile
+     *  (registerInputProfiles), for the camera preview shown before the RAW
      *  decodes, for a stored preview standing in for the photo, and for a cache
      *  entry written before 3.1.0 until its rewrite lands, a few seconds after
      *  the open: wait for `useDevelopStore().sourceSize.native` before asking.
@@ -583,6 +585,22 @@ export interface SafelightAPI {
      *  you hold replaces it; another extension's id is refused. Dropped when
      *  the extension stops. Needs Safelight 3.2.1. */
     registerBrushTip(tip: BrushTipContribution): void;
+    /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
+     *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
+     *  transform and hands it the original's bytes; core reads the file's
+     *  8-bit codes without colour management and applies the transform with
+     *  nothing clipped, so colour outside sRGB arrives as negative channels.
+     *  A null answer, a throw, an answer later than 3 s or an invalid
+     *  transform leaves the photo to the browser's decode (sRGB). Develop,
+     *  exports, headless renders and edited thumbnails use it; the Library's
+     *  plain previews don't. One extension holds it: another's is refused
+     *  with a warning, and registering again replaces your own. Dropped when
+     *  the extension stops. Needs Safelight 3.2.3. */
+    registerInputProfiles(resolver: InputProfileResolver): void;
+    /** Your resolver's answers changed with no photo's token changing (a
+     *  setting, a profile added or removed): photos converted before load
+     *  again. Only the resolver's owner may call it. Needs Safelight 3.2.3. */
+    invalidateInputProfiles(): void;
     /** React hook: the panels that can be added to a mask, in their order.
      *  Needs Safelight 3.2.0. */
     useMaskPanels(): MaskPanelEntry[];
@@ -765,6 +783,13 @@ export interface SafelightAPI {
     /** Take the photos out of their stacks. A stack left with one photo is no
      *  stack. */
     clearStack(ids: string[]): Promise<void>;
+    /** Store `token` as the photos' `inputProfile`, or with null clear it:
+     *  what your InputProfileResolver is handed for them. Opaque to core;
+     *  synced between windows and written like a rating (no undo entry). The
+     *  photos load again in Develop, and edited thumbnails are drawn again.
+     *  Only the extension holding the input profile resolver may call it;
+     *  any other call is rejected. Needs Safelight 3.2.3. */
+    setInputProfile(ids: string[], token: string | null): Promise<void>;
     /** The stack photo `id` belongs to among all the catalogue's photos: its
      *  id, its members in catalogue order and its cover (the marked member with
      *  the lowest id, else the first member). Null for a photo in no stack. */

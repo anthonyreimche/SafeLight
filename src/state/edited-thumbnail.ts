@@ -24,6 +24,7 @@ import { editFingerprint } from "@/catalog/edit-fingerprint";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
+import { convertedTargetEdge } from "@/catalog/input-profiles";
 import { getSettings } from "@/state/settings-store";
 import { catalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { useCatalogStore } from "./catalog-store";
@@ -135,7 +136,10 @@ async function run(
   //    preview not at all (isStoredPreview): the grid keeps it as it is until the
   //    photo's original can be read.
   if (!blob) {
-    const decoded = await loadPhotoImage(photo, { background: true });
+    const decoded = await loadPhotoImage(photo, {
+      background: true,
+      ...convertedTargetEdge(photo, THUMB_SOURCE_MAX_EDGE),
+    });
     if (decoded?.kind === "bitmap" && isStoredPreview(decoded)) {
       decoded.bitmap.close();
       return;

@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildFrame, handleFrameRequest, toSrgb8, type FrameJob, type FrameRequest } from "./frame-job";
+import { answerFrameRequest, linearizeCodes, type ProfileJob } from "./profile-frame";
 
 class FakeWorker {
   static all: FakeWorker[] = [];
@@ -34,9 +35,12 @@ class FakeWorker {
   answerNext(): void {
     const req = this.queue.shift();
     if (!req) throw new Error("nothing to answer");
-    const { reply, transfer } = handleFrameRequest(req);
-    const data = structuredClone(reply, { transfer });
-    setTimeout(() => this.onmessage?.({ data }));
+    const send = ({ reply, transfer }: ReturnType<typeof handleFrameRequest>) => {
+      const data = structuredClone(reply, { transfer });
+      setTimeout(() => this.onmessage?.({ data }));
+    };
+    if (req.op === "profile") void answerFrameRequest(req).then(send);
+    else send(handleFrameRequest(req));
   }
 
   terminate(): void {
@@ -219,5 +223,103 @@ describe("encodeSrgb8", () => {
 
     expect(bytes).toEqual(toSrgb8(Float32Array.from([-1, 0.001, 0.18, 1, 2, 0.5, 0.25, 1])));
     expect(data.buffer.byteLength).toBe(0);
+  });
+});
+
+/** A 3 × 2 photo's RGBA8 codes, as the image decoder hands them over. */
+const CODES = Uint8ClampedArray.from({ length: 3 * 2 * 4 }, (_, i) => (i * 37) % 256);
+
+/** Fakes the decode a profile job reads its codes through: every blob decodes
+ *  to CODES, and each decode's options are kept. */
+function stubCodeDecoder(): ImageBitmapOptions[] {
+  const asked: ImageBitmapOptions[] = [];
+  vi.stubGlobal("createImageBitmap", async (_src: Blob, opts: ImageBitmapOptions) => {
+    asked.push(opts);
+    return { width: 3, height: 2, close() {} };
+  });
+  vi.stubGlobal(
+    "OffscreenCanvas",
+    class {
+      getContext() {
+        return { drawImage() {}, getImageData: () => ({ data: CODES.slice() }) };
+      }
+    },
+  );
+  return asked;
+}
+
+function profileJob(over: Partial<ProfileJob> = {}): ProfileJob {
+  return {
+    source: new Blob(["png"]),
+    decoder: "browser",
+    transform: {
+      trc: [Float32Array.from([0, 1]), Float32Array.from([0, 0.25, 1]), Float32Array.from([-0.5, 2])],
+      toRec709: [1.2, -0.2, 0, 0, 1, 0, 0, -0.1, 1.1],
+    },
+    turn: 90,
+    ...over,
+  };
+}
+
+describe("convertInputFrame", () => {
+  it("returns the halves the inline conversion gives, decoded without colour management", async () => {
+    const asked = stubCodeDecoder();
+    const { convertInputFrame } = await load();
+    const job = profileJob();
+
+    const frame = await convertInputFrame(job);
+
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(frame).toEqual(linearizeCodes(CODES, 3, 2, job.transform, 90));
+    expect(asked).toEqual([{ colorSpaceConversion: "none", imageOrientation: "none" }]);
+  });
+
+  it("leaves the transform with the resolver, which may keep it", async () => {
+    stubCodeDecoder();
+    const { convertInputFrame } = await load();
+    const job = profileJob();
+
+    await convertInputFrame(job);
+
+    expect(job.transform.trc.map((t) => t.length)).toEqual([2, 3, 2]);
+  });
+
+  it("averages down to the target edge", async () => {
+    stubCodeDecoder();
+    const { convertInputFrame } = await load();
+
+    const frame = await convertInputFrame(profileJob({ turn: 0, targetEdge: 2 }));
+
+    expect([frame.width, frame.height]).toEqual([2, 1]);
+  });
+
+  it("converts inline where there is no Worker", async () => {
+    stubCodeDecoder();
+    vi.stubGlobal("Worker", undefined);
+    const { convertInputFrame } = await load();
+    const job = profileJob();
+
+    expect(await convertInputFrame(job)).toEqual(linearizeCodes(CODES, 3, 2, job.transform, 90));
+  });
+
+  it("rejects when the file can't be decoded", async () => {
+    stubCodeDecoder();
+    vi.stubGlobal("createImageBitmap", async () => {
+      throw new Error("corrupt");
+    });
+    const { convertInputFrame } = await load();
+
+    await expect(convertInputFrame(profileJob())).rejects.toThrow("corrupt");
+  });
+
+  it("refuses a conversion abandoned before it was asked for", async () => {
+    stubCodeDecoder();
+    const { convertInputFrame } = await load();
+    const gone = new AbortController();
+    gone.abort();
+
+    await expect(convertInputFrame(profileJob(), { signal: gone.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 });
