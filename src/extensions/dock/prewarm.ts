@@ -14,17 +14,20 @@ import { useDockStore } from "./store";
 
 type Hint = (stageIds: string[]) => void;
 
-function stagesOfPanel(panelId: string): string[] {
-  const { panels, processingStages } = useRegistry.getState();
-  const owner = panels[panelId]?.extensionId;
-  if (!owner) return [];
-  return Object.values(processingStages)
-    .filter((s) => s.extensionId === owner)
+function stagesOf(extensionId: string): string[] {
+  return Object.values(useRegistry.getState().processingStages)
+    .filter((s) => s.extensionId === extensionId)
     .map((s) => s.id);
 }
 
 function hintPanel(panelId: string, hint: Hint): void {
-  const ids = stagesOfPanel(panelId);
+  const owner = useRegistry.getState().panels[panelId]?.extensionId;
+  if (owner) prewarmExtension(owner, hint);
+}
+
+/** Hint `extensionId`'s stages, if it has any (api.develop.prewarmStages). */
+export function prewarmExtension(extensionId: string, hint: Hint = hintStages): void {
+  const ids = stagesOf(extensionId);
   if (ids.length > 0) hint(ids);
 }
 

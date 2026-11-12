@@ -15,6 +15,9 @@ import {
   disposeRenderBridge,
   getRenderBridge,
   getStageTextures,
+  needStageVariants,
+  noteLiveStageBag,
+  setExtensionTextureBudget,
   setStageTexture,
   type FrameResult,
 } from "./render-bridge";
@@ -1056,6 +1059,60 @@ describe("RenderBridge image hand-off", () => {
     expect(worker.transfers[at][0]).toBe(sample.data.buffer);
     bridge.dispose();
   });
+
+  // The frame itself stays with the native frame worker; the renderer needs its size.
+  it("hands the size of the open photo's native frame to the worker under its key", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+
+    bridge.setNativeFrame("p:0", { width: 3, height: 2 });
+
+    const at = worker.posted.findIndex((m) => m.cmd === "setNativeFrame");
+    expect(worker.posted[at]).toEqual({ cmd: "setNativeFrame", key: "p:0", width: 3, height: 2 });
+    expect(worker.transfers[at]).toHaveLength(0);
+    bridge.dispose();
+  });
+
+  it("hands each detail want to the handler set, and drops them with none", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const want = { request: 3, key: "p:0", rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, outW: 640, outH: 480, baseW: 3072, baseH: 2048 };
+    expect(() => worker.reply({ type: "detailWanted", ...want })).not.toThrow();
+    const handler = vi.fn();
+    bridge.onDetailWanted(handler);
+    worker.reply({ type: "detailWanted", ...want });
+    expect(handler.mock.calls).toEqual([[want]]);
+    bridge.onDetailWanted(null);
+    worker.reply({ type: "detailWanted", ...want });
+    expect(handler).toHaveBeenCalledTimes(1);
+    bridge.dispose();
+  });
+
+  it("hands a cut gain to the worker under its request, moving its pixels, and none as null", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const gain = { data: new Uint16Array(6), width: 3, height: 2, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } };
+
+    bridge.setDetailGain(7, gain);
+    bridge.setDetailGain(8, null);
+
+    const sent = worker.posted.filter((m) => m.cmd === "setDetailGain");
+    const at = worker.posted.findIndex((m) => m.cmd === "setDetailGain");
+    expect(sent[0]).toEqual({ cmd: "setDetailGain", request: 7, data: gain.data, width: 3, height: 2, rect: gain.rect });
+    expect(worker.transfers[at]).toEqual([gain.data.buffer]);
+    expect(sent[1]).toMatchObject({ cmd: "setDetailGain", request: 8, data: null });
+    bridge.dispose();
+  });
+
+  it("tells the worker to let go of the native frame", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+
+    bridge.clearNativeFrame();
+
+    expect(worker.posted.filter((m) => m.cmd === "clearNativeFrame")).toEqual([{ cmd: "clearNativeFrame" }]);
+    bridge.dispose();
+  });
 });
 
 // The worker builds its first develop program while it handles `init`, from the
@@ -1574,6 +1631,27 @@ describe("RenderBridge worker replies", () => {
       expect(onFrame).toHaveBeenCalledTimes(1);
       expect(onFrame.mock.calls[0][0].bitmap).toBe(bitmap);
       expect(onFrame.mock.calls[0][0].histogram).toBeUndefined();
+    });
+
+    // Once a detail gain is cut for a still view, the worker draws a frame no render
+    // asked for, with seq 0: it is shown, and the render in flight is still awaited.
+    it("shows a frame the worker drew unasked without taking it for the render in flight", () => {
+      const onFrame = vi.fn<(frame: FrameResult) => void>();
+      bridge.setOnFrame(onFrame);
+      const renders = () => worker.posted.filter((m) => m.cmd === "render");
+      const frame = { type: "frame", width: 320, height: 240, sourceWidth: 320, sourceHeight: 240, sourceGen: 1 } as const;
+      bridge.render();
+      bridge.render();
+      expect(renders()).toHaveLength(1);
+
+      worker.reply({ ...frame, seq: 0, bitmap: bitmapOf(320) });
+      expect(onFrame).toHaveBeenCalledTimes(1);
+      expect(renders()).toHaveLength(1);
+
+      const inFlight = renders()[0];
+      if (inFlight.cmd !== "render") throw new Error("no render posted");
+      worker.reply({ ...frame, seq: inFlight.seq, bitmap: bitmapOf(320) });
+      expect(renders()).toHaveLength(2);
     });
 
     it("hands over the window a frame was drawn for, and null for the whole image", () => {
@@ -4055,5 +4133,133 @@ describe("RenderBridge stage quarantine", () => {
       expect(failuresOfAcme()).toEqual([]);
       bridge.dispose();
     });
+  });
+});
+
+// A headless frame (renderPhotoFrame, an edited thumbnail, a float frame) whose
+// bag names a stage texture variant made on demand waits for it, and the
+// worker gets the variant before the frame.
+describe("a headless frame naming a variant made on demand", () => {
+  const calib: ProcessingStageContribution = {
+    id: "acme.calib",
+    name: "Calibration",
+    phase: "decode",
+    glsl: "",
+    uniforms: [],
+    textures: [{ key: "table", kind: "dynamic", format: "rgba8" }],
+  };
+  const tex: StageTextureData = { data: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1, format: "rgba8", version: 1 };
+  const request = (requestId: string) => ({
+    requestId,
+    key: "k",
+    params: normalizeParams({}),
+    asShotTemperature: 6500,
+    maxEdge: 64,
+    contributedParams: { "acme.calib.table": "v1" },
+  });
+  const sent = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) =>
+      m.cmd === "patchStageTextures"
+        ? [`textures ${Object.keys(m.set).join()}`]
+        : m.cmd === "renderThumbnailFromSource"
+          ? [`frame ${m.requestId}`]
+          : m.cmd === "capture" || m.cmd === "captureFloat" || m.cmd === "readDevelopedPixels"
+            ? [m.cmd]
+            : [],
+    );
+
+  beforeEach(() => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerProcessingStage("acme", calib);
+  });
+
+  afterEach(() => {
+    noteLiveStageBag({});
+    for (const key of Object.keys(getStageTextures())) setStageTexture(key, null);
+    disposeRenderBridge();
+    unregisterExtension("acme");
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("asks once for both frames, and hands the worker the variant ahead of them", async () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    const provide = vi.fn(async () => tex);
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    void bridge.renderThumbnailFromSource(request("t1"));
+    void bridge.renderThumbnailFromSource(request("t2"));
+    expect(sent(worker)).toEqual([]);
+    await vi.waitFor(() => expect(sent(worker)).toHaveLength(3));
+    expect(sent(worker)).toEqual(["textures acme.calib.table#v1", "frame t1", "frame t2"]);
+    expect(provide).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws nothing and answers null when the variant can't be made", async () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", async () => {
+      throw new Error("the master can't be read");
+    });
+    expect(await bridge.renderThumbnailFromSource(request("t1"))).toBeNull();
+    expect(sent(worker)).toEqual([]);
+  });
+
+  it("draws at once when the bag names no variant made on demand", () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    const provide = vi.fn(async () => tex);
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    void bridge.renderThumbnailFromSource({ ...request("t1"), contributedParams: {} });
+    expect(sent(worker)).toEqual(["frame t1"]);
+    expect(provide).not.toHaveBeenCalled();
+  });
+
+  it("measures the live photo only once the variants its bag names are in the worker", async () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    let land: () => void = () => undefined;
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", () => new Promise((done) => (land = () => done(tex))));
+    bridge.setContributedParams({ "acme.calib.table": "v1" });
+    void bridge.capture(normalizeParams({}));
+    void bridge.captureFloat(normalizeParams({}));
+    void bridge.readDevelopedPixels(256);
+    await Promise.resolve();
+    expect(sent(worker).filter((m) => !m.startsWith("textures"))).toEqual([]);
+    land();
+    await vi.waitFor(() => expect(sent(worker)).toHaveLength(4));
+    expect(sent(worker)[0]).toBe("textures acme.calib.table#v1");
+    expect(sent(worker).slice(1).sort()).toEqual(["capture", "captureFloat", "readDevelopedPixels"]);
+  });
+
+  it("asks for a variant a capture's own bag names, and waits for it", async () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    const provide = vi.fn(async () => tex);
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    void bridge.capture(normalizeParams({}), { paramBag: { "acme.calib.table": "v2" } });
+    await vi.waitFor(() => expect(sent(worker)).toEqual(["textures acme.calib.table#v2", "capture"]));
+    expect(provide).toHaveBeenCalledWith("v2", expect.anything());
+  });
+
+  it("keeps the variants a worker frame draws with until the worker answers it", async () => {
+    setExtensionTextureBudget(4);
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", async () => ({ ...tex }));
+    const drawing = bridge.renderThumbnailFromSource(request("t1"));
+    await vi.waitFor(() => expect(sent(worker)).toContain("frame t1"));
+    const other = needStageVariants({ "acme.calib.table": "v2" });
+    expect((await other)?.failure).toMatch(/can't hold/);
+    expect(Object.keys(getStageTextures())).toEqual(["acme.calib.table#v1"]);
+    worker.reply({ type: "thumbnail", requestId: "t1", blob: new Blob(["x"]) });
+    await drawing;
+    const after = await needStageVariants({ "acme.calib.table": "v2" });
+    after?.release();
+    expect(after?.failure).toBeNull();
+    expect(Object.keys(getStageTextures())).toEqual(["acme.calib.table#v2"]);
+    setExtensionTextureBudget(null);
   });
 });

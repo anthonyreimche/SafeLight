@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { AppModule, DevelopParams, EditState, StoredPhoto } from "@/catalog/types";
+import type { AppModule, EditState, StoredPhoto } from "@/catalog/types";
 import type { ChangeStamps } from "@/project/change-stamps";
 
 /** What one catalogue write stored: edit histories, photo records as catalog.json
@@ -56,7 +56,8 @@ export type BroadcastMessage =
     }
   | {
       type: "edit-update";
-      payload: { photoId: string | null; params: DevelopParams };
+      // Which photo's stored look changed; a listener reads the look from the catalogue.
+      payload: { photoId: string | null };
     }
   | {
       type: "catalog-change";

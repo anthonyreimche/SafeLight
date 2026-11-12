@@ -65,6 +65,7 @@ const GROUP_OF: Record<StampedField, PhotoGroup> = {
   stackCover: "stack",
   inputProfile: "inputProfile",
   copyOf: "created",
+  sourceKey: "created",
   dateImported: "created",
 };
 

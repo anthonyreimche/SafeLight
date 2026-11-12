@@ -39,6 +39,9 @@ export const DEVTOOLS_EXTENSION_ID = "safelight.devtools";
 /** Accessibility: the overlays and the switches the welcome setup shows. */
 export const ACCESSIBILITY_EXTENSION_ID = "safelight.accessibility";
 
+/** Library and Develop are the two modules; with neither there is no app. */
+export const CORE_MODULE_IDS: readonly string[] = ["safelight.library", "safelight.develop"];
+
 /** The registry kit (kits.json) that holds the essentials. */
 export const ESSENTIALS_KIT_ID = "essentials";
 

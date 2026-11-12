@@ -71,13 +71,22 @@ export interface CatalogPhoto {
    *  (api.catalog.setInputProfile). Opaque to core, which only keys the
    *  photo's converted source by it. */
   inputProfile?: string;
+  /** Set on a library source's photo: the key the source names it by, which
+   *  follows it through renamed albums and names (see library-sources.ts). */
+  sourceKey?: string;
 }
 
 /** A grid preview as a loader returns it, with the edit it shows. `previewEdit` is
  *  the edit its record named when it was read from the stored copy; one without it,
  *  such as a preview built from the photo's source file, shows none. It rides on
- *  the Blob because the project's reader also hands its result on as a plain Blob. */
-export type LoadedPreview = Blob & { readonly previewEdit?: string };
+ *  the Blob because the project's reader also hands its result on as a plain Blob.
+ *  `frame` is the upright size of the picture it was made from, for a library
+ *  source's photo listed without a size, which takes it until its original is
+ *  decoded. */
+export type LoadedPreview = Blob & {
+  readonly previewEdit?: string;
+  readonly frame?: { readonly width: number; readonly height: number };
+};
 
 /** A photo record as catalog.json stores it. The live file handles, the preview
  *  blob and its object URL belong to the window holding the record. */

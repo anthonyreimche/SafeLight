@@ -23,8 +23,17 @@ import {
   listRecentProjects,
   recentHandle,
   removeRecentProject,
+  lastRecentProject,
+  whenRecentSource,
   type RecentProject,
 } from "./recent";
+import {
+  dropLibrarySources,
+  listLibrarySources,
+  registerLibrarySource,
+  sourceRefOf,
+  sourceRoot,
+} from "./library-sources";
 
 // ── In-memory IndexedDB ──────────────────────────────────────────────────────
 // Node has no IndexedDB and the store's contract (keyPath dedup, upgrade-time
@@ -381,5 +390,77 @@ describe("legacy migration", () => {
 
     expect(ids(await listRecentProjects())).toEqual(["D:\\Photos\\Trip"]);
     expect(db.records("recent")?.size).toBe(1); // untouched, still available later
+  });
+});
+
+describe("a library source as a recent project", () => {
+  const register = () =>
+    registerLibrarySource("ext.a", {
+      id: "test.server",
+      name: "Server",
+      library: "lib-1",
+      list: async () => ({}),
+      readPreview: async () => new Blob(),
+      readOriginal: async () => new Blob(),
+    });
+
+  afterEach(() => dropLibrarySources("ext.a"));
+
+  it("is kept by its source and library, not by a handle", async () => {
+    register();
+    await addRecentProject(sourceRoot("test.server")!, null);
+    const [entry] = await listRecentProjects();
+    expect(entry).toMatchObject({
+      id: "source:ext.a\ntest.server\nlib-1",
+      name: "Server",
+      path: null,
+      handle: null,
+      source: { extensionId: "ext.a", id: "test.server", library: "lib-1" },
+    });
+    expect(sourceRefOf(recentHandle(entry))).toMatchObject({ id: "test.server", name: "Server", library: "lib-1" });
+  });
+
+  it("is no last project to open while its extension hasn't registered the source", async () => {
+    register();
+    await addRecentProject(sourceRoot("test.server")!, null);
+    dropLibrarySources("ext.a");
+    await expect(getLastProject()).resolves.toBeNull();
+    expect((await lastRecentProject())?.source?.id).toBe("test.server");
+  });
+
+  it("is waited for until its extension registers the source", async () => {
+    register();
+    await addRecentProject(sourceRoot("test.server")!, null);
+    dropLibrarySources("ext.a");
+    const waiting = whenRecentSource((await lastRecentProject())!, 1000);
+    setTimeout(register, 5);
+    expect(sourceRefOf(await waiting)?.id).toBe("test.server");
+  });
+
+  it("isn't another extension's source of the same id", async () => {
+    register();
+    await addRecentProject(sourceRoot("test.server")!, null);
+    const [entry] = await listRecentProjects();
+    dropLibrarySources("ext.a");
+    registerLibrarySource("ext.b", {
+      id: "test.server",
+      name: "Server",
+      library: "lib-1",
+      list: async () => ({}),
+      readPreview: async () => new Blob(),
+      readOriginal: async () => new Blob(),
+    });
+    expect(recentHandle(entry)).toBeNull();
+    dropLibrarySources("ext.b");
+  });
+
+  it("isn't reopened on another library", async () => {
+    register();
+    const [entry] = await (async () => {
+      await addRecentProject(sourceRoot("test.server")!, null);
+      return listRecentProjects();
+    })();
+    registerLibrarySource("ext.a", { ...listLibrarySources()[0], library: "lib-2" });
+    expect(recentHandle(entry)).toBeNull();
   });
 });

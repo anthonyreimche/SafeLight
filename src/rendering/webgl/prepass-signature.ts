@@ -35,13 +35,15 @@ function sourceHash(pass: PrepassPass): string {
  *  it. Inline params don't reach a pass, so they are left out: dragging one is
  *  a cache hit. Whether any later pass draws is in it too, since that decides
  *  whether the pass's last draw is the stage's last, which is drawn whole.
- *  Through the last pass it is the signature of the stage's result. */
+ *  Through the last pass it is the signature of the stage's result. Values are
+ *  signed by the uniform they bind, which a mask copy's passes share with its
+ *  stage's, so a copy given its stage's values signs as the stage does. */
 export function prefixSig(stage: PrepassStage, frame: SigFrame, srcSig: string, through: number): string {
   const { bag, w, h, baseCurve } = frame;
   const passes = stage.passes.slice(0, through + 1);
   let params = "";
   for (const pass of passes) {
-    for (const b of pass.bindings) params += `${b.qualifiedKey}=${String(boundValue(bag, b))};`;
+    for (const b of pass.bindings) params += `${b.glslName}=${String(boundValue(bag, b))};`;
   }
   const sources = passes.map(sourceHash).join(",");
   const counts = stage.passes.map((p) => passDraws(p, bag));

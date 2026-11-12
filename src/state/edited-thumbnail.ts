@@ -21,7 +21,7 @@
 
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
-import { getRenderBridge } from "@/rendering/render-bridge";
+import { getRenderBridge, needStageVariants } from "@/rendering/render-bridge";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { convertedTargetEdge } from "@/catalog/input-profiles";
@@ -101,7 +101,30 @@ export function regenerateEditedThumbnail(
     });
 }
 
+/** renderAndStore, once the stage texture variants made on demand that
+ *  `paramBag` names are held, and held across every source it tries: the grid
+ *  keeps its preview, and nothing is decoded, when one can't be had. */
 async function run(
+  photoId: string,
+  params: DevelopParams,
+  asShotTemperature: number,
+  paramBag?: Record<string, unknown>,
+  leaving?: LeftPhoto,
+): Promise<void> {
+  const needed = paramBag && needStageVariants(paramBag, { worker: true });
+  const lease = needed && (await needed);
+  try {
+    if (lease?.failure) {
+      console.warn(`[render] ${lease.failure}`);
+      return;
+    }
+    await renderAndStore(photoId, params, asShotTemperature, paramBag, leaving);
+  } finally {
+    lease?.release();
+  }
+}
+
+async function renderAndStore(
   photoId: string,
   params: DevelopParams,
   asShotTemperature: number,

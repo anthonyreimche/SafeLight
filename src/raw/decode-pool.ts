@@ -78,6 +78,15 @@ export interface DecodeRequest extends DecodePriority {
   /** Also build the develop-preview cache entry for the frame, its preview
    *  downscaled to this long edge, off the main thread (raw-cache.ts). */
   cacheEdge?: number;
+  /** Asked once libraw has answered a request whose `signal` fired meanwhile:
+   *  the caller that has taken the decode over since, if one has (decode.ts). Its
+   *  frame is then built for that caller instead of being dropped. */
+  heir?: () => DecodeHeir | null;
+}
+
+/** A caller waiting on a decode another caller began and then left. */
+export interface DecodeHeir {
+  signal?: AbortSignal;
 }
 
 // null: the pool was disposed while this request waited.

@@ -9,7 +9,7 @@ import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolvePipelineFor } from "@/extensions/pipelines";
 import type { HistogramData } from "./histogram";
 import type {
-  DevelopedPixels, SourceImage, ThumbEncodeOptions, ThumbRequest, WorkerRequest,
+  DevelopedPixels, SourceImage, ThumbEncodeOptions, ThumbRequest, WorkerRequest, WorkerResponse,
 } from "./render-protocol";
 import type { ProbePoint } from "./webgl/renderer";
 import type { MonitorTransform } from "./display-profile";
@@ -18,6 +18,7 @@ import {
   DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
 } from "./float-frame";
 import type { SourceSample, StoredSample } from "./source-sample";
+import type { DetailGain } from "@/raw/native-frame";
 import { setSourcePixels } from "./source-pixels";
 import {
   RenderTransport, type AvailabilityCallback, type RendererAvailability, type WorkerAnswer,
@@ -25,7 +26,8 @@ import {
 import { RenderRequests, blankBitmap } from "./render-bridge/requests";
 import { RenderMailbox } from "./render-bridge/mailbox";
 import { ParamSync, derivedFor } from "./render-bridge/param-sync";
-import { flushStageSync, stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
+import { flushStageSync, flushStageTextures, stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
+import { needStageVariants, noteLiveStageBag } from "./render-bridge/stage-texture-providers";
 import { unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
 import {
   forgetStageFailures,
@@ -47,7 +49,24 @@ import { useRegistry } from "@/extensions/registry";
 import { privilegedGpu } from "@/native/privileged";
 
 export type { RendererAvailability } from "./render-bridge/transport";
-export { getStageTextures, setStageTexture, stagesForWorker } from "./render-bridge/wiring";
+export {
+  flushStageTextures,
+  getStageTextures,
+  setExtensionTextureBudget,
+  setStageTexture,
+  stagesForWorker,
+} from "./render-bridge/wiring";
+export {
+  STAGE_VARIANT_TIMEOUT_MS,
+  dropStageTextureVariants,
+  needStageVariants,
+  noteLiveStageBag,
+  prepareStageVariant,
+  setStageTextureProvider,
+  stageTextureProviderOwner,
+  type StageTextureProvide,
+  type StageVariantLease,
+} from "./render-bridge/stage-texture-providers";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -78,6 +97,10 @@ export interface FrameResult {
   /** The prepass stages it was drawn without, for want of a texture unit. */
   overflowedStages: readonly string[];
 }
+
+/** A detail gain the develop renderer wants cut (detailWanted): answer it with
+ *  RenderBridge.setDetailGain under its `request`. */
+export type DetailWant = Omit<Extract<WorkerResponse, { type: "detailWanted" }>, "type">;
 
 type FrameCallback = (frame: FrameResult) => void;
 type HistogramCallback = (histogram: HistogramData) => void;
@@ -118,11 +141,14 @@ export class RenderBridge {
   private onError: ErrorCallback | null = null;
   private onSourceError: SourceErrorCallback | null = null;
   private onSourcePixels: SourcePixelsCallback | null = null;
+  private onDetailWant: ((want: DetailWant) => void) | null = null;
   private sourcesBound = 0;
   // The source number clearSource was called at: its pixels may still be on their way.
   private pixelsClearedGen: number | null = null;
   // The ids of the stages last posted, to tell when the set loses one.
   private postedStageIds: ReadonlySet<string> = new Set();
+  /** The live photo's stage bag, as the Develop view last set it. */
+  private liveStageBag: Record<string, unknown> = {};
   // The stages the GPU crash guard leaves out changed: the worker is sent the set without them.
   private readonly unsubCrashes = subscribeCrashes(() => {
     syncCrashFailures(useRegistry.getState().processingStages);
@@ -205,6 +231,11 @@ export class RenderBridge {
           histogramFollows: msg.histogramFollows,
           overflowedStages: msg.overflowedStages ?? [],
         });
+        break;
+      }
+      case "detailWanted": {
+        const { request, key, rect, outW, outH, baseW, baseH } = msg;
+        this.onDetailWant?.({ request, key, rect, outW, outH, baseW, baseH });
         break;
       }
       case "frameSkipped":
@@ -413,6 +444,39 @@ export class RenderBridge {
     );
   }
 
+  /** The size of the open photo's native frame, held under the source key its
+   *  develop source is bound by (native-frame-bridge.ts holdNativeLuma). The
+   *  develop renderer keeps it only while that source is bound and asks for
+   *  detail gains for zoomed windows (onDetailWanted); it drops one that doesn't
+   *  fit. */
+  setNativeFrame(key: string, size: { width: number; height: number }): void {
+    this.post({ cmd: "setNativeFrame", key, width: size.width, height: size.height });
+  }
+
+  /** The worker lets go of the native frame and any detail cut from it. */
+  clearNativeFrame(): void {
+    this.post({ cmd: "clearNativeFrame" });
+  }
+
+  /** Called with each detail gain the develop renderer wants cut, until
+   *  replaced; with none set, the wants are dropped. Each is answered with
+   *  setDetailGain under its request number. */
+  onDetailWanted(handler: ((want: DetailWant) => void) | null): void {
+    this.onDetailWant = handler;
+  }
+
+  /** The answer to detail want `request`: the gain cut for it, or null for
+   *  none. The worker takes only the newest want's. The gain's pixels move to the
+   *  worker. */
+  setDetailGain(request: number, gain: DetailGain | null): void {
+    if (!gain) {
+      this.post({ cmd: "setDetailGain", request, data: null, width: 0, height: 0, rect: { x: 0, y: 0, w: 0, h: 0 } });
+      return;
+    }
+    const { data, width, height, rect } = gain;
+    this.post({ cmd: "setDetailGain", request, data, width, height, rect }, [data.buffer]);
+  }
+
   setViewport(
     roi: { x: number; y: number; w: number; h: number } | null,
     outW?: number,
@@ -425,7 +489,7 @@ export class RenderBridge {
   // the caller can decode + uploadSource("thumb", …) and retry.
   // `lossless` wins over `quality`.
   renderThumbnailFromSource(opts: ThumbEncodeOptions & { key: string }): Promise<Blob | null> {
-    return new Promise<Blob | null>((resolve) => {
+    return this.withStageVariants(opts.contributedParams, () => new Promise<Blob | null>((resolve) => {
       this.requests.expect(
         this.requests.thumbs,
         opts.requestId,
@@ -442,6 +506,27 @@ export class RenderBridge {
         contributedParams,
         derived: derivedFor(opts.params),
       });
+    }), () => null);
+  }
+
+  /** `draw` a headless frame of `bag` once the stage texture variants made on
+   *  demand that it names are held and in the worker; `failed` with the reason
+   *  when one can't be had. A bag that names none draws at once. */
+  private withStageVariants<T>(
+    bag: Record<string, unknown> | undefined,
+    draw: () => Promise<T>,
+    failed: (reason: string) => T | Promise<T>,
+  ): Promise<T> {
+    const needed = bag && needStageVariants(bag, { worker: true });
+    if (!needed) return draw();
+    return needed.then(async (lease) => {
+      try {
+        if (lease.failure) return await failed(lease.failure);
+        flushStageTextures();
+        return await draw();
+      } finally {
+        lease.release();
+      }
     });
   }
 
@@ -467,9 +552,18 @@ export class RenderBridge {
    *  bag posted goes: the entries that are new or not the same value, and the keys
    *  dropped. The first bag, and the first after an init, goes whole. Callers replace
    *  the bag and the values in it on change and never mutate them. The live display
-   *  transform's derived uniforms are added to it (bagForRender). */
-  setContributedParams(bag: Record<string, unknown>) {
+   *  transform's derived uniforms are added to it (bagForRender). `own` is the
+   *  photo's own bag when view values are drawn over it: the stage texture
+   *  variants it names are made meanwhile (noteLiveStageBag). */
+  setContributedParams(bag: Record<string, unknown>, own?: Record<string, unknown>) {
     this.paramSync.setLiveBag(bag);
+    this.liveStageBag = bag;
+    noteLiveStageBag(bag, own);
+  }
+
+  /** The live bag with `patch` over it, for a measurement of the live photo. */
+  private liveBagWith(patch: Record<string, unknown> | undefined): Record<string, unknown> {
+    return patch ? { ...this.liveStageBag, ...patch } : this.liveStageBag;
   }
 
   /** Pixel data (baked LUT atlases, etc.) for processing-stage textures, keyed
@@ -507,7 +601,7 @@ export class RenderBridge {
     params: DevelopParams,
     opts: { asShown?: boolean; paramBag?: Record<string, unknown> } = {},
   ): Promise<ImageBitmap> {
-    return new Promise<ImageBitmap>((resolve) => {
+    return this.withStageVariants(this.liveBagWith(opts.paramBag), () => new Promise<ImageBitmap>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.captures, reqId, resolve, blankBitmap);
       flushStageSync();
@@ -522,6 +616,9 @@ export class RenderBridge {
         asShown: opts.asShown === true,
         ...(bagPatch ? { bagPatch } : {}),
       });
+    }), (reason) => {
+      console.warn(`[render] ${reason}`);
+      return blankBitmap();
     });
   }
 
@@ -536,7 +633,7 @@ export class RenderBridge {
     opts: LiveFloatCaptureOptions = {},
   ): Promise<FloatFrame | null> {
     if (this.transport.disposed) return Promise.resolve(null);
-    return new Promise<FloatFrame | null>((resolve) => {
+    return this.withStageVariants(this.liveBagWith(opts.paramBag), () => new Promise<FloatFrame | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.floatCaptures, reqId, resolve, () => null, { long: true });
       flushStageSync();
@@ -553,6 +650,9 @@ export class RenderBridge {
         maxEdge: captureMaxEdge(opts.maxEdge),
         ...(bagPatch ? { bagPatch } : {}),
       });
+    }), (reason) => {
+      console.warn(`[render] ${reason}`);
+      return null;
     });
   }
 
@@ -656,7 +756,7 @@ export class RenderBridge {
   }
 
   renderThumbnailAsync(opts: ThumbEncodeOptions & { image: SourceImage }): Promise<Blob> {
-    return new Promise<Blob>((resolve, reject) => {
+    return this.withStageVariants(opts.contributedParams, () => new Promise<Blob>((resolve, reject) => {
       this.requests.expect(
         this.requests.thumbs,
         opts.requestId,
@@ -665,6 +765,10 @@ export class RenderBridge {
         () => null,
       );
       this.renderThumbnail(opts);
+    }), (reason) => {
+      // Not handed to the worker, which would have taken it.
+      if (opts.image.kind === "bitmap") opts.image.bitmap.close();
+      throw new Error(reason);
     });
   }
 
@@ -679,7 +783,7 @@ export class RenderBridge {
     opts: ThumbRequest & { float: Pick<FloatCaptureOptions, "point" | "space"> },
   ): Promise<FloatFrame | null> {
     if (this.transport.disposed) return Promise.resolve(null);
-    return new Promise<FloatFrame | null>((resolve) => {
+    return this.withStageVariants(opts.contributedParams, () => new Promise<FloatFrame | null>((resolve) => {
       this.requests.expect(
         this.requests.thumbs,
         opts.requestId,
@@ -702,6 +806,10 @@ export class RenderBridge {
       } else {
         this.renderThumbnail({ ...opts, float });
       }
+    }), (reason) => {
+      if (opts.image?.kind === "bitmap") opts.image.bitmap.close();
+      console.warn(`[render] ${reason}`);
+      return null;
     });
   }
 
@@ -741,11 +849,14 @@ export class RenderBridge {
   /** The live photo's developed frame of the whole image, untransformed and
    *  uncropped, with its long edge at `edge` px; null without a frame. */
   readDevelopedPixels(edge: number): Promise<DevelopedPixels | null> {
-    return new Promise<DevelopedPixels | null>((resolve) => {
+    return this.withStageVariants(this.liveStageBag, () => new Promise<DevelopedPixels | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.pixels, reqId, resolve, () => null, { long: true });
       flushStageSync();
       this.post({ cmd: "readDevelopedPixels", reqId, edge });
+    }), (reason) => {
+      console.warn(`[render] ${reason}`);
+      return null;
     });
   }
 

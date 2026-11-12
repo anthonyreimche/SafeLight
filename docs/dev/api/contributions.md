@@ -90,6 +90,7 @@ interface ProcessingStageContribution {
   produces?: InterStageVariable[]; // values for later stages
   consumes?: string[];        // values from earlier stages
   dormantWhen?: Record<string, number | number[] | boolean>; // 3.2.1, see below
+  viewOnly?: boolean;         // 3.2.4: a view aid, see below
 }
 
 interface UniformDeclaration {
@@ -168,7 +169,7 @@ interface StagePass {
   - A `const` array, such as `const float W[25] = float[](…)`, is copied into every pixel's scratch memory before anything else runs, on every draw. Compute the values in the shader, or pass them in as a uniform array. The contract check warns about a `const` array.
   - A local array indexed inside a loop also lives in that scratch memory. Keep the values in scalars or vectors, or unroll the loop from TypeScript.
   - A gradient op, `texture()` or anything else that takes screen-space derivatives, reached from a loop makes ANGLE flatten every `if` around that loop: each draw runs every branch. Read with `texelFetch`, or `textureLod` when you need filtering. `fetchPrev4`, `readPrev4` and `fetchInput` use no gradient op (from 3.2.3); `readPrev` and `readSource` call `texture()`, so in a loop use `fetchInput` or a four-channel pass's `fetchPrev4` instead.
-- **Masks.** Each mask that uses a maskable stage gets its own copy of the stage, and the copy runs its passes separately. Five masks with your stage means six pass chains, and six sets of `keep` checkpoints.
+- **Masks.** Each mask that uses a maskable stage gets its own copy of the stage, and the copy runs its passes separately. Five masks with your stage can mean six pass chains, and six sets of `keep` checkpoints. The stage and its copies whose passes are given exactly the same (the same source and size, and the same value for every uniform the passes declare and every draw count) draw one result between them, and the others read it: they draw nothing and take no texture unit or target (from 3.2.4). When the stage's values move away from its copies', for a slider drag or because the stage is switched off, the copies keep the result it last drew for them. In Develop, a copy whose passes up to a kept pass are given what the stage's are resumes from the stage's checkpoint and keeps none of its own, so a mask that changes only what later passes read costs only those passes. So keep the per-mask values (an amount, a position) to the passes after a kept one, and since a copy reads only the values its mask holds (defaults for the rest), write the photo's values for the early passes' uniforms into the mask as well. Resuming needs the stage itself to run on the photo; while it doesn't, each copy with values of its own draws all its passes.
 
 ### Textures
 
@@ -182,9 +183,11 @@ interface TextureRequirement {
 ```
 
 - **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Set them in `activate` or any time later (bump `version` to replace the data); they are dropped when the extension is disabled, updated or reloaded. In GLSL the texture is a `sampler2D` named by its `key`, in your `glsl` and `helpers` alike. There are no 3D textures, so a 3D LUT goes in as a 2D atlas of slices: see the [LUT recipe](../extensions/recipes.md#a-3d-lut). Only the extension that registered the stage can set its textures; the call is ignored with a warning otherwise. A texture is also refused with a warning, keeping the previous one, if its format is unknown, its size isn't positive whole numbers, its data doesn't match width × height × channels, or it is over 64 MB (256 MB across all of an extension's textures). One larger than the GPU's maximum texture size draws as blank.
+- **Variants** (3.2.4) make a `lut` or `dynamic` texture per photo. `api.setStageTexture(stageId, key, data, variant)` files `data` under the name `variant` (1 to 64 letters, digits, `-` or `_`), beside the texture's other variants; clear one with `null` and its name. A photo whose param bag holds a variant's name under `"{stageId}.{key}"` draws with that variant, and one without draws with the plain texture. The name travels with the edit, so undo, presets, Copy/Paste, thumbnails and exports pick the same data, and every renderer holds every variant, uploading each to the GPU when a frame first draws with it. A name you have supplied no data for draws as opaque black, so put a marker texel in your data and leave the stage's work undone when it doesn't match. The size limits count every variant.
+- **Variants on demand** (3.2.4) suit variants too many to hold at once, one per calibration master and blur radius, say. `api.setStageTextureProvider(stageId, key, provide)` hands core `provide(variant)`, which resolves with that variant's data (as `setStageTexture` takes it) or `null` when there is none. Core asks for a variant when a frame whose bag names it first needs it, once however many frames need it at the same time. Exports, `renderPhotoFrame`, float frames, edited thumbnails, the Library histogram and captures of the live photo (`captureFrame`, `captureFloatFrame`, `readDevelopedPixels`) wait for it; when `provide` throws or takes over 30 s, that photo fails with your error's message (an export lists it with its other failures) instead of drawing without it, and so does an export still running when your extension is turned off. A `null` draws without it, and isn't asked for again. The live Develop view never waits: it draws now and again once the variant lands. Provided variants count against the extension's 256 MB, and core lets go of the least recently drawn to make room, never one the open photo's bag names or a frame in flight draws with, and asks again when it is next needed; making room for a texture you set yourself lets go of provided variants first. `provide` gets an `AbortSignal` too, aborted once nothing needs the variant any more (one the live view passed by in a drag, with no frame waiting): skip work not started yet. While `api.develop.setViewValues` keeps the live view on another variant, core asks for the one the photo's own bag names and keeps both. To point the open photo at a variant without a frame drawn before it lands (a slider drag), `await api.prepareStageTextureVariant(stageId, key, variant)` first: it resolves once the variant is held, or rejects with the reason. When what a variant was made from changes, `api.dropStageTextureVariants(stageId, key, variant?)` lets go of it (of every variant of the key without `variant`), and it is asked for again. Pass `null` as `provide` to stop; the provider goes with the extension. Only the extension that set a provider can stop it or drop its variants. A provider set while a photo is open is asked at once for what that photo names.
 - **`photo`** is for Safelight's own stages: their `derive` fills it per photo from the photo's params (the tone curve's table). Any other stage that declares one is refused.
 - **`atlas`** is for Safelight's own stages too (3.2.0): `derive` returns up to four `{ id, dabs }` brush strokes under the texture's key, and core bakes them into the texture's four channels in order (Heal's brush spots).
-- **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Not readable inside passes.
+- **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Add dabs at the end while the brush moves: dabs appended to the list are baked and uploaded on their own, at the cost of the area they reach however many came before, while any other change (an undo, a dab edited or removed) bakes the texture again. Not readable inside passes.
 - **`paint`** is painted in colour, on up to four layers (`MAX_PAINT_LAYERS`). The photo's bag value at `"{stageId}.{key}"` is a `PaintLayer[]`: `{ id, dabs }`, where each dab is a `BrushDab` plus `color: [r, g, b]`, display-encoded sRGB from 0 to 1. Other fields on a layer, such as a name, are left alone. A stroke lays its colour over the strokes before it by its coverage, an erase stroke takes coverage away, and a change of colour starts a new stroke. Your inline `glsl` reads layer *n* as `vec4 key(int layer, vec2 uv)`: its colour in `rgb` (not premultiplied) and its coverage in `a`, or `vec4(0.0)` where nothing is painted. A malformed layer reads as unpainted and keeps its place, so the layers after it keep their numbers. One paint texture per stage; it takes one of the four stage texture units `lut` and `dynamic` use. Replace the array when it changes, as for `coverage`. Not readable inside passes. Needs a Safelight build that has it: set `minAppVersion`.
 
 ### Values a stage sees: `space`
@@ -285,13 +288,26 @@ A stage that declares `dormantWhen` is left out of the live view's develop progr
 - The rule is ignored, with a warning, on `geometry` and `noise-reduction` stages, stages that `produces` values, and patch stages. It is also ignored on display stages without a `space`, whose input is clipped on version 2 photos, unless they are official Safelight extensions' stages, which never are. A malformed rule refuses the stage.
 - Older builds ignore the field and run the stage as before.
 
+### View aids: `viewOnly`
+
+`viewOnly: true` makes a stage a view aid, such as a focus or exposure overlay, that is drawn only in the frames the live Develop view shows. Everything else draws the photo without it, whatever the bag holds: exports, thumbnails, `renderPhotoFrame` and the other headless renders, captures and float captures (unless `asShown`), probes and colour pickers, the histogram, Auto Tone, Auto White Balance and Upright.
+
+- Drive it with [`api.develop.setViewValues`](stores.md#apidevelop), not the photo's bag, so nothing of it is saved, undone, pasted or put in a preset, and turning it on doesn't mark the photo as edited.
+- Nothing of it reaches a frame that leaves it out: the conversion into its `space`, and on version 2 the clip a display stage without a `space` is handed, happen inside its switch, so the frame is exactly the one drawn without the stage.
+- Its passes still follow the bag, so they don't run while your view values are off. They never run, and hold no target or texture unit, in a frame that leaves the stage out, and a renderer that doesn't draw view aids never builds the program with it for its values. Turned off in the live view, it gives its result target back; turned on again, its passes run anew.
+- A stage that reads the current image never sees a view aid in its input, so no measurement inherits one through a kept result.
+- The live view runs its block in every frame, the aid off included. Read your result inside your own switch through your result sampler (`u_<prefix>_stageResult`, `textureLod`) rather than through `stageResult`, which the block fetches for every pixel whenever it names it.
+- To have it appear the moment it is turned on, leave `dormantWhen` off: the stage then stays in the live view's program behind its uniforms, and turning it on builds no program. Call [`api.develop.prewarmStages`](stores.md#apidevelop) once the user is idle in Develop so its passes are built ahead too. `dormantWhen` instead leaves it out of the shader until it is first turned on, which rebuilds the program then.
+- It is refused on `geometry` and `noise-reduction` stages (an extension's noise reduction replaces the built-in denoiser in exports too), on stages that `produces` values, and together with `mask`, `anchor` or `reads: "current"`.
+- Needs Safelight 3.2.4. Older builds ignore the field and draw the stage everywhere: set `minAppVersion`.
+
 ### Masks
 
 `mask: { maskable: true }` lets a stage run again inside local adjustments. A mask whose bag holds any of your stage's keys gets its own copy of the stage, right after it, bound to that mask's values and blended by its coverage. A [per-mask panel](ui-shell.md#per-mask-panels-panelcontributionmask) writes those keys.
 
 - Only `scene-linear`, `tone-map`, `display-adjust`, `effects` and `output-encode` stages can be masked.
 - Copies run on version 2 photos only.
-- A copy shares the stage's textures and passes' programs. What it `produces` stays inside the copy.
+- A copy shares the stage's textures and passes' programs, and the stage's pass results where its passes would be given the same values (see [Passes](#passes-sizes-formats-and-cost)). What it `produces` stays inside the copy.
 - If the GPU can't fit every copy, the frame is drawn without them and Develop shows a "Too many effects" notice.
 
 ## `KeyActionContribution`
@@ -410,11 +426,14 @@ Adds a file type to the Presets panel's Import picker. Several importers may cla
 interface GridFilterContribution {
   id: string;
   test(photo: CatalogPhoto): boolean; // false hides it from the grid and culling
+  reads?: readonly (keyof CatalogPhoto)[]; // the photo fields test reads
   onClear?(): void;                   // called by Library "Clear filters"
 }
 ```
 
 Combined with the Library's own filters (AND). Re-register with the same id when your query changes.
+
+Set `reads` to the photo fields `test` reads, by their top-level name: `["keywords"]`, or `["exif"]` for anything inside `photo.exif`. The grid then filters and sorts again only when one of those fields changes on some photo, or when you register the filter again. Without it, every rating, flag, keyword and background metadata read runs the filter and the sort over the whole catalogue, which a large one feels on each key press. While your filter is off and `test` passes every photo, register it with `reads: []`. Data `test` reads from outside the photo (a collection's members, a keyword tree) is yours to follow: register again when it changes.
 
 ## `LibrarySortContribution`
 
@@ -422,10 +441,11 @@ Combined with the Library's own filters (AND). Re-register with the same id when
 interface LibrarySortContribution {
   id: string; label: string;          // id is also the saved sort id
   compare(a: CatalogPhoto, b: CatalogPhoto): number; // ascending; the toolbar flips it
+  reads?: readonly (keyof CatalogPhoto)[]; // the photo fields compare reads
 }
 ```
 
-Adds an entry to the Library toolbar's sort menu.
+Adds an entry to the Library toolbar's sort menu. Set `reads` as for a grid filter: while your sort is the one in use, the grid then sorts again only when one of those fields changes.
 
 ## `GridMenuItemContribution`
 

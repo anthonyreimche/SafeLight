@@ -51,6 +51,9 @@ const h = vi.hoisted(() => ({
   removeRecent: vi.fn(async (_id: string) => {}),
   /** The folder walk a tree refresh runs. */
   scan: vi.fn<typeof import("./scan").scanProject>(),
+  /** The last recent project, and what waiting for its library source gives. */
+  lastRecent: null as null | { id: string; name: string; source?: { extensionId: string; id: string; library: string } },
+  sourceWait: Promise.resolve(null) as Promise<null | { name: string }>,
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedOsOpen: () => h.osOpen }));
@@ -78,6 +81,8 @@ vi.mock("./project-storage", () => ({
 vi.mock("./recent", () => ({
   addRecentProject: async () => {},
   getLastProject: async () => null,
+  lastRecentProject: async () => h.lastRecent,
+  whenRecentSource: () => h.sourceWait,
   recentHandle: () => h.recentHandle,
   removeRecentProject: (id: string) => h.removeRecent(id),
   listRecentProjects: async () => {
@@ -205,6 +210,8 @@ beforeEach(async () => {
   h.recentHandle = null;
   h.removeRecent.mockClear();
   h.scan.mockReset();
+  h.lastRecent = null;
+  h.sourceWait = Promise.resolve(null);
   vi.stubGlobal("window", {
     addEventListener: (type: string, listener: () => void) => {
       if (type === "beforeunload") h.unload.push(listener);
@@ -1200,5 +1207,41 @@ describe("the photo open in Develop when its project is left", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// A library source's extension starts after the launch asks for the last project.
+// The launch doesn't wait on it: the source opens once registered, unless the
+// person opened something else first.
+describe("reopening a library source at launch", () => {
+  const SOURCE = { extensionId: "ext.a", id: "test.server", library: "lib-1" };
+
+  function waitForSource() {
+    let arrive: (handle: { name: string } | null) => void = () => {};
+    h.sourceWait = new Promise((resolve) => (arrive = resolve));
+    h.lastRecent = { id: "source:x", name: "Server", source: SOURCE };
+    h.recentHandle = null;
+    return (handle: { name: string } | null) => arrive(handle);
+  }
+
+  it("doesn't hold the launch, and opens the source once its extension registers it", async () => {
+    const arrive = waitForSource();
+    await useProjectStore.getState().openLast();
+    expect(h.open).not.toHaveBeenCalled();
+    h.open.mockImplementationOnce(async () => opened(projectStorage()));
+    arrive(folder("Server"));
+    await settle();
+    expect(h.open).toHaveBeenCalledOnce();
+    expect(h.open.mock.calls[0][0]).toEqual(folder("Server"));
+  });
+
+  it("doesn't open the source over a project opened meanwhile", async () => {
+    const arrive = waitForSource();
+    await useProjectStore.getState().openLast();
+    await openA();
+    arrive(folder("Server"));
+    await settle();
+    expect(h.open).toHaveBeenCalledOnce();
+    expect(useProjectStore.getState().name).toBe("A");
   });
 });

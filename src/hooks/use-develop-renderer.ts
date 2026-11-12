@@ -15,7 +15,7 @@ const VIZ_STRENGTH = 0.5;
 import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
 import { useStageViewValues } from "@/modules/develop/stage-view-values";
 import { currentDisplaySpace } from "@/rendering/display-space";
-import { getRenderBridge } from "@/rendering/render-bridge";
+import { getRenderBridge, noteLiveStageBag } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { setSourcePixels } from "@/rendering/source-pixels";
@@ -31,6 +31,7 @@ import { canvasToolView, useCanvasToolStore } from "@/modules/develop/canvas-too
 import { watchCacheFills } from "./develop-sources";
 import { createHistogramScheduler } from "./histogram-scheduler";
 import { NO_STAGES, useDevelopPhotoLoad } from "./use-develop-photo-load";
+import { useNativeFrame } from "./use-native-frame";
 import { useDevelopPicture, type DevelopTier } from "./use-develop-picture";
 
 export type { DevelopTier };
@@ -331,6 +332,7 @@ export function useDevelopRenderer(
     const st = useDevelopStore.getState();
     bridge.setContributedParams(
       stageBag(st.params, st.paramBag, st.bypassedPanels, useStageViewValues.getState().merged),
+      st.paramBag,
     );
     bridge.setParams(forRender(st.params, canvasToolView(useCanvasToolStore.getState().held)));
     histogram.clearDirty();
@@ -466,6 +468,8 @@ export function useDevelopRenderer(
       bridgeRef.current = null;
       ctxRef.current = null;
       dropPending();
+      // No photo is open: the stage textures it drew with may be let go of.
+      noteLiveStageBag({});
     };
   }, [canvasRef, present, dropPending]);
 
@@ -517,7 +521,7 @@ export function useDevelopRenderer(
     pushedRef.current = next;
     if (!last || !drawsSame(last, next)) {
       bridge.setAsShotTemperature(next.asShotTemperature);
-      bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues));
+      bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues), paramBag);
       bridge.setParams(next.drawn);
       histogram.markDirty();
       queueRender();
@@ -615,6 +619,8 @@ export function useDevelopRenderer(
     bridge.render(false);
   }, [sharpenViz]);
 
+  const noteWindowed = useNativeFrame(bridgeRef, photo, tier === "final", restores);
+
   const setViewport = useCallback(
     (
       roi: { x: number; y: number; w: number; h: number } | null,
@@ -623,13 +629,14 @@ export function useDevelopRenderer(
     ) => {
       const bridge = bridgeRef.current;
       if (!bridge) return;
+      noteWindowed(roi !== null);
       bridge.setViewport(roi, outW, outH);
       // On the edit's microtask, so a window and an edit of one task draw once; not on
       // the next animation frame: the bridge holds back all but the newest render
       // while the worker draws.
       queueRender();
     },
-    [queueRender],
+    [queueRender, noteWindowed],
   );
 
   const label = useTierLabel(tier, loading, photo && `${photo.id}:${fileAccessNonce}`);

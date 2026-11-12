@@ -31,6 +31,9 @@ interface PassProgress {
   done: number;
   total: number;
   stopped?: boolean;
+  /** Previews of a library source's photos forgotten, for the grid to download
+   *  again as they come into view, instead of rebuilt. */
+  refetched?: number;
 }
 
 const STOPPED_NOTE = "Stopped.";
@@ -86,7 +89,9 @@ export function PreviewsSection() {
       passProgress(setRebuild, signal),
       (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
       signal,
-    );
+    ).then(({ refetched }) => {
+      if (refetched > 0 && !signal?.aborted) setRebuild((p) => (p ? { ...p, refetched } : p));
+    });
   };
 
   const [cacheAll, setCacheAll] = useState<PassProgress | null>(null);
@@ -154,7 +159,9 @@ export function PreviewsSection() {
               ? STOPPED_NOTE
               : rebuilding
                 ? `${rebuild.done} / ${rebuild.total}`
-                : `Rebuilt ${rebuild.total}.`}
+                : rebuild.refetched
+                  ? `Cleared ${rebuild.refetched} ${rebuild.refetched === 1 ? "preview: it downloads" : "previews: each downloads"} again from its server when it comes into view.`
+                  : `Rebuilt ${rebuild.total}.`}
           </span>
         )}
       </Field>

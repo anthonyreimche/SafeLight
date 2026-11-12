@@ -131,6 +131,13 @@ vi.mock("@/raw/accept-decode", async (importOriginal) => {
 vi.mock("@/raw/raw-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: () => h.previewResult(),
+  // The preview with the bitmap that proved the image decoder takes it.
+  extractRawPreviewDecoded: async () => {
+    const blob = await h.previewResult();
+    if (!blob) return null;
+    const bitmap = await createImageBitmap(blob, { imageOrientation: "none" });
+    return { blob, bitmap, width: bitmap.width, height: bitmap.height };
+  },
 }));
 
 vi.mock("@/raw/netpbm", async (importOriginal) => ({

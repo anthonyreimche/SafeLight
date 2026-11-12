@@ -6,6 +6,7 @@
 import type { CatalogPhoto } from "./types";
 import {
   extractRawPreview,
+  extractRawPreviewDecoded,
   isRawFile,
   sensorNativeImage,
 } from "@/raw/raw-preview";
@@ -14,6 +15,7 @@ import { decodeTiff, isTiffName } from "@/raw/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import type { DecodeRequest } from "@/raw/decode-pool";
 import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
+import { samplePreview, type PreviewSample } from "@/raw/preview-sample";
 import { halfLumaSamples } from "@/raw/camera-match";
 import { baselineExposureFor } from "@/rendering/baseline-tone";
 import type { Float16Source, StoredSample } from "@/rendering/source-sample";
@@ -32,7 +34,6 @@ import {
   hasDecodeMarker,
   markDecode,
   rawCacheGeneration,
-  rawCacheKey,
   readCachedPreview,
   writeCachedPreview,
   type DecodeMarker,
@@ -40,8 +41,10 @@ import {
 import { getSettings } from "@/state/settings-store";
 import { convertInputFrame } from "@/raw/frame-bridge";
 import type { CodeDecoder } from "@/raw/profile-frame";
-import { hasCameraMatch, learnedMatch, rememberLearned, type DecodeLearned } from "./decode-learned";
+import { hasCameraMatch, learnedMatch, rememberLearned, rememberSourceFrame, type DecodeLearned } from "./decode-learned";
 import { inputProfileKey, resolveInputTransform } from "./input-profiles";
+import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
+import { photoCacheKey } from "@/raw/photo-cache-key";
 
 /** What a load settled on in place of the photo's own pixels, and why. */
 export interface Fallback {
@@ -153,14 +156,14 @@ function decodeRequestFor(
 // Paint the embedded preview (camera-rendered, decodes in ~1s) so the user sees
 // a sharp frame while libraw grinds. The precise float decode swaps in after; a
 // slight tonal shift on swap is expected (preview is camera-toned, the float
-// decode is linear + base curve).
+// decode is linear + base curve). `bm` is the preview as its search decoded it,
+// sensor-native, and is the painter's from here on.
 async function paintPreview(
-  preview: Blob,
+  bm: ImageBitmap,
   photo: CatalogPhoto,
   onPreview: (image: DecodedImage) => void,
 ): Promise<void> {
   try {
-    const bm = await createImageBitmap(preview, { imageOrientation: "none" });
     // Embedded previews are usually sensor-native and carry no orientation
     // tag — orient from the master EXIF, aspect-gated (see orient.ts).
     const deg = previewUprightRotation(
@@ -170,6 +173,37 @@ async function paintPreview(
     if (upright !== bm) bm.close();
     onPreview({ kind: "bitmap", bitmap: upright });
   } catch { /* preview paint is best-effort */ }
+}
+
+interface CameraPreview {
+  blob: Blob;
+  /** Its sample for the colour check on the decode, begun as the preview was
+   *  found so that it is read while libraw works, not after. */
+  sample?: PreviewSample;
+}
+
+/** The RAW's camera preview, painted through `onPreview` when one is given, from
+ *  the decode that found it rather than a second one of the same bytes.
+ *  `sampleAhead`: an opened photo's decode is under way, which the preview will
+ *  check. Background work reads the sample only once it has a decode to check:
+ *  the decoder may pass its request over, and then nothing reads the preview. */
+async function cameraPreview(
+  file: File,
+  photo: CatalogPhoto,
+  onPreview: ((image: DecodedImage) => void) | undefined,
+  sampleAhead: boolean,
+): Promise<CameraPreview | null> {
+  const found = (blob: Blob): CameraPreview =>
+    sampleAhead ? { blob, sample: samplePreview(blob) } : { blob };
+  if (!onPreview) {
+    const blob = await extractRawPreview(file);
+    return blob && found(blob);
+  }
+  const decoded = await extractRawPreviewDecoded(file);
+  if (!decoded) return null;
+  const preview = found(decoded.blob);
+  await paintPreview(decoded.bitmap, photo, onPreview);
+  return preview;
 }
 
 /** What the renderer adds with the camera baseline (baseline-tone.ts): the
@@ -252,7 +286,7 @@ export async function loadPhotoImage(
   // needs more pixels than it holds (export at "Original"/large sizes), fall
   // through to the full decode below.
   const isRaw = isRawFile({ name: photo.filename } as File);
-  const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  const cacheKey = photoCacheKey(photo);
   const cacheGeneration = rawCacheGeneration();
   // Whether the decoder has already failed on this RAW for good. Asked along
   // with the cache read, so a miss doesn't wait on a second round trip.
@@ -276,6 +310,10 @@ export async function loadPhotoImage(
 
   const signal = opts?.signal;
   if (signal?.aborted) return null;
+  // A library source's original comes over the network: only a load someone
+  // waits on fetches it.
+  if (opts?.background && isSourceFile(photo.fileHandle) && !(await sourceOriginalHeld(photo.fileHandle)))
+    return null;
 
   let shortfall = NOT_DECODED;
   // A non-RAW original, read once here for the resolver and kept for the
@@ -299,15 +337,13 @@ export async function loadPhotoImage(
         // The decode runs alongside the extraction rather than after it. The
         // preview is painted as soon as it's ready, but inside the awaited
         // chain, so it can never land on top of the final image.
-        const [preview, f] = await Promise.all([
-          extractRawPreview(file).then(async (blob) => {
-            if (blob && opts?.onPreview) await paintPreview(blob, photo, opts.onPreview);
-            return blob;
-          }),
+        const [camera, f] = await Promise.all([
+          cameraPreview(file, photo, opts?.onPreview, !unsupported && !opts?.background),
           unsupported
             ? null
             : decodeRawToFloat(file, decodeRequestFor(photo, cached, opts), photo.relPath),
         ]);
+        const preview = camera?.blob ?? null;
         // Kept for later opens and the background pass; an abandoned open
         // settles nothing about the file.
         const remember = (marker: DecodeMarker) => {
@@ -352,7 +388,7 @@ export async function loadPhotoImage(
           // is off by more than 2× vs the preview, reject the decode and fall
           // through to the JPEG-based float path below. The same ruling keeps
           // marginal decodes out of the cache (see accept-decode.ts).
-          const { use, cache, match } = await acceptDecode(f, r, preview);
+          const { use, cache, match } = await acceptDecode(f, r, preview, camera?.sample);
           // A photo keeps the first match it learns, so its look doesn't move
           // between a cached open and a larger export's fresh decode.
           if (use && !hasCameraMatch(photo)) Object.assign(learned, learnedMatch(match));
@@ -370,6 +406,8 @@ export async function loadPhotoImage(
               writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration, f.entry);
             }
             if (!cache) remember("suspicious");
+            const full = fullFrame(f, r);
+            rememberSourceFrame(photo, full.width, full.height);
             return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo) };
           }
           console.warn("[load] RAW colour mismatch vs embedded JPEG — using JPEG fallback");
@@ -414,15 +452,31 @@ export async function loadPhotoImage(
   if (signal?.aborted) return null;
   if (original) {
     const converted = await convertedImage(photo, original, opts);
+    if (converted) rememberSourceFrame(photo, converted.fullWidth ?? converted.width, converted.fullHeight ?? converted.height);
     if (converted || signal?.aborted) return converted;
   }
   // The bitmap path reads a RAW's original again and decodes it outside the pool.
   const loaded = await loadBitmap(photo, opts, original);
   if (!loaded) return null;
   const { bitmap, fallback } = loaded;
+  // A RAW's bitmap may be a reduced decode: it says nothing of the frame's size.
+  if (!fallback && !isRaw) rememberSourceFrame(photo, bitmap.width, bitmap.height);
   return fallback
     ? { kind: "bitmap", bitmap, fallback: { ...fallback, ...shortfall } }
     : { kind: "bitmap", bitmap };
+}
+
+/** The full frame a float decode stands for, turned as `upright` is: a decode
+ *  made at half size stands for its source's frame. */
+function fullFrame(
+  decode: { width: number; height: number; halfSize?: boolean; sourceWidth?: number; sourceHeight?: number },
+  upright: { width: number; height: number },
+): { width: number; height: number } {
+  const { halfSize, sourceWidth, sourceHeight } = decode;
+  if (!halfSize || !sourceWidth || !sourceHeight) return upright;
+  const long = Math.max(sourceWidth, sourceHeight);
+  const short = Math.min(sourceWidth, sourceHeight);
+  return upright.width >= upright.height ? { width: long, height: short } : { width: short, height: long };
 }
 
 /** For a photo Develop holds on the GPU from a RAW cache entry written before
@@ -433,7 +487,7 @@ export async function loadPhotoImage(
 export async function refreshStaleSource(
   photo: CatalogPhoto,
 ): Promise<{ fullWidth: number; fullHeight: number; sample: StoredSample } | null> {
-  const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  const cacheKey = photoCacheKey(photo);
   const generation = rawCacheGeneration();
   const cached = await readCachedPreview(cacheKey, { sample: true });
   if (!cached) return null;

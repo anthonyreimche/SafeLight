@@ -66,6 +66,11 @@ export interface WorkerState {
   // budget (full-res sources are large); the thumb renderer caches tiny sources, so
   // a quarter holds many. 0 until the first setCacheBudget message.
   cacheBudgetBytes: number;
+  // The pending cut of a detail gain for the live view (detail.ts), which waits for the
+  // view to be still and goes with the photo.
+  detailTimer: ReturnType<typeof setTimeout> | null;
+  // A frame the worker draws unasked after one that put off prepasses (detail.ts).
+  detailFollowUp: ReturnType<typeof setTimeout> | null;
 }
 
 export function initialState(): WorkerState {
@@ -88,6 +93,8 @@ export function initialState(): WorkerState {
     liveStateStale: false,
     sourceGen: 0,
     cacheBudgetBytes: 0,
+    detailTimer: null,
+    detailFollowUp: null,
   };
 }
 
@@ -124,6 +131,70 @@ export function postSourcePixels(ctx: WorkerContext): void {
 export function sourceFailed(ctx: WorkerContext, err: unknown): void {
   ctx.state.awaitingSource = true;
   ctx.respond({ type: "sourceError", sourceGen: ctx.state.sourceGen, message: messageOf(err) });
+}
+
+/** What a live frame was asked for with: its render's seq (0 for a frame the worker
+ *  draws unasked), and the histogram to measure after it. */
+export interface LiveFrameRequest {
+  seq: number;
+  wantHistogram?: boolean;
+  wantExtended?: boolean;
+}
+
+// Draws the live view and posts it, then the histogram it asked for. Every way out
+// answers by `seq`.
+export function postLiveFrame(
+  ctx: WorkerContext,
+  renderer: WebGLRenderer,
+  canvas: OffscreenCanvas,
+  msg: LiveFrameRequest,
+): void {
+  const { state, respond } = ctx;
+  let bitmap: ImageBitmap | null = null;
+  let framePosted = false;
+  try {
+    renderer.render();
+    state.liveStateStale = false;
+    bitmap = canvas.transferToImageBitmap();
+    const sourceFull = renderer.sourceFullSize;
+    const resp: WorkerResponse = {
+      type: "frame",
+      seq: msg.seq,
+      bitmap,
+      width: renderer.bufferWidth,
+      height: renderer.bufferHeight,
+      sourceWidth: renderer.sourceWidth,
+      sourceHeight: renderer.sourceHeight,
+      sourceGen: state.sourceGen,
+      sourceFullWidth: sourceFull.width,
+      sourceFullHeight: sourceFull.height,
+      sourceNative: renderer.sourceNative,
+      roi: renderer.viewport,
+      wholeWidth: renderer.wholeWidth,
+      wholeHeight: renderer.wholeHeight,
+      crop: renderer.drawnCrop,
+    };
+    if (msg.wantHistogram) resp.histogramFollows = true;
+    if (renderer.overflowedStages.length > 0) {
+      resp.overflowedStages = [...renderer.overflowedStages];
+    }
+    const prepassPending = renderer.prepassPending;
+    if (prepassPending) resp.prepassPending = true;
+    respond(resp, [bitmap]);
+    framePosted = true;
+    // The readback stalls until the GPU drains the frame, so the frame goes first.
+    // A frame with prepasses pending is followed by one that asks again.
+    if (msg.wantHistogram && !prepassPending) {
+      respond({ type: "histogram", histogram: renderer.computeHistogram(!!msg.wantExtended) });
+    }
+  } catch (err) {
+    if (framePosted) {
+      respond({ type: "histogramError", message: `histogram failed: ${messageOf(err)}` });
+    } else {
+      bitmap?.close();
+      respond({ type: "renderError", seq: msg.seq, message: messageOf(err) });
+    }
+  }
 }
 
 // Draws the live view, kept on the canvas rather than sent, when a capture

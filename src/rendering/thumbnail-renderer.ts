@@ -6,10 +6,12 @@
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import type { DecodedImage } from "@/catalog/load-image";
 import { loadPhotoImage } from "@/catalog/load-image";
+import { isSourceFile } from "@/project/library-sources";
 import { computeHistogram, type HistogramData } from "@/rendering/histogram";
 import { resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
+import { getStageTextures, needStageVariants } from "./render-bridge";
 import { windowFrameBag } from "./stage-bag";
 import { WebGLRenderer } from "./webgl/renderer";
 import { windowDerived } from "./window-derive";
@@ -142,6 +144,27 @@ export async function renderPhotoHistogram(
   paramBag: Record<string, unknown> = {},
   maxEdge: number = MAX_HIST_EDGE,
 ): Promise<HistogramData | null> {
+  // The stage texture variants made on demand that the bag names, held until
+  // the frame is drawn: no histogram, and nothing decoded, without one.
+  const needed = needStageVariants(paramBag);
+  const lease = needed && (await needed);
+  try {
+    if (lease?.failure) {
+      console.warn(`[histogram] ${lease.failure}`);
+      return null;
+    }
+    return await histogramOf(photo, params, paramBag, maxEdge);
+  } finally {
+    lease?.release();
+  }
+}
+
+async function histogramOf(
+  photo: CatalogPhoto,
+  params: DevelopParams,
+  paramBag: Record<string, unknown>,
+  maxEdge: number,
+): Promise<HistogramData | null> {
   const ctx = await getHistCtx(params);
   if (!ctx) return null;
 
@@ -155,7 +178,8 @@ export async function renderPhotoHistogram(
       image = null;
     }
   }
-  if (!image) image = await loadPhotoImage(photo);
+  // A library source's original comes over the network: a selection never fetches it.
+  if (!image) image = await loadPhotoImage(photo, isSourceFile(photo.fileHandle) ? { background: true } : undefined);
   if (!image) return null;
 
   try {
@@ -170,6 +194,9 @@ export async function renderPhotoHistogram(
       isFallback,
       true,
     );
+    // Whole and by reference, as an export's renderer takes them: stages that
+    // sample a texture draw black without it.
+    ctx.renderer.setStageTextures(getStageTextures());
     ctx.renderer.setContributedParams(windowFrameBag(params, paramBag));
     setPhotoParams(ctx.renderer, params);
     // The program for this photo's display transform and version, unless an earlier

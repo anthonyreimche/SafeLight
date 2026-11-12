@@ -15,6 +15,8 @@ import type { Float16Source, SourceSample, StoredSample } from "./source-sample"
 import type { HistogramData } from "./histogram";
 import type { MonitorTransform } from "./display-profile";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
+import type { FrameRect } from "@/raw/native-frame";
+import type { DetailRequest } from "./webgl/detail-gain";
 
 /** The developed frame of the whole image, untransformed and uncropped, as
  *  RGBA8 rows from the top. */
@@ -150,6 +152,17 @@ export type WorkerRequest =
   // size and centre sample (cache-events.ts). The develop renderer takes them
   // in place; the thumbnail renderer keeps no samples. No reply.
   | { cmd: "setSourceSample"; key: string; fullWidth: number; fullHeight: number; sample: StoredSample }
+  // The size of the open photo's native frame, held under its source key by the
+  // native frame worker (native-frame-bridge.ts). The develop renderer keeps it
+  // while that key's source is bound and asks for detail gains for zoomed windows
+  // (detailWanted); it drops one that doesn't fit the bound source. No reply.
+  | { cmd: "setNativeFrame"; key: string; width: number; height: number }
+  // Let go of the native frame, and any gain cut from it. No reply.
+  | { cmd: "clearNativeFrame" }
+  // The answer to detailWanted `request`: the gain map cut for it (native-frame.ts
+  // DetailGain), or null data for none. The develop renderer takes only the newest
+  // request's, for the source it was asked against, and then draws a frame unasked.
+  | { cmd: "setDetailGain"; request: number; data: Uint16Array<ArrayBuffer> | null; width: number; height: number; rect: FrameRect }
   // The linear colour around (u, v) of the live frame, x right and y down in
   // [0, 1] across its buffer, drawn from what the worker holds when it arrives.
   // See WebGLRenderer.probe.
@@ -222,6 +235,8 @@ export type WorkerResponse =
   | { type: "contextLost" }
   | {
       type: "frame";
+      // 0 for a frame the worker drew unasked, once a detail gain was cut for the
+      // view: no render waits for it.
       seq: number;
       bitmap: ImageBitmap;
       width: number;
@@ -264,6 +279,9 @@ export type WorkerResponse =
   // Render `seq` had nothing to draw with or from: no renderer, or no source yet for
   // the photo the develop view moved to.
   | { type: "frameSkipped"; seq: number }
+  // The live view has been still with a zoomed window the held detail gain doesn't
+  // serve: the cut it wants of the native frame, answered with setDetailGain.
+  | ({ type: "detailWanted" } & DetailRequest)
   // Drawing render `seq`, or measuring the histogram it asked for, threw.
   | { type: "renderError"; seq: number; message: string }
   // The develop renderer couldn't take source `sourceGen` (see sourceGen below). It holds

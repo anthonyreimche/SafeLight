@@ -238,6 +238,27 @@ describe("fs:externalCatalogDir", () => {
   });
 });
 
+describe("fs:sourceCatalogDir", () => {
+  type Resolve = (event: unknown, key: string, name: string) => Promise<string>;
+
+  it("keeps one catalogue per source and library under the app data, named after the source", async () => {
+    const userData = tempDir();
+    const resolve = channel<Resolve>("fs:sourceCatalogDir", userData);
+    const dir = await resolve({}, "immich\nhttp://nas:2283#u1", "Immich");
+    expect(path.basename(dir)).toBe(".safelight");
+    expect(path.dirname(path.dirname(dir))).toBe(path.join(userData, "source-catalogs"));
+    expect(path.basename(path.dirname(dir))).toMatch(/^Immich-[0-9a-f]{8}$/);
+    expect(fs.statSync(dir).isDirectory()).toBe(true);
+    await expect(resolve({}, "immich\nhttp://nas:2283#u1", "Immich")).resolves.toBe(dir);
+    await expect(resolve({}, "immich\nhttp://nas:2283#u2", "Immich")).resolves.not.toBe(dir);
+  });
+
+  it("makes a plain folder name of any source name", async () => {
+    const dir = await channel<Resolve>("fs:sourceCatalogDir", tempDir())({}, "k", "../a b:c");
+    expect(path.basename(path.dirname(dir))).toMatch(/^\.\._a_b_c-[0-9a-f]{8}$/);
+  });
+});
+
 describe("mutating fs channels", () => {
   type OnePath = (event: unknown, p: string) => Promise<void>;
   type Write = (event: unknown, p: string, data: Uint8Array) => Promise<void>;
@@ -335,5 +356,45 @@ describe("fs:setSpilloverPointer", () => {
     });
     await channel<Set>("fs:setSpilloverPointer", userData, { fileWriter })({}, "D:/card", "D:/x/.safelight");
     await expect(channel<Get>("fs:getSpilloverPointer", userData)({}, "D:/card")).resolves.toBe("D:/x/.safelight");
+  });
+});
+
+// A folder an extension keeps across launches (kept-folders.cjs): picked in the
+// native dialog, named to the extension by a token alone.
+describe("fs:pickKeptFolder", () => {
+  type Pick = (event: unknown, id: string, replacing: string | null) => Promise<{ token: string; path: string } | null>;
+  type Open = (event: unknown, id: string, token: string) => Promise<{ path?: string; error?: string }>;
+
+  function table(answer: string | null) {
+    const showOpenDialog = vi.fn(async () => ({ canceled: answer === null, filePaths: answer ? [answer] : [] }));
+    const channels = fsChannels({
+      userData: () => tempDir(),
+      fileWriter: { write: async () => undefined },
+      shell: {},
+      dialog: { showOpenDialog },
+      BrowserWindow: { fromWebContents: () => null },
+    } as never) as { channel: string; handler: unknown }[];
+    const find = <T>(name: string) => channels.find((c) => c.channel === name)!.handler as T;
+    return { showOpenDialog, pick: find<Pick>("fs:pickKeptFolder"), open: find<Open>("fs:keptFolder") };
+  }
+
+  it("keeps the folder picked in the native dialog, opening it at the one it replaces", async () => {
+    const out = tempDir();
+    const { pick, open, showOpenDialog } = table(out);
+    const first = await pick({ sender: {} }, "ext.recipes", null);
+    expect(first?.path).toBe(out);
+    await expect(open({}, "ext.recipes", first!.token)).resolves.toEqual({ path: out });
+
+    await pick({ sender: {} }, "ext.recipes", first!.token);
+    const asked = showOpenDialog.mock.calls.map((call) => (call as unknown[])[1]);
+    expect(asked).toEqual([
+      { properties: ["openDirectory"] },
+      { properties: ["openDirectory"], defaultPath: out },
+    ]);
+  });
+
+  it("keeps nothing when the dialog is cancelled", async () => {
+    const { pick } = table(null);
+    await expect(pick({ sender: {} }, "ext.recipes", null)).resolves.toBeNull();
   });
 });

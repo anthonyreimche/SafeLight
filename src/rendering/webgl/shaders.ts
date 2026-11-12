@@ -231,7 +231,16 @@ uniform int uSharpenViz;
 // the old uLinear gate, which wrongly disabled denoise for non-float sources.
 uniform bool uDenoiseReady;
 
-uniform sampler2D uDevelopedSrc; // pass-1 developed image, source-UV space
+${pick(
+  "uniform sampler2D uDevelopedSrc; // pass-1 developed image, source-UV space",
+  `// Dynamic detail (WebGLRenderer.cutDetail): the photo's native luminance over
+// the luminance the source shows, cut for a zoomed window of the live view, on
+// the unit uDevelopedSrc had. Off for every other draw.
+uniform sampler2D uDetail;
+uniform bool uDetailOn;
+uniform vec4 uDetailRect;    // the map's x, y, width and height in source UV
+uniform float uDetailAmount; // 1 - Luminance NR / 100`,
+)}
 uniform bool uHaveDeveloped;     // true on the compositing pass (match in edited space)
 uniform bool uApplyRetouch;      // false while rendering the developed pass
 // Pass 1 of the heal/clone pipeline: output ONLY the retouched source (no tone
@@ -886,7 +895,26 @@ void main() {
 
       lin *= max(targetL, 1e-4) / ls;
     }
-  }
+  }${v2(`
+
+  // Dynamic detail: the luminance scaled by native over source as the gain
+  // would have come through the baseline tone, after anything that replaces
+  // lin above (the built-in denoiser's result included). Half a gain texel in
+  // from the map's edge, so its clamped edge texels are never stretched.
+  if (uDetailOn && uLinear) {
+    vec2 dUv = (srcUv - uDetailRect.xy) / uDetailRect.zw;
+    vec2 dIn = 0.5 / vec2(textureSize(uDetail, 0));
+    if (dUv.x >= dIn.x && dUv.x <= 1.0 - dIn.x && dUv.y >= dIn.y && dUv.y <= 1.0 - dIn.y) {
+      float g = mix(1.0, texture(uDetail, dUv).r, uDetailAmount);
+      float k = g;
+      if (uApplyBaseCurve) {
+        vec3 s = max(src, 0.0);
+        float before = luma(baselineTone(s));
+        k = before < 1e-5 ? g : max(luma(baselineTone(s * g)), 1e-5) / before;
+      }
+      lin *= k;
+    }
+  }`)}
 
   // Channel reconstruction: recover colour from clipped highlights by estimating
   // saturated channels from their unclipped neighbours. Must run before WB/exposure

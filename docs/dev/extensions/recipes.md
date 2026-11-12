@@ -265,7 +265,7 @@ export function activate(api) {
 
 - `pickDirectory` opens the system folder picker. The id you pass lets the picker remember where it was last time. It returns `null` if the user cancels.
 - `exportPhotos` does what the Export panel does: it renders each photo with its edit, runs export processors, names the files and writes them into the folder. Start from `getDefaultSettings()` (the user's Export preferences) and change only what you need. All the fields are in [`api.export`](../api/stores.md#apiexport).
-- A folder handle can't be saved between sessions, so ask each time, or keep it in a variable for the session.
+- A folder handle can't be saved between sessions. To keep the user's folder for next time, pick it with `api.project.pickKeptDirectory(id)` instead, store the `token` it returns (in `api.settings`), and open the folder again with `openKeptDirectory(token)`. That says `"gone"` or `"unwritable"` when the folder can't be used any more: tell the user and offer to pick again (3.2.4). It writes nothing to check, so on Windows a folder whose permissions refuse writes still opens, and the export into it stops with the reason (`stopped` on the result): offer another folder then too. Uninstalling your extension forgets its kept folders.
 - The third argument, `onProgress`, reports progress if you want a progress bar.
 - In TypeScript, write `format: "image/jpeg" as const` so the settings object matches `ExportSettings`.
 

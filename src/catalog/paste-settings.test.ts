@@ -232,7 +232,7 @@ describe("pasteSettings — one catalogue write for the selection", () => {
     for (const photoId of IDS)
       expect(broadcast).toHaveBeenCalledWith({
         type: "edit-update",
-        payload: { photoId, params: expect.objectContaining({ contrast: 10 }) },
+        payload: { photoId },
       });
   });
 

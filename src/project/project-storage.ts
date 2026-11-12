@@ -94,6 +94,7 @@ import { scanProject, type FolderNode, type ScannedFile } from "./scan";
 import { recordVolume } from "./volume-print";
 import { adoptSidecar, SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
 import { resolveWorkingDir, type WorkingDirLocation } from "./working-dir";
+import { isSourceFile, isSourceRoot, pairSourceRecords } from "./library-sources";
 
 export { catalogKey, type CatalogRecovery } from "./catalog-file";
 
@@ -108,8 +109,9 @@ export interface ProjectStorageDeps {
     fileHandle: FileSystemFileHandle,
     directoryHandle: FileSystemDirectoryHandle | null,
   ): Promise<CatalogPhoto | null>;
-  /** A grid preview built from the photo's source file; null if it can't decode. */
-  buildPreviewBlob(photo: CatalogPhoto): Promise<Blob | null>;
+  /** A grid preview built from the photo's source file; null if it can't decode,
+   *  or once `signal` aborts. */
+  buildPreviewBlob(photo: CatalogPhoto, signal?: AbortSignal): Promise<LoadedPreview | null>;
   persistPreviews(): boolean;
   /** The fields extensions read for a new file, from its sidecars; null for none. */
   emitPhotoImport(ctx: {
@@ -356,6 +358,10 @@ export class ProjectStorage implements CatalogStorage {
    *  rebuild found the file damaged or missing, or it held entries this build
    *  couldn't open, or this is a pop-out window). */
   private backup: Blob | null = null;
+  /** The history snapshots putEditStates has found catalog.json can hold. A history
+   *  keeps its earlier snapshots as they are, so each is checked once, not with
+   *  every step added after it. */
+  private writable = new WeakSet<EditState["stack"][number]>();
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
@@ -485,28 +491,47 @@ export class ProjectStorage implements CatalogStorage {
       const underUnreadable = (rel: string) =>
         scan.unreadable.some((folder) => rel === folder || rel.startsWith(`${folder}/`));
 
+      const importStarted = Date.now();
+      // A library source names each photo by a key of its own, which follows the photo
+      // through renamed albums and renamed photos: its records pair with the files by
+      // that key alone, so no file takes the record of another photo that had its path.
+      const sourcePairs = isSourceRoot(root)
+        ? pairSourceRecords(
+            [...masterRecords].filter((r) => !storage.removedIds.has(r.id)),
+            scan.files,
+          )
+        : null;
+
       // A saved photo whose file the scan found under another spelling of its path,
       // or moved or renamed while the app was closed, keeps its record (and with it
       // its edits) on the file's new path instead of being imported again as new.
-      const importStarted = Date.now();
-      const moved = await findMoved(
-        [...byRel.values()].filter(
-          (r) =>
-            !scanPaths.has(r.relPath) &&
-            !underUnreadable(r.relPath) &&
-            !storage.removedIds.has(r.id),
-        ),
-        scan.files.filter((f) => !byRel.has(f.path) && !storage.removed.has(f.path)),
-        namesFoldCase(),
-        { signal, onProgress },
-      ).catch((error: unknown) => {
-        // A search that fails costs its photos one import again, never the open.
-        console.warn("[project] the search for moved photos failed:", error);
-        return new Map<ScannedFile, StoredPhoto>();
-      });
+      const searchMoved = () =>
+        findMoved(
+          [...byRel.values()].filter(
+            (r) =>
+              !scanPaths.has(r.relPath) &&
+              !underUnreadable(r.relPath) &&
+              !storage.removedIds.has(r.id),
+          ),
+          scan.files.filter((f) => !byRel.has(f.path) && !storage.removed.has(f.path)),
+          namesFoldCase(),
+          { signal, onProgress },
+        ).catch((error: unknown) => {
+          // A search that fails costs its photos one import again, never the open.
+          console.warn("[project] the search for moved photos failed:", error);
+          return new Map<ScannedFile, StoredPhoto>();
+        });
+      const moved = sourcePairs
+        ? new Map([...sourcePairs].filter(([file, record]) => file.path !== record.relPath))
+        : await searchMoved();
       for (const [file, record] of moved) {
-        byRel.delete(record.relPath);
-        byRel.set(file.path, storage.relocate(record, file));
+        const relocated = storage.relocate(record, file);
+        if (sourcePairs) {
+          sourcePairs.set(file, relocated);
+        } else {
+          byRel.delete(record.relPath);
+          byRel.set(file.path, relocated);
+        }
       }
 
       // The saved record each file is: the one under its path, unless the listing
@@ -514,18 +539,20 @@ export class ProjectStorage implements CatalogStorage {
       // or that record still unless the file's capture time shows it is another
       // photo; then the file is new. The browser build's listing gives no sizes, so
       // there the path decides alone. Telling another card at one mount point from
-      // this one is the separate catalogue's print's work (volume-print.ts).
-      const known = new Map<ScannedFile, StoredPhoto>();
-      await mapLimit(scan.files, 8, async (f: ScannedFile) => {
-        const prev = byRel.get(f.path);
-        if (!prev) return;
-        const sized =
-          f.size === undefined || prev.fileSize === f.size
-            ? prev
-            : named.get(f.path)?.find((r) => r.fileSize === f.size);
-        if (sized) known.set(f, sized);
-        else if (!(await shotDiffers(prev, f))) known.set(f, prev);
-      });
+      // this one is the separate catalogue's print's work (volume-print.ts). A
+      // library source's are its pairs.
+      const known = sourcePairs ?? new Map<ScannedFile, StoredPhoto>();
+      if (!sourcePairs)
+        await mapLimit(scan.files, 8, async (f: ScannedFile) => {
+          const prev = byRel.get(f.path);
+          if (!prev) return;
+          const sized =
+            f.size === undefined || prev.fileSize === f.size
+              ? prev
+              : named.get(f.path)?.find((r) => r.fileSize === f.size);
+          if (sized) known.set(f, sized);
+          else if (!(await shotDiffers(prev, f))) known.set(f, prev);
+        });
 
       // New files (not in the saved catalogue, not tombstoned) are the ones that get
       // decoded — the slow part of opening. Report progress against that count.
@@ -679,19 +706,21 @@ export class ProjectStorage implements CatalogStorage {
         }
 
       // A record under a file's name that the file turned out not to be is another
-      // photo, whose own file isn't here: it stays as saved, with its edits.
+      // photo, whose own file isn't here: it stays as saved, with its edits. A library
+      // source's photo is known by its key, so one not paired is gone from the source.
       const walkedIds = new Set(masters.map((m) => m.id));
-      for (const saved of masterRecords) {
-        const held = storage.photos.get(saved.id);
-        if (
-          held &&
-          scanPaths.has(saved.relPath) &&
-          !fileOf.has(saved.id) &&
-          !walkedIds.has(saved.id) &&
-          !storage.removedIds.has(saved.id)
-        )
-          masters.push(held);
-      }
+      if (!sourcePairs)
+        for (const saved of masterRecords) {
+          const held = storage.photos.get(saved.id);
+          if (
+            held &&
+            scanPaths.has(saved.relPath) &&
+            !fileOf.has(saved.id) &&
+            !walkedIds.has(saved.id) &&
+            !storage.removedIds.has(saved.id)
+          )
+            masters.push(held);
+        }
 
       // Re-attach virtual copies, saved or made during the open, as this copy holds
       // them: records that share a master's source file but own no disk file of
@@ -835,8 +864,15 @@ export class ProjectStorage implements CatalogStorage {
    *  disk copy made at another rotation than the photo's (previewRotation), or one
    *  that can't be read for now. A missing disk copy also drops the edit the
    *  photo's record named; otherwise the record keeps naming the copy on disk.
-   *  `hold: false` leaves the blob out of the ones kept to spot a changed preview. */
-  async readPreview(id: string, options?: { hold?: boolean }): Promise<LoadedPreview | null> {
+   *  A library source's photo's preview comes from the source, so it is kept on
+   *  disk once built: the source is read once per photo.
+   *  `hold: false` leaves the blob out of the ones kept to spot a changed preview;
+   *  `build: false` reads the disk copy only; `signal` stops a build (the grid
+   *  no longer wants the preview). */
+  async readPreview(
+    id: string,
+    options?: { hold?: boolean; build?: boolean; signal?: AbortSignal },
+  ): Promise<LoadedPreview | null> {
     const hold = options?.hold !== false;
     // Taken before the read: a record names a preview only once it is on disk
     // (previewStored), so the preview read is never older than this edit.
@@ -856,16 +892,30 @@ export class ProjectStorage implements CatalogStorage {
         // Can't be read for now (another program holds it): the record keeps naming it.
       }
     }
-    const photo = this.photos.get(id);
+    const photo = options?.build === false ? undefined : this.photos.get(id);
     if (photo) {
-      const blob = await this.deps.buildPreviewBlob(photo);
+      const blob = await this.deps.buildPreviewBlob(photo, options?.signal);
       if (blob) {
         if (hold) this.lastThumb.set(id, blob);
+        // A source's preview came over the network: kept, so it is read once.
+        if (isSourceFile(photo.fileHandle) && this.deps.persistPreviews())
+          void this.writePreview(id, blob, undefined, turnOf(photo)).catch((err: unknown) => {
+            console.warn(`[project] the preview of ${id} couldn't be stored:`, err);
+            if (this.lastThumb.get(id) === blob) this.lastThumb.delete(id);
+          });
         // Not sent (each window's previews are its own) nor saved (every load derives it again).
         // A preview stored while this one was built keeps the edit it shows.
         const held = this.photos.get(id);
         const named = held?.previewEdit !== undefined && held.previewEdit === photo.previewEdit;
         if (missing && named) this.show({ ...held, previewEdit: undefined });
+        // A source's photo listed without a size takes its preview's, stored like any
+        // change to its record, until its original's replaces it (decode-learned.ts).
+        const sized = this.photos.get(id);
+        if (blob.frame && sized && !(sized.width > 0 && sized.height > 0) && turnOf(sized) === turnOf(photo))
+          await this.storePhotos(
+            [{ ...sized, thumbnailBlob: null, width: blob.frame.width, height: blob.frame.height }],
+            { lazy: true },
+          );
         return blob;
       }
     }
@@ -1006,6 +1056,33 @@ export class ProjectStorage implements CatalogStorage {
       () => undefined,
     );
     return written.finally(() => {
+      if (newest()) this.previewWrites.delete(id);
+      this.letGoIfIdle();
+    });
+  }
+
+  /** Remove the previews kept for these photos, so each is built again when the
+   *  grid next reads it. A write asked for before a removal lands first, and one
+   *  asked for after it lands instead. */
+  async dropStoredPreviews(ids: string[]): Promise<void> {
+    await Promise.all(ids.map((id) => this.removePreview(id)));
+  }
+
+  private removePreview(id: string): Promise<void> {
+    const before = this.previewWrites.get(id)?.ended;
+    const turn = { ended: Promise.resolve() };
+    this.previewWrites.set(id, turn);
+    this.lastThumb.delete(id);
+    const newest = () => this.previewWrites.get(id) === turn;
+    const removed = (async () => {
+      if (before) await before;
+      if (newest()) await removeEntry(this.previews, `${id}.jpg`);
+    })();
+    turn.ended = removed.then(
+      () => undefined,
+      () => undefined,
+    );
+    return removed.finally(() => {
       if (newest()) this.previewWrites.delete(id);
       this.letGoIfIdle();
     });
@@ -1221,7 +1298,16 @@ export class ProjectStorage implements CatalogStorage {
    *  can't hold (savable) is not stored, the one held before it stays, and once the
    *  rest are saved this rejects naming its photo. */
   async putEditStates(editStates: EditState[]): Promise<void> {
-    const { records, refused } = savable(editStates, "edit", (editState) => editState.photoId);
+    const { records, refused } = savable(
+      editStates,
+      "edit",
+      (editState) => editState.photoId,
+      (editState) => ({
+        ...editState,
+        stack: editState.stack.filter((snapshot) => !this.writable.has(snapshot)),
+      }),
+    );
+    for (const { stack } of records) for (const snapshot of stack) this.writable.add(snapshot);
     await this.storeEditStates(records);
     if (refused) throw refused;
   }

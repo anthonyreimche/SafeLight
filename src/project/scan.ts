@@ -10,6 +10,7 @@
 import { FolderUnavailableError, failureReason, isUnreachable } from "./catalog-errors";
 import { nativeFs, nativePathOf, nativeSizeOf } from "./native-fs";
 import { SIDECAR_SUFFIX } from "./sidecar";
+import { sourceItemOf } from "./library-sources";
 
 /** Folders the OS keeps at a drive root and denies the user: skipped without a
  *  word, so a drive-root project doesn't report them as unreadable on every open.
@@ -34,8 +35,8 @@ export interface ScannedFile {
   path: string; // relative, posix separators
   handle: FileSystemFileHandle;
   parent: FileSystemDirectoryHandle;
-  /** The file's size as the listing gave it: the desktop bridge does, the
-   *  browser's file API doesn't (undefined). */
+  /** The file's size as the listing gave it: the desktop bridge and a library
+   *  source do, the browser's file API doesn't (undefined). */
   size?: number;
 }
 
@@ -100,7 +101,7 @@ export async function scanProject(
           }),
         );
       } else if (isSupported(entry.name)) {
-        slots.push({ path: childPath, handle: entry, parent: dir, size: nativeSizeOf(entry) });
+        slots.push({ path: childPath, handle: entry, parent: dir, size: nativeSizeOf(entry) ?? sourceItemOf(entry)?.size });
         node.count++;
       } else if (entry.name.endsWith(SIDECAR_SUFFIX)) {
         sidecars.add(childPath);

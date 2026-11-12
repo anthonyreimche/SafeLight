@@ -174,8 +174,11 @@ function withVirtualCopies(
 /** `photo` showing a preview the loader read, with a new object URL for it and the
  *  edit that preview shows, whatever edit the one it replaces showed. */
 function withPreview(photo: CatalogPhoto, blob: LoadedPreview): CatalogPhoto {
+  // A library source's photo listed without a size takes its preview's.
+  const sized = blob.frame && !(photo.width > 0 && photo.height > 0) ? blob.frame : null;
   return {
     ...photo,
+    ...(sized ? { width: sized.width, height: sized.height } : {}),
     thumbnailBlob: blob,
     thumbnailUrl: URL.createObjectURL(blob),
     previewEdit: blob.previewEdit,
@@ -671,7 +674,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         );
         pending = new Set();
         const round: CatalogPhoto[] = [];
-        const photos = get().photos.map((current) => {
+        const shown = get().photos;
+        const photos = shown.map((current) => {
           const t = turned.get(current.id);
           if (!t) return current;
           if (current.thumbnailBlob !== t.from.thumbnailBlob) {
@@ -696,7 +700,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         if (round.length === 0) continue;
         // Shown before it is written: an edit's preview rendered from here on is
         // made at the new rotation, and one stored later replaces this one.
-        set({ photos });
+        set({ photos: keepStructure(shown, photos, changedFields(shown, photos) ?? []) });
         await catalogStorage().putPhotos(round);
       }
 

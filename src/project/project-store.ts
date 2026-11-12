@@ -40,13 +40,16 @@ import {
 import { fsErrorText } from "./fs-errors";
 import { shouldWarmDecodePool } from "./warm-decode";
 import { ReadOnlyProjectError } from "./working-dir";
+import { SourceUnavailableError, sourceOffline, sourceRefOf, stopSourceRoot } from "./library-sources";
 import { getSettings } from "@/state/settings-store";
 import {
   addRecentProject,
   getLastProject,
+  lastRecentProject,
   listRecentProjects,
   recentHandle,
   removeRecentProject,
+  whenRecentSource,
   type RecentProject,
 } from "./recent";
 import { namesFoldCase, pathKey } from "./reattach";
@@ -100,6 +103,29 @@ function warmDecoding(): Promise<void> {
 // cancel the expensive decode loop without touching Zustand (AbortController is
 // mutable and shouldn't trigger re-renders).
 let importAbort: AbortController | null = null;
+
+/** The project an open under way is for, and its key (projectKey). */
+let openingProject: { handle: FileSystemDirectoryHandle; key: string } | null = null;
+
+/** What names a project, for the folder it last showed and to tell a second
+ *  open of it: a source's extension, id and library, else the folder's path (its
+ *  name in the browser). */
+function projectKey(handle: FileSystemDirectoryHandle): string {
+  const source = sourceRefOf(handle);
+  return source
+    ? `source:${source.extensionId}\n${source.id}\n${source.library}`
+    : (nativePathOf(handle) ?? handle.name);
+}
+
+/** Leave the open under way, as closing it would: its walk stops, and a library
+ *  source's listing with it. The caller bumps the generation, which keeps what
+ *  the open finishes later out of the window. */
+function leaveOpening(): void {
+  importAbort?.abort();
+  importAbort = null;
+  if (openingProject) stopSourceRoot(openingProject.handle);
+  openingProject = null;
+}
 
 // The open project's background passes (preview repair, Cache all pre-decode):
 // stopped as the next project starts opening or this one closes, so they read,
@@ -236,6 +262,11 @@ function restoreActiveFolder(project: string): string | null {
  *  The motivating case is a read-only source folder (a memory card) where the
  *  old code only console.error'd and left an unexplained empty library. */
 function describeOpenError(e: unknown, folderName: string): string {
+  if (e instanceof SourceUnavailableError)
+    return (
+      `Couldn't reach “${folderName}” (${e.reason.replace(/\.$/, "")}), and it has no photos ` +
+      `kept from an earlier visit. Check its connection in Preferences, then open it again.`
+    );
   if (e instanceof ReadOnlyProjectError) {
     if (e.redirectFailed) {
       const reason = e.cause instanceof Error ? ` (${e.cause.message})` : "";
@@ -397,7 +428,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   async openProject(handle) {
     hearSaves();
-    if (get().opening) return;
+    const key = projectKey(handle);
+    // Asked again for the project already opening (a double click): nothing new.
+    // Anything else leaves that open at once, as closing it would.
+    if (get().opening && openingProject?.key === key) return;
+    leaveOpening();
+    openingProject = { handle, key };
     // The project being left is saved and takes no more changes. Until the new
     // one's catalogue is read, a change has no catalogue to go into.
     leaveCatalog();
@@ -427,7 +463,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // Restore the folder this project was last viewing (or null = All Photos for
     // a first/different project). Seed lastPersistedFolder first so the change
     // subscription below doesn't redundantly re-write what we just restored.
-    activeProjectKey = nativePathOf(handle) ?? handle.name;
+    const source = sourceRefOf(handle);
+    activeProjectKey = key;
     const restoredFolder = restoreActiveFolder(activeProjectKey);
     lastPersistedFolder = restoredFolder;
     useUIStore.getState().setActiveFolder(restoredFolder);
@@ -449,7 +486,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
       // Queue cached previews for loading: visible cells request first (via the
       // Thumbnail IntersectionObserver); when idle, enqueue the rest in view order.
+      // A library source's previews come over the network, so only the cells on
+      // screen ask for them.
       const kickThumbnails = (photos: CatalogPhoto[], thumbGen: number) => {
+        if (source) return;
         const toLoad = photos.filter((p) => !p.thumbnailUrl);
         const inView = visibleList().filter((p) => !p.thumbnailUrl);
         const seen = new Set(inView.map((p) => p.id));
@@ -463,7 +503,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // The grid's preview reader for a project; its storage drops what it held of a
       // preview once the grid lets that one go.
       const previewLoader = (storage: ProjectStorage) =>
-        setThumbnailLoader((id) => storage.readPreview(id), {
+        setThumbnailLoader((id, stop) => storage.readPreview(id, { signal: stop }), {
           onEvict: (ids) => storage.forgetPreviews(ids),
         });
 
@@ -551,6 +591,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             `catalogued there are kept.`,
         );
       }
+      if (sourceOffline(handle))
+        notices.push(
+          `“${handle.name}” can't be reached right now, so its photos are shown as they were ` +
+            `last time. Photos opened before still open; the rest show their preview until it ` +
+            `can be reached again.`,
+        );
       notices.push(...describeSkippedFormats(opened.skipped));
       if (notices.length > 0) set({ storageNotice: notices.join(" ") });
       // Phase 2 — the scan finished: attach handles, add new, drop removed. If we
@@ -565,10 +611,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
       // Remember this folder for the welcome grid, with the first photo's grid
       // preview as the card cover. Reattached photos load previews lazily, so
-      // fall back to reading the cover off disk when no blob is in memory yet.
+      // fall back to reading the cover off disk when no blob is in memory yet; a
+      // library source's is never fetched for it.
       const first = opened.photos[0];
       const cover = first
-        ? first.thumbnailBlob ?? (await opened.storage.readPreview(first.id))
+        ? first.thumbnailBlob ?? (await opened.storage.readPreview(first.id, { build: !source }))
         : null;
       if (gen !== openGen) return;
       await addRecentProject(handle, cover);
@@ -607,7 +654,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         });
       }
     } catch (e) {
-      console.error("[project] open failed:", e);
+      // An open the person left (they opened something else) failed because it was stopped.
+      if (gen === openGen) console.error("[project] open failed:", e);
       // The grid was cleared when the open began; no project stays named over it,
       // nor takes the changes made from here, nor runs passes for it.
       if (gen === openGen) {
@@ -626,6 +674,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } finally {
       if (gen === openGen) {
         importAbort = null;
+        openingProject = null;
         set({ opening: false, importDone: 0, importTotal: 0 });
       }
     }
@@ -647,8 +696,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   async openLast() {
-    const handle = await getLastProject();
-    if (!handle) return;
+    const gen = openGen;
+    const last = await lastRecentProject();
+    if (!last) return;
+    const handle = recentHandle(last);
+    if (!handle) {
+      // A library source whose extension starts after this: it opens once the source
+      // is registered, unless the person opened something meanwhile. The launch
+      // doesn't wait for it.
+      if (last.source)
+        void whenRecentSource(last).then((source) => {
+          if (source && gen === openGen && !get().root && !get().opening) void get().openProject(source);
+        });
+      return;
+    }
     // Re-verify silently; readwrite is needed for the .safelight/ cache.
     if (await verifyPermission(handle, false, "readwrite")) {
       await get().openProject(handle);
@@ -694,8 +755,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   closeProject() {
     ++openGen;
-    importAbort?.abort();
-    importAbort = null;
+    leaveOpening();
     passesAbort?.abort();
     passesAbort = null;
     leaveCatalog();

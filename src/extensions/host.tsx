@@ -40,7 +40,7 @@ import {
   registerTheme,
 } from "./registry";
 import { initStylesheets } from "./stylesheets";
-import { initStagePrewarm } from "./dock/prewarm";
+import { initStagePrewarm, prewarmExtension } from "./dock/prewarm";
 import {
   applyPipeline,
   effectivePipelineId,
@@ -49,7 +49,15 @@ import {
   transformPresetField,
   usePipelineStore,
 } from "./pipelines";
-import { getRenderBridge, setStageTexture } from "@/rendering/render-bridge";
+import {
+  dropStageTextureVariants,
+  getRenderBridge,
+  prepareStageVariant,
+  setStageTexture,
+  setStageTextureProvider,
+  stageTextureProviderOwner,
+} from "@/rendering/render-bridge";
+import { variantTextureKey } from "@/rendering/webgl/stage-texture-variant";
 import {
   getExtSetting,
   initExtSettings,
@@ -117,6 +125,9 @@ import { isEditState } from "@/project/edit-files";
 import { isPlainObject } from "@/project/fs";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
 import { importFiles } from "@/modules/library/import-files";
+import { librarySourcesAPI } from "./library-sources-api";
+import { keptDirectoriesAPI } from "./kept-directories";
+import { networkAPI } from "./network";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
 import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -285,6 +296,15 @@ function catalogPhotoError(photos: unknown): string | null {
 
 /** Every register* call made through a scoped API is tagged with the
  *  extension's id, so uninstalling can sweep all of its contributions. */
+/** Whether `extensionId` provides stage texture `plain`: only it may stop the
+ *  provider or drop its variants, whether or not a stage holds the key now. */
+function providesStageTexture(extensionId: string, plain: string): boolean {
+  const owner = stageTextureProviderOwner(plain);
+  if (owner === extensionId) return true;
+  if (owner) console.warn(`[extensions] ${extensionId}: "${plain}" is provided by ${owner}; ignored`);
+  return false;
+}
+
 export function makeScopedAPI(extensionId: string): SafelightAPI {
   return {
     version: 1,
@@ -298,9 +318,28 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPipeline: (c) => registerPipeline(extensionId, c),
     registerProcessingStage: (c) => registerProcessingStage(extensionId, c),
     unregisterProcessingStage: (id) => unregisterProcessingStage(extensionId, id),
-    setStageTexture: (stageId, key, tex) => {
-      const qualifiedKey = `${stageId}.${key}`;
+    setStageTexture: (stageId, key, tex, variant) => {
+      const plain = `${stageId}.${key}`;
+      const qualifiedKey = variant === undefined ? plain : variantTextureKey(plain, variant);
+      if (qualifiedKey === null) {
+        console.warn(`[extensions] ${extensionId}: texture variant "${variant}" of "${plain}" isn't 1 to 64 letters, digits, - or _; setStageTexture ignored`);
+        return;
+      }
       if (mayWriteStageTexture(extensionId, qualifiedKey, tex === null)) setStageTexture(qualifiedKey, tex);
+    },
+    setStageTextureProvider: (stageId, key, provide) => {
+      const plain = `${stageId}.${key}`;
+      if (provide ? mayWriteStageTexture(extensionId, plain, false) : providesStageTexture(extensionId, plain))
+        setStageTextureProvider(plain, extensionId, provide);
+    },
+    dropStageTextureVariants: (stageId, key, variant) => {
+      const plain = `${stageId}.${key}`;
+      if (providesStageTexture(extensionId, plain)) dropStageTextureVariants(plain, variant);
+    },
+    prepareStageTextureVariant: async (stageId, key, variant) => {
+      const plain = `${stageId}.${key}`;
+      if (!mayWriteStageTexture(extensionId, plain, false)) throw new Error(`"${plain}" isn't a stage texture of ${extensionId}`);
+      await prepareStageVariant(plain, variant);
     },
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
@@ -425,6 +464,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           extensionId,
           values && ownStageValues(extensionId, values, Object.values(useRegistry.getState().processingStages)),
         ),
+      prewarmStages: () => prewarmExtension(extensionId),
       useMaskPanels,
       useOlderProcessing: () => useDevelopStore((s) => usesOlderProcessing(s.params)),
       autoAdjust,
@@ -520,10 +560,12 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       movePhotos,
       deleteFolder,
       pickDirectory: pickDirectoryHandle,
+      ...keptDirectoriesAPI(extensionId),
       pathOf: nativePathOf,
       reveal: revealNativePath,
     },
-    library: { importFiles },
+    library: { importFiles, ...librarySourcesAPI(extensionId) },
+    network: networkAPI(extensionId),
     presets: {
       useImporters: usePresetImporters,
       describeBag: describePresetBag,

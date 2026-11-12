@@ -17,7 +17,7 @@ import type { ProjectStorageDeps } from "./project-storage";
 export const storageDeps: ProjectStorageDeps = {
   isSupportedName: (name) => isSupportedName(name),
   importPhoto: (fileHandle, directoryHandle) => importPhoto(fileHandle, directoryHandle),
-  buildPreviewBlob: (photo) => buildPreviewBlob(photo),
+  buildPreviewBlob: (photo, signal) => buildPreviewBlob(photo, signal),
   persistPreviews: () => getSettings().persistPreviews,
   emitPhotoImport: (ctx) => emitPhotoImport(ctx),
 };

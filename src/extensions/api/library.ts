@@ -77,3 +77,16 @@ export type PresetImportOutcome =
   | { status: "failed"; reason: string }
   /** A .json file that isn't a Safelight preset this build can read. */
   | { status: "unreadable" };
+
+/** A folder an extension keeps across launches (`api.project.pickKeptDirectory`),
+ *  opened again by its token: the folder, or why it can't be written into now.
+ *  "gone": no folder at that path, or its drive or share isn't connected.
+ *  "unwritable": the folder is there but may not be written into; on Windows
+ *  only a folder that can't even be looked at shows here, and one whose
+ *  permissions refuse writes is reported by its first write instead. "unknown": the token
+ *  names no folder kept for this extension (forgotten, the extension
+ *  uninstalled since, or, in the browser build, picked before the page was
+ *  loaded). */
+export type KeptDirectory =
+  | { folder: FileSystemDirectoryHandle }
+  | { problem: "gone" | "unwritable" | "unknown" };

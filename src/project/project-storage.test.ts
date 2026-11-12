@@ -3217,6 +3217,40 @@ describe("a record catalog.json can't hold", () => {
     expect(storage.heldPhoto(a.id)?.rating).toBe(0);
     expect(catalog(p)?.photos.map((photo) => photo.rating)).toEqual([0, 2]);
   });
+
+  // A history grows by one snapshot per commit and keeps the earlier ones as they
+  // are, so checking the whole of it each time costs a commit the size of its history.
+  it("checks a snapshot once, not again with every later step of its history", async () => {
+    const { storage, photos } = await saved();
+    let reads = 0;
+    const counted = {
+      get "x.y"() {
+        reads++;
+        return 0.5;
+      },
+    };
+    const one = withBag(photos[0].id, "One", counted);
+    await storage.putEditState(one);
+    const readsWhenNew = reads;
+
+    reads = 0;
+    const two = edit(photos[0].id, "Two").stack[0];
+    await storage.putEditState({ ...one, stack: [...one.stack, two], currentIndex: 1 });
+
+    expect(reads).toBeLessThan(readsWhenNew);
+  });
+
+  it("refuses a step JSON can't write on a history whose earlier steps are stored", async () => {
+    const { p, storage, photos } = await saved();
+    const one = edit(photos[0].id, "One");
+    await storage.putEditState(one);
+    const bad = { ...edit(photos[0].id, "Bad").stack[0], paramBag: { "x.y": 10n } };
+
+    const putting = storage.putEditState({ ...one, stack: [...one.stack, bad], currentIndex: 1 });
+
+    await expect(putting).rejects.toThrow(photos[0].id);
+    expect(labelsOnDisk(p)).toEqual({ [photos[0].id]: "One" });
+  });
 });
 
 describe("catalogue writes", () => {

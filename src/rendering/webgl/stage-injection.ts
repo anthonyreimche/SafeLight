@@ -443,6 +443,9 @@ export interface PrepassStage {
   passesOf?: string;
   /** The stage's dormantWhen (dormantRule): its passes don't run while it holds. */
   dormant?: DormantRule;
+  /** A view-only stage's (ProcessingStageContribution.viewOnly): its passes
+   *  run only for a frame that draws view stages (PrepassFrame.viewStages). */
+  viewOnly?: true;
   /** Set when a pass fetches the input: the program that draws the source at
    *  pass size as the first draw reads it, for a source of another size. */
   inputSource?: string;
@@ -595,6 +598,11 @@ export interface BuiltStageInjection {
   prepass: PrepassStage[];
   maskSlots: MaskSlotBinding[];
   hasNoiseReduction: boolean;
+  /** The stages, other than core's own and the built-in denoiser, that write
+   *  the colour in the decode or noise-reduction phase. While one of them is
+   *  at work `lin` may be a picture rebuilt from base-resolution passes, which
+   *  a detail gain must not scale (detail-gain.ts rebuildsSource). */
+  rebuilders: readonly string[];
   /** In the order written. Kept out of `injection`, whose every field the
    *  version 2 freeze hashes. */
   steps: readonly InjectionStep[];
@@ -621,6 +629,7 @@ export function stageSignature(s: ProcessingStageContribution): string {
       ...handoff,
       ...(s.readsCurrentFrom === undefined ? [] : [{ readsCurrentFrom: s.readsCurrentFrom }]),
       ...(s.dormantWhen === undefined ? [] : [{ dormantWhen: s.dormantWhen }]),
+      ...(s.viewOnly === true ? [{ viewOnly: true }] : []),
     ]),
   );
 }
@@ -698,6 +707,29 @@ class GroupWriter {
       this.markSpaceHelpers();
     }
     this.held[group] = space;
+  }
+
+  /** `block` with the group's variable brought into `space` ahead of it, clipped
+   *  to [0, 1] first when `clip`, and back after it, so what the group holds
+   *  between blocks stays as it was: for a block that may not run (a view-only
+   *  stage's), whose input must not reach the frame without it. */
+  within(group: ColourGroup, domain: StageDomain, space: StageSpace | undefined, clip: boolean, block: string): string {
+    const from = this.held[group];
+    if (!clip && spaceKey(from, domain) === spaceKey(space, domain)) return block;
+    const v = colourVariable(domain);
+    const into: string[] = [];
+    const back: string[] = [];
+    if (!isIdentitySpace(from, domain)) {
+      into.push(`${v} = ${fromSpaceExpr(from, domain, v)};`);
+      back.unshift(`${v} = ${toSpaceExpr(from, domain, v)};`);
+    }
+    if (clip) into.push(LEGACY_DISPLAY_CLAMP);
+    if (!isIdentitySpace(space, domain)) {
+      into.push(`${v} = ${toSpaceExpr(space, domain, v)};`);
+      back.unshift(`${v} = ${fromSpaceExpr(space, domain, v)};`);
+    }
+    if (!isIdentitySpace(from, domain) || !isIdentitySpace(space, domain)) this.markSpaceHelpers();
+    return `{\n${[...into, block, ...back].join("\n")}\n}`;
   }
 
   /** Notes that written GLSL calls the space helpers, so they get compiled in. */
@@ -866,6 +898,18 @@ const bindingOf = (s: Pick<ProcessingStageContribution, "id">, u: UniformDeclara
   default: u.default,
 });
 
+/** True while the program draws a frame for the eye, which only the live
+ *  view's renderer does (WebGLRendererOpts.drawsViewStages). */
+export const VIEW_STAGES_UNIFORM = "uViewStages";
+
+/** A view-only stage's block (ProcessingStageContribution.viewOnly), run only
+ *  while VIEW_STAGES_UNIFORM is on; the switch is declared once per program. */
+function viewOnlyBlock(block: string, declared: Declared): string {
+  const decl = `uniform bool ${VIEW_STAGES_UNIFORM};`;
+  if (!declared.uniforms.includes(decl)) declared.uniforms.push(decl);
+  return `if (${VIEW_STAGES_UNIFORM}) ${block}`;
+}
+
 /** A raw-name stage in its phase's group: its block, braced. */
 function emitCoreStage(s: ProcessingStageContribution, declared: Declared): string {
   declareRawStage(s, declared, s.helpers);
@@ -913,7 +957,10 @@ function emitExtensionStage(
       return [`\nisv_${v.name} = (${rewrite(v.producer)}\n);`];
     })
     .join("");
-  return `{\n${sceneLuma}${prelude}${inline}${produced}\n}`;
+  // A view-only block runs in every live frame, the aid off included: one that
+  // reads its result through its own sampler pays no fetch per pixel for it.
+  const fetched = s.viewOnly === true && !/\bstageResult\b/.test(withoutComments(s.glsl)) ? "" : prelude;
+  return `{\n${sceneLuma}${fetched}${inline}${produced}\n}`;
 }
 
 /** GLSL with its comments blanked out, for telling what the code names. */
@@ -1117,6 +1164,7 @@ function declarePrepass(
     ...(layerUniform ? { layerUniform } : {}),
     ...(passesOf ? { passesOf } : {}),
     ...(dormant ? { dormant } : {}),
+    ...(s.viewOnly === true ? { viewOnly: true as const } : {}),
     ...(input ? { inputSource: input.fragmentSource } : {}),
   });
   if (!layerUniform) return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
@@ -1179,10 +1227,21 @@ export function buildStageInjection(
     }
     const { group, domain } = phaseInfo(stage.phase);
     exits.beforeStage(stage);
-    if (group !== "srcUv" && domain) prepareInput(writer, stage, group, domain, variant);
-    const block = writesRawNames(stage)
+    const core = writesRawNames(stage);
+    // A view-only stage's input is prepared inside its switch, so nothing of it
+    // reaches a frame that leaves it out.
+    const viewOnly = stage.viewOnly === true;
+    if (group !== "srcUv" && domain && !viewOnly) prepareInput(writer, stage, group, domain, variant);
+    let block = core
       ? emitCoreStage(stage, declared)
       : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered, variant, domain);
+    if (viewOnly) {
+      if (group !== "srcUv" && domain) {
+        const clip = !core && needsClippedInput(stage, domain, variant);
+        block = writer.within(group, domain, core ? undefined : stage.space, clip, block);
+      }
+      block = viewOnlyBlock(block, declared);
+    }
     writer.push(group, block);
     writer.steps.push({ kind: "stage", group, stageId: stage.id });
     exits.afterStage(stage);
@@ -1218,6 +1277,11 @@ export function buildStageInjection(
     prepass: declared.prepass,
     maskSlots: declared.maskSlots,
     hasNoiseReduction: ordered.some(isContributedNR),
+    rebuilders: ordered
+      .filter(
+        (s) => !isCoreStage(s) && s.id !== BUILTIN_DENOISE_ID && !anchorOf(s) && phaseInfo(s.phase).group === "noiseReduction",
+      )
+      .map((s) => s.id),
     steps: writer.steps,
   };
 }

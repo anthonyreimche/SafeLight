@@ -213,6 +213,8 @@ export interface AppSettings {
   // ── Render pipeline ────────────────────────────────────────────────────
   /** Resolution cap of the Develop render buffer (true 1:1 zoom vs. memory). */
   developMaxEdge: 2560 | 3072 | 4096 | 6144 | 8192;
+  /** Sharpen the visible area from the original when zoomed past the render buffer. */
+  developDynamicDetail: boolean;
   /** GPU memory budget (bytes) for resident decoded RAW sources. Larger keeps
    *  more photos ready for instant re-open and crisp zoom, at the cost of VRAM. */
   gpuSourceCacheBytes: number;
@@ -362,6 +364,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rawCachePrefetch: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
+  developDynamicDetail: false,
   gpuSourceCacheBytes: 512 * 1024 * 1024,
   developPrefetchNeighbors: true,
   highBitDepth: true,

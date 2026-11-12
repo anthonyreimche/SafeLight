@@ -45,8 +45,6 @@ export interface StoredSnapshotTarget {
 interface AppendedEdit {
   target: StoredSnapshotTarget;
   editState: EditState;
-  /** The look the new step holds. */
-  params: DevelopParams;
 }
 
 /** The targets for the catalogue photos among `ids`, in `ids` order. An id that is not
@@ -104,7 +102,7 @@ async function appendedEdit(
     stack: newStack,
     currentIndex: newStack.length - 1,
   };
-  return { target, editState, params: look.params };
+  return { target, editState };
 }
 
 /** Append a snapshot labelled `label` to the photo's stored edit, and make it the
@@ -160,14 +158,14 @@ export async function appendStoredSnapshots(
   const open = appended.find(({ target }) => target.photoId === develop.photoId);
   await Promise.all([stored, open && develop.loadEdit(open.target.photoId, open.target.asShot)]);
 
-  for (const { target, editState, params } of appended) {
+  for (const { target, editState } of appended) {
     try {
       // Let extensions persist the committed edit elsewhere (e.g. XMP sidecars).
       const photo = useCatalogStore.getState().photos.find((p) => p.id === target.photoId);
       if (photo) await emitEditCommit({ photo, editState });
 
       // Refresh this photo's histogram wherever it's shown.
-      broadcast({ type: "edit-update", payload: { photoId: target.photoId, params } });
+      broadcast({ type: "edit-update", payload: { photoId: target.photoId } });
     } catch (error) {
       // The edit is already stored; a failed announcement must not hold back the rest.
       console.warn(`[stored-edit] announcing ${target.photoId} failed:`, error);

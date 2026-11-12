@@ -182,6 +182,11 @@ export interface ExtensionPermissions {
    *  Only declared origins pass the content-security policy; undeclared hosts are
    *  blocked. A new declaration takes effect after the next app launch. */
   network?: string[];
+  /** The extension connects to a server address the person types in (api.network),
+   *  which no manifest can name ahead of time. Each address is allowed by the
+   *  person in a dialogue naming the extension before any request reaches it.
+   *  Needs Safelight 3.2.4. */
+  userOrigins?: boolean;
   /** Optional human-readable rationale shown to the user beside the request. */
   reason?: string;
 }

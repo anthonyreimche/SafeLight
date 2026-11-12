@@ -12,6 +12,7 @@
 const { diagnosticsChannels } = require("./diagnostics.cjs");
 const { extensionChannels } = require("./extensions.cjs");
 const { fsChannels } = require("./fs.cjs");
+const { netChannels } = require("./net.cjs");
 const { windowChannels } = require("./window.cjs");
 
 /**
@@ -26,15 +27,33 @@ const { windowChannels } = require("./window.cjs");
  * @param {Parameters<typeof windowChannels>[0]
  *   & Parameters<typeof extensionChannels>[0]
  *   & Parameters<typeof fsChannels>[0]
- *   & Parameters<typeof diagnosticsChannels>[0]} deps
+ *   & Parameters<typeof diagnosticsChannels>[0]
+ *   & Parameters<typeof netChannels>[0]} deps
  * @returns {IpcChannel[]}
  */
 function ipcChannels(deps) {
+  // What a channel group keeps per extension (kept folders, allowed server
+  // addresses) is forgotten when the extension is uninstalled; an update keeps it.
+  const forgetters = [];
+  const shared = {
+    ...deps,
+    onUninstalled: (forget) => void forgetters.push(forget),
+    forgetUninstalled: async (id) => {
+      for (const forget of forgetters) {
+        try {
+          await forget(id);
+        } catch (e) {
+          console.warn(`[extensions] couldn't forget what ${id} was given:`, e);
+        }
+      }
+    },
+  };
   return [
-    ...windowChannels(deps),
-    ...extensionChannels(deps),
-    ...fsChannels(deps),
-    ...diagnosticsChannels(deps),
+    ...windowChannels(shared),
+    ...extensionChannels(shared),
+    ...fsChannels(shared),
+    ...diagnosticsChannels(shared),
+    ...netChannels(shared),
   ];
 }
 

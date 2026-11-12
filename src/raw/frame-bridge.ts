@@ -231,3 +231,13 @@ export async function convertInputFrame(job: ProfileJob, priority?: FramePriorit
   if (reply.op !== "profile") throw new Error("the frame worker answered another request");
   return reply.frame;
 }
+
+/** The linear luminance of the RGBA frame `data`, one binary16 pattern per
+ *  pixel (frame-job.ts lumaHalves); `data` is handed to the worker. */
+export async function encodeFrameLuma(data: Float32Array, priority?: FramePriority): Promise<Uint16Array<ArrayBuffer>> {
+  const reply = await submit((id) => ({ id, op: "luma", data }), [data.buffer], priority);
+  const error = failure(reply);
+  if (error) throw error;
+  if (reply.op !== "luma") throw new Error("the frame worker answered another request");
+  return reply.data;
+}

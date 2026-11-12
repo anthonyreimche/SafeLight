@@ -146,7 +146,7 @@ describe("a photo's preview changing", () => {
     renderHook(() => useWindowSync());
     receive({ type: "catalog-change", payload: { action: "update", id: "a", origin: "other" } });
     expect(readPreview).toHaveBeenCalledTimes(1);
-    expect(readPreview).toHaveBeenCalledWith("a");
+    expect(readPreview).toHaveBeenCalledWith("a", expect.any(AbortSignal));
   });
 
   it("doesn't reload when this window rates a photo", async () => {

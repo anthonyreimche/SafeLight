@@ -10,14 +10,18 @@
 // reads hide per-read round-trip latency without flooding it. Loaded blobs are
 // flushed to the catalogue store in one batched update per frame to avoid a
 // render storm. The previews it loaded are capped (see CACHE_LIMIT): the oldest
-// are released and read again if their cell returns.
+// are released and read again if their cell returns. A read cells on screen
+// asked for stops once none of them wants it (they scrolled away, the person
+// left the album), and every read stops when the project changes: a library
+// source's previews come over the network.
 
 import { useCatalogStore } from "./catalog-store";
 import type { LoadedPreview } from "@/catalog/types";
 
 export type { LoadedPreview };
 
-type Loader = (id: string) => Promise<LoadedPreview | null>;
+/** Reads a photo's preview; `signal` aborts once nobody wants it any more. */
+type Loader = (id: string, signal: AbortSignal) => Promise<LoadedPreview | null>;
 
 const CONCURRENCY = 3;
 
@@ -62,6 +66,9 @@ const reloading = new Set<string>();
 // Ids a visible request took out of the idle prefill: a cancel gives them back.
 const takenFromPrefill = new Set<string>();
 const inFlight = new Set<string>();
+/** Each read in flight: its stop, and for one cells on screen began, how many
+ *  cells want it (null: the prefill's or a reload's, which no cell stops). */
+const reads = new Map<string, { stop: AbortController; holders: number | null }>();
 let active = 0;
 let pending: { id: string; blob: LoadedPreview }[] = [];
 let flushScheduled = false;
@@ -87,9 +94,12 @@ export function setThumbnailLoader(l: Loader | null, opts?: LoaderOptions): numb
   frontHolders.clear();
   reloading.clear();
   takenFromPrefill.clear();
-  // Stale in-flight reads keep their slots until they settle (their results are
-  // discarded by the generation guard); clearing the set here lets the new
-  // project re-request the same id without being deduped against a stale read.
+  // Stale in-flight reads are stopped and keep their slots until they settle
+  // (their results are discarded by the generation guard); clearing the set here
+  // lets the new project re-request the same id without being deduped against a
+  // stale read.
+  for (const read of reads.values()) read.stop.abort();
+  reads.clear();
   inFlight.clear();
   pending = [];
   flushScheduled = false;
@@ -108,9 +118,16 @@ export function thumbnailGen(): number {
  *  order (visible cells, mounting top-to-bottom, naturally request in order).
  *  `visible` jumps the idle prefill: the id is read as soon as a slot frees, even
  *  if the prefill already holds it. Returns whether it took a hold that
- *  cancelThumbnail releases: only a visible request that wasn't already read. */
+ *  cancelThumbnail releases: only a visible request, made before its read began
+ *  or while a read other visible requests began runs. */
 export function requestThumbnail(id: string, opts?: { visible?: boolean }): boolean {
-  if (!loader || inFlight.has(id)) return false;
+  if (!loader) return false;
+  if (inFlight.has(id)) {
+    const read = reads.get(id);
+    if (!opts?.visible || read?.holders == null) return false;
+    read.holders++;
+    return true;
+  }
   if (front.has(id)) {
     if (!opts?.visible) return false;
     frontHolders.set(id, (frontHolders.get(id) ?? 0) + 1);
@@ -131,11 +148,16 @@ export function requestThumbnail(id: string, opts?: { visible?: boolean }): bool
 }
 
 /** A visible cell no longer wants its preview (it scrolled away). Drops the
- *  request once its last requester cancels, unless the read already started, so
- *  cells on screen aren't queued behind everything that scrolled past. The id
- *  isn't moved to the idle queue; the prefill still holds it if it is within
- *  its limit. */
+ *  request once its last requester cancels, so cells on screen aren't queued
+ *  behind everything that scrolled past; a read visible requests began is
+ *  stopped then, unless a reload waits on it. The id isn't moved to the idle
+ *  queue; the prefill still holds it if it is within its limit. */
 export function cancelThumbnail(id: string): void {
+  const read = reads.get(id);
+  if (read?.holders != null) {
+    if (--read.holders === 0) read.stop.abort();
+    return;
+  }
   const holders = frontHolders.get(id);
   if (holders === undefined) return;
   if (holders > 1) {
@@ -155,19 +177,23 @@ export function cancelThumbnail(id: string): void {
   }
 }
 
-function nextId(): string | undefined {
+/** The next id to read, with how many cells on screen asked for it (0 for the
+ *  prefill's and the reloads') and whether the prefill held it too. */
+function nextId(): { id: string; holders: number; prefilled: boolean } | undefined {
   for (const waiting of [front, reloading]) {
     const first = waiting.values().next();
     if (!first.done) {
-      waiting.delete(first.value);
-      frontHolders.delete(first.value);
-      takenFromPrefill.delete(first.value);
-      return first.value;
+      const id = first.value;
+      const holders = waiting === front ? (frontHolders.get(id) ?? 0) : 0;
+      const prefilled = takenFromPrefill.delete(id);
+      waiting.delete(id);
+      frontHolders.delete(id);
+      return { id, holders, prefilled };
     }
   }
   while (head < queue.length) {
     const id = queue[head++];
-    if (queued.delete(id)) return id;
+    if (queued.delete(id)) return { id, holders: 0, prefilled: false };
   }
   queue.length = 0;
   head = 0;
@@ -232,23 +258,40 @@ function scheduleFlush(): void {
   });
 }
 
+function requeueStopped(id: string, holders: number, prefilled: boolean): void {
+  if (inFlight.has(id) || front.has(id)) return;
+  if (holders > 0) {
+    front.add(id);
+    frontHolders.set(id, holders);
+    if (prefilled) takenFromPrefill.add(id);
+  } else if (prefilled && !queued.has(id)) {
+    queued.add(id);
+    queue.push(id);
+  }
+}
+
 function pump(): void {
   while (loader && active < CONCURRENCY) {
-    const id = nextId();
-    if (id === undefined) break;
+    const next = nextId();
+    if (next === undefined) break;
+    const { id } = next;
     inFlight.add(id);
     active++;
     const myGen = gen; // stamp so a newer open can disown this read's result
     const read = loader;
     const reloads = replacing.get(id);
     replacing.delete(id);
+    const entry = { stop: new AbortController(), holders: next.holders > 0 && !reloads ? next.holders : null };
+    reads.set(id, entry);
+    let shown = false;
     void (async () => {
       let blob: LoadedPreview | null = null;
       try {
-        blob = await read(id);
+        blob = await read(id, entry.stop.signal);
       } catch {
         blob = null;
       }
+      shown = blob !== null;
       // A newer open may have swapped the project during the read; its blob must
       // not merge into the new catalogue under this id.
       if (!blob || gen !== myGen) return;
@@ -260,10 +303,16 @@ function pump(): void {
       pending.push({ id, blob });
       scheduleFlush();
     })().finally(() => {
-      inFlight.delete(id);
+      if (reads.get(id) === entry) {
+        reads.delete(id);
+        inFlight.delete(id);
+      }
       active--;
       for (const settle of reloads ?? []) settle();
       if (readAgain.delete(id) && gen === myGen) reloading.add(id);
+      // A read stopped with nothing to show: a cell that came back meanwhile asks
+      // again, and one the prefill held goes back to it.
+      if (entry.stop.signal.aborted && !shown && gen === myGen) requeueStopped(id, entry.holders ?? 0, next.prefilled);
       pump();
     });
   }

@@ -153,7 +153,7 @@ function moveHistory(
   if (editError || newIndex < 0 || newIndex > history.length - 1) return;
   const { params, paramBag } = lookOf(history[newIndex]);
   set({ historyIndex: newIndex, params, paramBag });
-  broadcast({ type: "edit-update", payload: { photoId, params } });
+  broadcast({ type: "edit-update", payload: { photoId } });
   if (!photoId) return;
 
   // Its writes go to the catalogue open now, or nowhere: not to one opened since.
@@ -163,8 +163,8 @@ function moveHistory(
     const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
     if (photo) void emitEditCommit({ photo, editState });
     const look = lookOf(editState.stack[editState.currentIndex]);
-    dropWaitingThumbnail(photoId);
-    void regenerateEditedThumbnail(photoId, look.params, asShotTemperature, look.paramBag);
+    // Steps taken in a row (a held Ctrl+Z) draw one thumbnail, once the view rests.
+    refreshThumbnailWhenQuiet(photoId, look.params, asShotTemperature, look.paramBag);
   };
 
   // With none of this photo's writes under way, the history held here is the
@@ -185,7 +185,7 @@ function moveHistory(
       // than the step taken here that was never saved.
       const look = lookOf(base.stack[steppable ? index : base.index]);
       set({ history: base.stack, historyIndex: steppable ? index : base.index, ...look });
-      broadcast({ type: "edit-update", payload: { photoId, params: look.params } });
+      broadcast({ type: "edit-update", payload: { photoId } });
     }
     if (steppable) store({ photoId, stack: base.stack, currentIndex: index });
   });
@@ -483,7 +483,7 @@ async function commitStoredEdit(
   // Announce the committed state so the Library refreshes this photo's
   // histogram the moment it's edited — for any visible photo, in any window —
   // instead of waiting on the periodic catalogue poll.
-  broadcast({ type: "edit-update", payload: { photoId, params } });
+  broadcast({ type: "edit-update", payload: { photoId } });
 }
 
 /** Close the open photo as its project is left: the change still uncommitted is

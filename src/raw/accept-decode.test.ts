@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { baselineRefit, baselineTone } from "@/rendering/baseline-tone";
 import { toneHighlights } from "@/rendering/local-tone";
 import { acceptDecode, compareBalance } from "./accept-decode";
+import { samplePreview } from "./preview-sample";
 
 const h = vi.hoisted(() => ({
   /** The 8-bit sRGB colour the faked preview sample reads back as. */
@@ -227,6 +228,30 @@ describe("acceptDecode against the embedded preview", () => {
     expect(h.samples).toEqual([[64, 64, "pixelated"]]);
     expect(h.closedSamples).toBe(1);
     expect(h.lostContexts).toBe(1);
+  });
+
+  // Reading the preview takes a JPEG decode: a caller that has the preview
+  // before its RAW decode ends begins the sample then, and hands it over.
+  it("rules on a sample begun earlier without reading the preview again", async () => {
+    const begun = samplePreview(preview);
+    expect(h.samples).toEqual([[64, 64, "pixelated"]]);
+
+    const right = await acceptDecode({}, flatDecode([200, 120, 60]), preview, begun);
+    const wrong = await acceptDecode({}, flatDecode([200, 120, 60], [3, 1, 1]), preview, begun);
+
+    expect(right).toEqual({ use: true, cache: true });
+    expect(wrong).toEqual({ use: false, cache: false });
+    expect(h.samples).toHaveLength(1);
+  });
+
+  it("trusts the decode when the sample begun earlier couldn't be read", async () => {
+    h.samplable = false;
+    const begun = samplePreview(preview);
+
+    const verdict = await acceptDecode({}, flatDecode([200, 120, 60], [3, 1, 1]), preview, begun);
+
+    expect(verdict).toEqual({ use: true, cache: true });
+    expect(h.samples).toHaveLength(1);
   });
 });
 

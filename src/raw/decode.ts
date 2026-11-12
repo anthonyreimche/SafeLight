@@ -52,6 +52,50 @@ const UNANSWERED_LIMIT = 256;
 const decoding = new Map<string, number>();
 const unanswered = new Set<string>();
 
+type Decoded = RawFloatImage | DecodeFailure;
+
+// A decode under way, by file. Its caller may leave while libraw runs (Develop
+// prefetches the next photo for the one that is open, and leaving that one
+// abandons the prefetch); libraw can't be stopped, so the decode would end for
+// nobody. A photo opened meanwhile takes it over instead of decoding the file
+// again from the start. Only a decode nobody waits for is taken over: its
+// frame's buffers go to one caller.
+interface Flight {
+  /** What was asked of the decode, as far as its frame depends on it. */
+  asked: string;
+  /** The caller it began for. */
+  signal: AbortSignal | undefined;
+  /** The caller that took it over, and how it is answered. */
+  heir: { signal: AbortSignal | undefined; answer: (decoded: Decoded) => void } | null;
+}
+const flights = new Map<string, Flight>();
+
+const ABORTED: DecodeFailure = { failure: "aborted" };
+
+function askedOf(request: DecodeRequest | undefined): string {
+  return [request?.targetEdge ?? 0, request?.turn ?? 0, request?.cacheEdge ?? 0].join(":");
+}
+
+/** Whether nobody waits on a decode any more: its caller has left, and no other
+ *  has taken it over. */
+function abandoned(request: DecodeRequest | undefined): boolean {
+  if (!request?.signal?.aborted) return false;
+  const heir = request.heir?.();
+  return !heir || !!heir.signal?.aborted;
+}
+
+/** The decode of file `id` that `request` takes over, if one is running for
+ *  nobody and makes the frame it asks for: its answer, once it has one. */
+function takeOver(id: string, request: DecodeRequest | undefined): Promise<Decoded> | null {
+  const flight = flights.get(id);
+  if (!flight?.signal?.aborted || flight.asked !== askedOf(request)) return null;
+  if (flight.heir && !flight.heir.signal?.aborted) return null;
+  flight.heir?.answer(ABORTED);
+  return new Promise((answer) => {
+    flight.heir = { signal: request?.signal, answer };
+  });
+}
+
 function fileId(file: Blob, path?: string): string | undefined {
   return file instanceof File
     ? `${path ?? file.name}:${file.size}:${file.lastModified}`
@@ -89,11 +133,27 @@ export async function decodeRawToFloat(
         ? "being decoded already"
         : undefined;
     if (reason) return { failure: "transient", reason, passedOver: true };
+  } else {
+    const taken = takeOver(id, request);
+    if (taken) {
+      const decoded = await taken;
+      // A decode still waiting for a decoder when its caller left has left the
+      // queue with it: this request decodes for itself after all.
+      const dropped = "failure" in decoded && decoded.failure === "aborted";
+      if (!dropped || request?.signal?.aborted) return decoded;
+    }
   }
+  const flight: Flight = { asked: askedOf(request), signal: request?.signal, heir: null };
+  // Of two decodes of one file begun side by side, the first is the one to take over.
+  if (!flights.has(id)) flights.set(id, flight);
   decoding.set(id, (decoding.get(id) ?? 0) + 1);
   try {
-    return await decodeFloat(file, request, id, bytes);
+    const decoded = await decodeFloat(file, { ...request, heir: () => flight.heir }, id, bytes);
+    if (!flight.heir) return decoded;
+    flight.heir.answer(flight.heir.signal?.aborted ? ABORTED : decoded);
+    return ABORTED;
   } finally {
+    if (flights.get(id) === flight) flights.delete(id);
     const left = (decoding.get(id) ?? 1) - 1;
     if (left > 0) decoding.set(id, left);
     else decoding.delete(id);
@@ -124,7 +184,7 @@ async function decodeFloat(
     return { ...viaLib, oriented: true };
   }
   if (viaLib.timedOut && id !== undefined) markUnanswered(id);
-  if (request?.signal?.aborted) return { failure: "aborted" };
+  if (abandoned(request)) return ABORTED;
 
   // In-house fallback handles only uncompressed CFA (sensor-native orientation).
   // A file it can't take either keeps libraw's verdict.

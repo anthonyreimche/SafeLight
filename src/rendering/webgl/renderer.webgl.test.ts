@@ -2307,25 +2307,41 @@ describe("brush coverage across frames", () => {
       renderer.render();
       expect(watched.reads()).toBe(baked);
 
+      // A new array is compared by value with what was baked, even of the same
+      // dabs (a caller may have edited one in place), and so is a copy.
       renderer.setParams(identityParams({ masks: [brushMask([watched.object])] }));
       renderer.render();
       expect(watched.reads()).toBeGreaterThan(baked);
+      const copy = counted({ ...LEFT });
+      renderer.setParams(identityParams({ masks: [brushMask([copy.object])] }));
+      renderer.render();
+      expect(copy.reads()).toBeGreaterThan(0);
     });
   });
 
   // The worker takes params patch by patch faster than it draws, and each patch's
-  // structured clone hands over new dab arrays.
+  // structured clone hands over new dab arrays of new dabs.
   it("signs a mask's dabs once for a frame, however many params came before it", () => {
-    const watched = counted(LEFT);
+    let reads = 0;
+    const cloned = (): BrushDab =>
+      new Proxy(
+        { ...LEFT },
+        {
+          get(from, key) {
+            reads++;
+            return Reflect.get(from, key);
+          },
+        },
+      );
     withRenderer({ stages: masksStages(), pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(flatSource(SIZE));
       const readsFor = (queued: number) => {
-        const before = watched.reads();
+        const before = reads;
         for (let i = 0; i < queued; i++) {
-          renderer.setParams(identityParams({ masks: [brushMask([watched.object])] }));
+          renderer.setParams(identityParams({ masks: [brushMask([cloned()])] }));
         }
         renderer.render();
-        return watched.reads() - before;
+        return reads - before;
       };
       readsFor(1);
       const one = readsFor(1);

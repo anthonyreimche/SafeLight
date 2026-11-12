@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
+import { nativeDetailCapable } from "@/hooks/use-native-frame";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
 import { mat3Apply } from "@/rendering/transform";
@@ -148,6 +149,13 @@ export function DevelopCanvas({
   // to another preset, so the look eases in/out instead of snapping.
   const previewParams = useDevelopStore((s) => s.previewParams);
   const openZoom = useSettings((s) => s.developOpenZoom);
+  // Dynamic mode measures the zoom in the photo's own pixels (the decoded frame's size
+  // over the source's) only where native detail can reach them; elsewhere 100% would
+  // be an upscale of the source.
+  const dynamicDetail = useSettings((s) => s.developDynamicDetail);
+  const logicalScale = useDevelopStore(({ sourceSize: s }) =>
+    dynamicDetail && nativeDetailCapable(photo, s) ? s.fullWidth / s.width : 1,
+  );
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const [fadeToken, setFadeToken] = useState(0);
   const fadeInit = useRef(false);
@@ -355,6 +363,7 @@ export function DevelopCanvas({
       imageHeight={wholeHeight}
       zoom={zoom}
       onZoomChange={onZoomChange}
+      logicalScale={logicalScale}
       onViewport={setViewport}
       onLayout={handleLayout}
       colorAssessment={colorAssessment}

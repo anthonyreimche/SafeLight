@@ -12,6 +12,7 @@
 
 import { normalizeRotation } from "@/catalog/orient";
 import { encodeCacheEntry, type EncodedEntry } from "./cache-encode";
+import { halfBits } from "./half-float";
 import type { HalfFrame, ProfileJob } from "./profile-frame";
 
 export interface FrameJob {
@@ -39,13 +40,15 @@ export type FrameResult =
  *  first, so profile-frame.ts answers it. */
 export type SyncFrameRequest =
   | { id: number; op: "build"; job: FrameJob }
-  | { id: number; op: "srgb8"; data: Float32Array };
+  | { id: number; op: "srgb8"; data: Float32Array }
+  | { id: number; op: "luma"; data: Float32Array };
 
 export type FrameRequest = SyncFrameRequest | { id: number; op: "profile"; job: ProfileJob };
 
 export type FrameReply =
   | { id: number; op: "build"; result: FrameResult }
   | { id: number; op: "srgb8"; bytes: Uint8ClampedArray<ArrayBuffer> }
+  | { id: number; op: "luma"; data: Uint16Array<ArrayBuffer> }
   | { id: number; op: "profile"; frame: HalfFrame }
   | { id: number; op: "error"; message: string };
 
@@ -192,12 +195,31 @@ export function toSrgb8(data: Float32Array): Uint8ClampedArray<ArrayBuffer> {
   return out;
 }
 
+/** The linear luminance of an RGBA float frame, one binary16 pattern per pixel,
+ *  with the weights of the shader's luma(). Negative sums clamp to 0, values
+ *  above 1.0 stay, and a NaN channel counts as 0. */
+export function lumaHalves(data: Float32Array): Uint16Array<ArrayBuffer> {
+  const out = new Uint16Array(data.length >> 2);
+  for (let p = 0, o = 0; p < out.length; p++, o += 4) {
+    const r = data[o];
+    const g = data[o + 1];
+    const b = data[o + 2];
+    const y = 0.2126 * (r === r ? r : 0) + 0.7152 * (g === g ? g : 0) + 0.0722 * (b === b ? b : 0);
+    out[p] = halfBits(y > 0 ? y : 0);
+  }
+  return out;
+}
+
 /** One message of the frame worker: its reply, and the buffers that go with it. */
 export function handleFrameRequest(req: SyncFrameRequest): { reply: FrameReply; transfer: Transferable[] } {
   try {
     if (req.op === "srgb8") {
       const bytes = toSrgb8(req.data);
       return { reply: { id: req.id, op: "srgb8", bytes }, transfer: [bytes.buffer] };
+    }
+    if (req.op === "luma") {
+      const data = lumaHalves(req.data);
+      return { reply: { id: req.id, op: "luma", data }, transfer: [data.buffer] };
     }
     const result = buildFrame(req.job);
     const transfer: Transferable[] = [];

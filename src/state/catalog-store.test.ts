@@ -1060,6 +1060,20 @@ describe("rotatePhotos", () => {
     expect(store.rows.get("a")?.rotation).toBe(90);
   });
 
+  // A turn moves no photo in the catalogue, so a grid sorted by name or date
+  // keeps its order instead of filtering and sorting every photo again.
+  it("keeps the catalogue's structure and counts the fields a turn changes", async () => {
+    const before = [previewed("a"), photo("b")];
+    useCatalogStore.setState({ photos: before });
+
+    await state().rotatePhotos(["a"], 90);
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["rotation"])).toBe(1);
+    expect(fieldChanges(state().photos, ["width", "height"])).toBe(2);
+    expect(fieldChanges(state().photos, ["rating", "filename"])).toBe(0);
+  });
+
   it("accumulates turns and keeps the angle in 0–359", async () => {
     useCatalogStore.setState({ photos: [photo("a", { rotation: 270 })] });
 

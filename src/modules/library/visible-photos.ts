@@ -118,6 +118,69 @@ export function orderFieldsRead(
   return fields;
 }
 
+interface Keyed {
+  photo: CatalogPhoto;
+  /** sortValue of the photo; unused under an extension's comparator. */
+  key: number | string;
+}
+
+type PhotoCompare = (a: CatalogPhoto, b: CatalogPhoto) => number;
+
+/** The grid's order: the sort's key (or an extension's comparator), then the
+ *  import date, in the toolbar's direction. Zero for photos it can't tell apart,
+ *  which keep the catalogue's order. */
+function orderCompare(sortDir: SortDirection, customCompare: PhotoCompare | undefined) {
+  const dir = sortDir === "asc" ? 1 : -1;
+  return (a: Keyed, b: Keyed): number => {
+    let c: number;
+    if (customCompare) {
+      c = customCompare(a.photo, b.photo);
+    } else {
+      c =
+        typeof a.key === "string" && typeof b.key === "string"
+          ? a.key.localeCompare(b.key)
+          : (a.key as number) - (b.key as number);
+    }
+    if (c === 0) c = a.photo.dateImported - b.photo.dateImported; // stable tiebreak
+    return c * dir;
+  };
+}
+
+/** How many of `shown` come before `photo` in the order visibleOrder gives
+ *  `photos` with no filter: where a photo the filter has dropped would sit among
+ *  the ones still shown (the grid's list, in any order). One pass over `shown`,
+ *  in place of sorting `photos` to find out. -1 when the folder scope leaves
+ *  `photo` out. */
+export function placeAmongShown(
+  photos: CatalogPhoto[],
+  photo: CatalogPhoto,
+  shown: readonly CatalogPhoto[],
+  sortField: string,
+  sortDir: SortDirection,
+  folder: string | null,
+  customCompare?: PhotoCompare,
+): number {
+  if (folder !== null && !inFolder(photo, folder, getSettings().showSubfolderPhotos)) return -1;
+  const compare = orderCompare(sortDir, customCompare);
+  const keyed = (p: CatalogPhoto): Keyed => ({
+    photo: p,
+    key: customCompare ? 0 : sortValue(p, sortField),
+  });
+  const target = keyed(photo);
+  // Only photos the sort can't tell apart need their place in the catalogue.
+  let places: Map<CatalogPhoto, number> | undefined;
+  const placeOf = (p: CatalogPhoto): number => {
+    places ??= new Map(photos.map((q, i) => [q, i]));
+    return places.get(p) ?? -1;
+  };
+  let before = 0;
+  for (const p of shown) {
+    const c = compare(keyed(p), target);
+    if (c < 0 || (c === 0 && placeOf(p) < placeOf(photo))) before++;
+  }
+  return before;
+}
+
 /** visiblePhotos as indices into `photos`: the photos the grid shows, in order. */
 export function visibleOrder(
   photos: CatalogPhoto[],
@@ -131,11 +194,10 @@ export function visibleOrder(
   predicates: readonly ((p: CatalogPhoto) => boolean)[] = [],
   // Ascending comparator for an extension-contributed sort; when given it
   // replaces the built-in field comparator (direction + tiebreak still apply).
-  customCompare?: (a: CatalogPhoto, b: CatalogPhoto) => number,
+  customCompare?: PhotoCompare,
 ): number[] {
-  const dir = sortDir === "asc" ? 1 : -1;
   const subfolders = folder !== null && getSettings().showSubfolderPhotos;
-  const shown: { index: number; photo: CatalogPhoto; key: number | string }[] = [];
+  const shown: (Keyed & { index: number })[] = [];
   photos.forEach((p, index) => {
     if (
       (folder === null || inFolder(p, folder, subfolders)) &&
@@ -146,19 +208,7 @@ export function visibleOrder(
     }
   });
   // Keys are computed once per photo, not once per comparison.
-  shown.sort((a, b) => {
-    let c: number;
-    if (customCompare) {
-      c = customCompare(a.photo, b.photo);
-    } else {
-      c =
-        typeof a.key === "string" && typeof b.key === "string"
-          ? a.key.localeCompare(b.key)
-          : (a.key as number) - (b.key as number);
-    }
-    if (c === 0) c = a.photo.dateImported - b.photo.dateImported; // stable tiebreak
-    return c * dir;
-  });
+  shown.sort(orderCompare(sortDir, customCompare));
   return shown.map((s) => s.index);
 }
 

@@ -22,6 +22,7 @@ import {
 } from "@/catalog/types";
 import type { ProcessingStageContribution, StagePass } from "@/extensions/types";
 import { encodeHalf } from "@/raw/half-float";
+import { LIVE_MASK_COPY_PREPASSES } from "./mask-stage-instances";
 import type { WebGLRenderer, WebGLRendererOpts } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
@@ -360,6 +361,223 @@ describe("kept passes in masks", () => {
     });
     expect(frames.map((f) => f.draws)).toEqual([18, 2, 2]);
     expect(differing(frames[2].frame, fresh(stages(), { bag: {}, masks: both }))).toBe(0);
+  });
+});
+
+// A copy whose passes would be given what its stage's are given reads what the
+// stage's passes drew: its result when every pass matches, its checkpoint when
+// the passes up to a kept one do. Where the mask covers fully the copy shows its
+// own result, so those pixels show what it drew or read; the same scene with the
+// stage off makes the copy draw everything itself.
+describe("a mask copy given its stage's pass values", () => {
+  const right: MaskComponent = { id: "right", kind: "linear", mode: "add", invert: false, linear: { x0: 0.5, y0: 0, x1: 0.5001, y1: 0 } };
+  const maskOf = (id: string, bag: Record<string, unknown>): Mask => ({
+    id,
+    name: id,
+    visible: true,
+    invert: false,
+    opacity: 100,
+    adj: defaultMaskAdjustments(),
+    panels: [],
+    components: [right],
+    bag,
+  });
+  const stages = () => [...masksStagesFor(CURRENT_PROCESS_VERSION), keepStage({ maskable: true })];
+  /** Pixels in the columns the mask covers fully that differ. */
+  const differingCovered = (a: Frame, b: Frame): number => {
+    let n = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = W / 2 + 3; x < W; x++) {
+        for (let c = 0; c < 4; c++) if (a.data[(y * W + x) * 4 + c] !== b.data[(y * W + x) * 4 + c]) n++;
+      }
+    }
+    return n;
+  };
+  /** The scene's first frame on a live renderer, its pass draws and the textures it holds after. */
+  function firstFrame(scene: Scene, opts: WebGLRendererOpts = { keepPassCheckpoints: true }) {
+    const tally = trackGlObjects(glHarness().gl);
+    try {
+      return onRenderer(
+        stages(),
+        (r) => {
+          setScene(r, scene);
+          const shot = capture(r);
+          return { ...shot, textures: tally.live.texture, overflowed: r.overflowedStages };
+        },
+        opts,
+      );
+    } finally {
+      tally.restore();
+    }
+  }
+  const apart = (masks: Mask[]) => firstFrame({ bag: {}, masks });
+
+  it("reads the stage's result when every pass matches: no draw and no target of its own, the same pixels", () => {
+    const shared = firstFrame({ bag: BAG, masks: [maskOf("a", BAG)] });
+    const alone = firstFrame({ bag: BAG, masks: [maskOf("a", {})] });
+    expect(shared.draws).toBe(9);
+    expect(shared.textures).toBe(alone.textures);
+    expect(differingCovered(shared.frame, apart([maskOf("a", BAG)]).frame)).toBe(0);
+  });
+
+  it("resumes from the stage's checkpoint when the passes up to it match, keeping none of its own", () => {
+    const later = { ...BAG, [`${ID}.u2`]: 0.25 };
+    const middle = { ...BAG, [`${ID}.u1`]: 0.25 };
+    const resumed = firstFrame({ bag: BAG, masks: [maskOf("a", later)] });
+    const fromFirst = firstFrame({ bag: BAG, masks: [maskOf("a", middle)] });
+    const alone = firstFrame({ bag: BAG, masks: [maskOf("a", {})] });
+    expect([resumed.draws, fromFirst.draws]).toEqual([9 + 2, 9 + 5]);
+    // Its result target, and no checkpoint.
+    expect(resumed.textures - alone.textures).toBe(1);
+    expect(differingCovered(resumed.frame, apart([maskOf("a", later)]).frame)).toBe(0);
+    expect(differingCovered(fromFirst.frame, apart([maskOf("a", middle)]).frame)).toBe(0);
+  });
+
+  it("draws its passes itself when a value of the first pass differs, or the stage is off", () => {
+    const first = { ...BAG, [`${ID}.u0`]: 0.5 };
+    expect(firstFrame({ bag: BAG, masks: [maskOf("a", first)] }).draws).toBe(18);
+    expect(apart([maskOf("a", BAG)]).draws).toBe(9);
+  });
+
+  it("draws everything itself in a frame that keeps no checkpoints, as an export, unless every pass matches", () => {
+    const later = { ...BAG, [`${ID}.u2`]: 0.25 };
+    expect(firstFrame({ bag: BAG, masks: [maskOf("a", later)] }, {}).draws).toBe(18);
+    expect(firstFrame({ bag: BAG, masks: [maskOf("a", BAG)] }, {}).draws).toBe(9);
+  });
+
+  it("takes no texture unit: more sharing copies than units all show, with no stage left out", () => {
+    const masks = Array.from({ length: 8 }, (_, i) => maskOf(`m${i}`, BAG));
+    const shared = firstFrame({ bag: BAG, masks });
+    expect(shared.overflowed).toEqual([]);
+    expect(shared.draws).toBe(9);
+    expect(differingCovered(shared.frame, apart([maskOf("a", BAG)]).frame)).toBe(0);
+  });
+
+  // The second frame the stage takes its copy's value and reads the copy's
+  // result; the third it moves on and draws from its own checkpoint.
+  it("follows its stage's values from frame to frame, sharing when they meet and drawing only what moved when they part", () => {
+    const later = { ...BAG, [`${ID}.u2`]: 0.25 };
+    const frames = onRenderer(
+      stages(),
+      (r) => {
+        const steps: Scene[] = [
+          { bag: BAG, masks: [maskOf("a", later)] },
+          { bag: later, masks: [maskOf("a", later)] },
+          { bag: BAG, masks: [maskOf("a", later)] },
+        ];
+        return steps.map((s) => {
+          setScene(r, s);
+          return capture(r);
+        });
+      },
+      { keepPassCheckpoints: true },
+    );
+    expect(frames.map((f) => f.draws)).toEqual([9 + 2, 0, 2]);
+    expect(differing(frames[1].frame, fresh(stages(), { bag: later, masks: [maskOf("a", later)] }))).toBe(0);
+    expect(differing(frames[2].frame, fresh(stages(), { bag: BAG, masks: [maskOf("a", later)] }))).toBe(0);
+  });
+});
+
+// The live view runs at most LIVE_MASK_COPY_PREPASSES copies' passes a frame and
+// puts the rest off; one put off with no result of its own shows nothing. No
+// mask may show nothing because sharing started or stopped, and dragging the
+// stage's value past its copies' costs no more draws than with copies that
+// never shared: the stage's result at the copies' value stays theirs.
+describe("sharing in the live view, with its copy budget", () => {
+  const right: MaskComponent = { id: "right", kind: "linear", mode: "add", invert: false, linear: { x0: 0.5, y0: 0, x1: 0.5001, y1: 0 } };
+  const maskOf = (i: number, bag: Record<string, unknown>): Mask => ({
+    id: `m${i}`,
+    name: `m${i}`,
+    visible: true,
+    invert: false,
+    opacity: 100,
+    adj: defaultMaskAdjustments(),
+    panels: [],
+    components: [right],
+    bag,
+  });
+  const stages = () => [...masksStagesFor(CURRENT_PROCESS_VERSION), keepStage({ maskable: true })];
+  const masksAt = (bag: Record<string, unknown>) => Array.from({ length: 6 }, (_, i) => maskOf(i, bag));
+  const at = (u2: number) => ({ ...BAG, [`${ID}.u2`]: u2 });
+  const LIVE = { keepPassCheckpoints: true, maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES };
+
+  /** Each scene drawn as a live frame: its pass draws and whether a copy was put off. */
+  function liveFrames(scenes: Scene[]): { draws: number; pending: boolean }[] {
+    return onRenderer(
+      stages(),
+      (r) =>
+        scenes.map((s) => {
+          setScene(r, s);
+          const before = r.renderDrawCounts.pass;
+          r.render();
+          return { draws: r.renderDrawCounts.pass - before, pending: r.prepassPending };
+        }),
+      LIVE,
+    );
+  }
+
+  it("keeps every mask shown and draws only the stage while its value is dragged away from six sharing copies and back", () => {
+    const copies = masksAt(BAG);
+    const frames = liveFrames([
+      { bag: BAG, masks: copies },
+      { bag: at(0.25), masks: copies },
+      { bag: at(0.3), masks: copies },
+      { bag: BAG, masks: copies },
+      { bag: at(0.25), masks: copies },
+    ]);
+    expect(frames).toEqual([
+      { draws: 9, pending: false },
+      { draws: 2, pending: false },
+      { draws: 2, pending: false },
+      { draws: 0, pending: false },
+      { draws: 2, pending: false },
+    ]);
+  });
+
+  it("costs what copies that never shared cost when the stage's value moves", () => {
+    const own = masksAt(at(0.5));
+    const frames = liveFrames([
+      { bag: BAG, masks: own },
+      { bag: BAG, masks: own },
+      { bag: at(0.25), masks: own },
+    ]);
+    // Six copies at one value draw once between them, from the stage's checkpoint.
+    expect(frames).toEqual([
+      { draws: 9 + 2, pending: false },
+      { draws: 0, pending: false },
+      { draws: 2, pending: false },
+    ]);
+  });
+
+  it("keeps every mask shown when the stage is turned off, and draws nothing when it comes back", () => {
+    const copies = masksAt(BAG);
+    const frames = liveFrames([
+      { bag: BAG, masks: copies },
+      { bag: {}, masks: copies },
+      { bag: BAG, masks: copies },
+    ]);
+    expect(frames).toEqual([
+      { draws: 9, pending: false },
+      { draws: 0, pending: false },
+      { draws: 0, pending: false },
+    ]);
+  });
+
+  it("shows what fresh renderers show after the copies part", () => {
+    const copies = masksAt(BAG);
+    const scene = { bag: at(0.25), masks: copies };
+    const parted = onRenderer(
+      stages(),
+      (r) => {
+        setScene(r, { bag: BAG, masks: copies });
+        r.render();
+        setScene(r, scene);
+        r.render();
+        return capture(r).frame;
+      },
+      LIVE,
+    );
+    expect(differing(parted, fresh(stages(), scene))).toBe(0);
   });
 });
 

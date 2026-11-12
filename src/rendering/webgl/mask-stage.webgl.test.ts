@@ -246,8 +246,10 @@ describe("a spatial stage in a mask", () => {
 
   describe("in more masks than a canvas frame runs", () => {
     const STEP = 1 / 64;
+    // Each mask a hair apart: copies at one value would draw once between them.
+    const apart = (value: number, i: number) => level(value + i * 1e-6);
     const masks = Array.from({ length: LIVE_MASK_COPY_PREPASSES + 2 }, (_, i) =>
-      mask(`m${i}`, level(STEP), { components: [EVERYWHERE] }),
+      mask(`m${i}`, apart(STEP, i), { components: [EVERYWHERE] }),
     );
     const live = { maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES };
 
@@ -282,7 +284,7 @@ describe("a spatial stage in a mask", () => {
         id: "spot", shape: "circle", mode: "heal", visible: true,
         dstX: 0.5, dstY: 0.5, srcX: 0.25, srcY: 0.25, radius: 0.1, feather: 0, opacity: 100,
       };
-      const brighter = masks.map((m) => ({ ...m, bag: level(0.08) }));
+      const brighter = masks.map((m, i) => ({ ...m, bag: apart(0.08, i) }));
       const version = CURRENT_PROCESS_VERSION;
       const stages = [...masksStagesFor(version), ...healStagesFor(version), LEVELLED];
       const frame = (shown: Mask[], retouch: RetouchSpot[], opts: WebGLRendererOpts) =>

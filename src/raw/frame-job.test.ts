@@ -10,7 +10,16 @@
 import { describe, expect, it } from "vitest";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { encodeCacheEntry } from "./cache-encode";
-import { SRGB_FROM_ACES, buildFrame, handleFrameRequest, linearOfCode, toSrgb8, type FrameJob } from "./frame-job";
+import { halfBits, halfToFloatTable } from "./half-float";
+import {
+  SRGB_FROM_ACES,
+  buildFrame,
+  handleFrameRequest,
+  linearOfCode,
+  lumaHalves,
+  toSrgb8,
+  type FrameJob,
+} from "./frame-job";
 
 /** The conversion as the adapter ran it inline, before it moved off the main thread. */
 function inlineFrame(job: FrameJob): Float32Array {
@@ -178,5 +187,68 @@ describe("handleFrameRequest", () => {
     const { reply } = handleFrameRequest({ id: 3, op: "build", job: job({ pixels: null as never }) });
 
     expect(reply).toEqual({ id: 3, op: "error", message: expect.any(String) });
+  });
+});
+
+describe("lumaHalves", () => {
+  const WEIGHTS = [0.2126, 0.7152, 0.0722];
+  const table = halfToFloatTable();
+
+  it("gives one half float per pixel", () => {
+    expect(lumaHalves(new Float32Array(7 * 4)).length).toBe(7);
+    expect(lumaHalves(new Float32Array(0)).length).toBe(0);
+  });
+
+  it("weights the channels as the shader's luma does and ignores alpha", () => {
+    const out = lumaHalves(Float32Array.from([1, 0, 0, 0.3, 0, 1, 0, 9, 0, 0, 1, -4, 0.5, 0.25, 0.125, 1]));
+
+    expect([...out]).toEqual([
+      halfBits(Math.fround(0.2126)),
+      halfBits(Math.fround(0.7152)),
+      halfBits(Math.fround(0.0722)),
+      halfBits(0.5 * WEIGHTS[0] + 0.25 * WEIGHTS[1] + 0.125 * WEIGHTS[2]),
+    ]);
+  });
+
+  it("gives 1 for white", () => {
+    expect(table[lumaHalves(Float32Array.from([1, 1, 1, 1]))[0]]).toBeCloseTo(1, 3);
+  });
+
+  it("clamps a negative sum to 0", () => {
+    const out = lumaHalves(Float32Array.from([-1, 0, 0, 1, 0, -0.5, 0.1, 1]));
+
+    expect([...out]).toEqual([0, 0]);
+  });
+
+  it("keeps values above 1.0", () => {
+    const out = lumaHalves(Float32Array.from([8, 8, 8, 1]));
+
+    expect(table[out[0]]).toBeCloseTo(8, 2);
+  });
+
+  it("counts a NaN channel as 0", () => {
+    const out = lumaHalves(Float32Array.from([NaN, 1, 0, 1, 0, NaN, 0, 1, NaN, NaN, NaN, 1]));
+
+    expect([...out]).toEqual([halfBits(WEIGHTS[1]), 0, 0]);
+  });
+});
+
+describe("handleFrameRequest luma", () => {
+  it("answers the halves lumaHalves gives and moves the result's buffer", () => {
+    const values = () => Float32Array.from([-1, 0.001, 0.18, 1, 2, 70000, 0.25, 1]);
+
+    const { reply, transfer } = handleFrameRequest({ id: 5, op: "luma", data: values() });
+
+    if (reply.op !== "luma") throw new Error("no luminance");
+    expect(reply.id).toBe(5);
+    expect(reply.data).toEqual(lumaHalves(values()));
+    expect(reply.data.length).toBe(2);
+    expect(transfer).toEqual([reply.data.buffer]);
+  });
+
+  it("answers a failure with its message", () => {
+    const { reply } = handleFrameRequest({ id: 6, op: "luma", data: null as never });
+
+    expect(reply).toEqual({ id: 6, op: "error", message: expect.any(String) });
   });
 });

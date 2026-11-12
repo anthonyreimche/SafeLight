@@ -440,7 +440,14 @@ export async function decodeRawFloatViaLibRaw(
     const bias = rawExposureBias(meta);
     const bits = pixels instanceof Uint16Array ? 16 : 8;
     const turn = request?.turn ? normalizeRotation(request.turn) : 0;
-    if (request?.signal?.aborted) return { failure: "aborted" };
+    // Abandoned while libraw ran: the frame is built only for a caller that
+    // took the decode over, and as that caller's, an opened photo's.
+    let waiting: DecodeRequest | undefined = request;
+    if (request?.signal?.aborted) {
+      const heir = request.heir?.();
+      if (!heir || heir.signal?.aborted) return { failure: "aborted" };
+      waiting = { ...request, signal: heir.signal, background: false };
+    }
     // Sigma Foveon (X3F) stacks three photodiodes per pixel, so its linear
     // pre-matrix output is legitimately channel-imbalanced — the frame worker's
     // Bayer-tuned colour check would false-reject valid X3F decodes.
@@ -455,7 +462,7 @@ export async function decodeRawFloatViaLibRaw(
         foveon: num((meta as Record<string, unknown>).is_foveon) > 0,
         cacheEdge: request?.cacheEdge,
       },
-      request,
+      waiting,
     );
     if ("rejected" in built) {
       console.warn("[libraw]", built.rejected);

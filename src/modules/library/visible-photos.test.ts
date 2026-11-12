@@ -14,6 +14,7 @@ import {
   isFilterActive,
   NO_FILTER,
   orderFieldsRead,
+  placeAmongShown,
   visiblePhotos,
   type LibraryFilter,
 } from "./visible-photos";
@@ -385,5 +386,73 @@ describe("orderFieldsRead", () => {
       ["dateImported", "flag", "folder", "keywords", "rating"],
     );
     expect(orderFieldsRead({ ...NO_FILTER, ratingOp: "eq" }, "other", null).sort()).toEqual(["dateImported", "rating"]);
+  });
+});
+
+// A photo the filter has dropped keeps a place among the shown ones: where it
+// would sit were it still shown. The count must agree with sorting the whole
+// catalogue and counting the shown photos ahead of it, whatever order `shown`
+// is handed over in (a collapsed stack's cover stands where another member did).
+describe("placeAmongShown", () => {
+  function reference(
+    photos: CatalogPhoto[],
+    target: CatalogPhoto,
+    shown: CatalogPhoto[],
+    sortField: string,
+    dir: "asc" | "desc",
+    folder: string | null,
+    compare?: (a: CatalogPhoto, b: CatalogPhoto) => number,
+  ): number {
+    const isShown = new Set(shown);
+    let before = 0;
+    for (const p of visiblePhotos(photos, NO_FILTER, sortField, dir, folder, [], compare)) {
+      if (p === target) return before;
+      if (isShown.has(p)) before++;
+    }
+    return -1;
+  }
+
+  // Small ranges on purpose: most pairs tie on the sort key, many on the date too.
+  function catalogue(seed: number): CatalogPhoto[] {
+    let state = seed;
+    const next = (n: number) => {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      return state % n;
+    };
+    return Array.from({ length: 60 }, (_, i) =>
+      photo({
+        id: `p${i}`,
+        filename: `IMG_${next(8)}.NEF`,
+        rating: next(3),
+        dateCreated: next(4),
+        dateImported: next(3),
+        folder: next(2) ? "2025" : "2026",
+      }),
+    );
+  }
+
+  const byRatingDown = (a: CatalogPhoto, b: CatalogPhoto) => b.rating - a.rating;
+
+  it.each([
+    ["filename", "asc", null, undefined],
+    ["filename", "desc", null, undefined],
+    ["rating", "asc", null, undefined],
+    ["dateCreated", "desc", "2025", undefined],
+    ["ext.rating", "asc", null, byRatingDown],
+    ["ext.rating", "desc", "2026", byRatingDown],
+  ] as const)("agrees with a full sort for %s %s in folder %s", (sortField, dir, folder, compare) => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const photos = catalogue(seed);
+      // Every third photo is dropped; the grid shows the rest of the folder,
+      // handed over backwards.
+      const shown = photos
+        .filter((p, i) => i % 3 !== 0 && (folder === null || p.folder === folder))
+        .reverse();
+      for (const target of photos.filter((_, i) => i % 3 === 0)) {
+        expect(placeAmongShown(photos, target, shown, sortField, dir, folder, compare)).toBe(
+          reference(photos, target, shown, sortField, dir, folder, compare),
+        );
+      }
+    }
   });
 });

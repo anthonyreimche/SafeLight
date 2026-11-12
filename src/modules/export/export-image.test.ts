@@ -102,10 +102,22 @@ const h = vi.hoisted(() => {
       if (FakeRenderer.stockError) throw FakeRenderer.stockError;
     }
 
-    setStageTextures() {
+    /** The stage textures it was handed, by reference as the export hands them. */
+    stageTextures: Record<string, unknown> = {};
+    /** The stage texture keys it held at each draw. */
+    drawnTextures: string[][] = [];
+    /** The keys of each setStageTextures call's bag, as handed over. */
+    handedTextures: string[][] = [];
+    setStageTextures(bag: Record<string, unknown>) {
       if (FakeRenderer.texturesError) throw FakeRenderer.texturesError;
+      this.stageTextures = bag;
+      this.handedTextures.push(Object.keys(bag));
     }
-    setOutputColorSpace() {}
+    /** Each setOutputColorSpace call's space. */
+    outputSpaces: string[] = [];
+    setOutputColorSpace(space: string) {
+      this.outputSpaces.push(space);
+    }
     setAsShotTemperature() {}
     setContributedParams(bag: Record<string, unknown>) {
       this.contributed.push(bag);
@@ -123,6 +135,7 @@ const h = vi.hoisted(() => {
       return this.images === FakeRenderer.overflowAtImage ? ["x"] : [];
     }
     private draw(): void {
+      this.drawnTextures.push(Object.keys(this.stageTextures));
       if (this.images === FakeRenderer.loseContextAtImage) this.lost = true;
     }
     signedOutputFor(params: DevelopParams): boolean {
@@ -159,6 +172,10 @@ const h = vi.hoisted(() => {
   return {
     FakeRenderer,
     events,
+    /** The live stage-texture bag, as getStageTextures hands it out. */
+    stageTextures: {} as Record<string, unknown>,
+    /** needStageVariants: what a frame of a bag waits for, or null for nothing. */
+    needVariants: (_bag: Record<string, unknown>): Promise<{ failure: string | null; release(): void }> | null => null,
     /** The 8-bit encode steps, in order: "canvasToBlob:<type>", "embedColorProfile". */
     encodes: [] as string[],
     /** The crop every photo's geometry reports, or null for the edit's own. */
@@ -169,6 +186,8 @@ const h = vi.hoisted(() => {
     closed: [] as string[],
     /** How long, in ms, decoding a photo id takes; none decodes at once. */
     decodeDelays: new Map<string, number>(),
+    /** The long edge each decode was asked for, in order. */
+    minEdges: [] as (number | undefined)[],
     /** What getSettings returns: the persisted Preferences. */
     settings: {} as Record<string, unknown>,
     /** Each range read of a source file, as [start, end). */
@@ -212,15 +231,19 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("@/rendering/webgl/renderer", () => ({ WebGLRenderer: h.FakeRenderer }));
-vi.mock("@/rendering/render-bridge", () => ({ getStageTextures: () => ({}) }));
+vi.mock("@/rendering/render-bridge", () => ({
+  getStageTextures: () => h.stageTextures,
+  needStageVariants: (bag: Record<string, unknown>) => h.needVariants(bag),
+}));
 const blameLostContext = vi.hoisted(() => vi.fn((): string[] => []));
 vi.mock("@/rendering/gpu-crash-guard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/rendering/gpu-crash-guard")>()),
   blameLostContext,
 }));
 vi.mock("@/catalog/load-image", () => ({
-  loadPhotoImage: async (photo: CatalogPhoto) => {
+  loadPhotoImage: async (photo: CatalogPhoto, opts?: { minEdge?: number }) => {
     h.events.push(`decode:${photo.id}`);
+    h.minEdges.push(opts?.minEdge);
     const delay = h.decodeDelays.get(photo.id);
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     return h.decoded.get(photo.id) ?? null;
@@ -281,6 +304,18 @@ vi.mock("@/project/native-fs", () => ({
   nativeFs: () => h.nativeFs,
   nativePathOf: (handle: { path?: string } | null) => handle?.path ?? null,
 }));
+// Holds on a library source's kept originals, each with how far h.events had got.
+const holds = vi.hoisted(() => ({ log: [] as { event: string; at: number }[] }));
+vi.mock("@/project/library-sources", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/project/library-sources")>()),
+  holdSourceOriginals: (handles: readonly unknown[]) => {
+    const names = handles.flatMap((handle) => (handle ? [(handle as { name: string }).name] : []));
+    for (const name of names) holds.log.push({ event: `hold:${name}`, at: h.events.length });
+    return () => {
+      for (const name of names) holds.log.push({ event: `release:${name}`, at: h.events.length });
+    };
+  },
+}));
 vi.mock("@/state/catalog-store", () => ({ useCatalogStore: { getState: () => ({ photos: h.catalog }) } }));
 vi.mock("./sharpen", () => ({
   applyOutputSharpening: (source: HTMLCanvasElement, amount: number, radius: number) => {
@@ -295,6 +330,8 @@ import {
   getDefaultExportSettings,
   proPhotoAt8Bit,
   renderPhotosToBlobs,
+  type ExportJob,
+  type ExportProgress,
   type ExportResult,
   type ExportSettings,
   type RenderPhotosOptions,
@@ -364,6 +401,8 @@ beforeEach(() => {
   h.FakeRenderer.loseContextAtImage = null;
   h.FakeRenderer.overflowAtImage = null;
   h.FakeRenderer.driverBuildMs = 0;
+  h.stageTextures = {};
+  h.needVariants = () => null;
   blameLostContext.mockClear();
   h.cropRegion = null;
   h.embedFails = false;
@@ -375,6 +414,7 @@ beforeEach(() => {
   h.encodes.length = 0;
   h.closed.length = 0;
   h.decodeDelays.clear();
+  h.minEdges.length = 0;
   h.settings = {};
   h.edits.clear();
   h.decoded.clear();
@@ -628,6 +668,55 @@ describe("a rendered batch", () => {
     expect(h.FakeRenderer.instances[0].contributed).toEqual([
       { "own.stage.x": 1, "own.stage.mode": 1, ...denoiseBag(CURRENT) },
     ]);
+  });
+
+  it("waits for the stage texture variants a photo's bag names, draws with them, then lets go", async () => {
+    h.bags.set("a", { "own.stage.tex": "v1" });
+    const events: string[] = [];
+    h.needVariants = (bag) =>
+      bag["own.stage.tex"] === "v1"
+        ? new Promise((done) =>
+            setTimeout(() => {
+              h.stageTextures["own.stage.tex#v1"] = { width: 1 };
+              done({
+                failure: null,
+                release: () => events.push(`released after ${h.FakeRenderer.instances[0].drawnTextures.length} draws`),
+              });
+            }),
+          )
+        : null;
+    const result = await exportPhotos([photo("a")], FOLDER, undefined, folder);
+    expect(result.failed).toEqual([]);
+    const [renderer] = h.FakeRenderer.instances;
+    expect(renderer.drawnTextures).toEqual([["own.stage.tex#v1"]]);
+    expect(events).toEqual(["released after 1 draws"]);
+  });
+
+  // The batch renderer is handed the bag by reference once; a variant let go of
+  // since is only freed on the GPU when it is handed the bag again.
+  it("hands the renderer the stage textures again for each photo that waited on variants", async () => {
+    h.edits.set("b", CURRENT);
+    h.decoded.set("b", { kind: "bitmap", bitmap: { width: 600, height: 400, close: () => undefined } as unknown as ImageBitmap });
+    h.bags.set("a", { "own.stage.tex": "v1" });
+    h.bags.set("b", { "own.stage.tex": "v2" });
+    h.needVariants = (bag) => {
+      const name = String(bag["own.stage.tex"]);
+      delete h.stageTextures["own.stage.tex#v1"];
+      h.stageTextures[`own.stage.tex#${name}`] = { width: 1 };
+      return Promise.resolve({ failure: null, release: () => undefined });
+    };
+    await exportPhotos([photo("a"), photo("b")], FOLDER, undefined, folder);
+    expect(h.FakeRenderer.instances[0].handedTextures.slice(-2)).toEqual([["own.stage.tex#v1"], ["own.stage.tex#v2"]]);
+  });
+
+  it("fails a photo whose stage texture variant can't be had, saying why, and draws nothing for it", async () => {
+    h.bags.set("a", { "own.stage.tex": "v1" });
+    const released = vi.fn();
+    h.needVariants = async () => ({ failure: "Calibration couldn't make what this photo needs: the master is gone", release: released });
+    const result = await exportPhotos([photo("a")], FOLDER, undefined, folder);
+    expect(result.failures).toEqual([{ filename: "a.RAF", reason: "Calibration couldn't make what this photo needs: the master is gone" }]);
+    expect(h.FakeRenderer.instances[0].drawnTextures).toEqual([]);
+    expect(released).toHaveBeenCalledTimes(1);
   });
 
   it("renders a photo's own params without a patch", async () => {
@@ -1559,9 +1648,14 @@ describe("a rendered batch", () => {
       },
     };
     const processorSettings = { other: { secret: "token" } };
-    await exportPhotos([photo("a")], { ...FOLDER, processorSettings, filenameTemplateId: "t", ifExists: "replace" }, undefined, folder);
+    await exportPhotos(
+      [photo("a")],
+      { ...FOLDER, processorSettings, filenameTemplateId: "t", filenameTemplate: "{filename}_x", ifExists: "replace" },
+      undefined,
+      folder,
+    );
     expect(seen).toHaveLength(1);
-    for (const hidden of ["processorSettings", "delivery", "bundle", "filenameTemplateId", "ifExists"])
+    for (const hidden of ["processorSettings", "delivery", "bundle", "filenameTemplateId", "filenameTemplate", "ifExists"])
       expect(seen[0]).not.toHaveProperty(hidden);
   });
 
@@ -1605,6 +1699,17 @@ describe("a rendered batch", () => {
     };
     await exportPhotos([photo("a")], FOLDER, undefined, folder);
     expect(written).toEqual(["a.avif"]);
+  });
+
+  it("names the files by a template handed in with the settings", async () => {
+    const dated: CatalogPhoto = { ...photo("a"), exif: { dateTimeOriginal: "2026:03:04 10:00:00" } };
+    await exportPhotos([dated], { ...FOLDER, filenameTemplate: "{year}-{filename}_web" }, undefined, folder);
+    expect(written).toEqual(["2026-a_web.jpg"]);
+  });
+
+  it("names the files by their base name when the handed-in template is empty", async () => {
+    await exportPhotos([photo("a")], { ...FOLDER, filenameTemplate: "" }, undefined, folder);
+    expect(written).toEqual(["a.jpg"]);
   });
 });
 
@@ -2482,5 +2587,303 @@ describe("the export status line", () => {
         "2 exported at reduced 16-bit precision (device can't render full precision). " +
         "ZIP exceeded 4 GiB; delivered as individual files.",
     );
+  });
+});
+
+// One selection exported several ways (an archive TIFF, a web JPEG): each
+// photo is decoded once and drawn once per job, instead of once per export.
+describe("an export with several jobs", () => {
+  const canvas = {
+    width: 600,
+    height: 400,
+    toBlob: (done: BlobCallback, type: string) => done(new Blob(["img"], { type })),
+    getContext: () => null,
+  };
+  /** A folder that records the names it writes; `failAt` writes (from 1) throw `failure`. */
+  function folder(failAt: number[] = [], failure?: Error) {
+    const written: string[] = [];
+    let writes = 0;
+    const dir = {
+      written,
+      getFileHandle: emptyFolder(async (name: string) => ({
+        createWritable: async () => ({
+          write: async () => {
+            if (failAt.includes(++writes)) throw failure;
+            written.push(name);
+          },
+          close: async () => undefined,
+          abort: async () => undefined,
+        }),
+      })),
+      removeEntry: async () => undefined,
+    };
+    return dir as unknown as FileSystemDirectoryHandle & { written: string[] };
+  }
+  const FOLDER: ExportSettings = { ...SETTINGS, delivery: "folder" };
+  const decodes = () => h.events.filter((e) => e.startsWith("decode:"));
+  const drawsAndCloses = () => h.events.filter((e) => e === "setImage" || e.startsWith("close:"));
+  const ab = () => [photo("a"), photo("b")];
+
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: () => canvas });
+    for (const id of ["a", "b"]) {
+      h.edits.set(id, CURRENT);
+      h.decoded.set(id, {
+        kind: "bitmap",
+        bitmap: { width: 600, height: 400, close: () => void h.events.push(`close:${id}`) } as unknown as ImageBitmap,
+      });
+    }
+  });
+
+  it("decodes a photo again for each separate export", async () => {
+    await exportPhotos([photo("a")], FOLDER, undefined, folder());
+    await exportPhotos([photo("a")], FOLDER, undefined, folder());
+    expect(decodes()).toEqual(["decode:a", "decode:a"]);
+  });
+
+  it("decodes each photo once, draws it once per job and closes it after its last draw", async () => {
+    const archive = folder();
+    const web = folder();
+    const jobs: ExportJob[] = [
+      { settings: { ...FOLDER, format: "image/webp" }, destDir: archive },
+      { settings: { ...FOLDER, longEdge: 300, filenameTemplate: "{filename}_web" }, destDir: web },
+    ];
+    const results = await exportPhotos(ab(), jobs);
+
+    expect(decodes()).toEqual(["decode:a", "decode:b"]);
+    expect(drawsAndCloses()).toEqual(["setImage", "setImage", "close:a", "setImage", "setImage", "close:b"]);
+    expect(h.FakeRenderer.instances).toHaveLength(1);
+    expect(h.FakeRenderer.instances[0].uploads.map((u) => u.maxEdge)).toEqual([600, 300, 600, 300]);
+    expect(archive.written).toEqual(["a.webp", "b.webp"]);
+    expect(web.written).toEqual(["a_web.jpg", "b_web.jpg"]);
+    expect(results).toEqual([
+      { exported: 2, failed: [], degradedTo8Bit: 0, reducedPrecision: 0, zipFellBack: false },
+      { exported: 2, failed: [], degradedTo8Bit: 0, reducedPrecision: 0, zipFellBack: false },
+    ]);
+  });
+
+  it("decodes at the largest size any job asks for", async () => {
+    await exportPhotos([photo("a")], [
+      { settings: { ...FOLDER, longEdge: 1024 }, destDir: folder() },
+      { settings: { ...FOLDER, longEdge: 2048 }, destDir: folder() },
+    ]);
+    expect(h.minEdges).toEqual([2048]);
+
+    h.minEdges.length = 0;
+    await exportPhotos([photo("a")], [
+      { settings: { ...FOLDER, longEdge: 1024 }, destDir: folder() },
+      { settings: FOLDER, destDir: folder() },
+    ]);
+    expect(h.minEdges).toEqual([Infinity]);
+  });
+
+  it("draws each job in its own colour space", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    h.embedFails = true;
+    await exportPhotos(ab(), [
+      { settings: { ...FOLDER, colorSpace: "display-p3" }, destDir: folder() },
+      { settings: FOLDER, destDir: folder() },
+    ]);
+    const spaces = h.FakeRenderer.instances[0].outputSpaces;
+    expect(spaces.slice(-4)).toEqual(["display-p3", "srgb", "display-p3", "srgb"]);
+  });
+
+  it("reads a photo's metadata once when any job carries it", async () => {
+    const withFile = (id: string): CatalogPhoto => ({
+      ...photo(id),
+      fileHandle: { name: `${id}.RAF` } as unknown as FileSystemFileHandle,
+    });
+    await exportPhotos(["a", "b"].map(withFile), [
+      { settings: FOLDER, destDir: folder() },
+      { settings: { ...FOLDER, includeMetadata: true }, destDir: folder() },
+      { settings: { ...FOLDER, includeMetadata: true }, destDir: folder() },
+    ]);
+    expect(h.sliceReads.map((r) => r.name)).toEqual(["a.RAF", "b.RAF"]);
+  });
+
+  it("counts progress file by file across the jobs, naming the job", async () => {
+    const seen: ExportProgress[] = [];
+    await exportPhotos(ab(), [{ settings: FOLDER, destDir: folder() }, { settings: FOLDER, destDir: folder() }], (p) =>
+      seen.push(p),
+    );
+    expect(seen).toEqual([
+      { done: 1, total: 4, filename: "a.RAF", job: 0 },
+      { done: 2, total: 4, filename: "a.RAF", job: 1 },
+      { done: 3, total: 4, filename: "b.RAF", job: 0 },
+      { done: 4, total: 4, filename: "b.RAF", job: 1 },
+    ]);
+  });
+
+  it("names no job in a single export's progress", async () => {
+    const seen: ExportProgress[] = [];
+    await exportPhotos([photo("a")], FOLDER, (p) => seen.push(p), folder());
+    expect(seen).toEqual([{ done: 1, total: 1, filename: "a.RAF" }]);
+  });
+
+  it("stops a job whose folder fills up and goes on with the others", async () => {
+    const full = folder([1], new Error("Error invoking remote method 'fs:write': Error: ENOSPC: no space left on device"));
+    const fine = folder();
+    const results = await exportPhotos(ab(), [
+      { settings: FOLDER, destDir: full },
+      { settings: FOLDER, destDir: fine },
+    ]);
+
+    expect(results[0]).toMatchObject({ exported: 0, failed: ["a.RAF"], stopped: "the disk is full" });
+    expect(results[1]).toMatchObject({ exported: 2, failed: [] });
+    expect(results[1].stopped).toBeUndefined();
+    expect(fine.written).toEqual(["a.jpg", "b.jpg"]);
+    expect(drawsAndCloses()).toEqual(["setImage", "setImage", "close:a", "setImage", "close:b"]);
+  });
+
+  it("decodes no more once every job has stopped", async () => {
+    const full = () => folder([1], new Error("Error invoking remote method 'fs:write': Error: EROFS: read-only file system"));
+    const results = await exportPhotos([photo("a"), photo("b"), { ...photo("c") }], [
+      { settings: FOLDER, destDir: full() },
+      { settings: FOLDER, destDir: full() },
+    ]);
+    expect(results.map((r) => r.stopped)).toEqual(["the folder is read-only", "the folder is read-only"]);
+    expect(h.events.filter((e) => e === "setImage")).toHaveLength(2);
+    expect(decodes()).not.toContain("decode:c");
+  });
+
+  it("stops every job before its next file when cancelled", async () => {
+    const run = new AbortController();
+    const results = await exportPhotos(
+      ab(),
+      [{ settings: FOLDER, destDir: folder() }, { settings: FOLDER, destDir: folder() }],
+      ({ done }) => done === 1 && run.abort(),
+      { signal: run.signal },
+    );
+    expect(results).toEqual([
+      { exported: 1, failed: [], degradedTo8Bit: 0, reducedPrecision: 0, zipFellBack: false, cancelled: true },
+      { exported: 0, failed: [], degradedTo8Bit: 0, reducedPrecision: 0, zipFellBack: false, cancelled: true },
+    ]);
+    expect(h.events.filter((e) => e === "setImage")).toHaveLength(1);
+    await vi.waitFor(() => expect(h.events.filter((e) => e.startsWith("close:"))).toEqual(["close:a", "close:b"]));
+    expect(h.FakeRenderer.instances[0].disposed).toBe(true);
+  });
+
+  it("stops every job when the graphics driver resets", async () => {
+    h.FakeRenderer.loseContextAtImage = 2;
+    const first = folder();
+    const results = await exportPhotos(ab(), [
+      { settings: FOLDER, destDir: first },
+      { settings: FOLDER, destDir: folder() },
+    ]);
+    const LOST = "the graphics driver reset";
+    expect(results[0]).toMatchObject({ exported: 1, stopped: LOST });
+    expect(results[1]).toMatchObject({ exported: 0, failed: ["a.RAF"], stopped: LOST });
+    expect(first.written).toEqual(["a.jpg"]);
+    expect(blameLostContext).toHaveBeenCalledTimes(1);
+    expect(decodes()).toEqual(["decode:a", "decode:b"]);
+    expect(h.events.filter((e) => e === "setImage")).toHaveLength(2);
+  });
+
+  it("fails every photo of every job when no renderer can be made", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    h.FakeRenderer.createError = new Error("no WebGL2");
+    const results = await exportPhotos(ab(), [
+      { settings: FOLDER, destDir: folder() },
+      { settings: FOLDER, destDir: folder() },
+    ]);
+    expect(results.map((r) => r.failed)).toEqual([
+      ["a.RAF", "b.RAF"],
+      ["a.RAF", "b.RAF"],
+    ]);
+  });
+
+  it("does nothing for no jobs", async () => {
+    expect(await exportPhotos(ab(), [])).toEqual([]);
+    expect(h.FakeRenderer.instances).toEqual([]);
+    expect(decodes()).toEqual([]);
+  });
+});
+
+// A library source's kept originals stay while the export needs them, one photo
+// at a time: from its decode until its last job has drawn it, so the kept
+// originals' limit still holds during a large export. Whichever way the export
+// ends, nothing stays held.
+describe("an export's hold on kept originals", () => {
+  const canvas = {
+    width: 600,
+    height: 400,
+    toBlob: (done: BlobCallback, type: string) => done(new Blob(["img"], { type })),
+    getContext: () => null,
+  };
+  const folder = () =>
+    ({
+      getFileHandle: emptyFolder(async () => ({
+        createWritable: async () => ({ write: async () => undefined, close: async () => undefined, abort: async () => undefined }),
+      })),
+      removeEntry: async () => undefined,
+    }) as unknown as FileSystemDirectoryHandle;
+  const FOLDER: ExportSettings = { ...SETTINGS, delivery: "folder" };
+  const IDS = ["a", "b", "c", "d", "e"];
+  const withFile = (id: string): CatalogPhoto => ({
+    ...photo(id),
+    fileHandle: { name: `${id}.RAF` } as unknown as FileSystemFileHandle,
+  });
+  const at = (event: string) => holds.log.find((e) => e.event === event)?.at ?? -1;
+  const nth = (event: string, n: number) => h.events.reduce<number[]>((all, e, i) => (e === event ? [...all, i] : all), [])[n];
+  /** The most originals held at once, and how many are held at the end. */
+  function heldCounts() {
+    let held = 0;
+    let most = 0;
+    for (const { event } of holds.log) {
+      held += event.startsWith("hold:") ? 1 : -1;
+      most = Math.max(most, held);
+    }
+    return { most, left: held };
+  }
+
+  beforeEach(() => {
+    holds.log = [];
+    vi.stubGlobal("document", { createElement: () => canvas });
+    for (const id of IDS) {
+      h.edits.set(id, CURRENT);
+      h.decoded.set(id, {
+        kind: "bitmap",
+        bitmap: { width: 600, height: 400, close: () => void h.events.push(`close:${id}`) } as unknown as ImageBitmap,
+      });
+    }
+  });
+
+  it("holds each photo's from its decode until its last job has drawn it", async () => {
+    await exportPhotos(["a", "b"].map(withFile), [
+      { settings: FOLDER, destDir: folder() },
+      { settings: { ...FOLDER, longEdge: 300 }, destDir: folder() },
+    ]);
+    expect(at("hold:a.RAF")).toBeGreaterThanOrEqual(0);
+    expect(at("hold:b.RAF")).toBeGreaterThanOrEqual(0);
+    expect(at("hold:a.RAF")).toBeLessThanOrEqual(h.events.indexOf("decode:a"));
+    expect(at("hold:b.RAF")).toBeLessThanOrEqual(h.events.indexOf("decode:b"));
+    expect(at("release:a.RAF")).toBeGreaterThan(h.events.indexOf("close:a"));
+    expect(at("release:a.RAF")).toBeLessThanOrEqual(nth("setImage", 2));
+    expect(at("release:b.RAF")).toBeGreaterThan(h.events.indexOf("close:b"));
+    expect(heldCounts().left).toBe(0);
+  });
+
+  it("holds no more than the photo being drawn and those read ahead of it", async () => {
+    await exportPhotos(IDS.map(withFile), FOLDER, undefined, folder());
+    // Two decoded 24 MP photos fit the read-ahead budget, a third doesn't.
+    expect(heldCounts()).toEqual({ most: 2, left: 0 });
+  });
+
+  it("lets go of every one when the export is cancelled", async () => {
+    const stop = new AbortController();
+    await exportPhotos(IDS.map(withFile), [{ settings: FOLDER, destDir: folder() }], () => stop.abort(), {
+      signal: stop.signal,
+    });
+    expect(heldCounts().left).toBe(0);
+    expect(at("hold:e.RAF")).toBe(-1);
+  });
+
+  it("lets go of every one when the export throws", async () => {
+    const failing = exportPhotos(IDS.map(withFile), [{ settings: FOLDER, destDir: folder() }], () => {
+      throw new Error("the progress listener broke");
+    });
+    await expect(failing).rejects.toThrow("the progress listener broke");
+    expect(heldCounts().left).toBe(0);
+    expect(at("hold:e.RAF")).toBe(-1);
   });
 });

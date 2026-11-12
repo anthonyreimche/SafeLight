@@ -29,6 +29,7 @@ import {
   useInstalledPlugins,
   useRunningPlugins,
 } from "@/extensions/loader";
+import { holdSourceOriginals } from "@/project/library-sources";
 import { useDevelopStore } from "@/state/develop-store";
 import { showsEdit, standsForPhoto } from "@/state/fallback-rules";
 import { getSettings } from "@/state/settings-store";
@@ -103,6 +104,10 @@ export function useDevelopPhotoLoad({
   // so the view renders, and loads the photo again, as it moves.
   useSyncExternalStore(onInputProfilesChanged, inputProfileRevision);
   const sourceKey = photo ? photoSourceKey(photo) : undefined;
+
+  // A library source's photo keeps its kept original while it is open here.
+  const fileHandle = photo?.fileHandle;
+  useEffect(() => holdSourceOriginals([fileHandle]), [fileHandle]);
 
   // An edited photo's stored preview, its original out of reach (Fallback
   // "stored-edited"), shows the edit it was rendered with, so it is never a source: an
