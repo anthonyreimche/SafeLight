@@ -321,9 +321,11 @@ describe("DetailAsks: the renderer's detail requests", () => {
 
 // A stage that writes the colour ahead of the gain turns it off only while it
 // is at work on the photo: an extension merely installed must not cost every
-// photo its detail.
+// photo its detail, and extensions send every uniform a value on every frame.
 describe("rebuildsSource", () => {
+  const ca = { id: "ext.ca", defaults: { "ext.ca.amount": 0, "ext.ca.scale": 1, "ext.ca.curve": [0.5, 0.5] } };
   const fixed = { stageId: "ext.ca", passes: [{ iterations: 1 }] };
+  const denoise = { id: "ext.denoise", defaults: { "ext.denoise.draws": 0, "ext.denoise.threshold": 0.2 } };
   const counted = {
     stageId: "ext.denoise",
     passes: [{ iterations: 8, drawCount: { qualifiedKey: "ext.denoise.draws", max: 8, fallback: 0 } }],
@@ -334,19 +336,34 @@ describe("rebuildsSource", () => {
   });
 
   it("is false for a stage the photo holds no value of", () => {
-    expect(rebuildsSource(["ext.ca"], [fixed], {})).toBe(false);
-    expect(rebuildsSource(["ext.ca"], [fixed], { "ext.ca.amount": 0, "ext.other.amount": 5 })).toBe(false);
+    expect(rebuildsSource([ca], [fixed], {})).toBe(false);
+    expect(rebuildsSource([ca], [fixed], { "ext.other.amount": 5 })).toBe(false);
   });
 
-  it("is true once the photo holds a value of the stage's", () => {
-    expect(rebuildsSource(["ext.ca"], [fixed], { "ext.ca.amount": 0.4 })).toBe(true);
-    expect(rebuildsSource(["ext.ca"], [fixed], { "ext.ca.on": true })).toBe(true);
+  it("is false while every value is where its uniform starts, zero or not", () => {
+    const sent = { "ext.ca.amount": 0, "ext.ca.scale": 1, "ext.ca.curve": [0.5, 0.5] };
+    expect(rebuildsSource([ca], [fixed], sent)).toBe(false);
+    expect(rebuildsSource([ca], [fixed], { ...sent, "ext.ca.curve": new Float32Array([0.5, 0.5]) })).toBe(false);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.amount": false })).toBe(false);
+  });
+
+  it("is true once a value has moved from its start", () => {
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.amount": 0.4 })).toBe(true);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.scale": 0 })).toBe(true);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.curve": [0.5, 0.6] })).toBe(true);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.curve": [0.5] })).toBe(true);
+  });
+
+  it("counts a value with no declared start when it isn't zero or false", () => {
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.mystery": 0 })).toBe(false);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.mystery": 3 })).toBe(true);
+    expect(rebuildsSource([ca], [fixed], { "ext.ca.on": true })).toBe(true);
   });
 
   it("follows a counted pass's draws", () => {
-    expect(rebuildsSource(["ext.denoise"], [counted], {})).toBe(false);
-    expect(rebuildsSource(["ext.denoise"], [counted], { "ext.denoise.threshold": 0.2, "ext.denoise.draws": 0 })).toBe(false);
-    expect(rebuildsSource(["ext.denoise"], [counted], { "ext.denoise.draws": 3 })).toBe(true);
+    expect(rebuildsSource([denoise], [counted], {})).toBe(false);
+    expect(rebuildsSource([denoise], [counted], { "ext.denoise.threshold": 0.7, "ext.denoise.draws": 0 })).toBe(false);
+    expect(rebuildsSource([denoise], [counted], { "ext.denoise.draws": 3 })).toBe(true);
   });
 
   it("counts a default above zero as at work", () => {
@@ -354,16 +371,18 @@ describe("rebuildsSource", () => {
       stageId: "ext.sharpen",
       passes: [{ iterations: 4, drawCount: { qualifiedKey: "ext.sharpen.draws", max: 4, fallback: 2 } }],
     };
-    expect(rebuildsSource(["ext.sharpen"], [eager], {})).toBe(true);
+    expect(rebuildsSource([{ id: "ext.sharpen", defaults: { "ext.sharpen.draws": 2 } }], [eager], {})).toBe(true);
   });
 
   it("goes by the values alone for a stage with no passes", () => {
-    expect(rebuildsSource(["ext.inline"], [], {})).toBe(false);
-    expect(rebuildsSource(["ext.inline"], [], { "ext.inline.amount": 12 })).toBe(true);
+    const inline = { id: "ext.inline", defaults: { "ext.inline.amount": 50 } };
+    expect(rebuildsSource([inline], [], {})).toBe(false);
+    expect(rebuildsSource([inline], [], { "ext.inline.amount": 50 })).toBe(false);
+    expect(rebuildsSource([inline], [], { "ext.inline.amount": 12 })).toBe(true);
   });
 
   it("is false while the stage's dormant rule holds, and for a view-only stage", () => {
-    expect(rebuildsSource(["ext.ca"], [{ ...fixed, dormant: [] }], { "ext.ca.amount": 1 })).toBe(false);
-    expect(rebuildsSource(["ext.ca"], [{ ...fixed, viewOnly: true as const }], { "ext.ca.amount": 1 })).toBe(false);
+    expect(rebuildsSource([ca], [{ ...fixed, dormant: [] }], { "ext.ca.amount": 1 })).toBe(false);
+    expect(rebuildsSource([ca], [{ ...fixed, viewOnly: true as const }], { "ext.ca.amount": 1 })).toBe(false);
   });
 });

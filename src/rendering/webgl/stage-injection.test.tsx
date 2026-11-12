@@ -1533,11 +1533,35 @@ describe("rebuilders", () => {
   });
 
   it("names an extension's decode stage", () => {
-    expect(buildStageInjection([stage("ext.raw-denoise", "decode")], V2_VARIANT).rebuilders).toEqual(["ext.raw-denoise"]);
+    expect(buildStageInjection([stage("ext.raw-denoise", "decode")], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.raw-denoise", defaults: {} },
+    ]);
   });
 
   it("names an extension's noise-reduction stage", () => {
-    expect(buildStageInjection([stage("ext.wavelet", "noise-reduction")], V2_VARIANT).rebuilders).toEqual(["ext.wavelet"]);
+    expect(buildStageInjection([stage("ext.wavelet", "noise-reduction")], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.wavelet", defaults: {} },
+    ]);
+  });
+
+  it("leaves out a stage that keeps the photo's detail", () => {
+    const ca = { ...stage("ext.ca", "decode"), keepsDetail: true };
+    expect(buildStageInjection([ca, stage("ext.moire", "decode")], V2_VARIANT).rebuilders.map((r) => r.id)).toEqual([
+      "ext.moire",
+    ]);
+  });
+
+  it("carries where each uniform starts, under the bag's keys", () => {
+    const denoise: ProcessingStageContribution = {
+      ...stage("ext.denoise", "decode"),
+      uniforms: [
+        { key: "on", glslType: "float", default: 0 },
+        { key: "threshold", glslType: "float", default: 0.2 },
+      ],
+    };
+    expect(buildStageInjection([denoise], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.denoise", defaults: { "ext.denoise.on": 0, "ext.denoise.threshold": 0.2 } },
+    ]);
   });
 
   it("names no display stage, nor the built-in denoiser", () => {

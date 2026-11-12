@@ -163,7 +163,7 @@ const canvasOf = (container: HTMLElement) => container.querySelector("canvas")!;
 beforeEach(() => zoomSpy.mockClear());
 
 describe("a logical scale of 1, or none", () => {
-  it.each([undefined, 1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])(
+  it.each([undefined, 1, 0, -2, Number.NaN, Number.POSITIVE_INFINITY])(
     "fits and zooms by the buffer's pixels (logicalScale %s)",
     (logicalScale) => {
       const onViewport = vi.fn();
@@ -176,6 +176,43 @@ describe("a logical scale of 1, or none", () => {
       expect(onViewport).toHaveBeenLastCalledWith({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 }, 1500, 1000);
     },
   );
+});
+
+// The zoom counts device pixels: on a screen scaled 2x, 100% draws each buffer
+// pixel on one device pixel, half a CSS px, and the window is asked for at the
+// frame's device size.
+describe("a scaled screen", () => {
+  it("draws one buffer pixel per device pixel at zoom 1", () => {
+    const before = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    try {
+      const onViewport = vi.fn();
+      const view = render(<Placed zoom={null} onViewport={onViewport} />);
+      expect(canvasOf(view.container).style.transform).toBe("translate(0px, 0px) scale(0.5)");
+
+      view.rerender(<Placed zoom={2} onViewport={onViewport} />);
+      advance(200);
+      expect(canvasOf(view.container).style.transform).toBe("translate(-750px, -500px) scale(1)");
+      expect(onViewport).toHaveBeenLastCalledWith({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 }, 3000, 2000);
+    } finally {
+      if (before) Object.defineProperty(window, "devicePixelRatio", before);
+      else Reflect.deleteProperty(window, "devicePixelRatio");
+    }
+  });
+});
+
+// The buffer can hold more pixels than the logical image.
+describe("a logical scale under 1", () => {
+  it("fits the same on screen, and reaches the buffer's own pixels at twice the zoom", () => {
+    const onViewport = vi.fn();
+    const view = render(<Placed zoom={null} logicalScale={0.5} onViewport={onViewport} />);
+    expect(canvasOf(view.container).style.transform).toBe("translate(0px, 0px) scale(0.5)");
+
+    view.rerender(<Placed zoom={2} logicalScale={0.5} onViewport={onViewport} />);
+    advance(200);
+    expect(canvasOf(view.container).style.transform).toBe("translate(-750px, -500px) scale(1)");
+    expect(onViewport).toHaveBeenLastCalledWith({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 }, 1500, 1000);
+  });
 });
 
 describe("a logical scale of 2", () => {

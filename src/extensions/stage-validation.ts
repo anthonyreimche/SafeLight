@@ -471,6 +471,10 @@ export function checkStageContract(
       return fail('a viewOnly stage can\'t set reads: "current": the point it reads at is written into exports too');
   }
 
+  const keepsDetail: unknown = c.keepsDetail;
+  if (keepsDetail !== undefined && typeof keepsDetail !== "boolean")
+    return fail(`keepsDetail must be true or false, got ${formatValue(keepsDetail)}`);
+
   const mask: unknown = c.mask;
   if (mask !== undefined) {
     if (typeof mask !== "object" || mask === null || (mask as { maskable?: unknown }).maskable !== true) {

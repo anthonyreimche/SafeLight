@@ -926,6 +926,16 @@ export interface ProcessingStageContribution {
    *  Needs Safelight 3.2.4; older builds draw the stage everywhere. */
   viewOnly?: boolean;
 
+  /** For a stage in the decode or noise-reduction phase: its result keeps the
+   *  photo's own fine detail in place, as a chromatic-aberration or flat-field
+   *  correction does. With Dynamic render resolution, Develop then goes on
+   *  adding the full-size photo's detail to the zoomed-in view while the stage
+   *  is at work. Without it the detail is left off for that photo, because it
+   *  would put back what a denoiser or a moiré filter removed. Leave it out
+   *  for any stage that smooths or removes detail. Needs Safelight 3.2.4;
+   *  older builds ignore it. */
+  keepsDetail?: boolean;
+
   /** How this stage's params behave in presets. "global" (the default) is a
    *  look that applies to any photo — e.g. a film sim or a curve — so it is
    *  offered when saving a preset and pre-selected when changed. "per-image" is

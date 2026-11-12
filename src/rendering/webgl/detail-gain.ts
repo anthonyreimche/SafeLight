@@ -14,7 +14,7 @@ import type { FrameRect } from "@/raw/native-frame";
 import { mat3Apply, type Mat3 } from "../transform";
 import { stageDraws } from "./pass-draws";
 import { isDormant, paramIsActive } from "./stage-coverage";
-import type { PrepassPass, PrepassStage } from "./stage-injection";
+import type { PrepassPass, PrepassStage, Rebuilder } from "./stage-injection";
 
 /** A window of the view: fractions of the displayed (cropped) image. */
 export interface ViewWindow {
@@ -39,23 +39,40 @@ interface RebuildingStage extends Pick<PrepassStage, "stageId" | "dormant" | "vi
   passes: readonly Pick<PrepassPass, "iterations" | "drawCount">[];
 }
 
+const isTyped = (v: unknown): v is ArrayLike<number> => ArrayBuffer.isView(v) && !(v instanceof DataView);
+const listed = (v: unknown): unknown[] | null => (Array.isArray(v) ? v : isTyped(v) ? Array.from(v) : null);
+const plain = (v: unknown): unknown => (typeof v === "boolean" ? Number(v) : v);
+
+// Whether a bag value is the one its uniform starts at. Extensions hand every
+// uniform a value on every frame, so most of what a bag holds is this.
+function atStart(value: unknown, start: unknown): boolean {
+  const a = listed(value);
+  const b = listed(start);
+  if (a && b) return a.length === b.length && a.every((x, i) => plain(x) === plain(b[i]));
+  return !a && !b && plain(value) === plain(start);
+}
+
 /** Whether a stage that writes the colour ahead of the detail gain
- *  (BuiltStageInjection.rebuilders) is at work on a frame drawn from `bag`,
- *  by the rule the prepass runner starts a stage's passes with: its
- *  dormantWhen doesn't hold, or the bag holds a value of its own that isn't
- *  zero or false; and its passes draw at all. A stage with no passes has only
- *  its values to go by. An installed stage left untouched is not at work. */
+ *  (BuiltStageInjection.rebuilders) is at work on a frame drawn from `bag`:
+ *  its dormantWhen doesn't hold, or the bag holds a value of its own that has
+ *  moved from where its uniform starts (one with no declared start counts
+ *  when it isn't zero or false); and its passes draw at all. A stage with no
+ *  passes has only its values to go by. An installed stage left as it came is
+ *  not at work, whatever defaults its extension sends. */
 export function rebuildsSource(
-  rebuilders: readonly string[],
+  rebuilders: readonly Rebuilder[],
   stages: readonly RebuildingStage[],
   bag: Readonly<Record<string, unknown>>,
 ): boolean {
-  return rebuilders.some((id) => {
+  return rebuilders.some(({ id, defaults }) => {
     const stage = stages.find((s) => s.stageId === id);
     if (stage?.viewOnly) return false;
     if (stage?.dormant) return !isDormant(stage.dormant, bag) && stageDraws(stage, bag) > 0;
     const prefix = `${id}.`;
-    const touched = Object.entries(bag).some(([key, value]) => key.startsWith(prefix) && paramIsActive(value));
+    const touched = Object.entries(bag).some(([key, value]) => {
+      if (!key.startsWith(prefix)) return false;
+      return key in defaults ? !atStart(value, defaults[key]) : paramIsActive(value);
+    });
     if (!stage) return touched;
     const counted = stage.passes.some((pass) => pass.drawCount !== undefined);
     return (touched || counted) && stageDraws(stage, bag) > 0;

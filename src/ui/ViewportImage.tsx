@@ -54,11 +54,13 @@ interface ViewportImageProps {
   // window buffers coming, so they bring it.
   imageWidth?: number;
   imageHeight?: number;
-  zoom: number | null; // null = fit; number = scale (1 = one logical pixel per CSS px)
+  // null = fit; a number is the scale: 1 is one logical pixel per device pixel, as
+  // 100% is in other editors, whatever the display scaling.
+  zoom: number | null;
   onZoomChange: (zoom: number | null) => void;
   // How many logical pixels of the image one pixel of a whole-image buffer stands
   // for (Develop's Dynamic mode: the photo's own pixels over the source's). The zoom
-  // is measured in them. Under 1 or not finite counts as 1.
+  // is measured in them. Not positive or not finite counts as 1.
   logicalScale?: number;
   // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
   status?: string | null;
@@ -254,7 +256,10 @@ function ViewportImageView({
   }
   // Stable full-image dims: the dims captured from a whole buffer, falling back to
   // the live buffer until the first one lands, in logical pixels.
-  const scale = Number.isFinite(logicalScale) && logicalScale > 1 ? logicalScale : 1;
+  const dpr = useDevicePixelRatio();
+  // A logical pixel is a device pixel, so the view's CSS px hold fewer of them
+  // on a scaled display.
+  const scale = (Number.isFinite(logicalScale) && logicalScale > 0 ? logicalScale : 1) / dpr;
   const logicalW = (fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth) * scale;
   const logicalH = (fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight) * scale;
 
@@ -400,7 +405,6 @@ function ViewportImageView({
   // Emit the visible window (normalized image coords) + device-pixel output size
   // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
   // In fit mode (or without a handler) clear the ROI so the whole frame renders.
-  const dpr = useDevicePixelRatio();
   useEffect(() => {
     if (!onViewport || holdWindow) return;
     if (!windowed || !hasImage) {

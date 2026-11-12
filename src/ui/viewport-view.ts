@@ -4,8 +4,9 @@
 // be preserved in derived versions.
 
 // An image shown in a frame, in the frame's CSS px. The image is W×H at scale 1:
-// one of its logical pixels per CSS px (the whole-image buffer's, or more of them,
-// as ViewportImage's logicalScale gives).
+// one of its logical pixels per CSS px. ViewportImage sizes W×H so that is one
+// pixel of the whole-image buffer per device pixel (or more of them, as its
+// logicalScale gives).
 
 /** How the image sits in the frame: drawn at `scale`, its top-left corner at (x, y). */
 export interface View {

@@ -116,6 +116,7 @@ export function useNativeFrame(
         f.decode = null;
         if (result && !("miss" in result)) {
           holdNativeLuma(f.key, result);
+          console.info(`[dynamic] holding the photo's detail at ${result.width}×${result.height}`);
           f.held = { width: result.width, height: result.height };
           f.told = false;
           // Come while the source is loaded again, the renderer is told once it shows.
@@ -181,7 +182,12 @@ export function useNativeFrame(
         return;
       }
       cutNativeGain(want).then(
-        (gain) => bridge.setDetailGain(want.request, gain),
+        (gain) => {
+          console.info(
+            gain ? `[dynamic] detail for the view at ${gain.width}×${gain.height}` : "[dynamic] no detail for this view",
+          );
+          bridge.setDetailGain(want.request, gain);
+        },
         () => bridge.setDetailGain(want.request, null),
       );
     };

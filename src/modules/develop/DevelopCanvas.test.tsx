@@ -280,6 +280,26 @@ describe("DevelopCanvas's zoom in Dynamic mode", () => {
     expect(shownScale()).toBeCloseTo(6000 / 3072, 12);
   });
 
+  // 100% is one pixel per device pixel, as in other editors: on a screen scaled
+  // 2x that is half a CSS pixel, of the photo in Dynamic mode and of the buffer
+  // otherwise.
+  it.each([
+    ["the photo's pixels in Dynamic mode", true, 6000 / 3072 / 2],
+    ["the buffer's pixels at a fixed size", false, 1 / 2],
+  ])("measures %s against device pixels on a scaled screen", (_label, dynamic, factor) => {
+    const before = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    try {
+      useSettings.setState({ developDynamicDetail: dynamic });
+      useDevelopStore.setState({ sourceSize: SOURCE });
+      render(<DevelopCanvas photo={PHOTO} zoom={1} onZoomChange={() => {}} />);
+      expect(shownScale()).toBeCloseTo(factor, 12);
+    } finally {
+      if (before) Object.defineProperty(window, "devicePixelRatio", before);
+      else Reflect.deleteProperty(window, "devicePixelRatio");
+    }
+  });
+
   it("opens a photo at one photo pixel per CSS px when set to open at 100%", () => {
     useSettings.setState({ developDynamicDetail: true, developOpenZoom: "100" });
     useDevelopStore.setState({ sourceSize: SOURCE });

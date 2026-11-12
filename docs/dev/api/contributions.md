@@ -91,6 +91,7 @@ interface ProcessingStageContribution {
   consumes?: string[];        // values from earlier stages
   dormantWhen?: Record<string, number | number[] | boolean>; // 3.2.1, see below
   viewOnly?: boolean;         // 3.2.4: a view aid, see below
+  keepsDetail?: boolean;      // 3.2.4: keeps Dynamic's detail on, see below
 }
 
 interface UniformDeclaration {
@@ -287,6 +288,14 @@ A stage that declares `dormantWhen` is left out of the live view's develop progr
 - Declare it only where the stage is an exact no-op. Leaving a dormant stage out may differ from running it by float rounding, and nothing more.
 - The rule is ignored, with a warning, on `geometry` and `noise-reduction` stages, stages that `produces` values, and patch stages. It is also ignored on display stages without a `space`, whose input is clipped on version 2 photos, unless they are official Safelight extensions' stages, which never are. A malformed rule refuses the stage.
 - Older builds ignore the field and run the stage as before.
+
+### Dynamic detail: `keepsDetail`
+
+With **Dynamic** chosen as the render resolution, Develop adds the full-size photo's fine detail to the zoomed-in view, after the noise-reduction step. A stage in the decode or noise-reduction phase that writes the colour turns that off for a photo while it is at work there, because the detail would put back what a denoiser or a moiré filter took out.
+
+A stage whose result keeps the photo's own detail in place, such as a chromatic-aberration or flat-field correction, sets `keepsDetail: true`, and the detail stays on. Leave it out for any stage that smooths or removes detail.
+
+A stage is at work on a photo once the photo holds a value of its own that isn't zero or false and its passes draw. A stage with `dormantWhen` is at work while that rule doesn't hold. A stage that is only installed costs no photo its detail.
 
 ### View aids: `viewOnly`
 

@@ -74,6 +74,7 @@ import {
   type ContributedBinding,
   type MaskSlotBinding,
   type PrepassStage,
+  type Rebuilder,
   type StageSplit,
   type StageTextureBinding,
 } from "./stage-injection";
@@ -453,7 +454,7 @@ export class WebGLRenderer {
   // The stages other than core's that write the colour ahead of the detail
   // gain, and whether a contributed geometry stage may move srcUv: both decided
   // with the program in syncPipeline, for the detail gain.
-  private rebuilders: readonly string[] = [];
+  private rebuilders: readonly Rebuilder[] = [];
   private geometryWarped = false;
   // Tokens for the split part of a reads-current stage's prepass signature.
   private splitTokens = new SplitTokens();

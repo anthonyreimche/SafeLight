@@ -598,14 +598,30 @@ export interface BuiltStageInjection {
   prepass: PrepassStage[];
   maskSlots: MaskSlotBinding[];
   hasNoiseReduction: boolean;
-  /** The stages, other than core's own and the built-in denoiser, that write
-   *  the colour in the decode or noise-reduction phase. While one of them is
+  /** The stages, other than core's own, the built-in denoiser and those that
+   *  declare keepsDetail, that write the colour in the decode or
+   *  noise-reduction phase. While one of them is
    *  at work `lin` may be a picture rebuilt from base-resolution passes, which
    *  a detail gain must not scale (detail-gain.ts rebuildsSource). */
-  rebuilders: readonly string[];
+  rebuilders: readonly Rebuilder[];
   /** In the order written. Kept out of `injection`, whose every field the
    *  version 2 freeze hashes. */
   steps: readonly InjectionStep[];
+}
+
+/** A stage that writes the colour ahead of the detail gain, with the value
+ *  each of its uniforms starts at, under the key the bag holds it by. */
+export interface Rebuilder {
+  id: string;
+  defaults: Readonly<Record<string, UniformValue>>;
+}
+
+function rebuilderOf(s: ProcessingStageContribution): Rebuilder {
+  const defaults: Record<string, UniformValue> = {};
+  for (const u of [...s.uniforms, ...(s.passes ?? []).flatMap((p) => p.uniforms ?? [])]) {
+    if (u.default !== undefined) defaults[`${s.id}.${u.key}`] = u.default;
+  }
+  return { id: s.id, defaults };
 }
 
 /** Everything about a stage that the renderer derives state from, hashed.
@@ -1279,9 +1295,14 @@ export function buildStageInjection(
     hasNoiseReduction: ordered.some(isContributedNR),
     rebuilders: ordered
       .filter(
-        (s) => !isCoreStage(s) && s.id !== BUILTIN_DENOISE_ID && !anchorOf(s) && phaseInfo(s.phase).group === "noiseReduction",
+        (s) =>
+          !isCoreStage(s) &&
+          s.id !== BUILTIN_DENOISE_ID &&
+          !anchorOf(s) &&
+          s.keepsDetail !== true &&
+          phaseInfo(s.phase).group === "noiseReduction",
       )
-      .map((s) => s.id),
+      .map(rebuilderOf),
     steps: writer.steps,
   };
 }
