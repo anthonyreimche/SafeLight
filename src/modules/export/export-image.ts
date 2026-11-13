@@ -17,7 +17,7 @@ import { loadSavedEdit, type SavedEdit } from "@/catalog/edit-params";
 import { readExifEntries, type RawExifIfds } from "@/catalog/exif";
 import { WebGLRenderer, type QuarantinedStage } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
-import { quantise16, type Sharpen } from "@/rendering/webgl/export-draw";
+import type { Sharpen } from "@/rendering/webgl/export-draw";
 import { getStageTextures, needStageVariants } from "@/rendering/render-bridge";
 import { windowFrameBag } from "@/rendering/stage-bag";
 import { windowDerived } from "@/rendering/window-derive";
@@ -323,12 +323,8 @@ function render16Bit(
     const { data, width, height, target } = pixels;
     return { data, width, height, reduced: target === "float16" };
   }
-  const capture = renderer.captureFloatFrame();
-  if (!capture) return null;
-  const { width, height } = capture;
-  const data = new Uint16Array(width * height * 4);
-  for (let i = 0; i < data.length; i++) data[i] = quantise16(capture.data[i]);
-  return { data, width, height, reduced: false };
+  const capture = renderer.captureCodes16();
+  return capture && { ...capture, reduced: false };
 }
 
 // 16-bit PNG: the encoder writes the iCCP itself, so the file skips

@@ -291,7 +291,22 @@ async function open(
     opts.signal,
   );
   openCatalogs.push(opened.storage);
+  for (const photo of opened.photos) freezeHeld(photo);
   return opened;
+}
+
+/** Freeze a record the storage holds, and what it holds short of its handles and
+ *  preview, so a change made to it in place fails the test that makes it: the
+ *  storage keeps each record's save text for as long as it holds the record. */
+function freezeHeld(photo: CatalogPhoto): void {
+  const freeze = (value: unknown): void => {
+    if (typeof value !== "object" || value === null || Object.isFrozen(value)) return;
+    Object.freeze(value);
+    for (const inner of Object.values(value)) freeze(inner);
+  };
+  for (const [field, value] of Object.entries(photo))
+    if (field !== "directoryHandle" && field !== "fileHandle" && field !== "thumbnailBlob") freeze(value);
+  Object.freeze(photo);
 }
 
 beforeEach(() => {

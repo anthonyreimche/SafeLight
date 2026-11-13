@@ -45,7 +45,9 @@ export function learnedMatch(match: CameraMatch | undefined): DecodeLearned {
  *  catalogue in that time gets nothing stored. */
 export function rememberLearned(photo: CatalogPhoto, learned: DecodeLearned): void {
   if (Object.keys(learned).length === 0) return;
-  Object.assign(photo.exif, learned);
+  // A new exif, not the one in hand changed in place: the catalogue's records,
+  // a virtual copy's among them, may share it, and its save text is kept per record.
+  photo.exif = { ...photo.exif, ...learned };
   const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
   // Lazy: a decode learns it again if the save is lost.
   if (current) {

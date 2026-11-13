@@ -197,6 +197,14 @@ export interface NativeWindowBridge {
   /** Resolves true when the window now draws the material; null clears it.
    *  False on a system or backend that can't draw it. */
   setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+  /** Opens the pop-out, or brings it forward when it is open already. The main
+   *  process opens it: a page that opened it itself would hold its object. */
+  openApp(kind: "module", module: string): Promise<void>;
+  openApp(kind: "devtools"): Promise<void>;
+  closeApp(kind: "module", module: string): Promise<void>;
+  closeApp(kind: "devtools"): Promise<void>;
+  /** Brings the main window forward, from a pop-out. */
+  focusMain(): Promise<void>;
 }
 
 /** The Developer Tools dev folder. Privileged because the folder's manifests

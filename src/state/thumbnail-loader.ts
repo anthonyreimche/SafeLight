@@ -245,6 +245,14 @@ function remember(entries: { id: string; blob: LoadedPreview }[]): void {
   if (dropped.length > 0) onEvict?.(dropped);
 }
 
+/** Count previews the catalogue already shows, which this loader didn't read (an
+ *  import's), among those it holds: past the cache they are let go like the rest,
+ *  and their cells read them again on return. */
+export function adoptThumbnails(entries: { id: string; blob: LoadedPreview }[]): void {
+  if (!loader || entries.length === 0) return;
+  remember(entries);
+}
+
 function scheduleFlush(): void {
   if (flushScheduled) return;
   flushScheduled = true;

@@ -129,6 +129,17 @@ async function subfoldersAsync(dir) {
   }
 }
 
+/** listInstalledManifests without blocking the main process. */
+async function listInstalledManifestsAsync(pluginsDir) {
+  const found = await Promise.all(
+    (await subfoldersAsync(pluginsDir)).map(async (name) => {
+      const m = await readManifestAsync(path.join(pluginsDir, name));
+      return m && m.id === name ? m : null;
+    })
+  );
+  return found.filter(Boolean);
+}
+
 /** Dev-folder extensions. A folder with its own safelight.json is that one
  *  extension (the renderer loads just that one, valid or not); otherwise each
  *  immediate subfolder with a manifest is one, whatever the folder is called.
@@ -195,6 +206,7 @@ module.exports = {
   isOfficialRepo,
   validManifest,
   listInstalledManifests,
+  listInstalledManifestsAsync,
   listDevManifests,
   declaredConnectHosts,
   pendingConnectHosts,

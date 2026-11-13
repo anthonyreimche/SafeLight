@@ -7,6 +7,7 @@ import type { AppModule } from "@/catalog/types";
 import { MODULE_ID, hasModule, moduleTabs } from "@/extensions/registry";
 import { useUIStore } from "./ui-store";
 import { broadcast } from "./broadcast";
+import { privilegedWindow } from "@/native/privileged";
 
 // The module this window is dedicated to, if it was opened as a detached window.
 // Not checked against the registry: external plugins load after first paint, so
@@ -16,24 +17,16 @@ export function detachedModule(): AppModule | null {
   return m && MODULE_ID.test(m) ? m : null;
 }
 
-// Live references to the windows this (main) window has popped out, so they can
-// be focused/closed. The window `name` also enforces a single instance per
-// module at the browser level; its "safelight-module-" prefix keeps every module
-// clear of the Developer Tools window's "safelight-devtools".
-const popped = new Map<AppModule, Window>();
+const popOutFailed = (err: unknown) => console.warn("[safelight] pop-out window:", err);
 
+// The main process opens each module's window (one per module) and focuses it
+// when it is open already. Never window.open: the opener would hold the
+// pop-out's object, and extensions share this realm.
 export function detachModule(module: AppModule): void {
-  const existing = popped.get(module);
-  if (existing && !existing.closed) {
-    existing.focus();
-    return;
-  }
-  const url = `${window.location.origin}${window.location.pathname}?detached=${encodeURIComponent(module)}`;
-  const win = window.open(url, `safelight-module-${module}`, "width=1280,height=860");
-  if (!win) return;
-  popped.set(module, win);
+  const bridge = privilegedWindow();
+  if (!bridge) return;
+  bridge.openApp("module", module).catch(popOutFailed);
   markModuleDetached(module);
-  win.focus();
 }
 
 /** The main window records `module` as in its own window and, if it is showing
@@ -52,9 +45,7 @@ export function markModuleDetached(module: AppModule, previous?: AppModule): voi
 }
 
 export function focusDetached(module: AppModule): void {
-  const win = popped.get(module);
-  if (win && !win.closed) win.focus();
-  else detachModule(module); // ref lost (e.g. after a reload) → reopen/focus
+  privilegedWindow()?.openApp("module", module).catch(popOutFailed);
 }
 
 // api.navigation.goTo. A pop-out shows only its own module, so it hands any
@@ -66,7 +57,7 @@ export function goToModule(module: AppModule): void {
   if (own) {
     if (module === own) return;
     broadcast({ type: "navigate", payload: { module } });
-    (window.opener as Window | null)?.focus();
+    privilegedWindow()?.focusMain().catch(popOutFailed);
     return;
   }
   if (!hasModule(module)) {
@@ -82,9 +73,7 @@ export function goToModule(module: AppModule): void {
 
 // Re-attach from the main window: close the popped window and reclaim the module.
 export function attachModule(module: AppModule): void {
-  const win = popped.get(module);
-  if (win && !win.closed) win.close();
-  popped.delete(module);
+  privilegedWindow()?.closeApp("module", module).catch(popOutFailed);
   const ui = useUIStore.getState();
   ui.markAttached(module);
   ui.setActiveModule(module);

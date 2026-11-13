@@ -1027,7 +1027,8 @@ export interface CatalogHooksContribution {
     photo: import("@/catalog/types").CatalogPhoto;
     editState: import("@/catalog/types").EditState;
   }): Promise<void>;
-  /** Called when a photo is removed from the catalogue. */
+  /** Called when a photo is removed from the catalogue. When several photos are
+   *  removed at once, up to eight may be handled concurrently. */
   onPhotoRemove?(ctx: {
     photo: import("@/catalog/types").CatalogPhoto;
     dir: FileSystemDirectoryHandle;

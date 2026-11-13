@@ -36,7 +36,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:setMaterial|net:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -688,6 +688,10 @@ describe("opening paths from the OS", () => {
     );
   });
 
+  it("brings the main window forward on a second launch, not a pop-out", () => {
+    expect(MAIN).toMatch(/app\.on\("second-instance"[^]*?appWindows\.focusMain\(\);\s*\}\);/);
+  });
+
   it("listens for open-file from the first line of the lock branch, ahead of ready", () => {
     expect(MAIN).toMatch(/app\.on\("open-file", \(event, filePath\) => \{\s*event\.preventDefault\(\);\s*queueOsOpen\(\[filePath\]\);/);
     expect(MAIN.indexOf('app.on("open-file"')).toBeLessThan(MAIN.indexOf("app.whenReady()"));
@@ -735,6 +739,51 @@ describe("window reveal", () => {
   it("shows every window through revealWhenReady, never on ready-to-show alone", () => {
     expect(MAIN).not.toMatch(/\.once\("ready-to-show"/);
     expect(MAIN).toMatch(/revealWhenReady\(win, \(\) => \{/);
-    expect(MAIN).toMatch(/revealWhenReady\(childWin, \(\) => childWin\.show\(\)\)/);
+    expect(read("app-windows.cjs")).toMatch(/revealWhenReady\(win, \(\) => win\.show\(\)\)/);
+  });
+});
+
+// A page that window.opens the app's index holds the new window's object and
+// can claim its privileged bridge before the window's own bundle does, so the
+// pop-outs come from the main process, asked for by core alone.
+describe("app pop-out windows", () => {
+  const CHANNELS = ["window:openApp", "window:closeApp", "window:focusMain"];
+
+  it("lets nothing open a window with the preload through window.open", () => {
+    expect(MAIN).not.toMatch(/overrideBrowserWindowOptions/);
+    expect(MAIN).not.toMatch(/action:\s*["']allow["']/);
+    expect(MAIN).not.toMatch(/did-create-window/);
+  });
+
+  it("opens, closes and focuses through guarded channels only core is handed", () => {
+    expect(privilegedChannels()).toEqual(expect.arrayContaining(CHANNELS));
+    const privilegedSurface = PRELOAD.slice(0, PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+    const publicSurface = PRELOAD.slice(PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+    expect(registrations(privilegedSurface, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toEqual(
+      expect.arrayContaining(CHANNELS),
+    );
+    for (const channel of CHANNELS) expect(publicSurface).not.toContain(channel);
+  });
+
+  it("hands each request to the main process's window registry", () => {
+    const appWindows = { open: vi.fn(), close: vi.fn(), focusMain: vi.fn() };
+    entry("window:openApp", { appWindows }).handler(NO_EVENT, "module", "library");
+    entry("window:closeApp", { appWindows }).handler(NO_EVENT, "devtools", null);
+    entry("window:focusMain", { appWindows }).handler(NO_EVENT);
+    expect(appWindows.open.mock.calls).toEqual([[{ kind: "module", module: "library" }]]);
+    expect(appWindows.close.mock.calls).toEqual([[{ kind: "devtools", module: null }]]);
+    expect(appWindows.focusMain).toHaveBeenCalledOnce();
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\bappWindows,/);
+  });
+
+  it("ties the pop-outs to the main window", () => {
+    expect(functionSource("createWindow")).toMatch(/appWindows\.setMain\(win\);/);
+  });
+});
+
+describe("main process error handling", () => {
+  it("installs the rejection handler before anything else runs, and catches a failed startup", () => {
+    expect(MAIN).toMatch(/installMainErrorHandlers\(process, crashLog, console\.error\);/);
+    expect(MAIN).toMatch(/app\.whenReady\(\)\.then\(async \(\) => \{[\s\S]*?\}\)\.catch\(\(e\) => \{[\s\S]*?dialog\.showErrorBox\([\s\S]*?app\.quit\(\);/);
   });
 });

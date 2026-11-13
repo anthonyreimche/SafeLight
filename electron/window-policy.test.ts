@@ -30,11 +30,17 @@ const APP_DOCUMENTS = [
 const PLUGIN_FILE = "app://bundle/__plugins__/x/a.html";
 
 describe("app documents", () => {
-  it.each(APP_DOCUMENTS)("allows %s for navigation, window open and privileged", (url) => {
+  it.each(APP_DOCUMENTS)("allows %s for navigation and privileged", (url) => {
     expect(isAppIndexUrl(url)).toBe(true);
     expect(navigationAllowed(url)).toBe(true);
-    expect(windowOpenAction(url)).toBe("allow-app");
     expect(privilegedSenderAllowed({ url, isTopFrame: true })).toBe(true);
+  });
+
+  // The opener holds the new window's object, and could claim its privileged
+  // bridge before the window's own bundle does. Pop-outs come from the main
+  // process (app-windows.cjs) instead.
+  it.each(APP_DOCUMENTS)("denies window.open of %s", (url) => {
+    expect(windowOpenAction(url)).toBe("deny");
   });
 
   it("denies an extension's own file for all three", () => {

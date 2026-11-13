@@ -99,6 +99,40 @@ describe("the size limit on an answer", () => {
   });
 });
 
+describe("reading an answer with a declared length", () => {
+  const chunked = (parts: number[][]) => {
+    const rest = parts.map((p) => new Uint8Array(p));
+    return new ReadableStream<Uint8Array>({
+      pull: (c) => {
+        const next = rest.shift();
+        if (next) c.enqueue(next);
+        else c.close();
+      },
+    });
+  };
+  const read = async (headers: Record<string, string>) => {
+    const { access } = rig({
+      fetchImpl: async () => new Response(chunked([[1, 2, 3], [4, 5]]), { status: 200, headers }),
+    });
+    await access.request(null, "ext.immich", "http://nas:2283");
+    const res = await access.fetch("ext.immich", "r1", "http://nas:2283/x", {});
+    return [...(res as { body: Uint8Array }).body];
+  };
+
+  it("returns the same bytes with and without a content-length", async () => {
+    expect(await read({ "content-length": "5" })).toEqual([1, 2, 3, 4, 5]);
+    expect(await read({})).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("returns only the bytes that arrived when the body is shorter than declared", async () => {
+    expect(await read({ "content-length": "9" })).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("returns every byte when the body is longer than declared", async () => {
+    expect(await read({ "content-length": "4" })).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
 describe("originOf", () => {
   it("takes the origin of an http or https address", () => {
     expect(originOf("http://192.168.1.20:2283/api/albums")).toBe("http://192.168.1.20:2283");

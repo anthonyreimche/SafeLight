@@ -83,8 +83,10 @@ vi.mock("@/state/catalog-store", () => ({
       reconcileCatalog: () => {},
       appendPhotos: () => {},
       mergeRebuiltPhoto: (id: string, change: unknown) => h.merged.push([id, change]),
+      photos: [],
     }),
   },
+  photoById: () => undefined,
 }));
 vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => [] }));
 vi.mock("@/state/ui-store", () => ({
@@ -109,7 +111,7 @@ const openProject = (name: string) => useProjectStore.getState().openProject(fol
 /** What ProjectStorage.open resolves to: a project saved before. */
 function opened() {
   return {
-    storage: { readPreview: async () => null, close: () => {} },
+    storage: { readPreview: async () => null, heldPhoto: () => undefined, close: () => {} },
     rawCacheDir: {},
     tree: null,
     unreadable: [],
@@ -157,6 +159,7 @@ function withPhoto() {
         h.covers.push(args);
         return null;
       },
+      heldPhoto: () => undefined,
       close: () => {},
     },
   };

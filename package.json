@@ -65,6 +65,7 @@
       "dist/**/*",
       "electron/main.cjs",
       "electron/app-protocol.cjs",
+      "electron/app-windows.cjs",
       "electron/atomic-write.cjs",
       "electron/crash-recovery.cjs",
       "electron/extension-origins.cjs",

@@ -196,6 +196,47 @@ describe("processThumb", () => {
     });
   });
 
+  describe("an idle pool", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("ends every worker after a minute and spawns again for the next job", async () => {
+      const { processThumb } = await bootPool(true);
+      const p = processThumb(input());
+      const [first] = FakeWorker.spawned;
+      const terminate = vi.spyOn(first, "terminate");
+      first.respond({ ok: false });
+      await p;
+
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(terminate).toHaveBeenCalledTimes(1);
+
+      void processThumb(input("next.NEF"));
+      expect(FakeWorker.spawned).toHaveLength(2);
+      expect(FakeWorker.spawned[1].posted).toHaveLength(1);
+    });
+
+    it("keeps the workers while one is busy", async () => {
+      const { processThumb } = await bootPool(true);
+      void processThumb(input("a.NEF"));
+      void processThumb(input("b.NEF"));
+      const [a, b] = FakeWorker.spawned;
+      const terminate = vi.spyOn(a, "terminate");
+      a.respond({ ok: false });
+
+      await vi.advanceTimersByTimeAsync(59_000);
+      b.respond({ ok: false });
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(terminate).not.toHaveBeenCalled();
+    });
+  });
+
   describe("a worker that never answers", () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -236,12 +277,12 @@ describe("processThumb", () => {
       expect(h.runThumbTask).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps no timer once the worker has answered", async () => {
+    it("keeps no task timer once the worker has answered, only the idle one", async () => {
       const { processThumb } = await bootPool(true);
       const p = processThumb(input());
       FakeWorker.spawned[0].respond({ ok: false });
       await p;
-      expect(vi.getTimerCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(1);
     });
 
     it("replaces the stalled worker, which then serves the next task", async () => {

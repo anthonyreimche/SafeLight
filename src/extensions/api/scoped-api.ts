@@ -293,6 +293,13 @@ export interface SafelightAPI {
     /** Tell the person something in the app's dialogue card; resolves when they
      *  close it. Use it instead of `window.alert`. */
     alertDialog: typeof import("@/ui/components/ConfirmDialog").alertDialog;
+    /** Take the Escape key while something of yours is open that Escape should
+     *  close (an edit mode whose handles sit over the photo, a popover): the
+     *  newest taker gets the key, ahead of an on-image tool, and a slider's
+     *  value field keeps it for its own revert. Returns the function that
+     *  gives the key back: call it as soon as there is nothing left to close,
+     *  from a React effect's cleanup. Needs Safelight 3.2.4. */
+    onEscape(handler: () => void): () => void;
   };
   /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
    *  that must escape its panel's clipping. Extension bundles can't import

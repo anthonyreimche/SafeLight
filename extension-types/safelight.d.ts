@@ -1114,7 +1114,8 @@ export interface CatalogHooksContribution {
         photo: CatalogPhoto;
         editState: EditState;
     }): Promise<void>;
-    /** Called when a photo is removed from the catalogue. */
+    /** Called when a photo is removed from the catalogue. When several photos are
+     *  removed at once, up to eight may be handled concurrently. */
     onPhotoRemove?(ctx: {
         photo: CatalogPhoto;
         dir: FileSystemDirectoryHandle;
@@ -1469,6 +1470,13 @@ export interface SafelightAPI {
         /** Tell the person something in the app's dialogue card; resolves when they
          *  close it. Use it instead of `window.alert`. */
         alertDialog: typeof alertDialog;
+        /** Take the Escape key while something of yours is open that Escape should
+         *  close (an edit mode whose handles sit over the photo, a popover): the
+         *  newest taker gets the key, ahead of an on-image tool, and a slider's
+         *  value field keeps it for its own revert. Returns the function that
+         *  gives the key back: call it as soon as there is nothing left to close,
+         *  from a React effect's cleanup. Needs Safelight 3.2.4. */
+        onEscape(handler: () => void): () => void;
     };
     /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
      *  that must escape its panel's clipping. Extension bundles can't import
@@ -3049,6 +3057,14 @@ export interface NativeWindowBridge {
     /** Resolves true when the window now draws the material; null clears it.
      *  False on a system or backend that can't draw it. */
     setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+    /** Opens the pop-out, or brings it forward when it is open already. The main
+     *  process opens it: a page that opened it itself would hold its object. */
+    openApp(kind: "module", module: string): Promise<void>;
+    openApp(kind: "devtools"): Promise<void>;
+    closeApp(kind: "module", module: string): Promise<void>;
+    closeApp(kind: "devtools"): Promise<void>;
+    /** Brings the main window forward, from a pop-out. */
+    focusMain(): Promise<void>;
 }
 
 /** The Developer Tools dev folder. Privileged because the folder's manifests

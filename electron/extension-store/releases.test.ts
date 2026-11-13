@@ -241,3 +241,70 @@ describe("store fetch timeouts", () => {
     expectTimeoutSignals();
   });
 });
+
+describe("author-controlled text bodies", () => {
+  const endless = () =>
+    new Response(
+      new ReadableStream({
+        pull(c) {
+          c.enqueue(new TextEncoder().encode("x".repeat(64 * 1024)));
+        },
+      }),
+    );
+  const oversize = () =>
+    new Response("x", { headers: { "content-length": String(8 * MIB) } });
+
+  it("treats a README past 1 MiB as no README", async () => {
+    for (const body of [oversize, endless]) {
+      const info = createRepoInfo({ net: { fetch: async () => body() }, fetchOgImage: async () => "" });
+      await expect(info.fetchReadme("o/r", "main")).resolves.toBeNull();
+    }
+  });
+
+  it("still returns a README that fits", async () => {
+    const info = createRepoInfo({ net: { fetch: async () => new Response("# hi") }, fetchOgImage: async () => "" });
+    await expect(info.fetchReadme("o/r", "main")).resolves.toBe("# hi");
+  });
+
+  it("reads a manifest past 256 KiB as unparseable", async () => {
+    const latest = { tag: "v1.0.0", version: "1.0.0" };
+    const releasesFor = (fetch: FakeFetch) =>
+      createReleases({
+        net: { fetch },
+        userData: () => os.tmpdir(),
+        fileWriter: { write: async () => {} },
+        registryVersionsFor: async () => ({ latest }) as never,
+      });
+    expect(
+      await releasesFor(async () => Response.json({ version: "1.0.0" })).fetchReleaseManifest("o/r", "1.0.0"),
+    ).toEqual({ version: "1.0.0" });
+    for (const body of [oversize, endless])
+      expect(await releasesFor(async () => body()).fetchReleaseManifest("o/r", "1.0.0")).toBeNull();
+  });
+});
+
+describe("oversize remote text", () => {
+  const endless = () =>
+    new Response(
+      new ReadableStream({
+        pull(c) {
+          c.enqueue(new TextEncoder().encode("x".repeat(64 * 1024)));
+        },
+      }),
+    );
+
+  it("treats an endless README as no README", async () => {
+    const info = createRepoInfo({ net: { fetch: async () => endless() }, fetchOgImage: async () => "" });
+    await expect(info.fetchReadme("o/r", "main")).resolves.toBeNull();
+  });
+
+  it("treats an oversize manifest as unparseable", async () => {
+    const releases = createReleases({
+      net: { fetch: async () => new Response("{}", { headers: { "content-length": String(10 * MIB) } }) },
+      userData: () => os.tmpdir(),
+      fileWriter: { write: async () => {} },
+      registryVersionsFor: async () => ({ latest: { tag: "v1.0.0", version: "1.0.0" } }),
+    });
+    await expect(releases.fetchReleaseManifest("o/r", "1.0.0")).resolves.toBeNull();
+  });
+});

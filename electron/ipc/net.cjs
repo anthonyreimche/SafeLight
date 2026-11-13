@@ -16,7 +16,7 @@ const { listDevManifests, readDevFolder } = require("../extension-origins.cjs");
  *   dialog: Pick<Electron.Dialog, "showMessageBox">,
  *   userData: () => string,
  *   fileWriter: { write: (p: string, bytes: Uint8Array) => Promise<void> },
- *   listPlugins: () => { id: string, name: string, permissions?: { userOrigins?: boolean } }[],
+ *   listPlugins: () => Promise<{ id: string, name: string, permissions?: { userOrigins?: boolean } }[]>,
  *   devFolderFile: () => string,
  *   fetchImpl?: typeof fetch,
  *   onUninstalled?: (forget: (id: string) => Promise<void>) => void,
@@ -24,7 +24,7 @@ const { listDevManifests, readDevFolder } = require("../extension-origins.cjs");
  */
 function netChannels({ BrowserWindow, dialog, userData, fileWriter, listPlugins, devFolderFile, fetchImpl, onUninstalled }) {
   const findManifest = async (id) =>
-    listPlugins().find((m) => m.id === id) ??
+    (await listPlugins()).find((m) => m.id === id) ??
     (await listDevManifests(await readDevFolder(devFolderFile()))).find((m) => m.id === id) ??
     null;
 

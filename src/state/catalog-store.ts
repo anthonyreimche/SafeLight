@@ -13,6 +13,7 @@ import {
   type StoredPhoto,
 } from "@/catalog/types";
 import { catalogStorage } from "@/catalog/storage";
+import { same } from "@/catalog/edit-equality";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { mapLimit } from "@/project/fs";
 import { broadcast, WINDOW_ID } from "./broadcast";
@@ -55,6 +56,9 @@ const PREVIEW_FIELDS = new Set<string>(["thumbnailBlob", "thumbnailUrl", "previe
 
 // Previews turned at once: each decodes and re-encodes a bitmap.
 const ROTATE_CONCURRENCY = 4;
+
+// Photos whose removal hooks run at once.
+const REMOVE_CONCURRENCY = 8;
 
 // Fields the open attaches without saying anything about the photo itself.
 const HANDLE_FIELDS = new Set<string>(["directoryHandle", "fileHandle"]);
@@ -155,6 +159,21 @@ function changedFields(before: CatalogPhoto[], after: CatalogPhoto[]): Set<strin
     if (before[i] !== after[i]) for (const key in changesFrom(before[i], after[i])) fields.add(key);
   }
   return fields;
+}
+
+/** `local` taking on the fields of `stored`, each staying `local`'s own value when
+ *  it holds an equal one, and `local` itself when nothing differs. */
+function takeStored(local: CatalogPhoto, stored: StoredPhoto): CatalogPhoto {
+  // The record's previewEdit names the preview on disk, not the one kept here.
+  const next: Record<string, unknown> = { ...mergeStoredPhoto(local, stored), previewEdit: local.previewEdit };
+  const held: Record<string, unknown> = { ...local };
+  let differs = false;
+  for (const key in next) {
+    if (same(next[key], held[key])) next[key] = held[key];
+    else differs = true;
+  }
+  for (const key in held) if (!(key in next)) differs = true;
+  return differs ? (next as unknown as CatalogPhoto) : local;
 }
 
 /** Expand a removal set to also include virtual copies of any master in it — a
@@ -510,12 +529,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         const merged = s.photos.flatMap((p) => {
           if (gone.has(p.id)) return [];
           const stored = byId.get(p.id);
-          // The record's previewEdit names the preview on disk, not the one kept here.
-          return [stored ? { ...mergeStoredPhoto(p, stored), previewEdit: p.previewEdit } : p];
+          return [stored ? takeStored(p, stored) : p];
         });
-        if (gone.size === 0) return { photos: merged };
+        // Another window's rating needn't make this one derive its sort and filter again.
+        const changed = changedFields(s.photos, merged);
+        const photos = changed ? keepStructure(s.photos, merged, changed) : merged;
+        if (gone.size === 0) return { photos };
         return {
-          photos: merged,
+          photos,
           selectedIds: new Set([...s.selectedIds].filter((id) => !gone.has(id))),
           activePhotoId:
             s.activePhotoId && gone.has(s.activePhotoId) ? null : s.activePhotoId,
@@ -584,7 +605,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       const storage = catalogStorage();
       const byId = new Map(get().photos.map((p) => [p.id, p] as const));
       // Let extensions react to removal (e.g. delete XMP sidecars).
-      for (const id of ids) {
+      await mapLimit(ids, REMOVE_CONCURRENCY, async (id) => {
         const photo = byId.get(id);
         if (photo?.directoryHandle && photo?.fileHandle) {
           await emitPhotoRemove({
@@ -593,7 +614,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
             fileName: photo.fileHandle.name,
           });
         }
-      }
+      });
       if (catalogStorage() !== storage) return;
       // Storage drops the records at once; the grid follows then, not once their
       // previews and blobs are gone, or edits made meanwhile land on no record.
@@ -714,7 +735,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     async setStack(ids, opts) {
-      const members = [...new Set(ids)].filter((id) => get().photos.some((p) => p.id === id));
+      const photos = get().photos;
+      const members = [...new Set(ids)].filter((id) => photoById(photos, id));
       if (members.length < 2) return;
       const stackId = crypto.randomUUID();
       const cover = opts?.cover !== undefined && members.includes(opts.cover) ? opts.cover : members[0];

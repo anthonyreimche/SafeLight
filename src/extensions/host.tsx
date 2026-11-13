@@ -190,6 +190,7 @@ import { ContextMenu } from "@/ui/components/ContextMenu";
 import { ScaleStepper } from "@/ui/components/ScaleStepper";
 import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
+import { pushEscapeHandler } from "@/ui/escape-stack";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { SurroundControl } from "@/ui/SurroundControl";
@@ -389,7 +390,19 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       PickerIcon,
       AutoButton,
     },
-    ui: { ...uiKit, confirmDialog, alertDialog },
+    ui: {
+      ...uiKit,
+      confirmDialog,
+      alertDialog,
+      onEscape: (handler) =>
+        pushEscapeHandler(() => {
+          try {
+            handler();
+          } catch (err) {
+            console.warn(`[extensions] ${extensionId}: its Escape handler threw:`, err);
+          }
+        }),
+    },
     reactDom: { createPortal },
     stores: {
       useDevelopStore,

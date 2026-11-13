@@ -8,7 +8,8 @@
 // document, to the first caller, which is core at boot. Any other app:// file
 // (an extension's own page under /__plugins__/) loaded as a top-level document
 // would get a fresh preload and could claim it, so only the app's index may be
-// navigated to or opened, and only its top frame may call the privileged
+// navigated to, nothing on app:// may be window.open'ed, and only the index's
+// top frame may call the privileged
 // channels. main.cjs wires these in; they are pure so the unit suite pins them.
 
 "use strict";
@@ -33,10 +34,11 @@ function navigationAllowed(url) {
   return isAppIndexUrl(url);
 }
 
-/** "allow-app" opens a native child window, "external" hands the URL to the
- *  system browser, "deny" drops it. */
+/** "external" hands the URL to the system browser, "deny" drops it. The app's
+ *  own index is denied too: the opener would hold the new window's object and
+ *  could claim its privileged bridge first, so pop-outs come from the main
+ *  process (app-windows.cjs). */
 function windowOpenAction(url) {
-  if (isAppIndexUrl(url)) return "allow-app";
   let protocol;
   try {
     protocol = new URL(String(url)).protocol;

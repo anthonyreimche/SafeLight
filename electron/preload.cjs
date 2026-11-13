@@ -98,6 +98,13 @@ const privileged = {
   window: {
     setMaterial: (material) =>
       ipcRenderer.invoke("window:setMaterial", typeof material === "string" ? material : null),
+    // The app's pop-outs, opened by the main process: a page that opens a
+    // window holds its object and could claim this bridge there first.
+    openApp: (kind, module) =>
+      ipcRenderer.invoke("window:openApp", String(kind), module == null ? null : String(module)),
+    closeApp: (kind, module) =>
+      ipcRenderer.invoke("window:closeApp", String(kind), module == null ? null : String(module)),
+    focusMain: () => ipcRenderer.invoke("window:focusMain"),
   },
   // Records the dev folder so the next launch reads its manifests' declared
   // network origins like an installed extension's; resolves with the origins

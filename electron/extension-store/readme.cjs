@@ -8,6 +8,9 @@
 // the raw GitHub payload (or its many embedded URLs) never reaches the renderer.
 
 const { validRepo } = require("../window-policy.cjs");
+const { readTextWithin } = require("../registry-entry.cjs");
+
+const MAX_README_BYTES = 1024 * 1024;
 
 /**
  * @param {{
@@ -55,7 +58,7 @@ function createRepoInfo({ net, fetchOgImage }) {
         `https://raw.githubusercontent.com/${repo}/${branch}/${name}`,
         { headers: { "User-Agent": "Safelight" }, signal: AbortSignal.timeout(10000) }
       );
-      if (res.ok) return res.text();
+      if (res.ok) return readTextWithin(res, MAX_README_BYTES);
       if (res.status !== 404) throw new Error(`GitHub error: ${res.status}`);
     }
     return null;

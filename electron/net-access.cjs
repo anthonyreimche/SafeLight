@@ -54,22 +54,35 @@ function networkMessage(error) {
 }
 
 /** The answer's bytes, or null once they pass `limit`. A server need not say
- *  how long its answer is, so the limit is kept while reading. */
+ *  how long its answer is, so the limit is kept while reading. A declared
+ *  length that fits is trusted only as the size of the first buffer. */
 async function readWithin(res, limit) {
   if (!res.body) return new Uint8Array(0);
   const reader = res.body.getReader();
+  const declared = Number(res.headers.get("content-length"));
+  let filled = Number.isInteger(declared) && declared >= 0 && declared <= limit ? new Uint8Array(declared) : null;
   const parts = [];
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    if (filled && total + value.byteLength <= filled.byteLength) filled.set(value, total);
+    else {
+      if (filled) {
+        parts.push(filled.subarray(0, total));
+        filled = null;
+      }
+      parts.push(value);
+    }
     total += value.byteLength;
     if (total > limit) {
       await reader.cancel().catch(() => {});
       return null;
     }
-    parts.push(value);
   }
+  // A copy when the body came up short of its content-length: a view would carry
+  // the whole preallocated buffer across IPC.
+  if (filled) return total === filled.length ? filled : filled.slice(0, total);
   const bytes = new Uint8Array(total);
   let at = 0;
   for (const part of parts) {

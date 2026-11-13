@@ -1103,6 +1103,60 @@ describe("undo / redo", () => {
     expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5000, {}, undefined);
   });
 
+  describe("what the renderer is handed", () => {
+    const withMasks = (...masks: Mask[]) => {
+      useDevelopStore.setState({ params: { ...params(), masks } });
+    };
+
+    it("keeps the live masks and every other field a step doesn't change", async () => {
+      withMasks(brushMask());
+      s().setDynParam("ext.stage.amount", 40);
+      await commit("A", 1);
+      await commit("B", 2);
+      const before = { params: params(), paramBag: s().paramBag };
+
+      s().undo();
+
+      expect(params().exposure).toBe(1);
+      expect(params().masks).toBe(before.params.masks);
+      for (const key of Object.keys(before.params) as (keyof DevelopParams)[]) {
+        if (key !== "exposure") expect(params()[key], key).toBe(before.params[key]);
+      }
+      expect(s().paramBag).toEqual(before.paramBag);
+    });
+
+    it("keeps the masks a step leaves alone when another one changed", async () => {
+      const other = { ...brushMask(), id: "m2", name: "Other" };
+      withMasks(brushMask(), other);
+      await commit("A", 1);
+      useDevelopStore.setState({
+        params: { ...params(), masks: params().masks.map((m) => (m.id === "m2" ? { ...m, opacity: 40 } : m)) },
+      });
+      await s().commitEdit("B");
+      const live = params().masks;
+      const [first] = live;
+
+      s().undo();
+
+      expect(params().masks).not.toBe(live);
+      expect(params().masks[0]).toBe(first);
+      expect(params().masks[1].opacity).toBe(100);
+    });
+
+    it("keeps a bag value the step doesn't change", async () => {
+      s().setDynParams({ "ext.stage.amount": 40, "ext.stage.tint": [1, 2, 3] });
+      await s().commitEdit("A");
+      const tint = s().paramBag["ext.stage.tint"];
+      s().setDynParam("ext.stage.amount", 80);
+      await s().commitEdit("B");
+
+      s().undo();
+
+      expect(s().paramBag["ext.stage.amount"]).toBe(40);
+      expect(s().paramBag["ext.stage.tint"]).toBe(tint);
+    });
+  });
+
   it("fills today's defaults when stepping into an older build's snapshot", async () => {
     registerStageParams("teststage", "Test Stage", "test-ext", [
       { key: "amount", glslType: "float", default: 25 },

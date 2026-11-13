@@ -27,7 +27,7 @@ const { selfInstallMethod, updateSupport } = require("../self-update.cjs");
  *     storeVocabulary(): Promise<unknown>,
  *     uninstallPlugin(id: unknown): Promise<void>,
  *   },
- *   listPlugins: () => unknown[],
+ *   listPlugins: () => Promise<unknown[]>,
  *   installReleaseOnce: (repo: string, tag: string) => Promise<void>,
  *   updateHost: () => Parameters<typeof selfInstallMethod>[0],
  *   forgetUninstalled?: (id: string) => Promise<void>,

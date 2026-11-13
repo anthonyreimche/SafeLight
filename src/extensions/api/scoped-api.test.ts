@@ -114,7 +114,7 @@ describe("SafelightAPI public shapes", () => {
     same<API["components"]["ProcessingUpdateControl"], typeof ProcessingUpdateControl>();
     same<API["components"]["ProofToggle"], typeof ProofToggle>();
     same<API["components"]["AssessmentToggle"], typeof AssessmentToggle>();
-    same<Omit<API["ui"], "confirmDialog" | "alertDialog">, typeof uiKit>();
+    same<Omit<API["ui"], "confirmDialog" | "alertDialog" | "onEscape">, typeof uiKit>();
     same<API["preferences"]["fields"]["Field"], typeof Field>();
     same<API["preferences"]["fields"]["ToggleField"], typeof ToggleField>();
     same<API["preferences"]["fields"]["OptionRow"], typeof OptionRow>();

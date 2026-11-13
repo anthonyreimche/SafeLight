@@ -462,22 +462,44 @@ export function readU32(b: Uint8Array, i: number): number {
   return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
 
-// CRC-32 (PNG polynomial) for chunk integrity.
-let CRC_TABLE: Uint32Array | null = null;
+// CRC-32 (PNG and ZIP polynomial). Eight tables of 256: slicing-by-8 takes
+// eight bytes per step, which matters over a 16-bit PNG's ~128 MB of IDAT.
+let CRC_TABLES: Uint32Array | null = null;
+
+function crcTables(): Uint32Array {
+  if (CRC_TABLES) return CRC_TABLES;
+  const t = new Uint32Array(8 * 256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  for (let n = 0; n < 256; n++) {
+    for (let k = 1; k < 8; k++) {
+      const prev = t[(k - 1) * 256 + n];
+      t[k * 256 + n] = (prev >>> 8) ^ t[prev & 0xff];
+    }
+  }
+  return (CRC_TABLES = t);
+}
 
 // Continues a CRC over more bytes: start from 0, then pass each call's result
 // back in. A chunk too big to hold whole can be checked a part at a time.
 export function crc32Update(crc: number, buf: Uint8Array): number {
-  if (!CRC_TABLE) {
-    CRC_TABLE = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      CRC_TABLE[n] = c >>> 0;
-    }
-  }
+  const t = crcTables();
   let c = crc ^ 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  let i = 0;
+  const whole = buf.length - (buf.length & 7);
+  for (; i < whole; i += 8) {
+    const lo = c ^ (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24));
+    const hi = buf[i + 4] | (buf[i + 5] << 8) | (buf[i + 6] << 16) | (buf[i + 7] << 24);
+    c =
+      t[1792 + (lo & 0xff)] ^ t[1536 + ((lo >>> 8) & 0xff)] ^
+      t[1280 + ((lo >>> 16) & 0xff)] ^ t[1024 + (lo >>> 24)] ^
+      t[768 + (hi & 0xff)] ^ t[512 + ((hi >>> 8) & 0xff)] ^
+      t[256 + ((hi >>> 16) & 0xff)] ^ t[hi >>> 24];
+  }
+  for (; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 

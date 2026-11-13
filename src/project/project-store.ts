@@ -12,7 +12,7 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { closeOpenPhoto } from "@/state/develop-store";
 import { verifyPermission } from "@/catalog/permissions";
-import { setLastProjectOpener, useCatalogStore } from "@/state/catalog-store";
+import { photoById, setLastProjectOpener, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import {
   isSupportedName,
@@ -59,6 +59,7 @@ import type { NativeOpenTarget } from "@/extensions/types";
 import { scanProject, type FolderNode } from "./scan";
 import { visibleList } from "@/modules/library/photo-navigation";
 import {
+  adoptThumbnails,
   requestThumbnail,
   setThumbnailLoader,
   thumbnailGen,
@@ -77,6 +78,57 @@ if (typeof window !== "undefined") {
 // How many photos the idle prefill reads ahead: the cells on screen read theirs on
 // demand, so a bigger catalogue's rest is not worth holding in memory.
 const PREFILL_LIMIT = 2000;
+
+// Each append re-sorts and re-filters the whole catalogue for the grid, so once it
+// holds this many photos an import appends at most every APPEND_SPACING ms.
+const SPACED_APPEND_FROM = 2000;
+const APPEND_SPACING = 250;
+
+/** What an import finds, appended to the grid in batches: once per frame (`raf`),
+ *  or at most every APPEND_SPACING ms once the catalogue holds SPACED_APPEND_FROM
+ *  photos (`size`). `flush` appends what waits at once; `discard` drops it. */
+export function createAppendBuffer<T>({
+  append,
+  size,
+  raf,
+  now,
+}: {
+  append: (items: T[]) => void;
+  size: () => number;
+  raf: (run: () => void) => void;
+  now: () => number;
+}): { push: (item: T) => void; flush: () => void; discard: () => void } {
+  let waiting: T[] = [];
+  let scheduled = false;
+  let appendedAt = -Infinity;
+  const flush = () => {
+    if (waiting.length === 0) return;
+    const items = waiting;
+    waiting = [];
+    appendedAt = now();
+    append(items);
+  };
+  const frame = () => {
+    scheduled = false;
+    if (size() >= SPACED_APPEND_FROM && now() - appendedAt < APPEND_SPACING) schedule();
+    else flush();
+  };
+  const schedule = () => {
+    if (scheduled || waiting.length === 0) return;
+    scheduled = true;
+    raf(frame);
+  };
+  return {
+    push(item) {
+      waiting.push(item);
+      schedule();
+    },
+    flush,
+    discard() {
+      waiting = [];
+    },
+  };
+}
 
 // Schedule low-priority work for when the main thread is idle (falls back to a
 // short timeout where requestIdleCallback isn't available).
@@ -473,16 +525,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     let decoderWarm: Promise<void> | null = null;
     const warmOnce = () => (decoderWarm ??= warmDecoding());
     try {
-      // Buffer streamed (newly-decoded) photos and flush once per frame, so a
-      // large import appends in a few batches instead of one re-render per photo.
-      let buf: CatalogPhoto[] = [];
-      let scheduled = false;
-      const flush = () => {
-        scheduled = false;
-        if (buf.length === 0) return;
-        useCatalogStore.getState().appendPhotos(buf);
-        buf = [];
-      };
+      // The storage the open hands over once the catalogue is read (onSkeletons).
+      let importing: ProjectStorage | null = null;
+      // Newly decoded photos are appended in batches, not one re-render per photo.
+      // The previews they bring go to the grid's loader, which lets go of them past
+      // its cache like the ones it read: the storage reads them back from disk.
+      const found = createAppendBuffer<CatalogPhoto>({
+        append: (photos) => {
+          if (gen !== openGen) return;
+          useCatalogStore.getState().appendPhotos(photos);
+          adoptThumbnails(
+            photos.flatMap(({ id, thumbnailBlob: blob }) =>
+              blob && importing?.mayForgetPreview(id) ? [{ id, blob }] : [],
+            ),
+          );
+        },
+        size: () => useCatalogStore.getState().photos.length,
+        raf: (run) => void requestAnimationFrame(run),
+        now: () => performance.now(),
+      });
 
       // Queue cached previews for loading: visible cells request first (via the
       // Thumbnail IntersectionObserver); when idle, enqueue the rest in view order.
@@ -512,6 +573,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // is stored in it, and paint the grid from the saved photos, so skeletons
       // appear with the UI rather than after.
       let painted = false;
+      // The grid loader's generation once onSkeletons installed it.
+      let loaderGen: number | null = null;
       const onSkeletons = (
         storage: ProjectStorage,
         rawCacheDir: FileSystemDirectoryHandle,
@@ -522,10 +585,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         setRawCacheDir(rawCacheDir);
         setCatalogStorage(storage);
         set({ root: handle, name: handle.name });
-        const thumbGen = previewLoader(storage);
+        importing = storage;
+        loaderGen = previewLoader(storage);
         if (painted) {
           useCatalogStore.getState().finalizeCatalog(skeletons);
-          kickThumbnails(skeletons, thumbGen);
+          kickThumbnails(skeletons, loaderGen);
         }
         warmOnce();
       };
@@ -535,12 +599,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         handle,
         storageDeps,
         (photo) => {
-          if (gen !== openGen) return;
-          buf.push(photo);
-          if (!scheduled) {
-            scheduled = true;
-            requestAnimationFrame(flush);
-          }
+          if (gen === openGen) found.push(photo);
         },
         onSkeletons,
         (done, total) => {
@@ -549,11 +608,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         signal,
       );
       if (gen !== openGen) {
-        buf = []; // discard any stragglers if cancelled
+        found.discard(); // discard any stragglers if cancelled
         opened.storage.close(); // no window shows it, so it stops following the others
         return;
       }
-      flush(); // drain any photos buffered since the last frame
+      found.flush(); // drain any photos buffered since the last frame
+      // Each photo as the storage holds it now, with the preview the grid shows:
+      // the grid's copy is the one its loader and other windows' thumbnails
+      // replace (revoking the URL before), while the storage may still hold that.
+      const shown = useCatalogStore.getState().photos;
+      const photos = opened.photos.map((photo) => {
+        const held = opened.storage.heldPhoto(photo.id) ?? photo;
+        const current = photoById(shown, photo.id);
+        return current
+          ? { ...held, thumbnailBlob: current.thumbnailBlob, thumbnailUrl: current.thumbnailUrl, previewEdit: current.previewEdit }
+          : held;
+      });
       // The storage, raw cache and name went in once the catalogue was read
       // (onSkeletons); the folder tree is known only now.
       set({ tree: opened.tree });
@@ -603,17 +673,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // painted skeletons, reconcile (keeps already-loaded previews); otherwise
       // (first import / no cache) finalize and kick off loading normally.
       if (painted) {
-        useCatalogStore.getState().reconcileCatalog(opened.photos);
+        useCatalogStore.getState().reconcileCatalog(photos);
       } else {
-        const thumbGen = previewLoader(opened.storage);
-        useCatalogStore.getState().finalizeCatalog(opened.photos);
-        kickThumbnails(opened.photos, thumbGen);
+        // The loader keeps the import's previews it was handed, to let them go.
+        const thumbGen = loaderGen ?? previewLoader(opened.storage);
+        useCatalogStore.getState().finalizeCatalog(photos);
+        kickThumbnails(photos, thumbGen);
       }
       // Remember this folder for the welcome grid, with the first photo's grid
       // preview as the card cover. Reattached photos load previews lazily, so
       // fall back to reading the cover off disk when no blob is in memory yet; a
       // library source's is never fetched for it.
-      const first = opened.photos[0];
+      const first = photos[0];
       const cover = first
         ? first.thumbnailBlob ?? (await opened.storage.readPreview(first.id, { build: !source }))
         : null;
@@ -632,7 +703,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         // Background: fill in previews for any records imported without one (decode
         // failed at scan time), updating them in place so they're never re-imported.
         void repairMissingPreviews(
-          opened.photos,
+          photos,
           (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
           passes,
         );
@@ -646,11 +717,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         void warmOnce().then(async () => {
           if (passes.aborted) return;
           await readPendingMetadata(
-            opened.photos,
+            photos,
             (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
             passes,
           );
-          if (!passes.aborted) await preDecodeRawsForCache(opened.photos, { signal: passes });
+          if (!passes.aborted) await preDecodeRawsForCache(photos, { signal: passes });
         });
       }
     } catch (e) {

@@ -9,7 +9,7 @@
 // secure origin, so every response carries the isolation headers and the app
 // shell carries its CSP. main.cjs supplies protocol, net and the paths.
 
-const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { contains } = require("./plugin-files.cjs");
@@ -147,7 +147,8 @@ function serveAppProtocol({ protocol, net, dist, pluginsDir, csp }) {
       if (decoded === null) return new Response("Bad request", { status: 400 });
       const rel = path.normalize(decoded).replace(/^([/\\]|\.\.[/\\])+/, "");
       const filePath = path.join(pluginsDir(), rel);
-      if (!contains(pluginsDir(), filePath) || !fs.existsSync(filePath)) {
+      const stat = contains(pluginsDir(), filePath) ? await fsp.stat(filePath).catch(() => null) : null;
+      if (!stat?.isFile()) {
         return new Response("Not found", { status: 404 });
       }
       const res = await net.fetch(pathToFileURL(filePath).toString());
@@ -162,14 +163,13 @@ function serveAppProtocol({ protocol, net, dist, pluginsDir, csp }) {
     if (filePath === null) return new Response("Bad request", { status: 400 });
 
     // Directory or missing file: serve index.html so SPA routes resolve.
-    try {
-      const stat = fs.statSync(filePath);
-      if (stat.isDirectory()) filePath = path.join(filePath, "index.html");
-    } catch {
-      const hasExt = path.extname(filePath) !== "";
-      if (!hasExt) filePath = path.join(dist, "index.html");
+    const stat = await fsp.stat(filePath).catch(() => null);
+    if (stat?.isDirectory()) {
+      filePath = path.join(filePath, "index.html");
+      if (!(await fsp.stat(filePath).catch(() => null))) filePath = path.join(dist, "index.html");
+    } else if (!stat) {
+      filePath = path.join(dist, "index.html");
     }
-    if (!fs.existsSync(filePath)) filePath = path.join(dist, "index.html");
 
     const res = await net.fetch(pathToFileURL(filePath).toString());
     const headers = new Headers(res.headers);

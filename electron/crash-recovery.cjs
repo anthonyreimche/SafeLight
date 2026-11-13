@@ -122,11 +122,22 @@ function createCrashLog({ max = 20, now = Date.now } = {}) {
   };
 }
 
+/** Keeps a rejected promise nobody awaited out of silence: logged and put in
+ *  the crash log. Uncaught exceptions keep Electron's own error dialog. */
+function installMainErrorHandlers(proc, crashLog, log) {
+  proc.on("unhandledRejection", (reason) => {
+    const name = reason instanceof Error ? reason.name : undefined;
+    log("[safelight] unhandled promise rejection:", reason);
+    crashLog.record("main", { reason: "unhandled-rejection", name });
+  });
+}
+
 module.exports = {
   isRuntimeGpuCrash,
   isRendererCrash,
   createRecoveryGate,
   createCrashLog,
+  installMainErrorHandlers,
   isMainFrameLoadFailure,
   restartPrompt,
   RESTART,

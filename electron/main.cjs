@@ -34,6 +34,7 @@ const {
   isRendererCrash,
   createRecoveryGate,
   createCrashLog,
+  installMainErrorHandlers,
   isMainFrameLoadFailure,
   restartPrompt,
   RESTART,
@@ -61,7 +62,7 @@ const { sweepPluginWork, retry } = require("./plugin-files.cjs");
 const { createAtomicWriter, writeAtomicSync } = require("./atomic-write.cjs");
 const { argvPaths, createRequestOrder, openTargetFor, withoutPaths } = require("./os-open.cjs");
 const {
-  listInstalledManifests,
+  listInstalledManifestsAsync,
   listDevManifests,
   declaredConnectHosts,
   readDevFolder,
@@ -74,6 +75,7 @@ const {
 } = require("./window-policy.cjs");
 const { effectiveMinimum, fitToWorkArea } = require("./window-bounds.cjs");
 const { revealWhenReady } = require("./window-reveal.cjs");
+const { createAppWindows } = require("./app-windows.cjs");
 const {
   SAFELIGHT_REPO,
   downloadVerified,
@@ -110,6 +112,7 @@ const DIST = path.join(__dirname, "..", "dist");
 
 // Processes that died this launch, for Report an issue.
 const crashLog = createCrashLog();
+installMainErrorHandlers(process, crashLog, console.error);
 
 function appVersion() {
   return app.getVersion();
@@ -342,7 +345,7 @@ let launchHosts = [];
 // without blocking: it may sit on a slow or network drive.
 async function loadLaunchHosts() {
   launchHosts = declaredConnectHosts([
-    ...listPlugins(),
+    ...(await listPlugins()),
     ...(await listDevManifests(await readDevFolder(devFolderFile()))),
   ]);
 }
@@ -383,7 +386,7 @@ const pluginWorkDir = () => path.join(userData(), "plugins-update");
 const devFolderFile = () => path.join(userData(), "dev-folder.json");
 
 function listPlugins() {
-  return listInstalledManifests(pluginsDir());
+  return listInstalledManifestsAsync(pluginsDir());
 }
 
 const trust = createTrustList({ net, userData, fileWriter });
@@ -529,6 +532,7 @@ function registerIpcChannels() {
     setSoftwareRendering,
     setGraphicsBackend,
     rendererFailed,
+    appWindows,
   });
   registerIpc(channels, { ipcMain, handlePrivileged });
 }
@@ -612,14 +616,14 @@ function trackWindowState(win) {
   let timer = null;
   // getNormalBounds, not getBounds: maximizing or entering full screen must not
   // overwrite the restored-down geometry that has to come back on the next launch.
-  const write = () => {
+  const write = (options) => {
     const state = {
       ...win.getNormalBounds(),
       maximized: win.isMaximized(),
       fullScreen: win.isFullScreen(),
     };
     try {
-      writeAtomicSync(windowStateFile(), JSON.stringify(state));
+      writeAtomicSync(windowStateFile(), JSON.stringify(state), options);
     } catch {}
   };
   // Drags fire resize/move continuously; coalesce to one write per gesture on an
@@ -628,7 +632,7 @@ function trackWindowState(win) {
     if (timer) return;
     timer = setTimeout(() => {
       timer = null;
-      if (!win.isDestroyed()) write();
+      if (!win.isDestroyed()) write({ durable: false });
     }, 500);
     if (timer.unref) timer.unref();
   };
@@ -651,35 +655,34 @@ function trackWindowState(win) {
 }
 
 // window.open policy for every webContents (main window, pop-outs and their
-// children). The app's own index opens as a native child with the same
-// isolation settings, so the app:// origin, preload and COOP/COEP carry over and
-// BroadcastChannel sync keeps working. http(s) goes to the system browser.
-// Anything else is denied: an extension's own file opened as a window would be
-// a fresh document that could claim the privileged bridge.
+// children): http(s) goes to the system browser, everything else is denied. The
+// opener of a window holds its object and could claim its privileged bridge, so
+// app:// is never opened this way; see appWindows.
 function windowOpenHandler({ url }) {
-  const action = windowOpenAction(url);
-  if (action === "allow-app") {
-    return {
-      action: "allow",
-      overrideBrowserWindowOptions: {
-        show: false,
-        autoHideMenuBar: true,
-        ...titleBarOpts,
-        ...materialOptions(),
-        webPreferences: {
-          preload: path.join(__dirname, "preload.cjs"),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          devTools: true,
-          backgroundThrottling: false,
-        },
-      },
-    };
-  }
-  if (action === "external") shell.openExternal(url);
+  if (windowOpenAction(url) === "external") shell.openExternal(url);
   return { action: "deny" };
 }
+
+// The pop-outs (a module's window, Developer Tools), opened by the main process
+// on core's request. Same isolation settings as the main window, so the app://
+// origin, preload and COOP/COEP carry over and BroadcastChannel sync keeps working.
+const appWindows = createAppWindows({
+  BrowserWindow,
+  windowOptions: () => ({
+    show: false,
+    autoHideMenuBar: true,
+    ...titleBarOpts,
+    ...materialOptions(),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      devTools: true,
+      backgroundThrottling: false,
+    },
+  }),
+});
 
 function createWindow() {
   const state = readWindowState();
@@ -715,6 +718,7 @@ function createWindow() {
   });
 
   trackWindowState(win);
+  appWindows.setMain(win);
 
   // The minimum follows whichever display the window is on now; a smaller
   // screen (or a resolution change) must not leave the frame bigger than it.
@@ -814,26 +818,15 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("second-instance", (_e, argv, workingDirectory) => {
     queueOsOpen(argvPaths(argv, { defaultApp: process.defaultApp, cwd: workingDirectory }));
-    const [win] = BrowserWindow.getAllWindows();
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
+    appWindows.focusMain();
   });
 
-  // Lock every webContents (main window, pop-outs and any children they open)
-  // to the app's own index: navigation may only target it, and window.open goes
-  // through windowOpenHandler. will-navigate never sees a new window's first
-  // load, so a webContents without the open handler could open any URL. http(s)
-  // goes to the system browser. Stops extensions/markdown links from hijacking
-  // a window.
+  // Lock every webContents (main window and pop-outs) to the app's own index:
+  // navigation may only target it, and window.open goes through
+  // windowOpenHandler, which opens no window. http(s) goes to the system
+  // browser. Stops extensions/markdown links from hijacking a window.
   app.on("web-contents-created", (_e, contents) => {
     contents.setWindowOpenHandler(windowOpenHandler);
-    // Children open hidden (show: false above) to avoid a black first frame;
-    // whichever window opened them shows them once painted.
-    contents.on("did-create-window", (childWin) => {
-      revealWhenReady(childWin, () => childWin.show());
-    });
     contents.on("will-navigate", (event, url) => {
       if (navigationAllowed(url)) return;
       event.preventDefault();
@@ -931,6 +924,10 @@ if (!app.requestSingleInstanceLock()) {
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+  }).catch((e) => {
+    console.error("[safelight] startup failed:", e);
+    dialog.showErrorBox("Safelight could not start", e instanceof Error ? e.message : String(e));
+    app.quit();
   });
 
   app.on("window-all-closed", () => {

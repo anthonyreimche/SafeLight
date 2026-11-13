@@ -212,6 +212,23 @@ alertDialog(options: {
 - Dialogues queue: a second one waits until the first is answered. While one is open the app's own shortcuts stand down.
 - A start of your extension that no longer counts (it timed out, or a newer copy took over) can't open one: the call throws, like a `register` call would.
 
+### `onEscape`
+
+```ts
+api.ui.onEscape(handler: () => void): () => void;
+```
+
+Takes the Escape key while something of yours is open that Escape should close: an edit mode whose handles sit over the photo, a popover of your own. Needs Safelight 3.2.4.
+
+- The newest taker gets the key, so a dialogue or menu opened after yours closes first, and yours closes before an on-image tool (`setCanvasTool`) is let go. One press closes one thing.
+- It returns the function that gives the key back. Call it as soon as there is nothing left to close, from a React effect's cleanup: while you hold the key, Escape reaches nothing below you.
+- A slider's value field keeps Escape for its own revert.
+- An on-image tool held with `setCanvasTool` already gets Escape through its `onEscape`; use this for everything else.
+
+```tsx
+React.useEffect(() => (editing ? api.ui.onEscape(() => setEditing(false)) : undefined), [editing]);
+```
+
 ```js
 const ok = await api.ui.confirmDialog({
   title: "Clear the cache",

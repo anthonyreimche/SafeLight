@@ -2471,6 +2471,18 @@ export class WebGLRenderer {
     return { data: topDown(raw, w, h), width: w, height: h };
   }
 
+  /** captureFloatFrame's frame as 16-bit codes (quantise16), read back in bands
+   *  rather than as a float copy of the whole frame. Null in the same cases. */
+  captureCodes16(): { data: Uint16Array; width: number; height: number } | null {
+    if (!this.hasImage || !this.params || !this.caps.colorBufferFloat) return null;
+    this.syncPipeline();
+    this.resize();
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const data = this.readback.floatCodes(w, h, this.gl.RGBA16F, (fbo) => this.drawRedirected({ fbo, w, h }));
+    return data && { data, width: w, height: h };
+  }
+
   /** The current frame as floats at the canvas's size, RGBA, top-down, in
    *  `space`: converted from perceptual Rec.709 texel by texel, then averaged
    *  down where `captureEdge` (measureSize) caps its long edge. At

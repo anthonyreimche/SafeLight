@@ -8,12 +8,13 @@
 // so; the reported failure mode is VirtualBox's virtual GL driver killing the
 // GPU process after a heavy import, leaving a black-but-draggable window.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   isRuntimeGpuCrash,
   isRendererCrash,
   createRecoveryGate,
   createCrashLog,
+  installMainErrorHandlers,
   isMainFrameLoadFailure,
   restartPrompt,
   RESTART,
@@ -163,5 +164,42 @@ describe("createCrashLog", () => {
     log.record("GPU", { reason: "crashed", exitCode: 1 });
     log.list()[0].reason = "changed";
     expect(log.list()[0].reason).toBe("crashed");
+  });
+});
+
+describe("installMainErrorHandlers", () => {
+  const fakeProc = () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    return {
+      on: (event: string, fn: (...args: unknown[]) => void) => void handlers.set(event, fn),
+      emit: (event: string, ...args: unknown[]) => handlers.get(event)?.(...args),
+      events: () => [...handlers.keys()],
+    };
+  };
+
+  it("logs an unhandled rejection and records it in the crash log", () => {
+    const proc = fakeProc();
+    const log = vi.fn();
+    const crashLog = createCrashLog({ now: () => 7 });
+    installMainErrorHandlers(proc, crashLog, log);
+    proc.emit("unhandledRejection", new TypeError("boom"));
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(crashLog.list()).toEqual([
+      { time: 7, process: "main", reason: "unhandled-rejection", exitCode: 0, name: "TypeError" },
+    ]);
+  });
+
+  it("survives a rejection that is not an Error", () => {
+    const proc = fakeProc();
+    const crashLog = createCrashLog();
+    installMainErrorHandlers(proc, crashLog, () => {});
+    proc.emit("unhandledRejection", "nope");
+    expect(crashLog.list()).toHaveLength(1);
+  });
+
+  it("leaves uncaught exceptions to Electron's own dialog", () => {
+    const proc = fakeProc();
+    installMainErrorHandlers(proc, createCrashLog(), () => {});
+    expect(proc.events()).toEqual(["unhandledRejection"]);
   });
 });

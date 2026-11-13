@@ -61,4 +61,19 @@ describe("ErrorBoundary", () => {
     expect(s.prefill?.crash).toMatchObject({ what: 'Panel "acme.film"', message: "boom" });
     expect(s.prefill?.crash?.componentStack).toContain("Boom");
   });
+
+  // The Develop canvas's overlay slot is click-through, so the photo under an
+  // extension's overlay still pans and zooms.
+  it("can be reported from inside a click-through layer", async () => {
+    const user = userEvent.setup();
+    render(
+      <div style={{ pointerEvents: "none" }}>
+        <ErrorBoundary what='Slot item "acme.overlay"' className="notice">
+          <Boom />
+        </ErrorBoundary>
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Report this" }));
+    expect(useReportIssue.getState().open).toBe(true);
+  });
 });

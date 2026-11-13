@@ -19,7 +19,7 @@ import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from
 import type { ExportFrame, ExportProcessorContext, ProcessingStageContribution } from "@/extensions/types";
 import { buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
-import type { ExportPixels, ExportPixelsOptions, ExportTarget, Sharpen } from "@/rendering/webgl/export-draw";
+import { quantise16, type ExportPixels, type ExportPixelsOptions, type ExportTarget, type Sharpen } from "@/rendering/webgl/export-draw";
 
 const h = vi.hoisted(() => {
   /** What happened, in order: "submit:<version>" and "built:<version>" (the driver's
@@ -60,7 +60,7 @@ const h = vi.hoisted(() => {
     /** Each setContributedParams call's bag. */
     contributed: Record<string, unknown>[] = [];
     maxTextureEdge = 16384;
-    /** The frames drawn, in order: "render", "renderSharpened", "exportPixels", "captureFloatFrame". */
+    /** The frames drawn, in order: "render", "renderSharpened", "exportPixels", "captureCodes16". */
     draws: string[] = [];
     /** Each exportPixels call's options. */
     exportOptions: ExportPixelsOptions[] = [];
@@ -163,6 +163,12 @@ const h = vi.hoisted(() => {
       this.draws.push("captureFloatFrame");
       this.draw();
       return this.lost ? null : FakeRenderer.floatCapture;
+    }
+    captureCodes16() {
+      this.draws.push("captureCodes16");
+      this.draw();
+      const frame = FakeRenderer.floatCapture;
+      return this.lost || !frame ? null : { ...frame, data: Uint16Array.from(frame.data, quantise16) };
     }
 
     dispose() {
@@ -1874,7 +1880,7 @@ describe("an export by process version", () => {
 
   it("exports a version 2 photo as it always has", async () => {
     const tiff = await exportOne(V2, { ...TIFF16, ...SHARPENED });
-    expect(tiff.renderer.draws).toEqual(["captureFloatFrame"]);
+    expect(tiff.renderer.draws).toEqual(["captureCodes16"]);
     expect(h.cpuSharpened).toEqual([]);
 
     const jpeg = await exportOne(V2, { ...JPEG, ...SHARPENED });
@@ -1884,7 +1890,7 @@ describe("an export by process version", () => {
 
   it("exports a version 3 edit the renderer holds to version 2 as version 2", async () => {
     h.FakeRenderer.newestVersion = 2;
-    expect((await exportOne(V3, TIFF16)).renderer.draws).toEqual(["captureFloatFrame"]);
+    expect((await exportOne(V3, TIFF16)).renderer.draws).toEqual(["captureCodes16"]);
     expect((await exportOne(V3, { ...JPEG, ...SHARPENED })).renderer.draws).toEqual(["render"]);
     expect(h.cpuSharpened).toEqual([{ amount: 80, radius: 2 }]);
   });
@@ -1917,7 +1923,7 @@ describe("an export by process version", () => {
       "exportPixels",
       "exportPixels",
       "render",
-      "captureFloatFrame",
+      "captureCodes16",
       "render",
       "exportPixels",
       "exportPixels",
@@ -1950,7 +1956,7 @@ describe("an export by process version", () => {
 
     it("quantises a version 2 photo's 16-bit PNG from its float capture, as its TIFF is", async () => {
       const { blob, renderer } = await exportOne(V2, { ...PNG16, ...SHARPENED });
-      expect(renderer.draws).toEqual(["captureFloatFrame"]);
+      expect(renderer.draws).toEqual(["captureCodes16"]);
       expect(h.encodes).toEqual([]);
       expect(h.cpuSharpened).toEqual([]);
       const png = await pngContents(blob);
@@ -2028,7 +2034,7 @@ describe("an export by process version", () => {
         "exportPixels",
         "render",
         "exportPixels",
-        "captureFloatFrame",
+        "captureCodes16",
         "render",
       ]);
       expect(h.encodes).toEqual([...PATH_8_BIT, ...PATH_8_BIT]);

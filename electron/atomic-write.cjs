@@ -133,15 +133,16 @@ function createAtomicWriter({ fsp, randomId, retry }) {
 }
 
 /** Synchronous counterpart for the writes that can't queue: the close-time
- *  window state and the pre-ready GPU backend cache. */
-function writeAtomicSync(file, text) {
+ *  window state and the pre-ready GPU backend cache. `durable: false` skips the
+ *  fsync, for writes repeated often enough that a lost last one is harmless. */
+function writeAtomicSync(file, text, { durable = true } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${crypto.randomBytes(8).toString("hex")}`;
   try {
     const fd = fs.openSync(tmp, "w");
     try {
       fs.writeSync(fd, text);
-      fs.fsyncSync(fd);
+      if (durable) fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }

@@ -396,4 +396,21 @@ describe("crc32Update", () => {
     }
     expect(crc).toBe(crc32(whole));
   });
+  it("matches a bitwise CRC at every length and alignment", () => {
+    const bitwise = (bytes: Uint8Array) => {
+      let c = 0xffffffff;
+      for (const b of bytes) {
+        c ^= b;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const data = new Uint8Array(80).map((_, i) => (i * 197 + 61) & 0xff);
+    for (let start = 0; start < 8; start++) {
+      for (let len = 0; start + len <= data.length; len++) {
+        const part = data.subarray(start, start + len);
+        expect(crc32(part), `${start}+${len}`).toBe(bitwise(part));
+      }
+    }
+  });
 });

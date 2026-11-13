@@ -415,7 +415,7 @@ interface CatalogHooksContribution {
 }
 ```
 
-Handlers are awaited, one after another. One that throws, or doesn't finish within 60 seconds, is logged and skipped, so it can't break or stall an import or a save. When several `onPhotoImport` handlers return fields, the later ones win.
+Handlers are awaited, one after another. One that throws, or doesn't finish within 60 seconds, is logged and skipped, so it can't break or stall an import or a save. When several `onPhotoImport` handlers return fields, the later ones win. When several photos are removed at once, `onPhotoRemove` may run for up to eight of them at the same time; the handlers for any one photo still run in order.
 
 ## `PresetImporterContribution`
 

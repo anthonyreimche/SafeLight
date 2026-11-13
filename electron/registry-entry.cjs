@@ -141,4 +141,36 @@ function filterRegistry(items, query, vocabulary) {
   );
 }
 
-module.exports = { avatarFor, normalizeRegistryEntry, parseVocabulary, readIndexCache, filterRegistry };
+/** A response body as text, or null once it passes `limit` bytes, whether the
+ *  server announces its length or not. Remote authors control these bodies. */
+async function readTextWithin(res, limit) {
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > limit) {
+    if (res.body) res.body.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks, total));
+}
+
+module.exports = {
+  avatarFor,
+  normalizeRegistryEntry,
+  parseVocabulary,
+  readIndexCache,
+  filterRegistry,
+  readTextWithin,
+};

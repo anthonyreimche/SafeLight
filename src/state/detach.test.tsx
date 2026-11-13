@@ -7,23 +7,34 @@
 // paint, so the detached id is read raw; the main window hands over to the
 // next attached module from the registry's tab order.
 
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { detachModule, detachedModule, goToModule } from "./detach";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { attachModule, detachModule, detachedModule, focusDetached, goToModule } from "./detach";
 import { useUIStore } from "./ui-store";
 import { registerModule, useRegistry } from "@/extensions/registry";
 import { registerEssentialModules } from "@/test/essential-modules.test-support";
 import { makeScopedAPI } from "@/extensions/host";
+import { detachDevtools } from "@/extensions/devtools/detach";
+import { toggleDockPanelFloating, useDockStore } from "@/extensions/dock";
 
 const View = () => null;
 
-/** Every window this window has popped out, closed after each test so the next
- *  one opens its own. */
-const opened: { closed: boolean; focus: Mock; close: Mock }[] = [];
-const fakeWindow = () => {
-  const win = { closed: false, focus: vi.fn(), close: vi.fn() };
-  opened.push(win);
-  return win;
-};
+// Pop-outs are opened by the main process through core's privileged window
+// bridge. window.open would hand this window the pop-out's object, and with it
+// a race for the pop-out's privileged bridge.
+const native = vi.hoisted(() => ({
+  present: true,
+  bridge: {
+    setMaterial: vi.fn(async () => true),
+    openApp: vi.fn(async () => {}),
+    closeApp: vi.fn(async () => {}),
+    focusMain: vi.fn(async () => {}),
+  },
+}));
+vi.mock("@/native/privileged", () => ({
+  privilegedWindow: () => (native.present ? native.bridge : null),
+}));
+
+const openerReads = vi.fn();
 
 /** What this window has sent the others over the sync channel. */
 const posted: unknown[] = [];
@@ -40,14 +51,18 @@ beforeEach(() => {
   registerEssentialModules();
   useUIStore.setState({ activeModule: "library", detached: new Set() });
   window.history.replaceState({}, "", "/");
-  vi.stubGlobal("open", vi.fn(fakeWindow));
+  vi.stubGlobal("open", vi.fn());
+  Object.defineProperty(window, "opener", { configurable: true, get: openerReads });
   vi.stubGlobal("BroadcastChannel", FakeChannel);
   posted.length = 0;
+  native.present = true;
+  for (const call of Object.values(native.bridge)) call.mockClear();
+  openerReads.mockClear();
 });
 
 afterEach(() => {
-  for (const win of opened) win.closed = true;
-  opened.length = 0;
+  expect(window.open).not.toHaveBeenCalled();
+  expect(openerReads).not.toHaveBeenCalled();
 });
 
 describe("detachedModule", () => {
@@ -92,19 +107,43 @@ describe("detachModule", () => {
     expect(useUIStore.getState().activeModule).toBe("book");
   });
 
-  it("opens the module's window under a name no module shares with Developer Tools", () => {
+  it("asks the main process for the module's window", () => {
     detachModule("map");
-    expect(window.open).toHaveBeenCalledWith(
-      `${window.location.origin}/?detached=map`,
-      "safelight-module-map",
-      "width=1280,height=860",
-    );
+    expect(native.bridge.openApp.mock.calls).toEqual([["module", "map"]]);
   });
 
-  it("encodes the id so the pop-out reads back the id it was opened for", () => {
-    detachModule("a&b");
-    const url = String(vi.mocked(window.open).mock.calls[0][0]);
-    expect(new URL(url).searchParams.get("detached")).toBe("a&b");
+  it("leaves the module in place where there is no native window bridge", () => {
+    native.present = false;
+    useUIStore.setState({ activeModule: "map" });
+    detachModule("map");
+    expect(useUIStore.getState().detached.has("map")).toBe(false);
+    expect(useUIStore.getState().activeModule).toBe("map");
+  });
+});
+
+describe("focusDetached and attachModule", () => {
+  it("asks for the module's window again, which the main process only focuses", () => {
+    focusDetached("map");
+    expect(native.bridge.openApp.mock.calls).toEqual([["module", "map"]]);
+  });
+
+  it("closes the module's window and shows the module here", () => {
+    useUIStore.setState({ activeModule: "library", detached: new Set(["develop"]) });
+    attachModule("develop");
+    expect(native.bridge.closeApp.mock.calls).toEqual([["module", "develop"]]);
+    expect(useUIStore.getState().detached.has("develop")).toBe(false);
+    expect(useUIStore.getState().activeModule).toBe("develop");
+  });
+});
+
+describe("detachDevtools", () => {
+  it("asks the main process for the Developer Tools window and closes the docked panel", () => {
+    useDockStore.setState({ rails: [], floating: {}, zOrder: [], open: [] });
+    toggleDockPanelFloating("core.devtools");
+    expect(useDockStore.getState().open).toContain("core.devtools");
+    detachDevtools();
+    expect(native.bridge.openApp.mock.calls).toEqual([["devtools"]]);
+    expect(useDockStore.getState().open).not.toContain("core.devtools");
   });
 });
 
@@ -132,33 +171,29 @@ describe("goToModule in the main window", () => {
   it("focuses a popped-out module's window instead of switching to its placeholder", () => {
     registerModule("ext", { id: "map", label: "Map", component: View });
     detachModule("map");
-    const [win] = opened;
-    win.focus.mockClear();
+    native.bridge.openApp.mockClear();
     goToModule("map");
-    expect(win.focus).toHaveBeenCalledOnce();
+    expect(native.bridge.openApp.mock.calls).toEqual([["module", "map"]]);
     expect(useUIStore.getState().activeModule).toBe("library");
   });
 });
 
 describe("goToModule in a pop-out window", () => {
-  let openerFocus: Mock;
   beforeEach(() => {
     window.history.replaceState({}, "", "/?detached=map");
-    openerFocus = vi.fn();
-    vi.stubGlobal("opener", { focus: openerFocus });
   });
 
   it("does nothing for the module the window shows", () => {
     goToModule("map");
     expect(posted).toEqual([]);
-    expect(openerFocus).not.toHaveBeenCalled();
+    expect(native.bridge.focusMain).not.toHaveBeenCalled();
     expect(useUIStore.getState().activeModule).toBe("library");
   });
 
   it("asks the main window to go anywhere else, and brings it forward", () => {
     goToModule("develop");
     expect(posted).toEqual([{ type: "navigate", payload: { module: "develop" } }]);
-    expect(openerFocus).toHaveBeenCalledOnce();
+    expect(native.bridge.focusMain).toHaveBeenCalledOnce();
     expect(useUIStore.getState().activeModule).toBe("library");
   });
 });

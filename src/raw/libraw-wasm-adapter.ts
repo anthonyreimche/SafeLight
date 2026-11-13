@@ -49,8 +49,9 @@ interface Watched {
   extendTo(limitMs: number): void;
   /** Milliseconds since the instance was lent. */
   elapsed(): number;
-  /** Hands the instance back: released if every call answered, else discarded. */
-  done(): void;
+  /** Hands the instance back: released if every call answered, else discarded.
+   *  `peakBytes`: the most heap the decode may have needed (decode-pool.ts). */
+  done(peakBytes?: number): void;
 }
 
 /** A call still out when the decode's time limit ran down. */
@@ -86,10 +87,10 @@ function watch(raw: LibRawInstance, limitMs: number): Watched {
     elapsed(): number {
       return Date.now() - started;
     },
-    done(): void {
+    done(peakBytes?: number): void {
       clearTimeout(timer);
       if (broken) discardInstance(raw);
-      else releaseInstance(raw);
+      else releaseInstance(raw, peakBytes);
     },
   };
 }
@@ -205,9 +206,20 @@ export function decodeTimeLimitForFrame(width: number, height: number): number {
  */
 const HEAP_BUDGET = 1_950_000_000;
 const FULL_SIZE_BYTES_PER_PIXEL = 16;
+// Half size keeps the 2-byte readout and shrinks the other 14 to a quarter.
+const HALF_SIZE_BYTES_PER_PIXEL = 6;
+
+function heapPeak(
+  frame: NonNullable<RawMetadata["frame"]>,
+  byteLength: number,
+  halfSize: boolean,
+): number {
+  const perPixel = halfSize ? HALF_SIZE_BYTES_PER_PIXEL : FULL_SIZE_BYTES_PER_PIXEL;
+  return frame.width * frame.height * perPixel + byteLength;
+}
 
 function pastHeapBudget(frame: RawMetadata["frame"], byteLength: number): boolean {
-  return !!frame && frame.width * frame.height * FULL_SIZE_BYTES_PER_PIXEL + byteLength > HEAP_BUDGET;
+  return !!frame && heapPeak(frame, byteLength, false) > HEAP_BUDGET;
 }
 
 /** Whether half the frame's long edge, rounded down, still reaches the edge the
@@ -316,7 +328,7 @@ export async function decodeRawFloatViaLibRaw(
   const handBack = (): void => {
     if (handedBack) return;
     handedBack = true;
-    watched.done();
+    watched.done(frame && heapPeak(frame, fileBytes, halfSize));
   };
   try {
     const settings = {

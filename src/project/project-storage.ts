@@ -73,7 +73,7 @@ import {
   type ChangeStamps,
   type PhotoStamps,
 } from "./change-stamps";
-import { mapLimit, readBlobIfThere, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
+import { mapLimit, readBlobIfThere, readJSON, removeEntry, writeBlob } from "./fs";
 import {
   BACKUP,
   CATALOG,
@@ -82,9 +82,9 @@ import {
   isMainWindow,
   OLDER_BACKUPS,
   readSavedCatalog,
-  type CatalogFile,
   type CatalogRecovery,
 } from "./catalog-file";
+import { catalogText, forgetStepTexts, sameRecordText } from "./catalog-json";
 import { fsErrorText } from "./fs-errors";
 import { openableEdit, SAVE_RETRY_DELAYS } from "./edit-files";
 import { nativeFs } from "./native-fs";
@@ -241,7 +241,8 @@ export interface OpenedProject {
   /** Files the scan left out as unsupported, counted by lower-cased extension. */
   skipped: Record<string, number>;
   photos: CatalogPhoto[];
-  /** Photos discovered on this open (candidates for background pre-decode). */
+  /** Photos discovered on this open (candidates for background pre-decode), as
+   *  held once it ends: one removed meanwhile is left out. */
   newPhotos: CatalogPhoto[];
   rawCacheDir: FileSystemDirectoryHandle;
   /** Where the .safelight working dir ended up: in the project folder, or
@@ -563,11 +564,13 @@ export class ProjectStorage implements CatalogStorage {
       let newDone = 0;
       onProgress?.(0, newTotal);
 
-      const newPhotos: CatalogPhoto[] = [];
+      // Ids, not records: an import's record holds its preview until the grid lets
+      // go of it (forgetPreviews), which a list of the records would keep.
+      const newIds: string[] = [];
       storage.scanning = true;
       /** The file the scan found each saved photo on. */
       const fileOf = new Map<string, ScannedFile>();
-      const results = await mapLimit(scan.files, 8, async (f: ScannedFile) => {
+      const results = await mapLimit(scan.files, 8, async (f: ScannedFile): Promise<string | null> => {
         const prev = known.get(f);
         if (prev) {
           // Known photo: reattach live handles only. The cached preview is loaded
@@ -577,7 +580,7 @@ export class ProjectStorage implements CatalogStorage {
           fileOf.set(prev.id, f);
           const photo = storage.resize(storage.onFile(prev, f), f);
           storage.show(photo);
-          return photo;
+          return photo.id;
         }
         // Tombstoned: the user removed this photo from the catalogue while its file
         // stayed on disk. Honour that removal instead of re-importing it as new,
@@ -663,13 +666,13 @@ export class ProjectStorage implements CatalogStorage {
           if (previewHeld) storage.lastThumb.set(photo.id, photo.thumbnailBlob);
           storage.show(photo);
           storage.changedPhotos.add(photo.id);
-          newPhotos.push(photo);
+          newIds.push(photo.id);
           onPhoto?.(photo);
           // Persist progress as we go: an interrupted import resumes from the last
           // saved photo instead of re-decoding the whole folder next launch.
           storage.scheduleSave();
           onProgress?.(++newDone, newTotal);
-          return photo;
+          return photo.id;
         } catch (err) {
           console.warn(`[import] skipped ${f.path}:`, err);
           onProgress?.(++newDone, newTotal);
@@ -683,10 +686,11 @@ export class ProjectStorage implements CatalogStorage {
       const finished = !signal?.aborted;
       // Each photo the walk reached, as this copy holds it now: a change stored
       // after the walk passed it stays, and a photo removed meanwhile stays out.
-      const masters = results.flatMap((walked) => {
-        if (!walked || storage.removedIds.has(walked.id)) return [];
-        const file = fileOf.get(walked.id);
-        return [file ? storage.onFile(walked, file) : (storage.photos.get(walked.id) ?? walked)];
+      const masters = results.flatMap((id) => {
+        const held = id === null || storage.removedIds.has(id) ? undefined : storage.photos.get(id);
+        if (!held) return [];
+        const file = fileOf.get(held.id);
+        return [file ? storage.onFile(held, file) : held];
       });
 
       // A folder the scan couldn't list hides its photos, and a cancelled open
@@ -789,7 +793,7 @@ export class ProjectStorage implements CatalogStorage {
       const heldIds = new Set(masters.map((m) => m.id));
       const removedCount = [...byRel.values()].filter((r) => !heldIds.has(r.id)).length;
       if (
-        newPhotos.length > 0 ||
+        newIds.length > 0 ||
         moved.size > 0 ||
         storage.resized ||
         removedCount > 0 ||
@@ -816,9 +820,9 @@ export class ProjectStorage implements CatalogStorage {
       storage.letGoIfIdle();
       // Other windows open on this catalogue keep the photos found here, so their
       // saves don't drop them, and take on the new place of the ones found moved.
-      const asHeld = (photo: { id: string }) => storage.photos.get(photo.id) ?? [];
-      const found = newPhotos.flatMap(asHeld);
-      const relocated = [...moved.values()].flatMap(asHeld);
+      const asHeld = (id: string) => storage.photos.get(id) ?? [];
+      const found = newIds.flatMap(asHeld);
+      const relocated = [...moved.values()].flatMap(({ id }) => asHeld(id));
       if (found.length + relocated.length > 0)
         storage.send(
           {
@@ -834,7 +838,7 @@ export class ProjectStorage implements CatalogStorage {
         skipped: scan.skipped,
         // Each record as it stands once the waiting records are applied.
         photos: photos.flatMap((photo) => storage.photos.get(photo.id) ?? []),
-        newPhotos,
+        newPhotos: found,
         rawCacheDir,
         storageLocation,
         externalPath,
@@ -924,9 +928,31 @@ export class ProjectStorage implements CatalogStorage {
 
   /** Stop holding the previews of photos the grid let go of (see readPreview), so
    *  the blobs they were read as can be freed. A preview that comes back is read
-   *  again and held again; one put without having been read is written. */
+   *  again and held again; one put without having been read is written. A record
+   *  holding the preview stored for it (an import's) lets go of it and its URL,
+   *  which the grid revoked: the record's stored fields stay as they are, so this
+   *  is no change to save or send. */
   forgetPreviews(ids: readonly string[]): void {
-    for (const id of ids) this.lastThumb.delete(id);
+    for (const id of ids) {
+      if (this.mayForgetPreview(id)) {
+        const held = this.photos.get(id);
+        if (held) {
+          const record = { ...held, thumbnailBlob: null, thumbnailUrl: null };
+          sameRecordText(held, record);
+          this.show(record);
+        }
+      }
+      this.lastThumb.delete(id);
+    }
+  }
+
+  /** Whether the preview the photo's record holds is one readPreview brings back
+   *  once let go of: the one stored for it, or one built again with previews not
+   *  kept on disk. One whose write failed is the only copy, and the next put that
+   *  carries it writes it. */
+  mayForgetPreview(id: string): boolean {
+    const blob = this.photos.get(id)?.thumbnailBlob;
+    return !!blob && this.lastThumb.get(id) === blob;
   }
 
   async putPhoto(photo: CatalogPhoto, options?: { lazy?: boolean }): Promise<void> {
@@ -1188,11 +1214,12 @@ export class ProjectStorage implements CatalogStorage {
     return records.to === undefined || records.to === this.origin;
   }
 
-  /** Whether a photo this copy holds, shown or kept, has `file` as its own. */
-  private holdsFile(file: string): boolean {
-    for (const photo of [...this.photos.values(), ...this.unshown.values()])
-      if (!photo.copyOf && photo.relPath === file) return true;
-    return false;
+  /** The files the photos this copy holds, shown or kept, have as their own. */
+  private heldFiles(): Set<string> {
+    const files = new Set<string>();
+    for (const records of [this.photos.values(), this.unshown.values()])
+      for (const photo of records) if (!photo.copyOf) files.add(photo.relPath);
+    return files;
   }
 
   /** A saved photo as this copy holds it, on the file open()'s scan found it on:
@@ -1308,6 +1335,7 @@ export class ProjectStorage implements CatalogStorage {
       }),
     );
     for (const { stack } of records) for (const snapshot of stack) this.writable.add(snapshot);
+    for (const { stack } of editStates) forgetStepTexts(stack);
     await this.storeEditStates(records);
     if (refused) throw refused;
   }
@@ -1612,8 +1640,9 @@ export class ProjectStorage implements CatalogStorage {
       this.changedPhotos.add(id);
       changed = true;
     }
+    let heldFiles: Set<string> | null = null;
     for (const file of records.removed ?? []) {
-      if (this.removed.has(file) || this.holdsFile(file)) continue;
+      if (this.removed.has(file) || (heldFiles ??= this.heldFiles()).has(file)) continue;
       this.removed.add(file);
       this.removedFiles.set(file, { at: ++this.changes, landed: null });
       changed = true;
@@ -1766,11 +1795,11 @@ export class ProjectStorage implements CatalogStorage {
     this.unsavedSince = null;
     const holds = this.changes;
     try {
-      const photos = [...[...this.photos.values()].map(storedPhoto), ...this.unshown.values()];
+      const photos = [...this.photos.values(), ...this.unshown.values()];
       const edits = [...this.edits.values()];
       const changed = this.stampsOf(photos, edits);
       const stamped = Object.keys(changed.photos).length + Object.keys(changed.edits).length > 0;
-      const data: CatalogFile = {
+      const text = catalogText({
         ...this.extra,
         version: 1,
         id: this.catalogId,
@@ -1778,8 +1807,11 @@ export class ProjectStorage implements CatalogStorage {
         edits,
         removed: [...this.removed],
         ...(stamped ? { changed } : {}),
-      };
-      await writeJSON(this.sl, CATALOG, data);
+      });
+      const file = await this.sl.getFileHandle(CATALOG, { create: true });
+      const writable = await file.createWritable();
+      await writable.write(text);
+      await writable.close();
     } catch (error) {
       this.dirty = true;
       if (unsavedSince !== null) this.noteUnsaved(unsavedSince);
