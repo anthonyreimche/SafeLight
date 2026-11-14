@@ -36,7 +36,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|secrets:.+|sockets:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -455,7 +455,13 @@ describe("extension release channels", () => {
         }),
       };
       const declares = { permissions: { userOrigins: true } };
+      const safeStorage = {
+        isEncryptionAvailable: () => true,
+        encryptString: (text: string) => Buffer.from(text, "utf8"),
+        decryptString: (bytes: Buffer) => bytes.toString("utf8"),
+      } as Partial<Deps["safeStorage"]> as Deps["safeStorage"];
       const channels = table({
+        safeStorage,
         store: store as Partial<Deps["store"]> as Deps["store"],
         userData: () => userData,
         fileWriter: {
@@ -489,6 +495,8 @@ describe("extension release channels", () => {
       const b = (await call("fs:pickKeptFolder", "ext.b", null)) as { token: string };
       await call("net:requestOrigin", "ext.a", "http://nas:2283");
       await call("net:requestOrigin", "ext.b", "http://nas:2283");
+      await call("secrets:set", "ext.a", "token", "secret-a");
+      await call("secrets:set", "ext.b", "token", "secret-b");
       return { a: a.token, b: b.token };
     }
 
@@ -499,8 +507,10 @@ describe("extension release channels", () => {
         await call("plugins:uninstall", "ext.a");
         await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ error: "unknown" });
         await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(false);
+        await expect(call("secrets:get", "ext.a", "token")).resolves.toBeNull();
         await expect(call("fs:keptFolder", "ext.b", tokens.b)).resolves.toEqual({ path: out });
         await expect(call("net:hasOrigin", "ext.b", "http://nas:2283")).resolves.toBe(true);
+        await expect(call("secrets:get", "ext.b", "token")).resolves.toBe("secret-b");
       } finally {
         cleanup();
       }
@@ -515,6 +525,7 @@ describe("extension release channels", () => {
         await expect(call("plugins:uninstall", "bad id")).rejects.toThrow("Bad extension id");
         await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ path: out });
         await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(true);
+        await expect(call("secrets:get", "ext.a", "token")).resolves.toBe("secret-a");
       } finally {
         cleanup();
       }

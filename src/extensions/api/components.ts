@@ -58,6 +58,10 @@ export interface SliderProps {
   /** Fired with true while a drag is held with Alt or Ctrl down, and false
    *  when that ends. */
   onModifierPreview?: (active: boolean) => void;
+  /** Shift+double-click on the track sets this one value automatically; a
+   *  plain double-click still resets. Make your own undo step. Needs
+   *  Safelight 3.2.5; older builds reset on any double-click. */
+  onAuto?: () => void;
 }
 
 /** Tonal zones across the histogram, left (dark) to right (light). */

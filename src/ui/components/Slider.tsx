@@ -34,6 +34,9 @@ interface SliderProps {
   // when that ends), for Lightroom-style "show me the effect" previews. The
   // modifier state is tracked live, so toggling Alt/Ctrl mid-drag re-fires.
   onModifierPreview?: (active: boolean) => void;
+  // Shift+double-click sets this one value automatically (a plain double-click
+  // still resets). The caller makes its own undo step.
+  onAuto?: () => void;
 }
 
 // Fine-control factor while Shift is held during a drag.
@@ -68,6 +71,7 @@ const openPhoto = () => useDevelopStore.getState().photoId;
 // it through stable proxies that call the latest ones, since callers pass
 // inline closures bound to a mask or key.
 const SliderView = memo(function SliderView({
+  hasAuto,
   label,
   ariaLabel,
   icon,
@@ -82,7 +86,8 @@ const SliderView = memo(function SliderView({
   onChange,
   onCommit,
   onModifierPreview,
-}: SliderProps) {
+  onAuto,
+}: Omit<SliderProps, "onAuto"> & { hasAuto: boolean; onAuto: () => void }) {
   const iconSvg = useRegistry((s) =>
     icon ? s.sliderIcons[icon]?.svg : undefined,
   );
@@ -361,8 +366,8 @@ const SliderView = memo(function SliderView({
           onKeyUp={(e) => {
             if (VALUE_KEYS.has(e.key)) onCommit?.();
           }}
-          onDoubleClick={reset}
-          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · Shift+scroll to step · double-click to reset`}
+          onDoubleClick={(e) => (e.shiftKey && hasAuto ? onAuto() : reset())}
+          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · Shift+scroll to step · double-click to reset${hasAuto ? " · Shift+double-click for auto" : ""}`}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>
@@ -418,15 +423,16 @@ const SliderView = memo(function SliderView({
   );
 });
 
-export function Slider({ onChange, onCommit, onModifierPreview, ...shown }: SliderProps) {
-  const latest = useRef({ onChange, onCommit, onModifierPreview });
+export function Slider({ onChange, onCommit, onModifierPreview, onAuto, ...shown }: SliderProps) {
+  const latest = useRef({ onChange, onCommit, onModifierPreview, onAuto });
   useLayoutEffect(() => {
-    latest.current = { onChange, onCommit, onModifierPreview };
+    latest.current = { onChange, onCommit, onModifierPreview, onAuto };
   });
   const proxies = useRef({
     onChange: (v: number) => latest.current.onChange(v),
     onCommit: () => latest.current.onCommit?.(),
     onModifierPreview: (active: boolean) => latest.current.onModifierPreview?.(active),
+    onAuto: () => latest.current.onAuto?.(),
   }).current;
-  return <SliderView {...shown} {...proxies} />;
+  return <SliderView {...shown} {...proxies} hasAuto={onAuto !== undefined} />;
 }

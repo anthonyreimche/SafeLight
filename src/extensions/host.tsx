@@ -98,7 +98,7 @@ import {
 import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
 import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
-import { registerBrushTip } from "@/rendering/brush-tip-registry";
+import { brushTips, registerBrushTip, unregisterBrushTip, useBrushTips } from "@/rendering/brush-tip-registry";
 import { inputProfileOwner, invalidateInputProfiles, registerInputProfiles } from "@/catalog/input-profiles";
 import { setInputProfiles, watchInputProfiles } from "@/state/input-profile-redraw";
 import { useMaskPanels } from "@/modules/develop/mask-panels";
@@ -128,6 +128,8 @@ import { importFiles } from "@/modules/library/import-files";
 import { librarySourcesAPI } from "./library-sources-api";
 import { keptDirectoriesAPI } from "./kept-directories";
 import { networkAPI } from "./network";
+import { secretsAPI } from "./secrets";
+import { socketsAPI } from "./sockets";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
 import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -470,6 +472,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
       showMaskCoverage,
       registerBrushTip: (tip) => registerBrushTip(extensionId, tip),
+      unregisterBrushTip: (id) => unregisterBrushTip(extensionId, id),
+      brushTips,
+      useBrushTips,
       registerInputProfiles: (resolver) => registerInputProfiles(extensionId, resolver),
       invalidateInputProfiles: () => invalidateInputProfiles(extensionId),
       setViewValues: (values) =>
@@ -579,6 +584,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     },
     library: { importFiles, ...librarySourcesAPI(extensionId) },
     network: networkAPI(extensionId),
+    secrets: secretsAPI(extensionId),
+    sockets: socketsAPI(extensionId),
     presets: {
       useImporters: usePresetImporters,
       describeBag: describePresetBag,

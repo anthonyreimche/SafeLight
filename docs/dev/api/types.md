@@ -97,7 +97,7 @@ interface Mask {
 }
 ```
 
-A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow?, strokeStart?, tip?, angle? }` in source UV, with `radius` in image-height units. `tip` (a [registered brush tip](stores.md#apidevelop) id) and `angle` (radians) are read from a stroke's `strokeStart` dab and hold for the whole stroke. A tip stamps its own shape across the dab's diameter instead of the round, feathered disc, and an unknown tip stamps the disc (3.2.1). A `RetouchSpot` is a `"circle"` or `"brush"` spot in `"heal"` or `"clone"` mode, with destination and source positions in source UV.
+A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow?, strokeStart?, tip?, angle? }` in source UV, with `radius` in image-height units. `tip` (a [registered brush tip](stores.md#apidevelop) id) is read from a stroke's `strokeStart` dab and holds for the whole stroke. `angle` (radians) turns the tip: a dab's own angle wins, and a dab without one takes its stroke's (per-dab since 3.2.5). A tip stamps its own shape across the dab's diameter instead of the round, feathered disc, and an unknown tip stamps the disc (3.2.1). A `RetouchSpot` is a `"circle"` or `"brush"` spot in `"heal"` or `"clone"` mode, with destination and source positions in source UV.
 
 Notes:
 

@@ -127,6 +127,29 @@ const privileged = {
         timeoutMs: init && Number.isFinite(init.timeoutMs) ? Number(init.timeoutMs) : undefined,
       }),
     abort: (requestId) => ipcRenderer.invoke("net:abort", String(requestId)),
+    // Signing in to a web service: a one-time listener on 127.0.0.1 for the
+    // browser's redirect (oauth-loopback.cjs).
+    authorizeListen: (id, timeoutMs) =>
+      ipcRenderer.invoke("net:authorizeListen", String(id), Number.isFinite(timeoutMs) ? Number(timeoutMs) : undefined),
+    authorizeOpen: (id, session, url) =>
+      ipcRenderer.invoke("net:authorizeOpen", String(id), String(session), String(url)),
+    authorizeCancel: (id, session) => ipcRenderer.invoke("net:authorizeCancel", String(id), String(session)),
+  },
+  // Values an extension keeps encrypted by the OS keychain
+  // (extension-secrets.cjs). Privileged so core names the asking extension.
+  secrets: {
+    available: () => ipcRenderer.invoke("secrets:available"),
+    get: (id, key) => ipcRenderer.invoke("secrets:get", String(id), String(key)),
+    set: (id, key, value) => ipcRenderer.invoke("secrets:set", String(id), String(key), String(value)),
+    delete: (id, key) => ipcRenderer.invoke("secrets:delete", String(id), String(key)),
+  },
+  // Live connections the person allowed an extension to open (socket-access.cjs).
+  // Privileged so core names the asking extension, not the page.
+  sockets: {
+    request: (id, url) => ipcRenderer.invoke("sockets:request", String(id), String(url)),
+    status: (id, url) => ipcRenderer.invoke("sockets:status", String(id), String(url)),
+    list: (id) => ipcRenderer.invoke("sockets:list", String(id)),
+    revoke: (id, url) => ipcRenderer.invoke("sockets:revoke", String(id), String(url)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.

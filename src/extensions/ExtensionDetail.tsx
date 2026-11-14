@@ -32,6 +32,7 @@ import { categoriesOf, moreFromAuthor, moreInCategory, typeOf, worksWithOf } fro
 import { SHELF_LIMIT, Shelf, StoreExpanded } from "./StoreCards";
 import { Screenshots } from "./Screenshots";
 import { Markdown } from "./Markdown";
+import { AllowedSockets } from "./AllowedSockets";
 import { openUrl } from "@/update/update-checker";
 import { isNewer } from "@/update/semver";
 
@@ -550,6 +551,7 @@ export function ExtensionDetail({
       {target.manifest?.permissions &&
         (target.manifest.permissions.network?.length ||
           target.manifest.permissions.userOrigins ||
+          target.manifest.permissions.userSockets ||
           target.manifest.permissions.reason) && (
           <div className="border-b border-border-subtle px-3 py-2 text-[11px]">
             <div className="mb-0.5 font-medium text-text-secondary">Permissions</div>
@@ -566,6 +568,9 @@ export function ExtensionDetail({
                 Connects to a server address you enter. Safelight asks you before it
                 reaches each address.
               </div>
+            )}
+            {target.manifest.permissions.userSockets && (
+              <AllowedSockets extensionId={id} installed={!!target.installed} />
             )}
             {target.manifest.permissions.reason && (
               <div className="mt-0.5 text-text-muted">

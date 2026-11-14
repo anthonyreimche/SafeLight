@@ -99,6 +99,8 @@ import type {
 } from "./stores";
 import type { SharedVariablesAPI } from "./variables";
 import type { NetworkAPI } from "./network";
+import type { SocketsAPI } from "./sockets";
+import type { SecretsAPI } from "./secrets";
 import type { LibrarySourceContribution, LibrarySourceEntry } from "./sources";
 import type { DevelopOverlayState } from "../develop-host";
 
@@ -631,12 +633,25 @@ export interface SafelightAPI {
     prewarmStages(): void;
     /** Offer a brush tip: a shape (an alpha image, at most 128 px an edge) a
      *  brush can stamp in place of its round disc. Name it by `id` in the `tip`
-     *  of the dab that starts a stroke, with an optional `angle`; an id nothing
+     *  of the dab that starts a stroke; an `angle` on any dab turns it (a dab
+     *  without one takes its stroke's, since 3.2.5); an id nothing
      *  holds bakes as the disc, so strokes saved with a tip keep drawing when
      *  its extension is off. Feather doesn't apply to a tip. Registering an id
      *  you hold replaces it; another extension's id is refused. Dropped when
      *  the extension stops. Needs Safelight 3.2.1. */
     registerBrushTip(tip: BrushTipContribution): void;
+    /** Take back a tip you registered, as when the person removes it from your
+     *  library. Strokes that name it stamp the round disc from then on. Another
+     *  extension's id is refused with a warning. Needs Safelight 3.2.5. */
+    unregisterBrushTip(id: string): void;
+    /** Every registered brush tip, whichever extension registered it, in the
+     *  order they came, with its group and brush settings: what a brush offers
+     *  in its tip picker. The same array until the set changes. Needs
+     *  Safelight 3.2.5. */
+    brushTips(): readonly BrushTipContribution[];
+    /** React hook: brushTips(), re-rendering as tips come and go. Needs
+     *  Safelight 3.2.5. */
+    useBrushTips(): readonly BrushTipContribution[];
     /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
      *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
      *  transform and hands it the original's bytes; core reads the file's
@@ -960,9 +975,18 @@ export interface SafelightAPI {
      *  3.2.4. */
     clearKeptOriginals(id: string): Promise<{ removed: number; kept: number }>;
   };
-  /** Reach a server whose address the person typed in: see NetworkAPI. The
-   *  manifest declares `permissions.userOrigins`. Needs Safelight 3.2.4. */
+  /** Reach a server whose address the person typed in (the manifest declares
+   *  `permissions.userOrigins`; Safelight 3.2.4), reach the origins the
+   *  manifest declares in `permissions.network` without CORS, and sign in
+   *  through the browser (Safelight 3.2.5): see NetworkAPI. */
   network: NetworkAPI;
+  /** Keep a sign-in token or a key encrypted by the OS keychain: see
+   *  SecretsAPI. Needs Safelight 3.2.5. */
+  secrets: SecretsAPI;
+  /** Open live connections (WebSockets) to a server whose address the person
+   *  typed in and allowed (the manifest declares `permissions.userSockets`):
+   *  see SocketsAPI. Needs Safelight 3.2.5; absent on older builds. */
+  sockets: SocketsAPI;
   /** Presets: the file formats and the descriptions the Presets panel and
    *  Copy Settings share. */
   presets: {

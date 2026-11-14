@@ -245,3 +245,53 @@ describe("a drag when Develop moves to another photo", () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 });
+
+// Shift+double-click sets the one value automatically when the caller gives
+// onAuto; a plain double-click still resets.
+describe("Slider auto", () => {
+  const track = () => screen.getByRole("slider", { name: "Exposure" });
+
+  it("calls onAuto on Shift+double-click, and neither resets nor commits", () => {
+    const onChange = vi.fn();
+    const onCommit = vi.fn();
+    const onAuto = vi.fn();
+    render(<Slider label="Exposure" {...at25} onChange={onChange} onCommit={onCommit} onAuto={onAuto} />);
+    fireEvent.doubleClick(track(), { shiftKey: true });
+    expect(onAuto).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("still resets on a double-click without Shift", () => {
+    const onChange = vi.fn();
+    const onAuto = vi.fn();
+    render(<Slider label="Exposure" {...at25} defaultValue={0} onChange={onChange} onAuto={onAuto} />);
+    fireEvent.doubleClick(track());
+    expect(onChange).toHaveBeenCalledWith(0);
+    expect(onAuto).not.toHaveBeenCalled();
+  });
+
+  it("resets on Shift+double-click when there is no onAuto", () => {
+    const onChange = vi.fn();
+    render(<Slider label="Exposure" {...at25} defaultValue={0} onChange={onChange} />);
+    fireEvent.doubleClick(track(), { shiftKey: true });
+    expect(onChange).toHaveBeenCalledWith(0);
+  });
+
+  it("names the gesture in the track's tooltip only when it is offered", () => {
+    const { rerender } = render(<Slider label="Exposure" {...at25} onChange={noop} />);
+    expect(track().getAttribute("title")).not.toContain("Shift+double-click");
+    rerender(<Slider label="Exposure" {...at25} onChange={noop} onAuto={noop} />);
+    expect(track().getAttribute("title")).toContain("Shift+double-click for auto");
+  });
+
+  it("calls the latest onAuto after a re-render", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = render(<Slider label="Exposure" {...at25} onChange={noop} onAuto={first} />);
+    rerender(<Slider label="Exposure" {...at25} onChange={noop} onAuto={second} />);
+    fireEvent.doubleClick(track(), { shiftKey: true });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+});

@@ -23,6 +23,7 @@ const {
   screen,
   session,
   dialog,
+  safeStorage,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -67,6 +68,7 @@ const {
   declaredConnectHosts,
   readDevFolder,
 } = require("./extension-origins.cjs");
+const { readSocketGrantOrigins, GRANTS_FILE: SOCKET_GRANTS_FILE } = require("./socket-access.cjs");
 const {
   navigationAllowed,
   windowOpenAction,
@@ -338,16 +340,20 @@ app.commandLine.appendSwitch("disable-features", "Translate,MediaRouter,Optimiza
 // or a newly chosen dev folder's, take effect on the next launch (a natural
 // consent point).
 // Malformed entries never reach the policy, so a manifest can't inject
-// 'unsafe-eval', a data: source, or a bare * into it.
+// 'unsafe-eval', a data: source, or a bare * into it. It also takes the wss:
+// addresses the person allowed extensions that declare permissions.userSockets
+// (socket-access.cjs), checked by the same rule.
 const galleryOrigins = galleryOriginsFrom(process.env);
 let launchHosts = [];
 // Once per launch, before the first page is served. The dev folder is read
 // without blocking: it may sit on a slow or network drive.
 async function loadLaunchHosts() {
-  launchHosts = declaredConnectHosts([
+  const manifests = [
     ...(await listPlugins()),
     ...(await listDevManifests(await readDevFolder(devFolderFile()))),
-  ]);
+  ];
+  const allowedSockets = await readSocketGrantOrigins(path.join(userData(), SOCKET_GRANTS_FILE), manifests);
+  launchHosts = [...new Set([...declaredConnectHosts(manifests), ...allowedSockets])];
 }
 function extensionConnectHosts() {
   return launchHosts;
@@ -515,6 +521,7 @@ function registerIpcChannels() {
     BrowserWindow,
     shell,
     dialog,
+    safeStorage,
     appVersion,
     takeOsOpen,
     store: extensionStore,

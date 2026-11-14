@@ -170,6 +170,9 @@ showMaskCoverage(maskId: string | null): void;     // 3.2.0
 setViewValues(values: Record<string, unknown> | null): void; // 3.2.1
 prewarmStages(): void;                            // 3.2.4
 registerBrushTip(tip: BrushTipContribution): void; // 3.2.1: { id, label, alpha: { width, height, data: Uint8Array } }
+unregisterBrushTip(id: string): void; // 3.2.5: one of your own
+brushTips(): readonly BrushTipContribution[]; // 3.2.5: every extension's tips, in order
+useBrushTips(): readonly BrushTipContribution[]; // 3.2.5: React hook
 registerInputProfiles(resolver: InputProfileResolver): void; // 3.2.3: { resolve(photo, file) }
 invalidateInputProfiles(): void;                   // 3.2.3
 useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
@@ -190,7 +193,9 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 - `showMaskCoverage` tints a mask's coverage over the image, fading in and out, or with `null` none: the mask a masking panel points at.
 - `setViewValues` gives the live view values for your own stages' params and textures, by qualified key (`"{stageId}.{key}"`), drawn over the photo's own: feedback that is not part of the edit, such as Paint Layers tinting the layer you hover. They are never saved, undone, exported or drawn in thumbnails. Each call replaces your last set, `null` clears it, keys of other extensions' stages are ignored, and holding your panel's preview off drops them. They are cleared when your extension stops. A stage that only ever shows feedback, such as a focus overlay, should also declare [`viewOnly`](contributions.md#view-aids-viewonly), which keeps it out of captures, probes and the histogram as well.
 - `prewarmStages` hints that your stages are about to be needed, when nothing else says so: a view aid the user can turn on with a key at any moment. The live view starts building, in the background, the programs their first frame would build: their passes' programs, and while a stage is dormant the program with it in. That frame then waits for none. A hint for programs already built costs nothing. Opening or hovering your panel gives the same hint by itself. Send it once the user is idle in Develop, not on every frame.
-- `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back.
+- `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back. A tip may carry a `group` (a picker heading) and `brush`, the settings it was made for: `spacing`, `scatter`, `count`, `sizeJitter`, `angleJitter`, `flowJitter`, `angle`, `followStroke`. Core clamps them into range and stamps nothing by them; a painter loads them when the tip is picked (3.2.5).
+- `unregisterBrushTip` takes back one tip of your own, as when the person removes it from your library; strokes that name it stamp the round disc from then on (3.2.5).
+- `brushTips` and `useBrushTips` list every registered tip, whichever extension registered it, so a brush can offer another extension's tips in its picker (3.2.5).
 - `registerInputProfiles` lets one extension read non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) through their colour profiles. Each load of such a photo calls `resolve(photo, file)` with `{ id, filename, inputProfile }` and the original as a `Blob`. Answer an `InputTransform` (below) or `null`. Core then decodes the file's 8-bit codes without colour management, puts each channel through its `trc` table and the three through `toRec709`, and clamps nothing. Colour outside sRGB arrives as negative channels, as it does from a RAW. Develop, exports, headless renders and edited thumbnails use the result; the Library's plain grid previews stay the browser's.
   - `null`, a throw, an answer later than 3 s or an invalid transform leaves the photo to the browser's decode, which converts to sRGB as before. So does a decode or conversion that fails afterwards.
   - One extension holds the resolver. Another's is refused with a warning naming the holder. Registering again replaces your own, and it is dropped when your extension stops.
@@ -417,6 +422,55 @@ For a server whose address the person types in, such as a self-hosted photo serv
 - It resolves with a `Response` whatever the status. It rejects with a `TypeError` when the origin isn't allowed or the server can't be reached, a `TimeoutError` past `timeoutMs` (30 s by default, 1 s to 30 minutes) and an `AbortError` when `signal` aborts. Answers are capped at 1 GiB.
 - In the browser build there is no dialogue: requests go through the page's own `fetch` and its policy.
 - Never log what you send: the person's key travels in your headers.
+
+### Declared origins and signing in (3.2.5)
+
+```ts
+authorizeInBrowser(buildUrl: (redirectUri: string) => string, options?: { timeoutMs?; signal? }): Promise<URLSearchParams>;
+```
+
+- **Declared origins.** The HTTPS origins your manifest lists in `permissions.network` count as allowed without asking: `hasAccess` and `requestAccess` answer `true`, and `fetch` reaches them the same way as an allowed address, outside the page. Use it for a web service whose content hosts send no CORS headers. A redirect may go to another declared origin. `https://*.example.com` covers every subdomain of example.com, not example.com itself, at the default port. A wildcard never covers an IP address, and one over a single label (`https://*.com`) covers nothing here. `userOrigins` isn't needed for these. As with the content-security policy, an origin added in an update applies from the next launch.
+- **Signing in.** `authorizeInBrowser` is OAuth 2.0 for installed apps. Safelight listens once on `127.0.0.1` at a free port and calls `buildUrl` with the redirect address (`http://127.0.0.1:<port>`, answered at `/`). Put it in the sign-in page's address as `redirect_uri`. Safelight opens the page, which must be `https://`, in the person's own browser, where their sign-in lives. When the provider sends the browser back, the tab shows a page saying it can be closed, and the call resolves with the query: `code` and `state`, or `error`.
+- The page's address must carry a `state` (it is refused without one): only an answer carrying the same `state` ends the wait, so a forged request can't. Check it yourself too, and use PKCE (`code_challenge_method=S256`): any program on the computer can reach the listener while it waits. Requests naming another host are refused.
+- It rejects with a `TimeoutError` after `timeoutMs` (5 minutes by default, 1 second to 15 minutes), an `AbortError` when `signal` aborts (a Cancel button), a `TypeError` when the page isn't `https://` or the browser can't be opened, and a `NotSupportedError` in the browser build. A new call ends your earlier one.
+- A redirect that leaves an origin drops the `Authorization` header, as `fetch` does.
+- Exchange the code for tokens with `fetch` to the provider's token origin, declared in `permissions.network`.
+
+## `api.secrets` (3.2.5)
+
+```ts
+available(): Promise<boolean>;
+get(key: string): Promise<string | null>;
+set(key: string, value: string): Promise<void>;
+delete(key: string): Promise<void>;
+```
+
+Keep a sign-in's refresh token or a key encrypted by the operating system's keychain (DPAPI on Windows, the Keychain on macOS, the Secret Service or KWallet on Linux), for your extension alone, across launches and updates. Uninstalling your extension forgets them.
+
+- Keys are 1 to 64 letters, digits, `.`, `-` or `_`; values are text up to 64 KiB.
+- Where there is no keychain (Linux without one, the browser build) `available()` answers `false`, `get` answers `null` and `set` rejects. Keep the value in memory for the session then, and tell the person they will sign in again next time.
+- `get` also answers `null` for a value the keychain can no longer read, for example after the computer's account was reset.
+- Use it instead of `api.settings` for anything that grants access. Like everything an extension holds, it keeps values off the disk in plain text; it doesn't hide them from other code in the app.
+
+## `api.sockets` (3.2.5)
+
+```ts
+type SocketAccess = "allowed" | "after-restart" | "not-allowed";
+requestAccess(url: string): Promise<SocketAccess>;
+status(url: string): Promise<SocketAccess>;
+list(): Promise<string[]>;
+revokeAccess(url: string): Promise<void>;
+```
+
+Live connections (WebSockets) to a server whose address the person types in, such as a studio's own sync relay, which no manifest can name in `permissions.network`. Declare `"permissions": { "userSockets": true }` in `safelight.json`. `api.network` can't do this: its requests are made outside the page, a request and an answer at a time.
+
+- `requestAccess` asks the person, in a dialogue that names your extension and the address, whether you may keep live connections to that origin. Only `wss://` is taken: no `ws://`, no wildcard, no user name or password. Call it from a click.
+- The page opens the socket itself (`new WebSocket(url)`), so an allowed address joins the app's content-security policy, which is built once per launch. `requestAccess` and `status` answer `"after-restart"` until Safelight starts again, then `"allowed"`. Until then, reach the same server over HTTPS with `api.network` if it offers that.
+- A yes is kept until `revokeAccess` (from the next launch), the person's Disconnect on your extension's page in the Extensions window, or your extension being uninstalled; an update keeps it.
+- The policy is the page's, so once an address is in it, any code in the app could reach it, as with `permissions.network`. A `wss://` source also lets the page `fetch` the same host over `https://` on the same port. It widens where data can go, never where code loads from.
+- One consent dialogue per extension at a time: a request made while yours is open answers `"not-allowed"` without asking.
+- In the browser build there is no dialogue: `wss://` addresses answer `"allowed"` and the page's own policy decides.
+- Keep what you send sealed if the server isn't yours alone to read: the server sees everything a socket carries.
 
 ## `api.variables` (shared variables)
 

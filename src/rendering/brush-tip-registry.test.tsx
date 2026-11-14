@@ -7,12 +7,13 @@
 // window accepts, who may hold an id, that the render worker is handed the set
 // (and again after a sweep), and that stopping the extension takes its tips away.
 
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrushTipContribution } from "@/extensions/api/contributions";
 import { makeScopedAPI } from "@/extensions/host";
 import { unregisterExtension } from "@/extensions/registry";
 import { brushTip, setActiveBrushTips } from "./webgl/brush-tips";
-import { dropBrushTips, registerBrushTip, unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
+import { brushTips, dropBrushTips, registerBrushTip, unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
 
 const tip = (id: string, over: Partial<BrushTipContribution["alpha"]> = {}): BrushTipContribution => ({
   id,
@@ -121,5 +122,71 @@ describe("brush tip registry", () => {
   it("is reached as api.develop.registerBrushTip", () => {
     makeScopedAPI("acme.brushes").develop.registerBrushTip(tip("chalk"));
     expect(brushTip("chalk")).toBeDefined();
+  });
+});
+
+describe("listing brush tips", () => {
+  afterEach(() => {
+    unregisterExtension("acme.brushes");
+    unregisterExtension("other.brushes");
+    setActiveBrushTips({});
+    vi.restoreAllMocks();
+  });
+
+  it("lists every extension's tips in the order they were registered", () => {
+    registerBrushTip("acme.brushes", tip("chalk"));
+    registerBrushTip("other.brushes", { ...tip("sponge"), group: "Wet" });
+    const listed = makeScopedAPI("other.brushes").develop.brushTips();
+    expect(listed.map((t) => t.id)).toEqual(["chalk", "sponge"]);
+    expect(listed[1].group).toBe("Wet");
+    expect(brushTips()).toBe(brushTips());
+  });
+
+  it("re-renders a useBrushTips reader when tips come and go", () => {
+    const { result } = renderHook(() => makeScopedAPI("other.brushes").develop.useBrushTips());
+    expect(result.current).toEqual([]);
+    act(() => registerBrushTip("acme.brushes", tip("chalk")));
+    expect(result.current.map((t) => t.id)).toEqual(["chalk"]);
+    act(() => dropBrushTips("acme.brushes"));
+    expect(result.current).toEqual([]);
+  });
+
+  it("lets an extension take back one tip of its own, and not another's", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerBrushTip("acme.brushes", tip("chalk"));
+    registerBrushTip("acme.brushes", tip("sponge"));
+    makeScopedAPI("other.brushes").develop.unregisterBrushTip("chalk");
+    expect(brushTip("chalk")).toBeDefined();
+    expect(warn.mock.calls[0][0]).toMatch(/other\.brushes.*chalk.*acme\.brushes/);
+    makeScopedAPI("acme.brushes").develop.unregisterBrushTip("chalk");
+    expect(brushTip("chalk")).toBeUndefined();
+    expect(brushTips().map((t) => t.id)).toEqual(["sponge"]);
+  });
+
+  it("keeps a tip's brush settings, clamped into their ranges", () => {
+    registerBrushTip("acme.brushes", {
+      ...tip("cloud"),
+      brush: { spacing: 0, scatter: 40, count: 2.6, sizeJitter: 1.5, angleJitter: -1, flowJitter: 0.25, angle: 7, followStroke: true },
+    });
+    expect(brushTip("cloud")?.brush).toEqual({
+      spacing: 0.01,
+      scatter: 10,
+      count: 3,
+      sizeJitter: 1,
+      angleJitter: 0,
+      flowJitter: 0.25,
+      angle: 7 - 2 * Math.PI,
+      followStroke: true,
+    });
+  });
+
+  it("drops brush settings that aren't numbers, and keeps the tip", () => {
+    registerBrushTip("acme.brushes", {
+      ...tip("odd"),
+      brush: { spacing: Number.NaN, count: "two", followStroke: "yes" } as never,
+      group: 7 as never,
+    });
+    expect(brushTip("odd")?.brush).toEqual({});
+    expect(brushTip("odd")?.group).toBeUndefined();
   });
 });

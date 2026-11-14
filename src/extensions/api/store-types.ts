@@ -187,6 +187,11 @@ export interface ExtensionPermissions {
    *  person in a dialogue naming the extension before any request reaches it.
    *  Needs Safelight 3.2.4. */
   userOrigins?: boolean;
+  /** The extension opens live connections (WebSockets, api.sockets) to a
+   *  `wss://` address the person types in. Each address is allowed by the
+   *  person in a dialogue naming the extension, and joins the network policy at
+   *  the next launch. Needs Safelight 3.2.5. */
+  userSockets?: boolean;
   /** Optional human-readable rationale shown to the user beside the request. */
   reason?: string;
 }

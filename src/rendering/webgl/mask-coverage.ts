@@ -217,7 +217,7 @@ function layRun(
   };
 
   // A registered tip is stamped in place of the disc: its longest edge across the
-  // dab's diameter, turned by the stroke's angle in the picture's own proportions
+  // dab's diameter, turned by the dab's angle (else its stroke's) in the picture's own proportions
   // (the turn comes before the stretch to the image's aspect), at `alpha`.
   const tip = brushTip(run.tip);
   const coverShape = tip ? tipCoverageShape(tip) : null;
@@ -236,7 +236,7 @@ function layRun(
     ctx.save();
     ctx.translate(dab.x * BAKE_SIZE, dab.y * BAKE_SIZE);
     ctx.scale(rx, ry);
-    ctx.rotate(run.angle ?? 0);
+    ctx.rotate(dab.angle ?? run.angle ?? 0);
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = op;
     ctx.drawImage(shape, -halfWidth, -halfHeight, halfWidth * 2, halfHeight * 2);

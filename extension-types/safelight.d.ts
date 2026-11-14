@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.2.4. GPL-3.0-only.
+// Safelight 3.2.5. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -900,6 +900,34 @@ export interface BrushTipContribution {
         height: number;
         data: Uint8Array;
     };
+    /** Heading a picker files the tip under ("Clouds", an imported pack's name). */
+    group?: string;
+    /** The brush settings the tip was made for, which a painter loads when the
+     *  tip is picked. Core keeps them, clamped into range, and stamps nothing by
+     *  them: the painter lays the dabs. Needs Safelight 3.2.5. */
+    brush?: BrushTipSettings;
+}
+
+/** A tip's own brush settings, as a raster editor's brush preset holds them.
+ *  Each is optional; a painter uses its own default for one left out. */
+export interface BrushTipSettings {
+    /** Distance between dabs, as a fraction of the diameter: 0.01 to 10. */
+    spacing?: number;
+    /** How far a dab may land off the stroke, across it, as a fraction of the
+     *  diameter: 0 to 10. */
+    scatter?: number;
+    /** Dabs laid at each spacing step: a whole number from 1 to 16. */
+    count?: number;
+    /** How much smaller a dab may come out, at random: 0 (never) to 1 (down to nothing). */
+    sizeJitter?: number;
+    /** How far a dab may turn at random: 0 (never) to 1 (a full turn either way). */
+    angleJitter?: number;
+    /** How much less a dab may deposit, at random: 0 to 1. */
+    flowJitter?: number;
+    /** The tip's turn, in radians. */
+    angle?: number;
+    /** Turn each dab along the stroke's direction, on top of `angle`. */
+    followStroke?: boolean;
 }
 
 /** The most layers a paint texture (TextureRequirement "paint") bakes. */
@@ -938,7 +966,15 @@ export interface ProcessingStageContribution {
      *  tools, ahead of the core block it is named for, instead of in the phase's
      *  group. The block is written as it reads (no braces, no space conversion)
      *  and sees the core's working values: `lin` at the two scene anchors, `c`
-     *  at the display ones. Ignored, with a warning, on any other extension's stage. */
+     *  at the display ones. Ignored, with a warning, on any other extension's
+     *  stage, bar `"tone"`: any extension's scene-linear stage may run there,
+     *  on `lin` (linear Rec.709) after White Balance and ahead of the tone block
+     *  (Basic's exposure, curves and the default shoulder), so an exposure tool
+     *  works before the tone mapping. Such a stage is written as its own
+     *  namespaced block, runs with Safelight's stages at the anchor by
+     *  priority, and can't declare passes, a space, a mask, reads or produces
+     *  (registration refuses it). Needs Safelight 3.2.5; older builds ignore
+     *  the anchor and run the stage in its phase. */
     anchor?: StageAnchor;
     /** For Safelight's own stages: this stage patches the source before the
      *  frame develops (Heal's): while any of the `active` uniforms' derived
@@ -1810,12 +1846,25 @@ export interface SafelightAPI {
         prewarmStages(): void;
         /** Offer a brush tip: a shape (an alpha image, at most 128 px an edge) a
          *  brush can stamp in place of its round disc. Name it by `id` in the `tip`
-         *  of the dab that starts a stroke, with an optional `angle`; an id nothing
+         *  of the dab that starts a stroke; an `angle` on any dab turns it (a dab
+         *  without one takes its stroke's, since 3.2.5); an id nothing
          *  holds bakes as the disc, so strokes saved with a tip keep drawing when
          *  its extension is off. Feather doesn't apply to a tip. Registering an id
          *  you hold replaces it; another extension's id is refused. Dropped when
          *  the extension stops. Needs Safelight 3.2.1. */
         registerBrushTip(tip: BrushTipContribution): void;
+        /** Take back a tip you registered, as when the person removes it from your
+         *  library. Strokes that name it stamp the round disc from then on. Another
+         *  extension's id is refused with a warning. Needs Safelight 3.2.5. */
+        unregisterBrushTip(id: string): void;
+        /** Every registered brush tip, whichever extension registered it, in the
+         *  order they came, with its group and brush settings: what a brush offers
+         *  in its tip picker. The same array until the set changes. Needs
+         *  Safelight 3.2.5. */
+        brushTips(): readonly BrushTipContribution[];
+        /** React hook: brushTips(), re-rendering as tips come and go. Needs
+         *  Safelight 3.2.5. */
+        useBrushTips(): readonly BrushTipContribution[];
         /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
          *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
          *  transform and hands it the original's bytes; core reads the file's
@@ -2130,9 +2179,18 @@ export interface SafelightAPI {
             kept: number;
         }>;
     };
-    /** Reach a server whose address the person typed in: see NetworkAPI. The
-     *  manifest declares `permissions.userOrigins`. Needs Safelight 3.2.4. */
+    /** Reach a server whose address the person typed in (the manifest declares
+     *  `permissions.userOrigins`; Safelight 3.2.4), reach the origins the
+     *  manifest declares in `permissions.network` without CORS, and sign in
+     *  through the browser (Safelight 3.2.5): see NetworkAPI. */
     network: NetworkAPI;
+    /** Keep a sign-in token or a key encrypted by the OS keychain: see
+     *  SecretsAPI. Needs Safelight 3.2.5. */
+    secrets: SecretsAPI;
+    /** Open live connections (WebSockets) to a server whose address the person
+     *  typed in and allowed (the manifest declares `permissions.userSockets`):
+     *  see SocketsAPI. Needs Safelight 3.2.5; absent on older builds. */
+    sockets: SocketsAPI;
     /** Presets: the file formats and the descriptions the Presets panel and
      *  Copy Settings share. */
     presets: {
@@ -2426,6 +2484,11 @@ export interface ExtensionPermissions {
      *  person in a dialogue naming the extension before any request reaches it.
      *  Needs Safelight 3.2.4. */
     userOrigins?: boolean;
+    /** The extension opens live connections (WebSockets, api.sockets) to a
+     *  `wss://` address the person types in. Each address is allowed by the
+     *  person in a dialogue naming the extension, and joins the network policy at
+     *  the next launch. Needs Safelight 3.2.5. */
+    userSockets?: boolean;
     /** Optional human-readable rationale shown to the user beside the request. */
     reason?: string;
 }
@@ -3130,6 +3193,42 @@ export interface NativeNetBridge {
         timeoutMs?: number;
     }): Promise<NativeNetResult>;
     abort(requestId: string): Promise<void>;
+    /** Listen once on 127.0.0.1 for the browser's redirect back from a sign-in
+     *  page. Optional: absent in older Electron builds. */
+    authorizeListen?(id: string, timeoutMs?: number): Promise<{
+        session: string;
+        redirectUri: string;
+    }>;
+    /** Open the https sign-in page in the system browser and resolve with the
+     *  query the browser came back with. */
+    authorizeOpen?(id: string, session: string, url: string): Promise<{
+        params: [string, string][];
+    } | {
+        error: {
+            kind: "refused" | "timeout" | "aborted" | "network";
+            message: string;
+        };
+    }>;
+    authorizeCancel?(id: string, session: string): Promise<void>;
+}
+
+/** Values an extension keeps encrypted by the OS keychain (api.secrets).
+ *  Privileged so core, not the page, names the asking extension. */
+export interface NativeSecretsBridge {
+    available(): Promise<boolean>;
+    get(id: string, key: string): Promise<string | null>;
+    set(id: string, key: string, value: string): Promise<void>;
+    delete(id: string, key: string): Promise<void>;
+}
+
+/** Live connections the person allowed an extension to open (api.sockets).
+ *  Privileged so core, not the page, names the asking extension. The answers
+ *  are read as untrusted (src/extensions/sockets.ts checks them). */
+export interface NativeSocketsBridge {
+    request(id: string, url: string): Promise<string>;
+    status(id: string, url: string): Promise<string>;
+    list(id: string): Promise<unknown[]>;
+    revoke(id: string, url: string): Promise<void>;
 }
 
 /** The one-shot privileged bundle returned by claimPrivileged(). */
@@ -3150,6 +3249,10 @@ export interface PrivilegedBridge {
     devtools?: NativeDevtoolsBridge;
     /** Optional: absent in older Electron builds. */
     net?: NativeNetBridge;
+    /** Optional: absent in older Electron builds. */
+    secrets?: NativeSecretsBridge;
+    /** Optional: absent in older Electron builds. */
+    sockets?: NativeSocketsBridge;
 }
 
 declare global {
@@ -3378,6 +3481,16 @@ export interface NetworkRequestInit {
     signal?: AbortSignal;
 }
 
+/** What `authorizeInBrowser` takes beyond the page's address. */
+export interface AuthorizeOptions {
+    /** How long to wait for the browser to come back, in ms: 5 minutes by
+     *  default, between 1 second and 15 minutes. Past it the call rejects with a
+     *  "TimeoutError". */
+    timeoutMs?: number;
+    /** Stop waiting (a Cancel button): the call rejects with an "AbortError". */
+    signal?: AbortSignal;
+}
+
 /** A server whose address the person types in (a photo server on their
  *  network, plain http or https), which no manifest can name ahead of time. The
  *  extension declares `"permissions": { "userOrigins": true }`; each address is
@@ -3385,7 +3498,15 @@ export interface NetworkRequestInit {
  *  and stays allowed until revoked or the extension is uninstalled (an update
  *  keeps it). Requests are made by Safelight itself, not
  *  the page: no cookies go with them, and a redirect to another address is
- *  refused. Needs Safelight 3.2.4. */
+ *  refused. Needs Safelight 3.2.4.
+ *
+ *  The https origins the manifest declares in `permissions.network` count as
+ *  allowed without asking, and requests to them are made the same way, so a
+ *  service that sends no CORS headers (a photo service's content host) can
+ *  answer; a redirect may go to another declared origin, without the
+ *  Authorization header. A wildcard entry ("https://*.example.com") covers
+ *  every subdomain, not example.com itself nor an IP address.
+ *  Needs Safelight 3.2.5. */
 export interface NetworkAPI {
     /** Ask the person to allow the address (origin) of `url`, unless it already
      *  is; resolves with whether it is allowed now. Ask from a click: the dialogue
@@ -3401,6 +3522,74 @@ export interface NetworkAPI {
      *  `timeoutMs`, and an "AbortError" when `signal` aborts. Answers are capped
      *  at 1 GiB. */
     fetch(url: string, init?: NetworkRequestInit): Promise<Response>;
+    /** Sign in to a web service the way desktop apps do (OAuth 2.0 for
+     *  installed apps): Safelight listens once on the loopback interface, hands
+     *  `buildUrl` the redirect address to put in the sign-in page's address
+     *  (`http://127.0.0.1:<port>`, answered at "/"), opens the page, which must
+     *  be https, in the person's own browser, and resolves with the query the
+     *  browser is sent back with (`code` and `state`, or `error`). The browser
+     *  tab then says it can be closed. The page's address must carry a
+     *  `state`, and only an answer with the same `state` ends the wait. Check
+     *  it yourself too, and use PKCE: any program on the computer can reach the
+     *  listener. A new call ends this
+     *  extension's earlier one. Rejects with a "TimeoutError" or "AbortError"
+     *  (see AuthorizeOptions), a TypeError when the page can't be opened, and a
+     *  "NotSupportedError" outside the desktop app. Needs Safelight 3.2.5. */
+    authorizeInBrowser(buildUrl: (redirectUri: string) => string, options?: AuthorizeOptions): Promise<URLSearchParams>;
+}
+
+// src/extensions/api/sockets.ts
+
+/** Whether the extension may open a WebSocket to an address: "allowed" now,
+ *  allowed but only from the next launch ("after-restart"), or not. */
+export type SocketAccess = "allowed" | "after-restart" | "not-allowed";
+
+/** Live connections (WebSockets) to a server whose address the person types
+ *  in, such as a studio's own sync relay, which no manifest can name ahead of
+ *  time. The extension declares `"permissions": { "userSockets": true }`; each
+ *  address is a secure WebSocket origin (`wss://`) that the person allows,
+ *  once, in a dialogue that names the extension. The page opens the socket
+ *  itself (`new WebSocket(url)`), so an allowed address joins the app's
+ *  network policy, and like every change to it, that happens the next time
+ *  Safelight starts. An allowed address stays allowed until revoked (here or
+ *  on the extension's page in the Extensions window) or the extension is
+ *  uninstalled; an update keeps it. Needs Safelight 3.2.5. */
+export interface SocketsAPI {
+    /** Ask the person to allow live connections to the address (origin) of
+     *  `url`, a `wss://` URL, unless it already is. Ask from a click: the
+     *  dialogue should answer something the person just did. */
+    requestAccess(url: string): Promise<SocketAccess>;
+    /** Whether the address of `url` is allowed, and from when, without asking. */
+    status(url: string): Promise<SocketAccess>;
+    /** The addresses allowed for this extension. */
+    list(): Promise<string[]>;
+    /** Stop allowing the address of `url`, from the next launch. */
+    revokeAccess(url: string): Promise<void>;
+}
+
+// src/extensions/api/secrets.ts
+
+/** Text an extension keeps secret, such as a sign-in's refresh token: each
+ *  value is encrypted by the operating system's keychain (Windows' DPAPI, the
+ *  macOS Keychain, the Secret Service or KWallet on Linux) and kept on this
+ *  computer for this extension alone, across launches and updates. Uninstalling
+ *  the extension forgets them. Where there is no keychain (Linux without one,
+ *  the browser build) nothing is kept: `available` says so, `get` answers
+ *  null and `set` rejects, so keep the value in memory for the session
+ *  instead. Values stay out of plain-text files; like everything else an
+ *  extension holds, they are not hidden from other code in the app. Needs
+ *  Safelight 3.2.5. */
+export interface SecretsAPI {
+    /** Whether values can be kept here. */
+    available(): Promise<boolean>;
+    /** The value kept under `key`, or null: none kept, no keychain, or one the
+     *  keychain can no longer read (the computer's account was reset). */
+    get(key: string): Promise<string | null>;
+    /** Keep `value` under `key` (1 to 64 letters, digits, dots, dashes or
+     *  underscores), replacing what was there. At most 64 KiB of text. Rejects
+     *  where there is no keychain ("NotSupportedError" in the browser build). */
+    set(key: string, value: string): Promise<void>;
+    delete(key: string): Promise<void>;
 }
 
 // src/extensions/api/sources.ts
@@ -3950,6 +4139,10 @@ export interface SliderProps {
     /** Fired with true while a drag is held with Alt or Ctrl down, and false
      *  when that ends. */
     onModifierPreview?: (active: boolean) => void;
+    /** Shift+double-click on the track sets this one value automatically; a
+     *  plain double-click still resets. Make your own undo step. Needs
+     *  Safelight 3.2.5; older builds reset on any double-click. */
+    onAuto?: () => void;
 }
 
 /** Tonal zones across the histogram, left (dark) to right (light). */

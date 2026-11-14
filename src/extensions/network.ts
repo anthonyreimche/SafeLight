@@ -3,14 +3,16 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// api.network: an extension reaches a server address the person allowed for it.
-// On the desktop the main process asks, keeps the answer and makes the request
-// (electron/net-access.cjs), over the privileged bridge core holds, so the id
-// it names is the calling extension's own. The browser build has no such
-// bridge: there the page's own policy decides what can be reached.
+// api.network: an extension reaches a server address the person allowed for it,
+// or one its manifest declares. On the desktop the main process asks, keeps the
+// answer and makes the request (electron/net-access.cjs), over the privileged
+// bridge core holds, so the id it names is the calling extension's own. The
+// browser build has no such bridge: there the page's own policy decides what
+// can be reached. Signing in through the browser (electron/oauth-loopback.cjs)
+// exists on the desktop only.
 
-import type { NetworkAPI, NetworkRequestInit } from "./api/network";
-import type { NativeNetBridge, NativeNetResult } from "./api/native-bridge";
+import type { AuthorizeOptions, NetworkAPI, NetworkRequestInit } from "./api/network";
+import type { NativeNetBridge } from "./api/native-bridge";
 import { privilegedNet } from "@/native/privileged";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -30,7 +32,7 @@ const isWebAddress = (url: string): boolean => {
 
 const abortError = () => new DOMException("The request was stopped.", "AbortError");
 
-function failureOf(error: Extract<NativeNetResult, { error: unknown }>["error"]): Error {
+function failureOf(error: { kind: string; message: string }): Error {
   if (error.kind === "timeout") return new DOMException(error.message, "TimeoutError");
   if (error.kind === "aborted") return abortError();
   return new TypeError(error.message);
@@ -74,6 +76,43 @@ async function viaPage(url: string, init: NetworkRequestInit): Promise<Response>
   return fetch(url, { method: init.method, headers: init.headers, body, credentials: "omit", signal });
 }
 
+async function authorizeVia(
+  net: NativeNetBridge,
+  extensionId: string,
+  buildUrl: (redirectUri: string) => string,
+  { timeoutMs, signal }: AuthorizeOptions,
+): Promise<URLSearchParams> {
+  const { authorizeListen, authorizeOpen, authorizeCancel } = net;
+  if (!authorizeListen || !authorizeOpen || !authorizeCancel) {
+    throw new DOMException("Signing in through the browser needs a newer Safelight.", "NotSupportedError");
+  }
+  if (signal?.aborted) throw abortError();
+  const { session, redirectUri } = await authorizeListen(extensionId, timeoutMs);
+  const cancel = () => void authorizeCancel(extensionId, session);
+  let url: string;
+  try {
+    url = String(buildUrl(redirectUri));
+  } catch (error) {
+    cancel();
+    throw error;
+  }
+  let onAbort = () => {};
+  const stopped = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      cancel();
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const outcome = await Promise.race([authorizeOpen(extensionId, session, url), stopped]);
+    if ("error" in outcome) throw failureOf(outcome.error);
+    return new URLSearchParams(outcome.params);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /** The network API of extension `extensionId`. */
 export function networkAPI(extensionId: string): NetworkAPI {
   return {
@@ -91,6 +130,11 @@ export function networkAPI(extensionId: string): NetworkAPI {
     fetch: (url, init = {}) => {
       const net = privilegedNet();
       return net ? viaBridge(net, extensionId, String(url), init) : viaPage(String(url), init);
+    },
+    authorizeInBrowser: async (buildUrl, options = {}) => {
+      const net = privilegedNet();
+      if (!net) throw new DOMException("Signing in through the browser needs the Safelight desktop app.", "NotSupportedError");
+      return authorizeVia(net, extensionId, buildUrl, options);
     },
   };
 }

@@ -5,7 +5,7 @@
 
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { isBuiltInStage, writesRawNames } from "@/rendering/webgl/builtin-stage";
-import { STAGE_ANCHORS, isStageAnchor } from "@/rendering/webgl/stage-anchors";
+import { OPEN_ANCHORS, STAGE_ANCHORS, isStageAnchor } from "@/rendering/webgl/stage-anchors";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import { isUniformValue } from "./pipeline-validation";
 import {
@@ -400,7 +400,21 @@ export function checkStageContract(
         `anchor ${formatValue(c.anchor)} is not one of ${Object.keys(STAGE_ANCHORS).join(", ")}`,
       );
     }
-    if (!writesRawNames({ id: c.id, extensionId })) warnings.push(`${stagePrefix}: anchor is for Safelight's own stages, so it is ignored`);
+    const own = writesRawNames({ id: c.id, extensionId });
+    if (!own && OPEN_ANCHORS.has(c.anchor)) {
+      if (c.phase !== "scene-linear") return fail("a stage at the tone anchor must be in the scene-linear phase");
+      const refused: [string, boolean][] = [
+        ["passes", (c.passes?.length ?? 0) > 0],
+        ["a space", c.space !== undefined],
+        ["a mask", c.mask !== undefined],
+        ["reads", c.reads !== undefined],
+        ["produces", (c.produces?.length ?? 0) > 0],
+      ];
+      const what = refused.find(([, declared]) => declared)?.[0];
+      if (what) return fail(`a stage at the tone anchor can't declare ${what}`);
+    } else if (!own) {
+      warnings.push(`${stagePrefix}: anchor is for Safelight's own stages, so it is ignored`);
+    }
   }
   if (c.derive !== undefined && !writesRawNames({ id: c.id, extensionId })) {
     warnings.push(`${stagePrefix}: derive is for Safelight's own stages, so it is ignored`);

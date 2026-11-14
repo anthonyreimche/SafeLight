@@ -13,6 +13,8 @@ const { diagnosticsChannels } = require("./diagnostics.cjs");
 const { extensionChannels } = require("./extensions.cjs");
 const { fsChannels } = require("./fs.cjs");
 const { netChannels } = require("./net.cjs");
+const { secretsChannels } = require("./secrets.cjs");
+const { socketChannels } = require("./sockets.cjs");
 const { windowChannels } = require("./window.cjs");
 
 /**
@@ -28,12 +30,14 @@ const { windowChannels } = require("./window.cjs");
  *   & Parameters<typeof extensionChannels>[0]
  *   & Parameters<typeof fsChannels>[0]
  *   & Parameters<typeof diagnosticsChannels>[0]
- *   & Parameters<typeof netChannels>[0]} deps
+ *   & Parameters<typeof netChannels>[0]
+ *   & Parameters<typeof secretsChannels>[0]
+ *   & Parameters<typeof socketChannels>[0]} deps
  * @returns {IpcChannel[]}
  */
 function ipcChannels(deps) {
   // What a channel group keeps per extension (kept folders, allowed server
-  // addresses) is forgotten when the extension is uninstalled; an update keeps it.
+  // addresses, secrets) is forgotten when the extension is uninstalled; an update keeps it.
   const forgetters = [];
   const shared = {
     ...deps,
@@ -54,6 +58,8 @@ function ipcChannels(deps) {
     ...fsChannels(shared),
     ...diagnosticsChannels(shared),
     ...netChannels(shared),
+    ...secretsChannels(shared),
+    ...socketChannels(shared),
   ];
 }
 

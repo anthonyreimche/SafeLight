@@ -24,6 +24,8 @@ import type {
   NativeNetBridge,
   NativeOsOpenBridge,
   NativePluginsBridge,
+  NativeSecretsBridge,
+  NativeSocketsBridge,
   NativeUpdatesBridge,
   NativeWindowBridge,
 } from "@/extensions/types";
@@ -38,6 +40,8 @@ let osOpenBridge: NativeOsOpenBridge | null = null;
 let windowBridge: NativeWindowBridge | null = null;
 let devtoolsBridge: NativeDevtoolsBridge | null = null;
 let netBridge: NativeNetBridge | null = null;
+let secretsBridge: NativeSecretsBridge | null = null;
+let socketsBridge: NativeSocketsBridge | null = null;
 
 /** Claim the privileged bridge into module scope. Idempotent. Must run before
  *  the first extension loads — call it at the very top of renderer boot. */
@@ -54,6 +58,8 @@ export function claimPrivileged(): void {
   windowBridge = priv?.window ?? null;
   devtoolsBridge = priv?.devtools ?? null;
   netBridge = priv?.net ?? null;
+  secretsBridge = priv?.secrets ?? null;
+  socketsBridge = priv?.sockets ?? null;
 }
 
 /** The privileged fs bridge, or null in the plain-browser build. Lazily claims
@@ -110,4 +116,18 @@ export function privilegedDevtools(): NativeDevtoolsBridge | null {
 export function privilegedNet(): NativeNetBridge | null {
   if (!claimed) claimPrivileged();
   return netBridge;
+}
+
+/** The secrets extensions keep encrypted by the OS keychain, or null outside
+ *  Electron. */
+export function privilegedSecrets(): NativeSecretsBridge | null {
+  if (!claimed) claimPrivileged();
+  return secretsBridge;
+}
+
+/** The live connections the person allowed an extension, or null outside
+ *  Electron. */
+export function privilegedSockets(): NativeSocketsBridge | null {
+  if (!claimed) claimPrivileged();
+  return socketsBridge;
 }

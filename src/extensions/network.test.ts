@@ -95,3 +95,68 @@ describe("api.network in the browser build", () => {
     expect(fetchSpy).toHaveBeenCalledWith("https://photos.example/api", expect.objectContaining({ credentials: "omit" }));
   });
 });
+
+describe("api.network.authorizeInBrowser", () => {
+  type Outcome = Awaited<ReturnType<NonNullable<NativeNetBridge["authorizeOpen"]>>>;
+
+  function authBridge(outcome: Outcome | Promise<Outcome>) {
+    const net = bridge({ status: 204, statusText: "No Content", headers: [], body: new Uint8Array() });
+    const full = Object.assign(net, {
+      authorizeListen: vi.fn(async () => ({ session: "s1", redirectUri: "http://127.0.0.1:53682" })),
+      authorizeOpen: vi.fn(async () => outcome),
+      authorizeCancel: vi.fn(async () => {}),
+    });
+    h.net = full;
+    return full;
+  }
+
+  it("builds the page's address around the listener's, opens it, and hands back the query", async () => {
+    const net = authBridge({ params: [["code", "4/0A"], ["state", "xyz"]] });
+    const build = vi.fn((redirect: string) => `https://accounts.example.com/auth?redirect_uri=${encodeURIComponent(redirect)}`);
+    const query = await networkAPI("ext.google").authorizeInBrowser(build, { timeoutMs: 60_000 });
+    expect(build).toHaveBeenCalledWith("http://127.0.0.1:53682");
+    expect(net.authorizeListen).toHaveBeenCalledWith("ext.google", 60_000);
+    expect(net.authorizeOpen).toHaveBeenCalledWith(
+      "ext.google",
+      "s1",
+      "https://accounts.example.com/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A53682",
+    );
+    expect(query.get("code")).toBe("4/0A");
+    expect(query.get("state")).toBe("xyz");
+  });
+
+  it("rejects as fetch does when the sign-in ends without an answer", async () => {
+    authBridge({ error: { kind: "timeout", message: "no answer" } });
+    await expect(networkAPI("ext.a").authorizeInBrowser(() => "https://a.example")).rejects.toMatchObject({ name: "TimeoutError" });
+    authBridge({ error: { kind: "refused", message: "must be https" } });
+    await expect(networkAPI("ext.a").authorizeInBrowser(() => "http://a.example")).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("stops listening when its signal aborts", async () => {
+    const net = authBridge(new Promise<Outcome>(() => {}));
+    const ac = new AbortController();
+    const pending = networkAPI("ext.a").authorizeInBrowser(() => "https://a.example", { signal: ac.signal });
+    await vi.waitFor(() => expect(net.authorizeOpen).toHaveBeenCalled());
+    ac.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(net.authorizeCancel).toHaveBeenCalledWith("ext.a", "s1");
+  });
+
+  it("stops listening when building the address throws", async () => {
+    const net = authBridge({ params: [] });
+    await expect(
+      networkAPI("ext.a").authorizeInBrowser(() => {
+        throw new Error("no client id");
+      }),
+    ).rejects.toThrow("no client id");
+    expect(net.authorizeCancel).toHaveBeenCalledWith("ext.a", "s1");
+    expect(net.authorizeOpen).not.toHaveBeenCalled();
+  });
+
+  it("isn't there outside the desktop app", async () => {
+    h.net = null;
+    await expect(networkAPI("ext.a").authorizeInBrowser(() => "https://a.example")).rejects.toMatchObject({
+      name: "NotSupportedError",
+    });
+  });
+});

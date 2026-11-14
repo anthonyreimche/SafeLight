@@ -61,7 +61,7 @@ The same order as a list:
 2. Sample the image; Heal.
 3. Convert to linear light, with the RAW baseline. Then `decode` and `noise-reduction` stages.
 4. Core noise reduction.
-5. Highlight reconstruction, White Balance, Exposure, Highlights, Shadows, the tone shoulder and mask tone. Then `scene-linear` and `tone-map` stages.
+5. Highlight reconstruction, White Balance, then stages that name the `tone` anchor (3.2.5, see [Ahead of the tone mapping](api/contributions.md#ahead-of-the-tone-mapping-anchor-tone)), then Exposure, Highlights, Shadows, the tone shoulder and mask tone. Then `scene-linear` and `tone-map` stages.
 6. The display transform, which `registerPipeline` replaces.
 7. Whites, Blacks, Contrast, presence, Tone Curve, HSL, Vibrance, Saturation, Colour Grading, Sharpening and mask display values. Then `display-adjust`, `effects` and `output-encode` stages.
 8. Output encode and the final clip.

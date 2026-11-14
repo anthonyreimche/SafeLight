@@ -795,6 +795,34 @@ export interface BrushTipContribution {
   id: string;
   label: string;
   alpha: { width: number; height: number; data: Uint8Array };
+  /** Heading a picker files the tip under ("Clouds", an imported pack's name). */
+  group?: string;
+  /** The brush settings the tip was made for, which a painter loads when the
+   *  tip is picked. Core keeps them, clamped into range, and stamps nothing by
+   *  them: the painter lays the dabs. Needs Safelight 3.2.5. */
+  brush?: BrushTipSettings;
+}
+
+/** A tip's own brush settings, as a raster editor's brush preset holds them.
+ *  Each is optional; a painter uses its own default for one left out. */
+export interface BrushTipSettings {
+  /** Distance between dabs, as a fraction of the diameter: 0.01 to 10. */
+  spacing?: number;
+  /** How far a dab may land off the stroke, across it, as a fraction of the
+   *  diameter: 0 to 10. */
+  scatter?: number;
+  /** Dabs laid at each spacing step: a whole number from 1 to 16. */
+  count?: number;
+  /** How much smaller a dab may come out, at random: 0 (never) to 1 (down to nothing). */
+  sizeJitter?: number;
+  /** How far a dab may turn at random: 0 (never) to 1 (a full turn either way). */
+  angleJitter?: number;
+  /** How much less a dab may deposit, at random: 0 to 1. */
+  flowJitter?: number;
+  /** The tip's turn, in radians. */
+  angle?: number;
+  /** Turn each dab along the stroke's direction, on top of `angle`. */
+  followStroke?: boolean;
 }
 
 /** The most layers a paint texture (TextureRequirement "paint") bakes. */
@@ -833,7 +861,15 @@ export interface ProcessingStageContribution {
    *  tools, ahead of the core block it is named for, instead of in the phase's
    *  group. The block is written as it reads (no braces, no space conversion)
    *  and sees the core's working values: `lin` at the two scene anchors, `c`
-   *  at the display ones. Ignored, with a warning, on any other extension's stage. */
+   *  at the display ones. Ignored, with a warning, on any other extension's
+   *  stage, bar `"tone"`: any extension's scene-linear stage may run there,
+   *  on `lin` (linear Rec.709) after White Balance and ahead of the tone block
+   *  (Basic's exposure, curves and the default shoulder), so an exposure tool
+   *  works before the tone mapping. Such a stage is written as its own
+   *  namespaced block, runs with Safelight's stages at the anchor by
+   *  priority, and can't declare passes, a space, a mask, reads or produces
+   *  (registration refuses it). Needs Safelight 3.2.5; older builds ignore
+   *  the anchor and run the stage in its phase. */
   anchor?: StageAnchor;
 
   /** For Safelight's own stages: this stage patches the source before the

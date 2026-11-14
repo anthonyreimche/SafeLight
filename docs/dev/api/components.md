@@ -39,12 +39,14 @@ interface SliderProps {
   compact?: boolean;       // narrow label and value columns
   trackBackground?: string; // CSS gradient track, with a marker
   onModifierPreview?: (active: boolean) => void; // Alt/Ctrl mid-drag
+  onAuto?: () => void;     // 3.2.5: Shift+double-click sets this value automatically
 }
 ```
 
 Notes:
 
 - Update live state in `onChange` (cheap enough to bind straight to a store setter). Snapshot undo history in `onCommit`.
+- With `onAuto`, Shift+double-click on the track calls it instead of resetting, and the track's tooltip names the gesture. A plain double-click still resets. Set the value and make the undo step yourself; the slider commits nothing for it. Older builds reset on any double-click.
 - A typed value may pass `min`/`max` (the field turns red). Dragging and arrow keys clamp.
 
 ## `Histogram`

@@ -50,3 +50,16 @@ export function anchorOf(
 ): StageAnchor | undefined {
   return isStageAnchor(s.anchor) && writesRawNames(s) ? s.anchor : undefined;
 }
+
+/** The anchors any extension's stage may name (3.2.5): the tone anchor, ahead
+ *  of the tone block (Basic's exposure, curves and the default shoulder), so
+ *  an exposure tool can work before the tone mapping. */
+export const OPEN_ANCHORS: ReadonlySet<StageAnchor> = new Set<StageAnchor>(["tone"]);
+
+/** The open anchor an extension's stage runs at, as its own namespaced block;
+ *  Safelight's and the official extensions' stages go through anchorOf. */
+export function openAnchorOf(
+  s: { id: string; anchor?: unknown; extensionId?: unknown },
+): StageAnchor | undefined {
+  return isStageAnchor(s.anchor) && OPEN_ANCHORS.has(s.anchor) && !writesRawNames(s) ? s.anchor : undefined;
+}

@@ -263,6 +263,36 @@ export interface NativeNetBridge {
     init: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number },
   ): Promise<NativeNetResult>;
   abort(requestId: string): Promise<void>;
+  /** Listen once on 127.0.0.1 for the browser's redirect back from a sign-in
+   *  page. Optional: absent in older Electron builds. */
+  authorizeListen?(id: string, timeoutMs?: number): Promise<{ session: string; redirectUri: string }>;
+  /** Open the https sign-in page in the system browser and resolve with the
+   *  query the browser came back with. */
+  authorizeOpen?(
+    id: string,
+    session: string,
+    url: string,
+  ): Promise<{ params: [string, string][] } | { error: { kind: "refused" | "timeout" | "aborted" | "network"; message: string } }>;
+  authorizeCancel?(id: string, session: string): Promise<void>;
+}
+
+/** Values an extension keeps encrypted by the OS keychain (api.secrets).
+ *  Privileged so core, not the page, names the asking extension. */
+export interface NativeSecretsBridge {
+  available(): Promise<boolean>;
+  get(id: string, key: string): Promise<string | null>;
+  set(id: string, key: string, value: string): Promise<void>;
+  delete(id: string, key: string): Promise<void>;
+}
+
+/** Live connections the person allowed an extension to open (api.sockets).
+ *  Privileged so core, not the page, names the asking extension. The answers
+ *  are read as untrusted (src/extensions/sockets.ts checks them). */
+export interface NativeSocketsBridge {
+  request(id: string, url: string): Promise<string>;
+  status(id: string, url: string): Promise<string>;
+  list(id: string): Promise<unknown[]>;
+  revoke(id: string, url: string): Promise<void>;
 }
 
 /** The one-shot privileged bundle returned by claimPrivileged(). */
@@ -283,6 +313,10 @@ export interface PrivilegedBridge {
   devtools?: NativeDevtoolsBridge;
   /** Optional: absent in older Electron builds. */
   net?: NativeNetBridge;
+  /** Optional: absent in older Electron builds. */
+  secrets?: NativeSecretsBridge;
+  /** Optional: absent in older Electron builds. */
+  sockets?: NativeSocketsBridge;
 }
 
 declare global {
