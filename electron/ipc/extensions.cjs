@@ -27,12 +27,13 @@ const { selfInstallMethod, updateSupport } = require("../self-update.cjs");
  *     storeVocabulary(): Promise<unknown>,
  *     uninstallPlugin(id: unknown): Promise<void>,
  *   },
- *   listPlugins: () => unknown[],
+ *   listPlugins: () => Promise<unknown[]>,
  *   installReleaseOnce: (repo: string, tag: string) => Promise<void>,
  *   updateHost: () => Parameters<typeof selfInstallMethod>[0],
+ *   forgetUninstalled?: (id: string) => Promise<void>,
  * }} deps
  */
-function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost }) {
+function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost, forgetUninstalled }) {
   return [
     {
       channel: "releases:fetch",
@@ -131,7 +132,10 @@ function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost 
     {
       channel: "plugins:uninstall",
       privileged: true,
-      handler: (_e, id) => store.uninstallPlugin(id),
+      handler: async (_e, id) => {
+        await store.uninstallPlugin(id);
+        if (forgetUninstalled) await forgetUninstalled(String(id));
+      },
     },
   ];
 }

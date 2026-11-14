@@ -9,6 +9,7 @@
 import type { WorkerRequest, WorkerResponse } from "./render-protocol";
 import { captureHandlers } from "./render-worker/capture";
 import { initialState, messageOf, type Cmd, type Handler, type HandlersFor, type WorkerContext } from "./render-worker/context";
+import { detailHandlers } from "./render-worker/detail";
 import { displayHandlers } from "./render-worker/display";
 import { liveHandlers } from "./render-worker/live";
 import { sourceHandlers } from "./render-worker/sources";
@@ -39,6 +40,7 @@ const handlers: HandlersFor<Cmd> = {
   ...thumbnailHandlers(ctx),
   ...sourceHandlers(ctx),
   ...displayHandlers(ctx),
+  ...detailHandlers(ctx),
 };
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {

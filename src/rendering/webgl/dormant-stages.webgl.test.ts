@@ -7,11 +7,11 @@
 // left out of a version 2 program while its values say it changes nothing, and
 // joins it, for the rest of the session, the first time a photo needs it.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, defaultMaskAdjustments, type Mask } from "@/catalog/types";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import { BUILTIN_DENOISE_ID, denoiseBag } from "./builtin-denoise";
-import type { WebGLRenderer, WebGLRendererOpts } from "./renderer";
+import type { StageBuildEvent, WebGLRenderer, WebGLRendererOpts } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
   builtinStage,
@@ -409,5 +409,215 @@ describe("a prewarm hint", () => {
       r.prewarmStages(ids());
       expect(built()).toBe(before);
     }, opts);
+  });
+});
+
+// A stage's passes compile the first time a frame runs them. A hint builds them
+// ahead, so a view aid turned on, or a panel's first slider move, waits for no
+// program at all.
+describe("a prewarm hint for a stage with passes", () => {
+  const PASSES: ProcessingStageContribution = {
+    id: "prewarm-passes.test",
+    name: "Passes",
+    phase: "scene-linear",
+    glsl: "if (amount > 0.0) lin = mix(lin, stageResult, amount);",
+    uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    passes: [{ glsl: "c = c * 0.5;" }, { glsl: "c = c + 0.25;" }],
+  };
+  const amount = (id: string, value: number) => ({ [`${id}.amount`]: value });
+
+  function withHinted(stage: ProcessingStageContribution, fn: (r: WebGLRenderer, built: () => number) => void): void {
+    const { canvas, gl } = glHarness();
+    const tally = trackGlObjects(gl);
+    try {
+      withRenderer(
+        { stages: [stage], ...LIVE },
+        (r) => {
+          r.setImage(SOURCE);
+          r.setParams(v2());
+          r.render();
+          fn(r, () => tally.created.program);
+        },
+        canvas,
+      );
+    } finally {
+      tally.restore();
+    }
+  }
+
+  it("builds the passes of a stage in the program, which its first frame then uses", () => {
+    withHinted(PASSES, (r, built) => {
+      const before = built();
+      r.prewarmStages([PASSES.id]);
+      expect(built()).toBe(before + 2);
+
+      r.setContributedParams(amount(PASSES.id, 1));
+      r.render();
+
+      expect(r.renderDrawCounts.pass).toBe(2);
+      expect(built()).toBe(before + 2);
+    });
+  });
+
+  it("builds a dormant stage's passes with the program that wakes it", () => {
+    const dormant: ProcessingStageContribution = { ...PASSES, id: "prewarm-dormant.test", dormantWhen: { amount: 0 } };
+    withHinted(dormant, (r, built) => {
+      const before = built();
+      r.prewarmStages([dormant.id]);
+      expect(built()).toBe(before + 3);
+
+      r.setContributedParams(amount(dormant.id, 1));
+      r.render();
+
+      expect(r.dormantStages).toEqual([]);
+      expect(built()).toBe(before + 3);
+    });
+  });
+
+  it("draws the frame its unhinted first frame draws", () => {
+    const frame = (hint: boolean): Frame => {
+      let drawn: Frame | null = null;
+      withHinted(PASSES, (r) => {
+        if (hint) r.prewarmStages([PASSES.id]);
+        r.setContributedParams(amount(PASSES.id, 1));
+        drawn = capture(r);
+      });
+      if (!drawn) throw new Error("no frame");
+      return drawn;
+    };
+    expect(worstDifference(frame(true), frame(false))).toBe(0);
+  });
+
+  it("builds nothing for passes built already, or for another stage", () => {
+    withHinted(PASSES, (r, built) => {
+      r.setContributedParams(amount(PASSES.id, 1));
+      r.render();
+      const before = built();
+      r.prewarmStages([PASSES.id, "acme.unknown"]);
+      expect(built()).toBe(before);
+    });
+  });
+});
+
+// Passes built ahead are told to the GPU crash guard as they start and end,
+// kept to a few at once, and never left in flight for a stage that is gone.
+describe("passes built ahead", () => {
+  const passesOf = (id: string, count: number, extra: Partial<ProcessingStageContribution> = {}): ProcessingStageContribution => ({
+    id,
+    name: "Passes",
+    phase: "scene-linear",
+    glsl: "if (amount > 0.0) lin = mix(lin, stageResult, amount);",
+    uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    passes: Array.from({ length: count }, (_, i) => ({ glsl: `c = c * ${(0.5 + i / 100).toFixed(2)};` })),
+    ...extra,
+  });
+
+  /** Runs `fn` on a live renderer holding `stages`, a photo set when `withPhoto`,
+   *  with the build events and the programs created. */
+  function watched(
+    stages: ProcessingStageContribution[],
+    fn: (r: WebGLRenderer, built: () => number, events: StageBuildEvent[]) => void,
+    withPhoto = true,
+  ): void {
+    const { canvas, gl } = glHarness();
+    const tally = trackGlObjects(gl);
+    const events: StageBuildEvent[] = [];
+    try {
+      withRenderer(
+        { stages, ...LIVE, onStageBuild: (e) => void events.push(e) },
+        (r) => {
+          if (withPhoto) {
+            r.setImage(SOURCE);
+            r.setParams(v2());
+            r.render();
+          }
+          fn(r, () => tally.created.program, events);
+        },
+        canvas,
+      );
+    } finally {
+      tally.restore();
+    }
+  }
+  const ends = (events: StageBuildEvent[]) => events.flatMap((e) => (e.phase === "end" ? [e.outcome] : []));
+  const starts = (events: StageBuildEvent[]) => events.filter((e) => e.phase === "start").length;
+
+  it("end as suspect when let go of on a lost context, so the guard keeps blaming them", () => {
+    const stage = passesOf("ahead-lost.test", 2);
+    const events: StageBuildEvent[] = [];
+    const lost = vi.spyOn(glHarness().gl, "isContextLost");
+    try {
+      watched([stage], (r, _built, seen) => {
+        r.prewarmStages([stage.id]);
+        lost.mockReturnValue(true);
+        seen.length = 0;
+        r.dispose();
+        events.push(...seen);
+      });
+    } finally {
+      lost.mockRestore();
+    }
+    expect(ends(events)).toEqual(["suspect", "suspect"]);
+  });
+
+  it("are finished by the next frame once the driver says they are built, drawn or not", () => {
+    const stage = passesOf("ahead-settled.test", 2);
+    const { gl } = glHarness();
+    const COMPLETION = 0x91b1;
+    const getExtension = gl.getExtension.bind(gl);
+    const getProgramParameter = gl.getProgramParameter.bind(gl);
+    const ext = vi.spyOn(gl, "getExtension").mockImplementation(((name: string) =>
+      name === "KHR_parallel_shader_compile" ? { COMPLETION_STATUS_KHR: COMPLETION } : getExtension(name)) as typeof gl.getExtension);
+    const param = vi.spyOn(gl, "getProgramParameter").mockImplementation((p, pname) =>
+      pname === COMPLETION ? true : getProgramParameter(p, pname));
+    try {
+      watched([stage], (r, _built, events) => {
+        events.length = 0;
+        r.prewarmStages([stage.id]);
+        expect(ends(events)).toEqual([]);
+        r.render();
+        expect(ends(events)).toEqual(["built", "built"]);
+        expect(r.renderDrawCounts.pass).toBe(0);
+      });
+    } finally {
+      ext.mockRestore();
+      param.mockRestore();
+    }
+  });
+
+  it("are built a few at a time, the rest as those finish", () => {
+    const stage = passesOf("ahead-many.test", 12);
+    watched([stage], (r, built) => {
+      const before = built();
+      r.prewarmStages([stage.id]);
+      expect(built() - before).toBe(8);
+      r.setContributedParams({ [`${stage.id}.amount`]: 1 });
+      r.render();
+      expect(built() - before).toBe(12);
+      expect(r.renderDrawCounts.pass).toBe(12);
+    });
+  });
+
+  it("are let go of when their stage goes while dormant", () => {
+    const stage = passesOf("ahead-gone.test", 2, { dormantWhen: { amount: 0 } });
+    watched([stage], (r, _built, events) => {
+      r.prewarmStages([stage.id]);
+      r.setStages([]);
+      r.render();
+      expect(ends(events)).toHaveLength(starts(events));
+    });
+  });
+
+  it("wait for a photo, whose processing version names them", () => {
+    const stage = passesOf("ahead-early.test", 2);
+    watched(
+      [stage],
+      (r, built) => {
+        const before = built();
+        r.prewarmStages([stage.id]);
+        expect(built()).toBe(before);
+      },
+      false,
+    );
   });
 });

@@ -5,12 +5,14 @@
 
 // What a RAW decode learns about its photo that the RAW cache doesn't keep: the
 // as-shot white balance, the exposure bias a Fujifilm DR mode left in the raw,
-// and the camera match. Develop's open and the cache pass both store it.
+// and the camera match. Develop's open and the cache pass both store it. Also the
+// size of a library source's photo its source listed none for.
 
 import type { CatalogPhoto, ExifData } from "./types";
 import { CAMERA_MATCH_VERSION, type CameraMatch } from "@/raw/camera-match";
 import { catalogStorage } from "./storage";
 import { useCatalogStore } from "@/state/catalog-store";
+import { sourceItemOf } from "@/project/library-sources";
 
 export type DecodeLearned = Partial<
   Pick<
@@ -43,7 +45,9 @@ export function learnedMatch(match: CameraMatch | undefined): DecodeLearned {
  *  catalogue in that time gets nothing stored. */
 export function rememberLearned(photo: CatalogPhoto, learned: DecodeLearned): void {
   if (Object.keys(learned).length === 0) return;
-  Object.assign(photo.exif, learned);
+  // A new exif, not the one in hand changed in place: the catalogue's records,
+  // a virtual copy's among them, may share it, and its save text is kept per record.
+  photo.exif = { ...photo.exif, ...learned };
   const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
   // Lazy: a decode learns it again if the save is lost.
   if (current) {
@@ -52,4 +56,22 @@ export function rememberLearned(photo: CatalogPhoto, learned: DecodeLearned): vo
       { lazy: true },
     );
   }
+}
+
+/** A library source's photo listed without a size is catalogued at its grid
+ *  preview's until its original is decoded: then the original's own size,
+ *  upright as the photo is turned, takes its place in the catalogue and the
+ *  grid. A size the source listed, or a photo turned or gone meanwhile, is left
+ *  as it is. */
+export function rememberSourceFrame(photo: CatalogPhoto, width: number, height: number): void {
+  const item = sourceItemOf(photo.fileHandle);
+  if (!item || (item.width && item.height) || !(width > 0 && height > 0)) return;
+  const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
+  if (!current || current.rotation !== photo.rotation) return;
+  if (current.width === width && current.height === height) return;
+  useCatalogStore.getState().mergeRebuiltPhoto(photo.id, { width, height });
+  // Lazy: the next decode learns it again if the save is lost.
+  void catalogStorage()
+    .putPhoto({ ...current, width, height }, { lazy: true })
+    .catch((e: unknown) => console.warn(`[load] the size of ${photo.filename} wasn't stored:`, e));
 }

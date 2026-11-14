@@ -15,6 +15,7 @@ import {
   normalizeRegistryEntry,
   parseVocabulary,
   readIndexCache,
+  readTextWithin,
 } from "./registry-entry.cjs";
 
 const row = (over: Record<string, unknown> = {}) => ({
@@ -202,5 +203,48 @@ describe("filterRegistry", () => {
   it("matches category labels when it has a vocabulary", () => {
     expect(names(filterRegistry(items, "colour", vocabulary))).toEqual(["acme/grade"]);
     expect(filterRegistry(items, "colour", null)).toEqual([]);
+  });
+});
+
+describe("readTextWithin", () => {
+  const enc = new TextEncoder();
+
+  it("reads a body that fits", async () => {
+    expect(await readTextWithin(new Response("hello"), 100)).toBe("hello");
+  });
+
+  it("drops a UTF-8 byte order mark, as res.text() does", async () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...enc.encode('{"id":"x"}')]);
+    expect(JSON.parse((await readTextWithin(new Response(bom), 100)) ?? "")).toEqual({ id: "x" });
+  });
+
+  it("refuses a declared length over the limit without reading the body", async () => {
+    let pulled = 0;
+    const body = new ReadableStream({
+      pull(c) {
+        pulled++;
+        c.enqueue(enc.encode("x"));
+      },
+    });
+    const res = new Response(body, { headers: { "content-length": "5000" } });
+    expect(await readTextWithin(res, 100)).toBeNull();
+    expect(pulled).toBeLessThanOrEqual(1);
+  });
+
+  it("stops an endless stream past the limit", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const body = new ReadableStream({
+      pull(c) {
+        pulled++;
+        c.enqueue(enc.encode("x".repeat(64)));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    expect(await readTextWithin(new Response(body), 1000)).toBeNull();
+    expect(pulled).toBeLessThan(50);
+    expect(cancelled).toBe(true);
   });
 });

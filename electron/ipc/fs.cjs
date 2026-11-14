@@ -15,6 +15,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { readFileRange } = require("../file-range.cjs");
+const { createKeptFolders } = require("../kept-folders.cjs");
 
 // Base directory for "separate" catalogues: the user's override if set, else a
 // stable folder under the app's userData. Shared by the resolve + list handlers
@@ -147,9 +148,23 @@ function notRoot(p) {
  *   shell: Pick<Electron.Shell, "trashItem" | "openPath" | "showItemInFolder">,
  *   dialog: Pick<Electron.Dialog, "showOpenDialog">,
  *   BrowserWindow: { fromWebContents(contents: Electron.WebContents): Electron.BrowserWindow | null },
+ *   onUninstalled?: (forget: (id: string) => Promise<void>) => void,
  * }} deps
  */
-function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
+function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow, onUninstalled }) {
+  const kept = createKeptFolders({
+    userData,
+    fileWriter,
+    pickPath: async (e, defaultPath) => {
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        properties: ["openDirectory"],
+        ...(defaultPath ? { defaultPath } : {}),
+      });
+      return canceled || !filePaths[0] ? null : filePaths[0];
+    },
+  });
+  if (onUninstalled) onUninstalled((id) => kept.forgetExtension(id));
   return [
     // With a range, only those bytes cross (file-range.cjs): the import reads a
     // RAW's head and camera preview, not the whole file.
@@ -277,6 +292,21 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
           }
         }
         return variants.sort((a, b) => a - b);
+      },
+    },
+    // A library source's .safelight (src/project/library-sources.ts): it has no
+    // folder of its own, so its catalogue, previews, listing and originals always
+    // live under the app data, one folder per `key` (the extension, its source and
+    // the library it shows), named after the source for whoever looks in the folder.
+    {
+      channel: "fs:sourceCatalogDir",
+      privileged: true,
+      handler: async (_e, key, name) => {
+        const tag = crypto.createHash("sha1").update(String(key)).digest("hex").slice(0, 8);
+        const leaf = String(name).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "source";
+        const dir = path.join(userData(), "source-catalogs", `${leaf}-${tag}`, ".safelight");
+        await fs.promises.mkdir(dir, { recursive: true });
+        return dir;
       },
     },
     // Enumerate the "separate" catalogues under `baseOverride` (or the app data dir)
@@ -446,6 +476,23 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         });
         return canceled || !filePaths[0] ? null : filePaths[0];
       },
+    },
+    // Folders an extension keeps across launches (kept-folders.cjs). Core names
+    // the asking extension; the page only ever holds a token.
+    {
+      channel: "fs:pickKeptFolder",
+      privileged: true,
+      handler: (e, id, replacing) => kept.pick(e, String(id), replacing == null ? null : String(replacing)),
+    },
+    {
+      channel: "fs:keptFolder",
+      privileged: true,
+      handler: (_e, id, token) => kept.open(String(id), String(token)),
+    },
+    {
+      channel: "fs:forgetKeptFolder",
+      privileged: true,
+      handler: (_e, id, token) => kept.forget(String(id), String(token)),
     },
     // One file, e.g. the monitor's ICC profile in Preferences. Filters come from
     // the renderer, so only well-formed ones reach the dialogue.

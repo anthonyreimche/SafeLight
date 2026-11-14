@@ -4,7 +4,9 @@
 // be preserved in derived versions.
 
 // An image shown in a frame, in the frame's CSS px. The image is W×H at scale 1:
-// one pixel of the whole-image buffer per CSS px.
+// one of its logical pixels per CSS px. ViewportImage sizes W×H so that is one
+// pixel of the whole-image buffer per device pixel (or more of them, as its
+// logicalScale gives).
 
 /** How the image sits in the frame: drawn at `scale`, its top-left corner at (x, y). */
 export interface View {
@@ -63,6 +65,14 @@ export function clampView(view: View, frame: Size, image: Size): View {
     x: w <= frame.w ? (frame.w - w) / 2 : Math.min(0, Math.max(frame.w - w, view.x)),
     y: h <= frame.h ? (frame.h - h) / 2 : Math.min(0, Math.max(frame.h - h, view.y)),
   };
+}
+
+/** The view at `scale` of the image measured as `to` that keeps at the frame's centre
+ *  the point `view` shows there of it measured as `from`, as fractions of the image. */
+export function recentreView(view: View, frame: Size, from: Size, to: Size, scale: number): View {
+  const u = (frame.w / 2 - view.x) / (view.scale * from.w);
+  const v = (frame.h / 2 - view.y) / (view.scale * from.h);
+  return { scale, x: frame.w / 2 - u * scale * to.w, y: frame.h / 2 - v * scale * to.h };
 }
 
 /** The view `e` of the way from `from` to `to`: the scaling about the frame point both

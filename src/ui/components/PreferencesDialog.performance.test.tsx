@@ -69,6 +69,26 @@ describe("Preferences ▸ Performance on integrated graphics", () => {
     expect(useSettings.getState().developMaxEdge).toBe(3072);
   });
 
+  it("offers Dynamic, and choosing a size afterwards turns it off", async () => {
+    const user = userEvent.setup();
+    showPerformance();
+    expect(screen.getByRole("button", { name: "Dynamic", pressed: false })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Dynamic" }));
+    expect(useSettings.getState()).toMatchObject({ developDynamicDetail: true, developMaxEdge: 4096 });
+    expect(screen.getByRole("button", { name: "Dynamic", pressed: true })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "4096 px", pressed: false })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "3072 px" }));
+    expect(useSettings.getState()).toMatchObject({ developDynamicDetail: false, developMaxEdge: 3072 });
+  });
+
+  it("turns Dynamic off with the integrated graphics button", async () => {
+    const user = userEvent.setup();
+    updateSettings({ developDynamicDetail: true });
+    showPerformance();
+    await user.click(screen.getByRole("button", { name: "Use integrated graphics settings" }));
+    expect(useSettings.getState()).toMatchObject({ developDynamicDetail: false, developMaxEdge: 2560 });
+  });
+
   it("names the integrated graphics it found", () => {
     showPerformance();
     expect(screen.getByText(/AMD Radeon 760M Graphics shares memory with the processor/)).toBeTruthy();

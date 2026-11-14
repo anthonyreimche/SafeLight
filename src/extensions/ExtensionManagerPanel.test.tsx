@@ -595,7 +595,7 @@ describe("ExtensionManagerPanel categories", () => {
     mountStore();
     await openCategory(user, "Detail and repair");
     await user.type(screen.getByLabelText("Search official extensions"), "grade");
-    await screen.findByText(/No new extensions found for “grade” in Detail and repair/);
+    await screen.findByText(/No extensions found for “grade” in Detail and repair/);
   });
 
   it("falls back to the home page when the open category is no longer in the vocabulary", async () => {
@@ -611,8 +611,93 @@ describe("ExtensionManagerPanel categories", () => {
     mountStore();
     await openCategory(user, "Other");
     await user.type(screen.getByLabelText("Search official extensions"), "warp");
-    await screen.findByText(/No new extensions found for “warp” in Other/);
+    await screen.findByText(/No extensions found for “warp” in Other/);
     screen.getByRole("button", { name: "Other" });
+  });
+});
+
+// A Browse search finds installed extensions too, marked Installed in place of
+// the Install button; the unsearched home page still offers only new ones.
+describe("ExtensionManagerPanel search includes installed", () => {
+  const r = (fullName: string, over: Partial<ExtensionSearchResult> = {}): ExtensionSearchResult => ({
+    fullName,
+    description: null,
+    stars: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    source: "registry",
+    ...over,
+  });
+  const catalog = [
+    r("acme/warp", { categories: ["detail"] }),
+    r("acme/grade", { categories: ["color"] }),
+    r("other/unverified-installed", { categories: ["color"] }),
+  ];
+
+  beforeEach(() => {
+    useExtStoreUI.setState({
+      browse: "home",
+      railExpanded: false,
+      vocabulary: FALLBACK_VOCABULARY,
+      view: "list",
+      selected: null,
+      kit: null,
+      kits: null,
+    });
+    localStorage.setItem(
+      "sl_ext_sources",
+      JSON.stringify({ "acme.grade": "acme/grade", "other.uv": "other/unverified-installed" }),
+    );
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [
+          { id: "acme.grade", name: "Grade", version: "1.0.0", main: "index.js" },
+          { id: "other.uv", name: "UV", version: "1.0.0", main: "index.js" },
+        ],
+        search: async (q: string) => (q ? catalog.filter((x) => x.fullName.includes(q)) : catalog),
+        vocabulary: async () => FALLBACK_VOCABULARY,
+      },
+    });
+  });
+
+  const cardOf = (name: string) => screen.getByText(name).closest("div.border") as HTMLElement;
+
+  it("shows installed matches beside new ones, marked Installed", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await screen.findAllByText("warp");
+    await user.type(screen.getByLabelText("Search official extensions"), "acme");
+    await waitFor(() => within(cardOf("grade")).getByText("Installed"));
+    expect(within(cardOf("grade")).queryByRole("button", { name: "Install" })).toBeNull();
+    within(cardOf("warp")).getByRole("button", { name: "Install" });
+  });
+
+  it("keeps installed extensions off the unsearched home page", async () => {
+    mountStore();
+    await screen.findAllByText("warp");
+    expect(screen.queryByText("grade")).toBeNull();
+  });
+
+  it("finds an installed extension when it's the only match", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await screen.findAllByText("warp");
+    await user.type(screen.getByLabelText("Search official extensions"), "grade");
+    await screen.findByText("grade");
+    within(cardOf("grade")).getByText("Installed");
+  });
+
+  it("shows an installed unverified match while Only verified is on", async () => {
+    useSettings.setState({ onlyVerifiedExtensions: true });
+    try {
+      const user = userEvent.setup();
+      mountStore();
+      await user.type(screen.getByLabelText("Search official extensions"), "other");
+      await screen.findByText("unverified-installed");
+      within(cardOf("unverified-installed")).getByText("Installed");
+    } finally {
+      useSettings.setState({ onlyVerifiedExtensions: false });
+    }
   });
 });
 

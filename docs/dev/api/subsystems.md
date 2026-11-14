@@ -20,6 +20,7 @@ A project keeps its catalogue with the photos, in `<project>/.safelight/`:
 - Read and write records and edits through [`api.catalog`](stores.md#apicatalog) and the catalogue store, not the storage object. Writes there reach every window.
 - An edit you put is visible to `getEditState` as soon as the call returns, before the file is saved, so you can reload Develop right after.
 - With no project open, writes do nothing.
+- A [library source](stores.md#library-sources-324) has no folder of its own: its catalogue, previews and the originals it fetched live in Safelight's own data instead, laid out the same way.
 
 ## Rendering
 
@@ -75,6 +76,7 @@ interface ExportSettings {
   includeLocation?: boolean;    // GPS, with includeMetadata (off)
   processorSettings?: Record<string, Record<string, unknown>>; // per processor
   filenameTemplateId?: string;
+  filenameTemplate?: string;    // a template string, without registering one (3.2.4)
 }
 ```
 
@@ -89,7 +91,7 @@ Each photo goes through these steps:
 - 16-bit output falls back to 8-bit on GPUs without float render targets.
 - Files carry no EXIF unless `includeMetadata` is on, and no GPS unless `includeLocation` is on too.
 - A photo whose original is out of reach fails instead of exporting its stored preview. `ExportResult.failures` lists it.
-- To render without writing files, use [`api.export.renderPhotos`](stores.md#apiexport). Filename templates: [`registerFilenameTemplate`](contributions.md#filenametemplatecontribution).
+- To render without writing files, use [`api.export.renderPhotos`](stores.md#apiexport). Filename templates: [`registerFilenameTemplate`](contributions.md#filenametemplatecontribution), or pass the template string itself as `filenameTemplate` to name one export without adding an entry to the Export panel's list (3.2.4). A `filenameTemplateId` wins over it.
 
 ## Cross-Window Broadcast
 

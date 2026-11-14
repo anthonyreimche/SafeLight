@@ -141,7 +141,8 @@ describe("a dev folder extension's id", () => {
   async function scan(): Promise<void> {
     setDevFolder(FOLDER);
     initDevFolder();
-    await vi.waitFor(() => expect(useDevFolder.getState().scanning).toBe(false));
+    // The default 1 s runs out when the whole suite loads the machine.
+    await vi.waitFor(() => expect(useDevFolder.getState().scanning).toBe(false), { timeout: 4000 });
   }
 
   afterEach(() => vi.restoreAllMocks());

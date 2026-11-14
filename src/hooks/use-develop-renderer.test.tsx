@@ -20,7 +20,8 @@ import { emitCacheEntryFilled } from "@/catalog/cache-events";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import type { HistogramData } from "@/rendering/histogram";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
-import { disposeRenderBridge, getRenderBridge } from "@/rendering/render-bridge";
+import { RenderBridge, disposeRenderBridge, getRenderBridge, noteLiveStageBag } from "@/rendering/render-bridge";
+import { setStageViewValues } from "@/modules/develop/stage-view-values";
 import type { WorkerRequest, WorkerResponse } from "@/rendering/render-protocol";
 import { useDevelopStore } from "@/state/develop-store";
 import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
@@ -90,6 +91,11 @@ vi.mock("@/catalog/load-image", async (importOriginal) => {
 
 // The decode pool's instances are only tokens handed round here.
 vi.mock("libraw-wasm", () => ({ default: class {} }));
+// The live bag the providers of stage texture variants are told, watched as it goes.
+vi.mock("@/rendering/render-bridge", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/rendering/render-bridge")>();
+  return { ...real, noteLiveStageBag: vi.fn(real.noteLiveStageBag) };
+});
 
 type Render = Extract<WorkerRequest, { cmd: "render" }>;
 type Frame = Extract<WorkerResponse, { type: "frame" }>;
@@ -4296,5 +4302,34 @@ describe("useDevelopRenderer painting outside the photo", () => {
     expect(outside(worker).at(-1)).toEqual([1, 1, 1]);
     act(() => useDevelopStore.setState({ colorAssessment: false }));
     expect(outside(worker).at(-1)).not.toEqual([1, 1, 1]);
+  });
+});
+
+// Stage texture variants made on demand: the providers are told what the live
+// view draws (the photo's bag under any view values), what the photo's own bag
+// names (the variant being made while a view value keeps the old one on show),
+// and that nothing is open once Develop closes.
+describe("useDevelopRenderer's live stage bag", () => {
+  afterEach(() => {
+    act(() => setStageViewValues("acme", null));
+    vi.mocked(noteLiveStageBag).mockClear();
+  });
+
+  it("hands the bridge the photo's own bag beside the bag it draws with view values over it", async () => {
+    const handed = vi.spyOn(RenderBridge.prototype, "setContributedParams");
+    useDevelopStore.setState({ ...loaded("p1", edit(0.5)), paramBag: { "acme.calib.table": "new" } });
+    await open(photo());
+    act(() => setStageViewValues("acme", { "acme.calib.table": "old" }));
+    const [shown, own] = handed.mock.calls.at(-1)!;
+    expect(shown["acme.calib.table"]).toBe("old");
+    expect(own?.["acme.calib.table"]).toBe("new");
+    handed.mockRestore();
+  });
+
+  it("notes an empty live bag once Develop is unmounted", async () => {
+    const { unmount } = await open(photo());
+    vi.mocked(noteLiveStageBag).mockClear();
+    unmount();
+    expect(noteLiveStageBag).toHaveBeenCalledWith({});
   });
 });

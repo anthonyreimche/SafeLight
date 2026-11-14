@@ -56,6 +56,21 @@ function withHiddenMembers(ids: readonly string[]): string[] {
   return [...all];
 }
 
+/** What Re-import says when it ends, or null when every photo was read again
+ *  from disk. A library source's photos (`refetched`) took what their server
+ *  lists now, and their previews download again as they come into view. */
+export function reimportReport({ ok, failed, refetched }: { ok: number; failed: number; refetched?: number }): string | null {
+  const photos = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
+  if (refetched)
+    return (
+      (ok === 1
+        ? `Re-imported 1 photo from what its server lists now. Its preview downloads again when it comes into view.`
+        : `Re-imported ${photos(ok)} from what their server lists now. Their previews download again as they come into view.`) +
+      (failed > 0 ? ` ${failed} couldn't be re-imported.` : "")
+    );
+  return failed > 0 ? `Re-imported ${photos(ok)}. ${failed} couldn't be read or decoded from disk.` : null;
+}
+
 export function usePhotoActions(): PhotoActions {
   const select = useCatalogStore((s) => s.select);
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
@@ -210,18 +225,14 @@ export function usePhotoActions(): PhotoActions {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
     const targets = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
-    const { ok, failed } = await reimportPhotos(
+    const result = await reimportPhotos(
       targets,
       undefined,
       (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
       projectPassSignal(),
     );
-    if (failed > 0) {
-      await alertDialog({
-        title: "Re-import",
-        message: `Re-imported ${ok} photo${ok === 1 ? "" : "s"}. ${failed} couldn't be read or decoded from disk.`,
-      });
-    }
+    const message = reimportReport(result);
+    if (message) await alertDialog({ title: "Re-import", message });
   }, []);
 
   const handleRemove = useCallback(async (ids: string[]) => {

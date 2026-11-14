@@ -32,6 +32,7 @@ import {
   easeOutCubic,
   interpolateView,
   placeBuffer,
+  recentreView,
   viewWindow,
   type ImageWindow,
   type View,
@@ -53,8 +54,14 @@ interface ViewportImageProps {
   // window buffers coming, so they bring it.
   imageWidth?: number;
   imageHeight?: number;
-  zoom: number | null; // null = fit; number = scale (1 = 100% of buffer)
+  // null = fit; a number is the scale: 1 is one logical pixel per device pixel, as
+  // 100% is in other editors, whatever the display scaling.
+  zoom: number | null;
   onZoomChange: (zoom: number | null) => void;
+  // How many logical pixels of the image one pixel of a whole-image buffer stands
+  // for (Develop's Dynamic mode: the photo's own pixels over the source's). The zoom
+  // is measured in them. Not positive or not finite counts as 1.
+  logicalScale?: number;
   // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
   status?: string | null;
   resetKey?: string; // changing this snaps back to the initial zoom (e.g. a new photo)
@@ -153,8 +160,9 @@ function ViewportImageView({
   bufferWindow = null,
   imageWidth = 0,
   imageHeight = 0,
-  zoom,
+  zoom: zoomProp,
   onZoomChange,
+  logicalScale = 1,
   status,
   resetKey,
   initialZoom = null,
@@ -189,15 +197,35 @@ function ViewportImageView({
   // change. `snapRef` marks the next zoom change as one that shows at once.
   const animRef = useRef<{ from: View; start: number } | null>(null);
   const snapRef = useRef(false);
-  const zoomSeenRef = useRef(zoom);
+  const zoomSeenRef = useRef(zoomProp);
   const drawnRef = useRef<View | null>(null);
   const [, setTick] = useState(0);
+  const skipRecenterRef = useRef(false);
+  // The logical scale last seen, the target view and image size of the last render
+  // with an image, the zoom a scale change put in place of the parent's until the
+  // parent takes it, and the zoom the image opened at while the view is still there.
+  const scaleSeenRef = useRef(1);
+  const viewSeenRef = useRef<{ view: View; image: { w: number; h: number } } | null>(null);
+  const rescaleRef = useRef<{ from: number; to: number } | null>(null);
+  const openedZoomRef = useRef<number | null | undefined>(undefined);
+  // A pan drag in progress: where it started, and the offset waiting for its frame.
+  const downRef = useRef<{
+    x: number;
+    y: number;
+    ox: number;
+    oy: number;
+    moved: boolean;
+  } | null>(null);
+  const panRaf = useRef<number | null>(null);
+  const pendingOffset = useRef<{ x: number; y: number } | null>(null);
 
   // A new image starts at the initial zoom (fit by default), centred, without
   // easing there from the image before.
   useEffect(() => {
     setOffset({ x: 0, y: 0 });
     animRef.current = null;
+    rescaleRef.current = null;
+    openedZoomRef.current = initialZoom;
     if (zoom !== initialZoom) snapRef.current = true;
     onZoomChange(initialZoom);
     // onZoomChange is a stable setter; zoom and initialZoom are read at reset time only.
@@ -227,11 +255,58 @@ function ViewportImageView({
     fitBufferRef.current = { w: imageWidth, h: imageHeight };
   }
   // Stable full-image dims: the dims captured from a whole buffer, falling back to
-  // the live buffer until the first one lands.
-  const logicalW = fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth;
-  const logicalH = fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight;
+  // the live buffer until the first one lands, in logical pixels.
+  const dpr = useDevicePixelRatio();
+  // A logical pixel is a device pixel, so the view's CSS px hold fewer of them
+  // on a scaled display.
+  const scale = (Number.isFinite(logicalScale) && logicalScale > 0 ? logicalScale : 1) / dpr;
+  const logicalW = (fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth) * scale;
+  const logicalH = (fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight) * scale;
 
   const hasImage = logicalW > 0 && logicalH > 0 && frame.w > 0 && frame.h > 0;
+
+  // A change of the logical scale with the image on screen changes what a zoom number
+  // means. A view at fit stays there; one still at the zoom the image opened at keeps
+  // that number, so opening at 100% holds once the photo's full size comes; any other
+  // keeps its picture on screen. Each keeps the image point at the frame's centre, and
+  // shows at once. The parent is handed the new zoom (layout effect below), which is
+  // used in place of its own until it takes it.
+  let zoom = zoomProp;
+  const rescaled = rescaleRef.current;
+  if (rescaled && zoomProp === rescaled.from) zoom = rescaled.to;
+  else rescaleRef.current = null;
+  if (scaleSeenRef.current !== scale) {
+    const ratio = scale / scaleSeenRef.current;
+    scaleSeenRef.current = scale;
+    animRef.current = null;
+    // A drag's origin is in the view before the change, so the drag ends here.
+    if (downRef.current) {
+      downRef.current = null;
+      setDragging(false);
+    }
+    pendingOffset.current = null;
+    if (panRaf.current != null) {
+      cancelAnimationFrame(panRaf.current);
+      panRaf.current = null;
+    }
+    const seen = viewSeenRef.current;
+    if (zoom != null && zoomProp != null && seen && hasImage) {
+      const next = zoom === openedZoomRef.current ? zoom : Math.min(MAX_ZOOM, zoom / ratio);
+      const image = { w: logicalW, h: logicalH };
+      const v = clampView(recentreView(seen.view, frame, seen.image, image, next), frame, image);
+      setOffset({ x: v.x, y: v.y });
+      if (next !== zoom) {
+        rescaleRef.current = { from: zoomProp, to: next };
+        zoom = next;
+        snapRef.current = true;
+        skipRecenterRef.current = true;
+      }
+    }
+  }
+  useLayoutEffect(() => {
+    const r = rescaleRef.current;
+    if (r && zoomProp === r.from) onZoomChange(r.to);
+  });
 
   // Color-assessment mat: a brilliant-white band hugging the image. In fit mode
   // we shrink the image to leave room for the band inside the frame, so "Assess"
@@ -281,6 +356,7 @@ function ViewportImageView({
   // move the target alone, which the view drawn follows at once (or mid-ease).
   if (zoomSeenRef.current !== zoom) {
     zoomSeenRef.current = zoom;
+    if (zoom !== openedZoomRef.current) openedZoomRef.current = undefined;
     const from = drawnRef.current;
     animRef.current =
       from && hasImage && !staticFit && !snapRef.current && !reducedMotion()
@@ -298,6 +374,7 @@ function ViewportImageView({
     else drawn = clampView(interpolateView(anim.from, targetView, easeOutCubic(t)), frame, image);
   }
   drawnRef.current = drawn;
+  viewSeenRef.current = hasImage ? { view: targetView, image } : null;
   // A zoom-in shows the pixels on screen, scaled up, until it settles, and only then
   // asks for its window: they cover every view on the way. A zoom-out asks at once,
   // so its wider frame comes in time to cover the views it widens through.
@@ -328,7 +405,6 @@ function ViewportImageView({
   // Emit the visible window (normalized image coords) + device-pixel output size
   // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
   // In fit mode (or without a handler) clear the ROI so the whole frame renders.
-  const dpr = useDevicePixelRatio();
   useEffect(() => {
     if (!onViewport || holdWindow) return;
     if (!windowed || !hasImage) {
@@ -357,7 +433,6 @@ function ViewportImageView({
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored
   // zooms set the offset themselves and skip this via the ref.
-  const skipRecenterRef = useRef(false);
   useEffect(() => {
     if (skipRecenterRef.current) {
       skipRecenterRef.current = false;
@@ -571,20 +646,10 @@ function ViewportImageView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staticFit]);
 
-  const downRef = useRef<{
-    x: number;
-    y: number;
-    ox: number;
-    oy: number;
-    moved: boolean;
-  } | null>(null);
-
   // Coalesce pan updates to one setOffset per animation frame. Pointer moves can
   // fire faster than the display refresh (high-Hz mice/trackpads), and each
   // setState forces a synchronous render — so without this a fast drag thrashes
   // React and the pan stutters.
-  const panRaf = useRef<number | null>(null);
-  const pendingOffset = useRef<{ x: number; y: number } | null>(null);
   const flushPan = () => {
     panRaf.current = null;
     if (pendingOffset.current) {

@@ -11,7 +11,7 @@
 // ipc/index.cjs, which runs here; main.cjs itself can't run under vitest, so the
 // rest of its wiring is read as text.
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:setMaterial|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -441,6 +441,86 @@ describe("extension release channels", () => {
     expect(PRELOAD).toMatch(/install: \(spec, version\) =>/);
   });
 
+  // A different extension installed later under the same id must not inherit
+  // the folders and server addresses the person gave the one they uninstalled.
+  describe("what an extension was given", () => {
+    function given() {
+      const userData = mkdtempSync(join(tmpdir(), "safelight-uninstall-"));
+      const out = mkdtempSync(join(tmpdir(), "safelight-uninstall-out-"));
+      const store = {
+        installPlugin: vi.fn(async () => ({})),
+        settleUpdate: vi.fn(async () => null),
+        uninstallPlugin: vi.fn(async (id: unknown) => {
+          if (id === "bad id") throw new Error("Bad extension id");
+        }),
+      };
+      const declares = { permissions: { userOrigins: true } };
+      const channels = table({
+        store: store as Partial<Deps["store"]> as Deps["store"],
+        userData: () => userData,
+        fileWriter: {
+          write: async (p: string, bytes: Uint8Array) => {
+            mkdirSync(dirname(p), { recursive: true });
+            writeFileSync(p, bytes);
+          },
+        },
+        dialog: {
+          showOpenDialog: async () => ({ canceled: false, filePaths: [out] }),
+          showMessageBox: async () => ({ response: 0 }),
+        } as Partial<Deps["dialog"]> as Deps["dialog"],
+        BrowserWindow: { fromWebContents: () => null } as Partial<Deps["BrowserWindow"]> as Deps["BrowserWindow"],
+        listPlugins: () => [
+          { id: "ext.a", name: "A", ...declares },
+          { id: "ext.b", name: "B", ...declares },
+        ],
+        devFolderFile: () => join(userData, "dev-folder.json"),
+      } as Partial<Deps>);
+      const call = (channel: string, ...args: unknown[]) =>
+        channels.find((c) => c.channel === channel)!.handler({ sender: {} } as Parameters<Channel["handler"]>[0], ...args);
+      const cleanup = () => {
+        rmSync(userData, { recursive: true, force: true });
+        rmSync(out, { recursive: true, force: true });
+      };
+      return { call, out, cleanup };
+    }
+
+    async function giveBoth(call: ReturnType<typeof given>["call"]) {
+      const a = (await call("fs:pickKeptFolder", "ext.a", null)) as { token: string };
+      const b = (await call("fs:pickKeptFolder", "ext.b", null)) as { token: string };
+      await call("net:requestOrigin", "ext.a", "http://nas:2283");
+      await call("net:requestOrigin", "ext.b", "http://nas:2283");
+      return { a: a.token, b: b.token };
+    }
+
+    it("is forgotten when it is uninstalled, and only its own", async () => {
+      const { call, out, cleanup } = given();
+      try {
+        const tokens = await giveBoth(call);
+        await call("plugins:uninstall", "ext.a");
+        await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ error: "unknown" });
+        await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(false);
+        await expect(call("fs:keptFolder", "ext.b", tokens.b)).resolves.toEqual({ path: out });
+        await expect(call("net:hasOrigin", "ext.b", "http://nas:2283")).resolves.toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("is kept through an update, and when the uninstall fails", async () => {
+      const { call, out, cleanup } = given();
+      try {
+        const tokens = await giveBoth(call);
+        await call("plugins:install", "owner/a", "2.0.0");
+        await call("plugins:settle-update", "ext.a", "keep");
+        await expect(call("plugins:uninstall", "bad id")).rejects.toThrow("Bad extension id");
+        await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ path: out });
+        await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   it("asks the update check for pre-releases on request", async () => {
     const fetchRemoteManifest = vi.fn(async () => null);
     const store = { fetchRemoteManifest } as Partial<Deps["store"]> as Deps["store"];
@@ -608,6 +688,10 @@ describe("opening paths from the OS", () => {
     );
   });
 
+  it("brings the main window forward on a second launch, not a pop-out", () => {
+    expect(MAIN).toMatch(/app\.on\("second-instance"[^]*?appWindows\.focusMain\(\);\s*\}\);/);
+  });
+
   it("listens for open-file from the first line of the lock branch, ahead of ready", () => {
     expect(MAIN).toMatch(/app\.on\("open-file", \(event, filePath\) => \{\s*event\.preventDefault\(\);\s*queueOsOpen\(\[filePath\]\);/);
     expect(MAIN.indexOf('app.on("open-file"')).toBeLessThan(MAIN.indexOf("app.whenReady()"));
@@ -655,6 +739,51 @@ describe("window reveal", () => {
   it("shows every window through revealWhenReady, never on ready-to-show alone", () => {
     expect(MAIN).not.toMatch(/\.once\("ready-to-show"/);
     expect(MAIN).toMatch(/revealWhenReady\(win, \(\) => \{/);
-    expect(MAIN).toMatch(/revealWhenReady\(childWin, \(\) => childWin\.show\(\)\)/);
+    expect(read("app-windows.cjs")).toMatch(/revealWhenReady\(win, \(\) => win\.show\(\)\)/);
+  });
+});
+
+// A page that window.opens the app's index holds the new window's object and
+// can claim its privileged bridge before the window's own bundle does, so the
+// pop-outs come from the main process, asked for by core alone.
+describe("app pop-out windows", () => {
+  const CHANNELS = ["window:openApp", "window:closeApp", "window:focusMain"];
+
+  it("lets nothing open a window with the preload through window.open", () => {
+    expect(MAIN).not.toMatch(/overrideBrowserWindowOptions/);
+    expect(MAIN).not.toMatch(/action:\s*["']allow["']/);
+    expect(MAIN).not.toMatch(/did-create-window/);
+  });
+
+  it("opens, closes and focuses through guarded channels only core is handed", () => {
+    expect(privilegedChannels()).toEqual(expect.arrayContaining(CHANNELS));
+    const privilegedSurface = PRELOAD.slice(0, PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+    const publicSurface = PRELOAD.slice(PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+    expect(registrations(privilegedSurface, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toEqual(
+      expect.arrayContaining(CHANNELS),
+    );
+    for (const channel of CHANNELS) expect(publicSurface).not.toContain(channel);
+  });
+
+  it("hands each request to the main process's window registry", () => {
+    const appWindows = { open: vi.fn(), close: vi.fn(), focusMain: vi.fn() };
+    entry("window:openApp", { appWindows }).handler(NO_EVENT, "module", "library");
+    entry("window:closeApp", { appWindows }).handler(NO_EVENT, "devtools", null);
+    entry("window:focusMain", { appWindows }).handler(NO_EVENT);
+    expect(appWindows.open.mock.calls).toEqual([[{ kind: "module", module: "library" }]]);
+    expect(appWindows.close.mock.calls).toEqual([[{ kind: "devtools", module: null }]]);
+    expect(appWindows.focusMain).toHaveBeenCalledOnce();
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\bappWindows,/);
+  });
+
+  it("ties the pop-outs to the main window", () => {
+    expect(functionSource("createWindow")).toMatch(/appWindows\.setMain\(win\);/);
+  });
+});
+
+describe("main process error handling", () => {
+  it("installs the rejection handler before anything else runs, and catches a failed startup", () => {
+    expect(MAIN).toMatch(/installMainErrorHandlers\(process, crashLog, console\.error\);/);
+    expect(MAIN).toMatch(/app\.whenReady\(\)\.then\(async \(\) => \{[\s\S]*?\}\)\.catch\(\(e\) => \{[\s\S]*?dialog\.showErrorBox\([\s\S]*?app\.quit\(\);/);
   });
 });

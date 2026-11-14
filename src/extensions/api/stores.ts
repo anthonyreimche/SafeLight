@@ -406,6 +406,8 @@ export interface AppSettings {
 
   // Render pipeline
   developMaxEdge: 2560 | 3072 | 4096 | 6144 | 8192;
+  /** Sharpen the visible area from the original when zoomed past the render buffer. */
+  developDynamicDetail: boolean;
   /** GPU memory budget (bytes) for resident decoded RAW sources. */
   gpuSourceCacheBytes: number;
   developPrefetchNeighbors: boolean;

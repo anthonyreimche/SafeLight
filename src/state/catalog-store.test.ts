@@ -17,6 +17,10 @@ const h = vi.hoisted(() => ({
     getEditState: (id: string) => Promise<EditState | null>;
   }[],
   removals: [] as { id: string; fileName: string }[],
+  /** While set, every removal hook waits for it; `removing` counts those waiting. */
+  removeGate: null as Promise<void> | null,
+  removing: 0,
+  peakRemoving: 0,
   /** While set, the awaited step it names waits for it: extension hooks told of
    *  a metadata change, a preview being turned, or a storage write. */
   metadataGate: null as Promise<void> | null,
@@ -42,6 +46,12 @@ vi.mock("@/extensions/registry", () => ({
   },
   emitPhotoRemove: async (ctx: { photo: CatalogPhoto; fileName: string }) => {
     h.removals.push({ id: ctx.photo.id, fileName: ctx.fileName });
+    h.peakRemoving = Math.max(h.peakRemoving, ++h.removing);
+    try {
+      if (h.removeGate) await h.removeGate;
+    } finally {
+      h.removing--;
+    }
   },
 }));
 
@@ -155,6 +165,9 @@ beforeEach(() => {
   h.broadcasts.length = 0;
   h.metadata.length = 0;
   h.removals.length = 0;
+  h.removeGate = null;
+  h.removing = 0;
+  h.peakRemoving = 0;
   h.metadataGate = null;
   h.rotateGate = null;
   h.storageGate = null;
@@ -672,6 +685,29 @@ describe("removal", () => {
     expect(h.removals).toEqual([{ id: "a", fileName: "a.NEF" }]);
   });
 
+  it("runs at most 8 removal hooks at once and deletes the records only after all finish", async () => {
+    const list = Array.from({ length: 20 }, (_, i) => photo(`p${i}`));
+    await store.storage.putPhotos(list);
+    useCatalogStore.setState({ photos: list });
+    const hooks = gate();
+    h.removeGate = hooks.promise;
+    const deleting = vi.spyOn(store.storage, "deletePhotos");
+
+    const removal = state().removePhotos(list.map((p) => p.id));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.removing).toBe(8);
+    expect(deleting).not.toHaveBeenCalled();
+
+    hooks.open();
+    await removal;
+
+    expect(h.peakRemoving).toBe(8);
+    expect(h.removals).toHaveLength(20);
+    expect(deleting).toHaveBeenCalledTimes(1);
+    expect(ids()).toEqual([]);
+  });
+
   it("is a no-op for an empty id list", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
@@ -767,6 +803,30 @@ describe("records another window wrote", () => {
     expect(state().activePhotoId).toBe("a");
     expect(store.rows.size).toBe(0);
     expect(h.broadcasts).toEqual([]);
+  });
+
+  it("leaves the grid's structure alone for a rating, and counts only that field", () => {
+    useCatalogStore.setState({ photos: [previewed("a", { keywords: ["dawn"] }), photo("b")] });
+    const before = state().photos;
+
+    state().mergeRemoteRecords([storedPhoto(photo("a", { rating: 4, keywords: ["dawn"] }))], []);
+
+    const after = state().photos;
+    expect(after).not.toBe(before);
+    expect(after[0].rating).toBe(4);
+    expect(after[1]).toBe(before[1]);
+    expect(structureVersion(after)).toBe(structureVersion(before));
+    expect(fieldChanges(after, ["rating"])).toBe(fieldChanges(before, ["rating"]) + 1);
+    expect(fieldChanges(after, ["keywords", "exif"])).toBe(fieldChanges(before, ["keywords", "exif"]));
+  });
+
+  it("keeps a photo whose record says nothing new", () => {
+    const local = previewed("a", { rating: 2 });
+    useCatalogStore.setState({ photos: [local] });
+
+    state().mergeRemoteRecords([storedPhoto(photo("a", { rating: 2 }))], []);
+
+    expect(state().photos[0]).toBe(local);
   });
 
   it("clears a field the other window's record leaves out", () => {
@@ -1058,6 +1118,20 @@ describe("rotatePhotos", () => {
     expect(liveUrls.has(a.thumbnailUrl)).toBe(false);
     expect(liveUrls.has(rotated.thumbnailUrl as string)).toBe(true);
     expect(store.rows.get("a")?.rotation).toBe(90);
+  });
+
+  // A turn moves no photo in the catalogue, so a grid sorted by name or date
+  // keeps its order instead of filtering and sorting every photo again.
+  it("keeps the catalogue's structure and counts the fields a turn changes", async () => {
+    const before = [previewed("a"), photo("b")];
+    useCatalogStore.setState({ photos: before });
+
+    await state().rotatePhotos(["a"], 90);
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["rotation"])).toBe(1);
+    expect(fieldChanges(state().photos, ["width", "height"])).toBe(2);
+    expect(fieldChanges(state().photos, ["rating", "filename"])).toBe(0);
   });
 
   it("accumulates turns and keeps the angle in 0–359", async () => {
@@ -1483,6 +1557,17 @@ describe("stacks", () => {
     expect(d.stackId).toBeUndefined();
     expect(stacked().map(([, , cover]) => cover)).toEqual([false, true, false, false]);
     expect(store.rows.get("b")).toMatchObject({ stackId: a.stackId, stackCover: true });
+  });
+
+  it("stacks a long list of ids without a pass over the catalogue for each", async () => {
+    const list = Array.from({ length: 2000 }, (_, i) => photo(`s${i}`));
+    useCatalogStore.setState({ photos: list });
+    const scans = vi.spyOn(Array.prototype, "some");
+
+    await state().setStack(list.map((p) => p.id));
+
+    expect(scans.mock.calls.length).toBeLessThan(10);
+    expect(state().photos.every((p) => p.stackId !== undefined)).toBe(true);
   });
 
   it("marks the first id as the cover when none is named, and keeps one mark only", async () => {

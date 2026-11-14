@@ -21,9 +21,10 @@ const TRAFFIC_LIGHT_HEIGHT = 14;
  *   takeOsOpen: () => unknown,
  *   saveMaterial?: (material: "acrylic" | "mica" | null) => void,
  *   isSoftware?: () => boolean,
+ *   appWindows: ReturnType<typeof import("../app-windows.cjs").createAppWindows>,
  * }} deps
  */
-function windowChannels({ appVersion, BrowserWindow, takeOsOpen, saveMaterial, isSoftware }) {
+function windowChannels({ appVersion, BrowserWindow, takeOsOpen, saveMaterial, isSoftware, appWindows }) {
   return [
     {
       channel: "app:version",
@@ -78,6 +79,22 @@ function windowChannels({ appVersion, BrowserWindow, takeOsOpen, saveMaterial, i
         if (system.platform === "win32" || system.platform === "darwin") saveMaterial?.(wanted);
         return applied;
       },
+    },
+    // Privileged so only core opens the app's pop-outs (app-windows.cjs).
+    {
+      channel: "window:openApp",
+      privileged: true,
+      handler: (_e, kind, module) => appWindows.open({ kind, module }),
+    },
+    {
+      channel: "window:closeApp",
+      privileged: true,
+      handler: (_e, kind, module) => appWindows.close({ kind, module }),
+    },
+    {
+      channel: "window:focusMain",
+      privileged: true,
+      handler: () => appWindows.focusMain(),
     },
     // Privileged: it names a folder for the renderer to open as the project.
     {

@@ -98,7 +98,7 @@ const { FakeRenderer } = vi.hoisted(() => {
      *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
     drawn: { params: DevelopParams | undefined; derived?: Record<string, unknown>; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
     /** Each render and readback, in order. */
-    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame" | "readSourceSample")[] = [];
+    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame" | "readSourceSample" | "requestDetail" | "setDetailGain")[] = [];
     /** What each readFloatFrame drew: its point, long-edge cap and space, and
      *  the params, bag, pipeline and screen it drew with. */
     floatReads: {
@@ -358,6 +358,53 @@ const { FakeRenderer } = vi.hoisted(() => {
       return true;
     }
 
+    setViewport(roi: { x: number; y: number; w: number; h: number } | null) {
+      this.viewport = roi;
+    }
+
+    /** Whether it keeps a native frame: the develop renderer does, the thumb renderer doesn't. */
+    keepNativeFrame = false;
+    /** Whether setNativeFrame takes the sizes it is handed. */
+    static takesNativeFrame = true;
+    /** Whether requestDetail asks for a cut. */
+    static asksDetail = true;
+    /** Whether setDetailGain takes the gains it is handed. */
+    static takesGain = true;
+    /** Each setNativeFrame call, as [key, width, height]. */
+    nativeFrames: [string, number, number][] = [];
+    hasNativeFrame = false;
+    clearedNativeFrames = 0;
+    /** Whether the last live frame wanted a detail gain it lacked. */
+    detailWanted = false;
+    /** How many times requestDetail ran. */
+    detailAsks = 0;
+    /** Each setDetailGain call, as [request, whether it carried a gain]. */
+    gainsSeen: [number, boolean][] = [];
+
+    setNativeFrame(key: string, size: { width: number; height: number }) {
+      this.nativeFrames.push([key, size.width, size.height]);
+      this.hasNativeFrame = FakeRenderer.takesNativeFrame;
+      return FakeRenderer.takesNativeFrame;
+    }
+
+    clearNativeFrame() {
+      this.clearedNativeFrames++;
+      this.hasNativeFrame = false;
+    }
+
+    requestDetail() {
+      this.detailAsks++;
+      this.calls.push("requestDetail");
+      if (!FakeRenderer.asksDetail) return null;
+      return { request: this.detailAsks, key: "p:0", rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 }, outW: 64, outH: 48, baseW: 3, baseH: 2 };
+    }
+
+    setDetailGain(request: number, gain: { data: Uint16Array } | null) {
+      this.gainsSeen.push([request, gain !== null]);
+      this.calls.push("setDetailGain");
+      return FakeRenderer.takesGain && gain !== null;
+    }
+
     render(options?: { viewOverlays?: boolean }) {
       this.calls.push("render");
       this.waking.push("render");
@@ -461,6 +508,9 @@ beforeEach(async () => {
   FakeRenderer.failing = {};
   FakeRenderer.resident = new Set();
   FakeRenderer.residentSize = { width: 0, height: 0 };
+  FakeRenderer.takesNativeFrame = true;
+  FakeRenderer.asksDetail = true;
+  FakeRenderer.takesGain = true;
   FakeOffscreenCanvas.made = [];
   handedOut = [];
   encodings = [];
@@ -1410,6 +1460,15 @@ describe("render-worker dormant stages", () => {
     expect(develop.opts).toMatchObject({ skipDormantStages: true });
     expect(develop.opts).not.toMatchObject({ wakeTogether: true });
     expect(thumbs.opts).toMatchObject({ skipDormantStages: true, wakeTogether: true });
+  });
+
+  it("draws view-only stages on the live view's renderer alone", async () => {
+    send(INIT);
+    send(thumbnail());
+    await Promise.resolve();
+    const [develop, thumbs] = FakeRenderer.instances;
+    expect(develop.opts).toMatchObject({ drawsViewStages: true });
+    expect(thumbs.opts).not.toMatchObject({ drawsViewStages: true });
   });
 
   it("hands a grid preview's renderer the live view's awake stages before each program and draw", async () => {
@@ -2927,5 +2986,232 @@ describe("render-worker brush tips", () => {
     expect(brushTip("chalk")).toBeUndefined();
     expect(brushTip("sponge")).toBeDefined();
     expect(posted).toEqual([]);
+  });
+});
+
+// The develop renderer keeps the open photo's native luminance and cuts detail gains
+// from it for a zoomed window once the view has been still for a moment, then draws
+// a frame the bridge didn't ask for, carrying seq 0, so the sharper picture shows
+// without waiting for the next edit.
+describe("render-worker dynamic detail", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const IMAGE: WorkerRequest = {
+    cmd: "setImage",
+    image: { kind: "float", data: new Float32Array(4 * 6), width: 3, height: 2 },
+  };
+  const NATIVE: WorkerRequest = { cmd: "setNativeFrame", key: "p:0", width: 6, height: 4 };
+  const GAIN = (request: number): Extract<WorkerRequest, { cmd: "setDetailGain" }> => ({
+    cmd: "setDetailGain",
+    request,
+    data: new Uint16Array(12),
+    width: 4,
+    height: 3,
+    rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+  });
+  const develop = () => FakeRenderer.instances[0];
+  const unasked = () => posted.filter((m) => m.type === "frame" && m.seq === 0);
+  const wants = () => posted.filter((m) => m.type === "detailWanted");
+
+  /** A live frame that wanted a gain it lacked. */
+  function wantingFrame(seq = 1) {
+    develop().detailWanted = true;
+    send({ cmd: "render", seq });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    send(INIT);
+    send(IMAGE);
+    posted = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a native frame on the develop renderer only", () => {
+    expect(develop().keepNativeFrame).toBe(true);
+    send(thumbnail());
+    expect(FakeRenderer.instances[1].keepNativeFrame).toBe(false);
+  });
+
+  it("hands the native frame's size to the develop renderer only, and answers nothing", () => {
+    send(thumbnail());
+    posted = [];
+    send(NATIVE);
+    expect(develop().nativeFrames).toEqual([["p:0", 6, 4]]);
+    expect(FakeRenderer.instances[1].nativeFrames).toEqual([]);
+    expect(posted).toEqual([]);
+  });
+
+  it("drops the native frame while there is no renderer", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    posted = [];
+    expect(() => send(NATIVE)).not.toThrow();
+    expect(() => send(GAIN(1))).not.toThrow();
+    expect(posted).toEqual([]);
+  });
+
+  it("lets go of it when told, and when the view moves to another photo", () => {
+    send(NATIVE);
+    send({ cmd: "clearNativeFrame" });
+    expect(develop().clearedNativeFrames).toBe(1);
+    send(NATIVE);
+    send({ cmd: "clearSource" });
+    expect(develop().clearedNativeFrames).toBe(2);
+  });
+
+  it("asks the window for the cut 120 ms after a frame that wanted a gain, and cuts nothing itself", () => {
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    posted = [];
+    develop().detailAsks = 0;
+    wantingFrame();
+    vi.advanceTimersByTime(119);
+    expect(develop().detailAsks).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(develop().detailAsks).toBe(1);
+    expect(wants()).toEqual([
+      { type: "detailWanted", request: 1, key: "p:0", rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 }, outW: 64, outH: 48, baseW: 3, baseH: 2 },
+    ]);
+    expect(unasked()).toEqual([]);
+  });
+
+  it("asks nothing when the renderer has nothing to ask", () => {
+    FakeRenderer.asksDetail = false;
+    send(NATIVE);
+    wantingFrame();
+    vi.advanceTimersByTime(500);
+    expect(develop().detailAsks).toBeGreaterThan(0);
+    expect(wants()).toEqual([]);
+  });
+
+  it("waits until the view has been still for 120 ms", () => {
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    develop().detailAsks = 0;
+    wantingFrame(1);
+    vi.advanceTimersByTime(100);
+    send({ cmd: "setViewport", roi: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 }, outW: 800, outH: 600 });
+    vi.advanceTimersByTime(100);
+    wantingFrame(2);
+    vi.advanceTimersByTime(100);
+    expect(develop().detailAsks).toBe(0);
+    vi.advanceTimersByTime(20);
+    expect(develop().detailAsks).toBe(1);
+  });
+
+  it("asks after a viewport change alone while it holds a native frame, and not without one", () => {
+    send({ cmd: "setViewport", roi: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 }, outW: 800, outH: 600 });
+    vi.advanceTimersByTime(500);
+    expect(develop().detailAsks).toBe(0);
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    develop().detailAsks = 0;
+    send({ cmd: "setViewport", roi: { x: 0.2, y: 0.1, w: 0.2, h: 0.2 }, outW: 800, outH: 600 });
+    vi.advanceTimersByTime(120);
+    expect(develop().detailAsks).toBe(1);
+  });
+
+  it("arms the ask when it takes a native frame, not when the renderer refuses it", () => {
+    FakeRenderer.takesNativeFrame = false;
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    expect(develop().detailAsks).toBe(0);
+    FakeRenderer.takesNativeFrame = true;
+    send(NATIVE);
+    vi.advanceTimersByTime(120);
+    expect(develop().detailAsks).toBe(1);
+  });
+
+  it("doesn't ask after a frame that wanted nothing", () => {
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    develop().detailAsks = 0;
+    develop().detailWanted = false;
+    send({ cmd: "render", seq: 1 });
+    vi.advanceTimersByTime(500);
+    expect(develop().detailAsks).toBe(0);
+  });
+
+  const photoChanges: [string, WorkerRequest][] = [
+    ["a new image", IMAGE],
+    ["a bound source", { cmd: "bindSource", reqId: 1, key: "p:1" }],
+    ["an upload that binds", { cmd: "uploadSource", target: "main", key: "p:1", image: { kind: "float", data: new Float32Array(24), width: 3, height: 2 } }],
+    ["clearing the source", { cmd: "clearSource" }],
+    ["clearing the native frame", { cmd: "clearNativeFrame" }],
+  ];
+  for (const [label, change] of photoChanges) {
+    it(`cancels a pending ask on ${label}`, () => {
+      send(NATIVE);
+      vi.advanceTimersByTime(500);
+      develop().detailAsks = 0;
+      wantingFrame();
+      vi.advanceTimersByTime(50);
+      send(change);
+      vi.advanceTimersByTime(500);
+      expect(develop().detailAsks).toBe(0);
+    });
+  }
+
+  it("keeps a pending ask through a neighbour's prefetch", () => {
+    send(NATIVE);
+    vi.advanceTimersByTime(500);
+    develop().detailAsks = 0;
+    wantingFrame();
+    vi.advanceTimersByTime(50);
+    send({
+      cmd: "uploadSource",
+      target: "main",
+      key: "p:2",
+      image: { kind: "float", data: new Float32Array(24), width: 3, height: 2 },
+      bind: false,
+    });
+    vi.advanceTimersByTime(70);
+    expect(develop().detailAsks).toBe(1);
+  });
+
+  it("hands the renderer the gain cut for a request, and draws a frame no render asked for once it is taken", () => {
+    send(GAIN(4));
+    expect(develop().gainsSeen).toEqual([[4, true]]);
+    expect(unasked()).toHaveLength(1);
+    expect(develop().calls.slice(-2)).toEqual(["setDetailGain", "render"]);
+  });
+
+  it("hands the renderer an answer with no gain as none, and draws nothing for a gain it refuses", () => {
+    send({ ...GAIN(2), data: null });
+    expect(develop().gainsSeen).toEqual([[2, false]]);
+    FakeRenderer.takesGain = false;
+    send(GAIN(3));
+    expect(unasked()).toEqual([]);
+  });
+
+  it("draws no unasked frame between photos", () => {
+    send({ cmd: "clearSource" });
+    send(GAIN(1));
+    expect(unasked()).toEqual([]);
+  });
+
+  // The bridge follows only a render it asked for when the frame put off prepasses.
+  it("follows an unasked frame that put off prepasses with another, until they are done", () => {
+    develop().prepassPending = true;
+    send(GAIN(1));
+    expect(unasked()).toHaveLength(1);
+    vi.advanceTimersToNextTimer();
+    expect(unasked()).toHaveLength(2);
+    develop().prepassPending = false;
+    vi.advanceTimersToNextTimer();
+    expect(unasked()).toHaveLength(3);
+    vi.advanceTimersByTime(100);
+    expect(unasked()).toHaveLength(3);
+  });
+
+  it("leaves the follow-up to a render the bridge asks for", () => {
+    develop().prepassPending = true;
+    send(GAIN(1));
+    send({ cmd: "render", seq: 5 });
+    vi.advanceTimersByTime(100);
+    expect(unasked()).toHaveLength(1);
   });
 });

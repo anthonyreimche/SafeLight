@@ -297,6 +297,8 @@ describe("decodeRawFloatViaLibRaw's limit once the frame is known", () => {
     h.imageData = () => Promise.resolve({ data: new Uint16Array(2 * 2 * 3), width: 2, height: 2 });
 
     await decodeRawFloatViaLibRaw(rawBytes(), { signal: opened.signal });
+    // The big frame leaves the pool's idle-recycle timer; only the watchdog's is in question.
+    disposeDecodePool();
 
     expect(vi.getTimerCount()).toBe(0);
   });

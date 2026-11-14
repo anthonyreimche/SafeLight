@@ -13,6 +13,7 @@ import {
   type HandlersFor,
   type WorkerContext,
 } from "./context";
+import { cancelDetailCut } from "./detail";
 import { ensureThumbRenderer } from "./thumbnails";
 
 type SourceCmd =
@@ -27,12 +28,17 @@ type SourceCmd =
 export function sourceHandlers(ctx: WorkerContext): HandlersFor<SourceCmd> {
   const { state, respond } = ctx;
   return {
+    // The native frame is the photo's own, so it goes with it, as a pending cut does
+    // with any change of photo below.
     clearSource() {
       state.awaitingSource = true;
+      cancelDetailCut(ctx);
+      state.renderer?.clearNativeFrame();
     },
 
     setImage(msg) {
       state.sourceGen++;
+      cancelDetailCut(ctx);
       const { renderer } = state;
       if (!renderer) return;
       const img = msg.image;
@@ -52,6 +58,7 @@ export function sourceHandlers(ctx: WorkerContext): HandlersFor<SourceCmd> {
     },
 
     bindSource(msg) {
+      cancelDetailCut(ctx);
       let hit = false;
       try {
         hit = !!state.renderer && state.renderer.bindSource(msg.key);
@@ -74,7 +81,10 @@ export function sourceHandlers(ctx: WorkerContext): HandlersFor<SourceCmd> {
     uploadSource(msg) {
       const bind = msg.bind ?? true;
       const main = msg.target === "main";
-      if (bind && main) state.sourceGen++;
+      if (bind && main) {
+        state.sourceGen++;
+        cancelDetailCut(ctx);
+      }
       const target = msg.target === "thumb" ? ensureThumbRenderer(ctx) : state.renderer;
       if (!target) return;
       const img = msg.image;

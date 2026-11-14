@@ -129,6 +129,28 @@ describe("prefixSig", () => {
     }
   });
 
+  // A mask copy draws with its stage's programs, binding its own keys to the
+  // stage's uniform names, so given the same values it draws the same state.
+  it("names no stage, so a mask copy bound to the same values signs as its stage", () => {
+    const copyId = `${ID}@0`;
+    const copy: PrepassStage = {
+      ...STAGE,
+      stageId: copyId,
+      passesOf: ID,
+      passes: STAGE.passes.map((p) => ({
+        ...p,
+        bindings: p.bindings.map((b) => ({ ...b, qualifiedKey: b.qualifiedKey.replace(ID, copyId) })),
+        ...(p.drawCount ? { drawCount: { ...p.drawCount, qualifiedKey: p.drawCount.qualifiedKey.replace(ID, copyId) } } : {}),
+      })),
+    };
+    const copied = Object.fromEntries(Object.entries(FRAME.bag).map(([k, v]) => [k.replace(ID, copyId), v]));
+    const both = withBag(copied);
+    for (let through = 0; through < 3; through++) {
+      expect(sigAt(through, both, copy)).toBe(sigAt(through, both));
+      expect(sigAt(through, withBag({ ...copied, [`${copyId}.u${through}`]: 0.875 }), copy)).not.toBe(sigAt(through, both));
+    }
+  });
+
   it("ignores bag entries the stage doesn't bind", () => {
     const frame = withBag({ "other.stage.u0": 1, [`${ID}.inlineOnly`]: 1 });
     for (let through = 0; through < 3; through++) expect(sigAt(through, frame)).toBe(sigAt(through));

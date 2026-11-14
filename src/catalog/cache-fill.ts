@@ -16,11 +16,13 @@ import { bakeRotation, manualRotation, normalizeRotation, rotateFloatRGBA } from
 import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/raw/raw-preview";
-import { markDecode, rawCacheGeneration, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import { markDecode, rawCacheGeneration, writeCachedPreview } from "@/raw/raw-cache";
+import { photoCacheKey } from "@/raw/photo-cache-key";
 import { cutSourceSample } from "@/rendering/source-sample";
 import { getSettings } from "@/state/settings-store";
 import { rememberLearned, hasCameraMatch, learnedMatch } from "./decode-learned";
 import { emitCacheEntryFilled } from "./cache-events";
+import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
 
 /** "refused": a write the cache could not take (the disk or the quota is full),
  *  which a pass counts to know when to stop. "nothing": a failed or rejected
@@ -39,7 +41,9 @@ export async function fillCacheEntry(
   signal?: AbortSignal,
 ): Promise<CacheFillResult> {
   if (!photo.fileHandle) return "nothing";
-  const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  // Background work never fetches a library source's original.
+  if (isSourceFile(photo.fileHandle) && !(await sourceOriginalHeld(photo.fileHandle))) return "nothing";
+  const key = photoCacheKey(photo);
   const file = await photo.fileHandle.getFile();
   if (signal?.aborted) return "nothing";
   // Read once for the decode and the preview it is judged against, and only
@@ -114,7 +118,7 @@ let waiting: { photo: CatalogPhoto; generation: number } | null = null;
  *  push the photo waiting out of its place. The write lands only in the
  *  project the request began in (the generation guard in raw-cache.ts). */
 export function completeCachedEntry(photo: CatalogPhoto, generation: number): void {
-  const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  const key = photoCacheKey(photo);
   if (running) {
     if (running.key === key && running.generation === generation) return;
     waiting = { photo, generation };

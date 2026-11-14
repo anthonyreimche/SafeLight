@@ -917,6 +917,25 @@ export interface ProcessingStageContribution {
    *  older builds ignore it. */
   dormantWhen?: Readonly<Record<string, UniformValue>>;
 
+  /** A view aid, such as a focus or exposure overlay: the stage runs only in
+   *  the frames the live Develop view shows. Exports, thumbnails, headless
+   *  renders, captures (unless `asShown`), probes and the histogram draw the
+   *  photo without it, whatever the bag holds. Drive it with
+   *  `api.develop.setViewValues`, so nothing of it reaches the edit. Refused
+   *  on geometry stages, on stages that `produce` values and with `mask`.
+   *  Needs Safelight 3.2.4; older builds draw the stage everywhere. */
+  viewOnly?: boolean;
+
+  /** For a stage in the decode or noise-reduction phase: its result keeps the
+   *  photo's own fine detail in place, as a chromatic-aberration or flat-field
+   *  correction does. With Dynamic render resolution, Develop then goes on
+   *  adding the full-size photo's detail to the zoomed-in view while the stage
+   *  is at work. Without it the detail is left off for that photo, because it
+   *  would put back what a denoiser or a moiré filter removed. Leave it out
+   *  for any stage that smooths or removes detail. Needs Safelight 3.2.4;
+   *  older builds ignore it. */
+  keepsDetail?: boolean;
+
   /** How this stage's params behave in presets. "global" (the default) is a
    *  look that applies to any photo — e.g. a film sim or a curve — so it is
    *  offered when saving a preset and pre-selected when changed. "per-image" is
@@ -1008,7 +1027,8 @@ export interface CatalogHooksContribution {
     photo: import("@/catalog/types").CatalogPhoto;
     editState: import("@/catalog/types").EditState;
   }): Promise<void>;
-  /** Called when a photo is removed from the catalogue. */
+  /** Called when a photo is removed from the catalogue. When several photos are
+   *  removed at once, up to eight may be handled concurrently. */
   onPhotoRemove?(ctx: {
     photo: import("@/catalog/types").CatalogPhoto;
     dir: FileSystemDirectoryHandle;
@@ -1071,6 +1091,12 @@ export interface GridFilterContribution {
   id: string;
   /** Return false to hide the photo from the grid (and from culling nav). */
   test(photo: import("@/catalog/types").CatalogPhoto): boolean;
+  /** The photo fields `test` reads, by their top-level name ("keywords",
+   *  "exif"). Declared, the grid is filtered and sorted again only when one of
+   *  them changes on some photo, or the filter is registered again; `[]` for a
+   *  test that reads none, such as one that passes every photo while its filter
+   *  is off. Left out, every change to any photo runs the filter again. */
+  reads?: readonly (keyof import("@/catalog/types").CatalogPhoto)[];
   /** Invoked by the Library "Clear filters" action so search clears too. */
   onClear?(): void;
 }
@@ -1092,6 +1118,10 @@ export interface LibrarySortContribution {
     a: import("@/catalog/types").CatalogPhoto,
     b: import("@/catalog/types").CatalogPhoto,
   ): number;
+  /** The photo fields `compare` reads, by their top-level name ("exif",
+   *  "rating"). Declared, the grid is sorted again only when one of them changes
+   *  on some photo; left out, every change to any photo sorts it again. */
+  reads?: readonly (keyof import("@/catalog/types").CatalogPhoto)[];
 }
 
 // ---------------------------------------------------------------------------

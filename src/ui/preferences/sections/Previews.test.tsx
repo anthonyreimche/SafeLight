@@ -12,6 +12,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 const h = vi.hoisted(() => ({
   clear: (): Promise<{ failed: number }> => Promise.resolve({ failed: 0 }),
   native: false,
+  /** What Rebuild thumbnails left to the grid to read again from a source. */
+  refetched: 0,
 }));
 
 vi.mock("@/raw/raw-cache", () => ({ clearRawCache: () => h.clear() }));
@@ -23,7 +25,10 @@ vi.mock("@/project/native-fs", () => ({
 vi.mock("@/modules/library/import-photos", () => ({
   EAGER_CACHE_LIMIT: 1000,
   preDecodeRawsForCache: async () => {},
-  rebuildThumbnails: async () => {},
+  rebuildThumbnails: async (photos: unknown[], onProgress?: (done: number, total: number) => void) => {
+    onProgress?.(photos.length, photos.length);
+    return { refetched: h.refetched };
+  },
 }));
 vi.mock("@/project/project-store", () => ({ projectPassSignal: () => undefined }));
 vi.mock("./StoredCatalogsField", () => ({ StoredCatalogsField: () => null }));
@@ -35,6 +40,7 @@ const clickClear = () => fireEvent.click(screen.getByText("Clear preview cache")
 beforeEach(() => {
   h.clear = () => Promise.resolve({ failed: 0 });
   h.native = false;
+  h.refetched = 0;
 });
 
 describe("Catalogue location", () => {
@@ -70,5 +76,26 @@ describe("Clear preview cache", () => {
     render(<PreviewsSection />);
     clickClear();
     expect(await screen.findByText("Couldn't clear the preview cache.")).toBeTruthy();
+  });
+});
+
+const { useCatalogStore } = await import("@/state/catalog-store");
+
+describe("Rebuild thumbnails", () => {
+  const photos = [{ id: "a" }, { id: "b" }] as unknown as ReturnType<typeof useCatalogStore.getState>["photos"];
+
+  it("says it rebuilt the previews of a folder", async () => {
+    useCatalogStore.setState({ photos });
+    render(<PreviewsSection />);
+    fireEvent.click(screen.getByText("Rebuild thumbnails"));
+    expect(await screen.findByText("Rebuilt 2.")).toBeTruthy();
+  });
+
+  it("says a source's previews download again as they come into view", async () => {
+    h.refetched = 2;
+    useCatalogStore.setState({ photos });
+    render(<PreviewsSection />);
+    fireEvent.click(screen.getByText("Rebuild thumbnails"));
+    expect(await screen.findByText("Cleared 2 previews: each downloads again from its server when it comes into view.")).toBeTruthy();
   });
 });

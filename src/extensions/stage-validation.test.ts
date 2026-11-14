@@ -805,3 +805,14 @@ describe("dormantWhen", () => {
     expect(dormancyIgnored({ ...stage, extensionId: "acme" })).toMatch(/space/);
   });
 });
+
+describe("keepsDetail", () => {
+  it("takes true or false", () => {
+    expect(checkStageContract(withFields({ phase: "decode", keepsDetail: true })).error).toBeNull();
+    expect(checkStageContract(withFields({ phase: "decode", keepsDetail: false })).error).toBeNull();
+  });
+
+  it("refuses anything else", () => {
+    expect(checkStageContract(withFields({ phase: "decode", keepsDetail: "yes" })).error).toMatch(/keepsDetail must be true or false/);
+  });
+});

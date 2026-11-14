@@ -119,6 +119,45 @@ describe("visible photos derive", () => {
     expect(derives.count).toBeLessThanOrEqual(1);
   });
 
+  // Culling with a filter on drops each photo as it is rated or rejected. The
+  // next arrow key needs only the place the dropped photo held, not another
+  // sort of the whole catalogue to find it.
+  describe("stepping on from a photo the filter has just dropped", () => {
+    const AT = 1000;
+
+    async function dropActive() {
+      installMemoryStorage();
+      useUIStore.setState({ filter: { ...NO_FILTER, rating: 0, ratingOp: "eq" } });
+      const list = visibleList();
+      const neighbours = { before: list[AT - 1].id, after: list[AT + 1].id };
+      useCatalogStore.getState().select(list[AT].id);
+      await act(async () => {
+        await useCatalogStore.getState().setRating(list[AT].id, 3);
+      });
+      derives.count = 0;
+      return neighbours;
+    }
+
+    it("lands on the photo that took its place with the one sort its rating needs", async () => {
+      const { after } = await dropActive();
+
+      moveActivePhoto(1);
+
+      expect(useCatalogStore.getState().activePhotoId).toBe(after);
+      console.info(`[derive count] arrow key after the filter dropped the photo: ${derives.count}`);
+      expect(derives.count).toBe(1);
+    });
+
+    it("lands on the photo before it when stepping back", async () => {
+      const { before } = await dropActive();
+
+      moveActivePhoto(-1);
+
+      expect(useCatalogStore.getState().activePhotoId).toBe(before);
+      expect(derives.count).toBe(1);
+    });
+  });
+
   it("re-derives once a field the filter or sort reads changes", async () => {
     installMemoryStorage();
     useUIStore.setState({ sortField: "rating" });
@@ -243,6 +282,108 @@ describe("visible photos derive", () => {
         await useCatalogStore.getState().setRating("p1", 5);
       });
       expect(derives.count).toBe(1);
+    });
+
+    // An extension that says which fields its filter or sort reads keeps the
+    // same saving the built-in ones have, instead of ending it for every edit.
+    describe("with an extension filter that declares what it reads", () => {
+      it("keeps the order for a field it doesn't read and re-filters for one it does", async () => {
+        registerGridFilter("ext", {
+          id: "ext.filter",
+          test: (p) => p.keywords.length === 0,
+          reads: ["keywords"],
+        });
+        const { result } = renderHook(() => useVisiblePhotos());
+        derives.count = 0;
+
+        await rateEach();
+        expect(derives.count).toBe(0);
+        expect(result.current.find((p) => p.id === "p3")?.rating).toBe(4);
+
+        await act(async () => {
+          await useCatalogStore.getState().addKeyword("p0", "hidden");
+        });
+        expect(derives.count).toBe(1);
+        expect(result.current.some((p) => p.id === "p0")).toBe(false);
+      });
+
+      it("keeps the order for every field while the filter reads none", async () => {
+        registerGridFilter("ext", { id: "ext.idle", test: () => true, reads: [] });
+        renderHook(() => useVisiblePhotos());
+        derives.count = 0;
+
+        await rateEach();
+        await act(async () => {
+          await useCatalogStore.getState().addKeyword("p0", "trip");
+        });
+
+        expect(derives.count).toBe(0);
+      });
+
+      it("re-filters when the filter is registered again with another test", async () => {
+        registerGridFilter("ext", { id: "ext.filter", test: () => true, reads: [] });
+        const { result } = renderHook(() => useVisiblePhotos());
+        derives.count = 0;
+
+        act(() => {
+          registerGridFilter("ext", { id: "ext.filter", test: (p) => p.id === "p7", reads: [] });
+        });
+
+        expect(derives.count).toBe(1);
+        expect(result.current.map((p) => p.id)).toEqual(["p7"]);
+      });
+
+      it("re-derives for any change once one filter in use doesn't declare", async () => {
+        registerGridFilter("ext", { id: "ext.idle", test: () => true, reads: [] });
+        registerGridFilter("other", { id: "other.filter", test: (p) => p.rating < 6 });
+        renderHook(() => useVisiblePhotos());
+        derives.count = 0;
+
+        await act(async () => {
+          await useCatalogStore.getState().setFlag("p0", "pick");
+        });
+
+        expect(derives.count).toBe(1);
+      });
+
+      it("re-derives for any change when what it declares isn't a list of fields", async () => {
+        registerGridFilter("ext", {
+          id: "ext.filter",
+          test: () => true,
+          reads: "rating" as unknown as ["rating"],
+        });
+        renderHook(() => useVisiblePhotos());
+        derives.count = 0;
+
+        await act(async () => {
+          await useCatalogStore.getState().setFlag("p0", "pick");
+        });
+
+        expect(derives.count).toBe(1);
+      });
+    });
+
+    it("re-sorts only for the fields an extension sort declares it reads", async () => {
+      registerLibrarySort("ext", {
+        id: "ext.rating",
+        label: "Rating",
+        compare: (a, b) => b.rating - a.rating,
+        reads: ["rating"],
+      });
+      useUIStore.setState({ sortField: "ext.rating" });
+      renderHook(() => useVisiblePhotos());
+      derives.count = 0;
+
+      await act(async () => {
+        await useCatalogStore.getState().setFlag("p0", "pick");
+      });
+      expect(derives.count).toBe(0);
+
+      await act(async () => {
+        await useCatalogStore.getState().setRating("p1", 5);
+      });
+      expect(derives.count).toBe(1);
+      expect(visibleList()[0].rating).toBe(5);
     });
   });
 

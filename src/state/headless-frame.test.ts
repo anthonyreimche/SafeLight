@@ -35,9 +35,12 @@ const h = vi.hoisted(() => ({
   asyncFails: false,
   /** The worker's EXT_color_buffer_float flag, as the bridge reports it once ready. */
   pipelineFloat: true,
+  /** needStageVariants: what a frame of a bag waits for, or null for nothing. */
+  needVariants: (_bag: Record<string, unknown>): Promise<{ failure: string | null; release(): void }> | null => null,
 }));
 
 vi.mock("@/rendering/render-bridge", () => ({
+  needStageVariants: (bag: Record<string, unknown>) => h.needVariants(bag),
   getRenderBridge: () => ({
     ready: Promise.resolve(),
     pipelineFloat: h.pipelineFloat,
@@ -99,12 +102,38 @@ beforeEach(() => {
   h.floatFrame = null;
   h.asyncFails = false;
   h.pipelineFloat = true;
+  h.needVariants = () => null;
   vi.stubGlobal("createImageBitmap", async () => frame);
 });
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("measuring a photo off-screen", () => {
+  it("measures nothing, and decodes nothing, when a stage texture its bag names can't be had", async () => {
+    h.decoded = fellBack({ from: "embedded", ...NONE });
+    const release = vi.fn();
+    const asked: Record<string, unknown>[] = [];
+    h.needVariants = (bag) => {
+      asked.push(bag);
+      return Promise.resolve({ failure: "Calibration couldn't make what this photo needs: gone", release });
+    };
+    await expect(renderPhotoFrame(ID, normalizeParams({}), { "acme.calib.table": "v1" })).resolves.toBeNull();
+    expect(asked).toHaveLength(1);
+    expect(h.requests).toEqual([]);
+    expect(h.decodes).toBe(0);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the stage textures its bag names across every source it tries", async () => {
+    h.decoded = fellBack({ from: "embedded", ...NONE, timedOut: true });
+    const events: string[] = [];
+    h.needVariants = () => Promise.resolve({ failure: null, release: () => events.push("released") });
+    const at = h.requests.length;
+    await renderPhotoFrame(ID, normalizeParams({}), { "acme.calib.table": "v1" });
+    expect(h.requests.length - at).toBe(2);
+    expect(events).toEqual(["released"]);
+  });
+
   it("never renders over a stored preview that already shows an edit", async () => {
     const stored = fellBack({ from: "stored-edited", ...NONE, offline: true });
     h.decoded = stored;

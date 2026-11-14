@@ -687,7 +687,7 @@ describe("live edits", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast).toHaveBeenCalledWith({
       type: "edit-update",
-      payload: { photoId: PHOTO_ID, params: params() },
+      payload: { photoId: PHOTO_ID },
     });
   });
 
@@ -701,7 +701,7 @@ describe("live edits", () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast).toHaveBeenCalledWith({
       type: "edit-update",
-      payload: { photoId: PHOTO_ID, params: params() },
+      payload: { photoId: PHOTO_ID },
     });
   });
 
@@ -748,7 +748,7 @@ describe("commitEdit", () => {
     );
     expect(vi.mocked(broadcast).mock.lastCall?.[0]).toEqual({
       type: "edit-update",
-      payload: { photoId: PHOTO_ID, params: params() },
+      payload: { photoId: PHOTO_ID },
     });
   });
 
@@ -893,13 +893,12 @@ describe("commitEdit", () => {
       const committing = s().commitEdit("Exposure");
       await vi.advanceTimersByTimeAsync(0);
       s().undo();
-      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
 
       release();
       await committing;
       await vi.advanceTimersByTimeAsync(3000);
       expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
     });
 
     it("renders the photo left at once when another is opened", async () => {
@@ -950,12 +949,43 @@ describe("commitEdit", () => {
       expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
     });
 
-    it("renders an undo step at once and drops the older wait", async () => {
+    it("waits for the view to go quiet after an undo, in place of the older wait", async () => {
       await commitExposure(2);
       s().undo();
+      await vi.advanceTimersByTimeAsync(299);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
       expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(2000);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
+      await vi.advanceTimersByTimeAsync(3000);
       expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders once for undo steps taken 100 ms apart, with the look they end on", async () => {
+      for (let i = 1; i <= 3; i++) await commitExposure(i);
+      await vi.advanceTimersByTimeAsync(3000);
+      vi.mocked(regenerateEditedThumbnail).mockClear();
+
+      for (let i = 0; i < 3; i++) {
+        s().undo();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
+    });
+
+    it("renders an undone look at once as its photo is left", async () => {
+      useCatalogStore.setState({ photos: [photo(PHOTO_ID), photo("photo-2")] });
+      await commitExposure(2);
+      s().undo();
+
+      await s().loadEdit("photo-2", 5000);
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
     });
   });
 
@@ -1069,12 +1099,62 @@ describe("undo / redo", () => {
     expect(storage.written).toHaveLength(1);
     expect(storage.written[0].currentIndex).toBe(0);
     expect(storage.written[0].stack).toHaveLength(2); // the redo tail survives
-    expect(regenerateEditedThumbnail).toHaveBeenCalledWith(
-      PHOTO_ID,
-      params(),
-      5000,
-      {},
-    );
+    flushPendingThumbnails();
+    expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5000, {}, undefined);
+  });
+
+  describe("what the renderer is handed", () => {
+    const withMasks = (...masks: Mask[]) => {
+      useDevelopStore.setState({ params: { ...params(), masks } });
+    };
+
+    it("keeps the live masks and every other field a step doesn't change", async () => {
+      withMasks(brushMask());
+      s().setDynParam("ext.stage.amount", 40);
+      await commit("A", 1);
+      await commit("B", 2);
+      const before = { params: params(), paramBag: s().paramBag };
+
+      s().undo();
+
+      expect(params().exposure).toBe(1);
+      expect(params().masks).toBe(before.params.masks);
+      for (const key of Object.keys(before.params) as (keyof DevelopParams)[]) {
+        if (key !== "exposure") expect(params()[key], key).toBe(before.params[key]);
+      }
+      expect(s().paramBag).toEqual(before.paramBag);
+    });
+
+    it("keeps the masks a step leaves alone when another one changed", async () => {
+      const other = { ...brushMask(), id: "m2", name: "Other" };
+      withMasks(brushMask(), other);
+      await commit("A", 1);
+      useDevelopStore.setState({
+        params: { ...params(), masks: params().masks.map((m) => (m.id === "m2" ? { ...m, opacity: 40 } : m)) },
+      });
+      await s().commitEdit("B");
+      const live = params().masks;
+      const [first] = live;
+
+      s().undo();
+
+      expect(params().masks).not.toBe(live);
+      expect(params().masks[0]).toBe(first);
+      expect(params().masks[1].opacity).toBe(100);
+    });
+
+    it("keeps a bag value the step doesn't change", async () => {
+      s().setDynParams({ "ext.stage.amount": 40, "ext.stage.tint": [1, 2, 3] });
+      await s().commitEdit("A");
+      const tint = s().paramBag["ext.stage.tint"];
+      s().setDynParam("ext.stage.amount", 80);
+      await s().commitEdit("B");
+
+      s().undo();
+
+      expect(s().paramBag["ext.stage.amount"]).toBe(40);
+      expect(s().paramBag["ext.stage.tint"]).toBe(tint);
+    });
   });
 
   it("fills today's defaults when stepping into an older build's snapshot", async () => {
@@ -1402,7 +1482,7 @@ describe("process versions", () => {
       expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5200, BAG, undefined);
       expect(vi.mocked(broadcast).mock.lastCall?.[0]).toEqual({
         type: "edit-update",
-        payload: { photoId: PHOTO_ID, params: params() },
+        payload: { photoId: PHOTO_ID },
       });
     });
 

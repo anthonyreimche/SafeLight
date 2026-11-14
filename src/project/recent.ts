@@ -12,13 +12,19 @@
 //     it on demand — no permission, no gesture.
 //
 // Each entry also keeps a small cover preview (the first photo's grid
-// thumbnail) so the welcome grid can show folders visually.
+// thumbnail) so the welcome grid can show folders visually. A library source
+// (library-sources.ts) is kept by its extension, source id and library, and
+// opens once that extension has registered the source again.
 
 import {
   isNativeFS,
   nativeDirectoryHandle,
   nativePathOf,
 } from "./native-fs";
+import { listLibrarySources, sourceRefOf, sourceRoot, whenLibrarySource } from "./library-sources";
+
+/** How long the launch's reopen waits for a library source's extension to start. */
+const SOURCE_WAIT_MS = 15_000;
 
 const DB_NAME = "safelight-projects";
 const STORE = "projects";
@@ -40,6 +46,8 @@ export interface RecentProject {
   openedAt: number;
   /** First-photo grid preview, used as the welcome card's cover. */
   cover: Blob | null;
+  /** Set for a library source: which extension's source, showing which library. */
+  source?: { extensionId: string; id: string; library: string };
 }
 
 function openDB(): Promise<IDBDatabase> {
@@ -78,16 +86,27 @@ export async function addRecentProject(
   cover: Blob | null,
 ): Promise<void> {
   const path = nativePathOf(handle);
-  const entry: RecentProject = {
-    id: path ?? handle.name,
-    name: handle.name,
-    path,
-    // A native (path-backed) handle isn't structured-cloneable and is rebuilt
-    // from the path on demand, so don't persist it; browser handles are kept.
-    handle: path ? null : handle,
-    openedAt: Date.now(),
-    cover,
-  };
+  const source = sourceRefOf(handle);
+  const entry: RecentProject = source
+    ? {
+        id: `source:${source.extensionId}\n${source.id}\n${source.library}`,
+        name: handle.name,
+        path: null,
+        handle: null,
+        openedAt: Date.now(),
+        cover,
+        source: { extensionId: source.extensionId, id: source.id, library: source.library },
+      }
+    : {
+        id: path ?? handle.name,
+        name: handle.name,
+        path,
+        // A native (path-backed) handle isn't structured-cloneable and is rebuilt
+        // from the path on demand, so don't persist it; browser handles are kept.
+        handle: path ? null : handle,
+        openedAt: Date.now(),
+        cover,
+      };
   let db: IDBDatabase | undefined;
   try {
     db = await openDB();
@@ -143,14 +162,37 @@ export async function removeRecentProject(id: string): Promise<void> {
 export function recentHandle(
   entry: RecentProject,
 ): FileSystemDirectoryHandle | null {
+  if (entry.source) {
+    const { extensionId, id, library } = entry.source;
+    const held = listLibrarySources().find((s) => s.id === id);
+    const same = held && held.extensionId === extensionId && (held.library ?? "") === library;
+    return same ? sourceRoot(id) : null;
+  }
   if (entry.path && isNativeFS()) return nativeDirectoryHandle(entry.path);
   return entry.handle;
 }
 
-/** Most-recently-opened project handle. Used by the browser reconnect flow. */
+/** The most recently opened project, or null with none. */
+export async function lastRecentProject(): Promise<RecentProject | null> {
+  return (await listRecentProjects())[0] ?? null;
+}
+
+/** Most-recently-opened project handle. Used by the browser reconnect flow. A
+ *  library source whose extension hasn't registered it (yet) has none. */
 export async function getLastProject(): Promise<FileSystemDirectoryHandle | null> {
-  const all = await listRecentProjects();
-  return all[0] ? recentHandle(all[0]) : null;
+  const last = await lastRecentProject();
+  return last ? recentHandle(last) : null;
+}
+
+/** The handle of recent library source `entry` once its extension registers the
+ *  source, or null if that doesn't happen within `ms`: extensions start after
+ *  the launch's reopen asks. */
+export async function whenRecentSource(
+  entry: RecentProject,
+  ms = SOURCE_WAIT_MS,
+): Promise<FileSystemDirectoryHandle | null> {
+  if (entry.source) await whenLibrarySource(entry.source.id, ms);
+  return recentHandle(entry);
 }
 
 // One-time seed of the welcome grid from the old single-"last" storage, so the

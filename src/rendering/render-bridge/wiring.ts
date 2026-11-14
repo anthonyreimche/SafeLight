@@ -117,6 +117,13 @@ function postStageTextures(): void {
 const MB = 1024 * 1024;
 const MAX_TEXTURE_BYTES = 64 * MB;
 const MAX_EXTENSION_TEXTURE_BYTES = 256 * MB;
+let extensionTextureBudget = MAX_EXTENSION_TEXTURE_BYTES;
+
+/** Set the bytes one extension's stage textures may take, or (null) put the
+ *  usual 256 MB back. For tests, which can't fill 256 MB. */
+export function setExtensionTextureBudget(bytes: number | null): void {
+  extensionTextureBudget = bytes ?? MAX_EXTENSION_TEXTURE_BYTES;
+}
 
 // What renderer.ensureStageTexture uploads each format from. Bytes may come in a
 // Uint8ClampedArray too: canvas ImageData hands its pixels over in one.
@@ -145,16 +152,50 @@ function textureOwner(
   return undefined;
 }
 
+/** The extension stage texture `qualifiedKey` belongs to. */
+export function stageTextureOwner(qualifiedKey: string): string | undefined {
+  return textureOwner(useRegistry.getState().processingStages, qualifiedKey);
+}
+
+// Lets go of an extension's variants made on demand that no frame draws with,
+// least recently bound first, until `bytes` are free (stage-texture-providers.ts).
+let makeRoom: (owner: string, bytes: number, keep: string) => void = () => undefined;
+
+/** Have `free` called when an extension's textures would go over its budget. */
+export function onTextureRoomNeeded(free: (owner: string, bytes: number, keep: string) => void): void {
+  makeRoom = free;
+}
+
 /** Why the renderer can't upload `tex` as it describes itself, or why the
- *  extension may not hold it besides the textures it has; null when it can. A
- *  texture that doesn't match its description uploads as a GL error, and the
- *  stage silently reads black. */
+ *  extension may not hold it besides the textures it has, once the variants
+ *  made on demand it can do without are let go; null when it can. A texture
+ *  that doesn't match its description uploads as a GL error, and the stage
+ *  silently reads black. */
 function textureProblem(
   stages: Readonly<Record<string, RegisteredProcessingStage>>,
   qualifiedKey: string,
   owner: string | undefined,
   tex: StageTextureData,
 ): string | null {
+  const problem = shapeProblem(tex);
+  if (problem) return problem;
+  const held = () => {
+    let bytes = tex.data.byteLength;
+    for (const [key, other] of Object.entries(stageTextures))
+      if (key !== qualifiedKey && textureOwner(stages, key) === owner) bytes += other.data.byteLength;
+    return bytes;
+  };
+  let bytes = held();
+  if (bytes > extensionTextureBudget && owner !== undefined) {
+    makeRoom(owner, bytes - extensionTextureBudget, qualifiedKey);
+    bytes = held();
+  }
+  if (bytes > extensionTextureBudget)
+    return `would bring its stage textures to ${inMB(bytes)} MB, over the ${extensionTextureBudget / MB} MB one extension may hold`;
+  return null;
+}
+
+function shapeProblem(tex: StageTextureData): string | null {
   const layout = Object.hasOwn(TEXEL_LAYOUTS, tex.format) ? TEXEL_LAYOUTS[tex.format] : undefined;
   if (!layout) return `has unknown format "${String(tex.format)}"`;
   const { width, height, data } = tex;
@@ -167,14 +208,38 @@ function textureProblem(
     return `holds ${data.length} values where ${width}×${height} ${tex.format} takes ${values}`;
   if (data.byteLength > MAX_TEXTURE_BYTES)
     return `is ${inMB(data.byteLength)} MB, over the ${MAX_TEXTURE_BYTES / MB} MB one texture may take`;
-  let held = data.byteLength;
-  for (const [key, other] of Object.entries(stageTextures))
-    if (key !== qualifiedKey && textureOwner(stages, key) === owner) held += other.data.byteLength;
-  if (held > MAX_EXTENSION_TEXTURE_BYTES)
-    return `would bring its stage textures to ${inMB(held)} MB, over the ${
-      MAX_EXTENSION_TEXTURE_BYTES / MB
-    } MB one extension may hold`;
   return null;
+}
+
+/** Hold `tex` under `qualifiedKey` as setStageTexture does, and say why not
+ *  (null: held). `post` false holds it here only: no worker frame needs it yet
+ *  (postStageTexture hands it over when one does), and no live redraw. */
+export function holdStageTexture(qualifiedKey: string, tex: StageTextureData, post = true): string | null {
+  const stages = useRegistry.getState().processingStages;
+  const problem = textureProblem(stages, qualifiedKey, textureOwner(stages, qualifiedKey), tex);
+  if (problem) return problem;
+  stageTextures[qualifiedKey] = tex;
+  if (post) {
+    queueTexturePost(qualifiedKey);
+    requestStageRender();
+  }
+  return null;
+}
+
+/** Let go of `qualifiedKey` here, and in the worker when it was handed over. */
+export function releaseStageTexture(qualifiedKey: string, posted: boolean): void {
+  delete stageTextures[qualifiedKey];
+  if (posted) queueTexturePost(qualifiedKey);
+}
+
+/** Hand `qualifiedKey` as held to the worker with the next post. */
+export function postStageTexture(qualifiedKey: string): void {
+  queueTexturePost(qualifiedKey);
+}
+
+/** Draw the live view again once the frame comes. */
+export function redrawStages(): void {
+  requestStageRender();
 }
 
 /** Set or clear (null) a processing stage's texture by qualified key
@@ -185,19 +250,23 @@ export function setStageTexture(
   tex: StageTextureData | null,
 ): void {
   if (tex) {
-    const stages = useRegistry.getState().processingStages;
-    const owner = textureOwner(stages, qualifiedKey);
-    const problem = textureProblem(stages, qualifiedKey, owner, tex);
-    if (problem) {
+    const problem = holdStageTexture(qualifiedKey, tex);
+    if (problem)
       console.warn(
-        `[extensions] ${owner ?? "?"}: stage texture "${qualifiedKey}" ${problem}; setStageTexture ignored`,
+        `[extensions] ${stageTextureOwner(qualifiedKey) ?? "?"}: stage texture "${qualifiedKey}" ${problem}; setStageTexture ignored`,
       );
-      return;
-    }
-    stageTextures[qualifiedKey] = tex;
-  } else delete stageTextures[qualifiedKey];
+    return;
+  }
+  delete stageTextures[qualifiedKey];
   queueTexturePost(qualifiedKey);
   requestStageRender();
+}
+
+/** Post the stage textures set or cleared since they last went, without waiting
+ *  for the frame that batches them: a frame waiting on a variant made on demand
+ *  goes once the worker has it. */
+export function flushStageTextures(): void {
+  postStageTextures();
 }
 
 /** Drop the textures of the stages a swept extension owned, so turning it off

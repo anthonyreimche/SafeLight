@@ -205,10 +205,7 @@ describe("updateProcessing — one catalogue write for the selection", () => {
     for (const photoId of ["a", "b"])
       expect(broadcast).toHaveBeenCalledWith({
         type: "edit-update",
-        payload: {
-          photoId,
-          params: expect.objectContaining({ processVersion: CURRENT_PROCESS_VERSION }),
-        },
+        payload: { photoId },
       });
   });
 

@@ -9,10 +9,10 @@
 // two modules stay in sync.
 
 import { useMemo, useSyncExternalStore } from "react";
-import { fieldChanges, structureVersion, useCatalogStore } from "@/state/catalog-store";
+import { fieldChanges, photoById, structureVersion, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { getSettings, useSettings } from "@/state/settings-store";
-import { NO_FILTER, orderFieldsRead, visibleOrder, type LibraryFilter } from "./visible-photos";
+import { orderFieldsRead, placeAmongShown, visibleOrder, type LibraryFilter } from "./visible-photos";
 import {
   useGridFilters,
   useLibrarySorts,
@@ -74,6 +74,24 @@ function sameFilters(
   return a.length === b.length && a.every((g, i) => g === b[i]);
 }
 
+/** The photo fields the order depends on, or null when it can't be said: an
+ *  extension's filter or sort in use that doesn't declare the fields it reads. */
+function fieldsRead(
+  filter: LibraryFilter,
+  sortField: string,
+  folder: string | null,
+  filters: readonly RegisteredGridFilter[],
+  sort: RegisteredLibrarySort | undefined,
+): string[] | null {
+  const fields = new Set<string>(orderFieldsRead(filter, sortField, folder));
+  for (const { reads } of sort ? [...filters, sort] : filters) {
+    // What an extension hands over isn't checked by the compiler.
+    if (!Array.isArray(reads)) return null;
+    for (const field of reads) fields.add(String(field));
+  }
+  return [...fields];
+}
+
 function deriveVisible(
   photos: CatalogPhoto[],
   filter: LibraryFilter,
@@ -97,7 +115,7 @@ function deriveVisible(
       e.sort === sort &&
       sameFilters(e.filters, filters),
   );
-  const reads = filters.length > 0 || sort ? null : orderFieldsRead(filter, sortField, folder);
+  const reads = fieldsRead(filter, sortField, folder, filters, sort);
   const changes = fieldChanges(photos, reads);
   if (entry && entry.changes !== changes) {
     const stale = entry;
@@ -303,22 +321,18 @@ export function visibleIndex(id: string): number {
 function visibleBefore(id: string): number {
   const ui = useUIStore.getState();
   const photos = useCatalogStore.getState().photos;
+  const photo = photoById(photos, id);
+  if (!photo) return -1;
   const sort = useRegistry.getState().librarySorts[ui.sortField];
-  const order = visibleOrder(
+  return placeAmongShown(
     photos,
-    NO_FILTER,
+    photo,
+    visibleList(),
     ui.sortField,
     ui.sortDirection,
     ui.activeFolder,
-    [],
     sort && guardCallback(sort.extensionId, "library sort", sort.compare, 0, sort),
   );
-  let before = 0;
-  for (const i of order) {
-    if (photos[i].id === id) return before;
-    if (visibleIndex(photos[i].id) !== -1) before++;
-  }
-  return -1;
 }
 
 /**

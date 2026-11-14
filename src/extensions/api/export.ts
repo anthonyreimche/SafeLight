@@ -30,6 +30,12 @@ export interface ExportSettings {
   /** Active filename template id (from a FilenameTemplateContribution), or
    *  undefined to use the built-in base-name + extension behaviour. */
   filenameTemplateId?: string;
+  /** A filename template string, with the variables a registered template
+   *  takes ({filename}, {ext}, {year}, {month}, {day}, {rating}, {camera},
+   *  {lens}), for naming an export without registering a template. A
+   *  registered `filenameTemplateId` wins over it; empty names the files as
+   *  without either. Needs Safelight 3.2.4. */
+  filenameTemplate?: string;
   /** Output sharpening amount (0–150). 0 disables sharpening. */
   sharpenAmount?: number;
   /** Output sharpening radius in pixels (0.3–3.0). */
@@ -75,6 +81,17 @@ export interface ExportProgress {
   done: number;
   total: number;
   filename: string;
+  /** In an export of several jobs, the index of the job the file was for.
+   *  Needs Safelight 3.2.4. */
+  job?: number;
+}
+
+/** One way to export a batch, in an export of several (`exportPhotos` with a
+ *  list of jobs): its settings, and the folder a "folder" delivery writes
+ *  into. Needs Safelight 3.2.4. */
+export interface ExportJob {
+  settings: ExportSettings;
+  destDir?: FileSystemDirectoryHandle;
 }
 
 export interface ExportResult {

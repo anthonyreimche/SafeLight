@@ -77,7 +77,16 @@ const h = vi.hoisted(() => {
       FakeRenderer.setImageCalls.push(args);
     }
 
+    /** The stage textures it was handed, by reference as the histogram hands them. */
+    stageTextures: Record<string, unknown> = {};
+    /** The stage texture keys it held at each draw. */
+    drawnTextures: string[][] = [];
+    setStageTextures(bag: Record<string, unknown>) {
+      this.stageTextures = bag;
+    }
+
     render() {
+      this.drawnTextures.push(Object.keys(this.stageTextures));
       if (FakeRenderer.renderError) throw FakeRenderer.renderError;
     }
 
@@ -128,10 +137,18 @@ const h = vi.hoisted(() => {
       height: 2,
     },
     histogram: { luma: new Uint32Array(256) },
+    /** The live stage-texture bag, as getStageTextures hands it out. */
+    stageTextures: {} as Record<string, unknown>,
+    /** needStageVariants: what a frame of a bag waits for, or null for nothing. */
+    needVariants: (_bag: Record<string, unknown>): Promise<{ failure: string | null; release(): void }> | null => null,
   };
 });
 
 vi.mock("./webgl/renderer", () => ({ WebGLRenderer: h.FakeRenderer }));
+vi.mock("./render-bridge", () => ({
+  getStageTextures: () => h.stageTextures,
+  needStageVariants: (bag: Record<string, unknown>) => h.needVariants(bag),
+}));
 vi.mock("@/catalog/load-image", () => ({
   loadPhotoImage: async (...args: unknown[]) => {
     h.loads.push(args);
@@ -193,6 +210,8 @@ beforeEach(async () => {
   h.gates.length = 0;
   h.canvases.length = 0;
   h.lostAtStart.value = false;
+  h.stageTextures = {};
+  h.needVariants = () => null;
   vi.stubGlobal("document", {
     createElement: () => {
       const canvas = new h.FakeCanvas();
@@ -218,6 +237,31 @@ describe("renderPhotoHistogram without a loaded thumbnail", () => {
     expect(image).toBe(h.cached);
     expect(options).toEqual([256, false, true]);
   });
+
+  it("loads a library source's photo as background work, which never fetches its original", async () => {
+    const sources = await import("@/project/library-sources");
+    sources.registerLibrarySource("ext.a", {
+      id: "test.server",
+      name: "Server",
+      list: async () => ({ items: [{ key: "k", name: "DSCF0001.RAF" }] }),
+      readPreview: async () => new Blob(),
+      readOriginal: async () => new Blob(),
+    });
+    try {
+      const root = sources.sourceRoot("test.server")!;
+      const fileHandle = await root.getFileHandle("DSCF0001.RAF");
+      await renderPhotoHistogram({ ...photo(), fileHandle }, normalizeParams({}));
+      expect(h.loads).toHaveLength(1);
+      expect(h.loads[0][1]).toEqual({ background: true });
+    } finally {
+      sources.dropLibrarySources("ext.a");
+    }
+  });
+
+  it("loads a photo on disk as before", async () => {
+    await renderPhotoHistogram(photo(), normalizeParams({}));
+    expect(h.loads[0][1]).toBeUndefined();
+  });
 });
 
 // The histogram draws the saved edit as Develop does: the photo's own stage bag
@@ -233,6 +277,36 @@ describe("renderPhotoHistogram's renderer", () => {
     guard.noteDrawEnded([key], "a11d3", true);
     await renderPhotoHistogram(photo(), normalizeParams({}));
     expect(h.FakeRenderer.instances[0].opts.confirmedDraws).toContain(`${key}|a11d3`);
+  });
+});
+
+// A stage that samples a texture draws black without it; one made on demand is
+// had before the frame, as an export's is.
+describe("renderPhotoHistogram's stage textures", () => {
+  it("draws with the stage textures, once the variants the photo's bag names are held, then lets go", async () => {
+    h.stageTextures = { "lut.stage.lut": { width: 1 } };
+    const events: string[] = [];
+    h.needVariants = (bag) =>
+      bag["acme.calib.table"] === "v1"
+        ? new Promise((done) =>
+            setTimeout(() => {
+              h.stageTextures["acme.calib.table#v1"] = { width: 1 };
+              done({ failure: null, release: () => events.push("released") });
+            }),
+          )
+        : null;
+    expect(await renderPhotoHistogram(photo(), normalizeParams({}), { "acme.calib.table": "v1" })).toBe(h.histogram);
+    expect(h.FakeRenderer.instances[0].drawnTextures).toEqual([["lut.stage.lut", "acme.calib.table#v1"]]);
+    expect(events).toEqual(["released"]);
+  });
+
+  it("gives no histogram when a variant the photo's bag names can't be had", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const release = vi.fn();
+    h.needVariants = async () => ({ failure: "Calibration couldn't make what this photo needs", release });
+    expect(await renderPhotoHistogram(photo(), normalizeParams({}), { "acme.calib.table": "v1" })).toBeNull();
+    expect(h.FakeRenderer.instances[0]?.drawnTextures ?? []).toEqual([]);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });
 

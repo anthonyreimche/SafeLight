@@ -8,7 +8,7 @@
 // browser.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildFrame, handleFrameRequest, toSrgb8, type FrameJob, type FrameRequest } from "./frame-job";
+import { buildFrame, handleFrameRequest, lumaHalves, toSrgb8, type FrameJob, type FrameRequest } from "./frame-job";
 import { answerFrameRequest, linearizeCodes, type ProfileJob } from "./profile-frame";
 
 class FakeWorker {
@@ -321,5 +321,77 @@ describe("convertInputFrame", () => {
     await expect(convertInputFrame(profileJob(), { signal: gone.signal })).rejects.toMatchObject({
       name: "AbortError",
     });
+  });
+});
+
+describe("encodeFrameLuma", () => {
+  const values = () => Float32Array.from([-1, 0.001, 0.18, 1, 2, 70000, 0.25, 1]);
+
+  it("takes the luminance in the worker as lumaHalves does inline, handing the samples over", async () => {
+    const { encodeFrameLuma } = await load();
+    const data = values();
+
+    const halves = await encodeFrameLuma(data, {});
+
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(halves).toEqual(lumaHalves(values()));
+    expect(halves).toHaveLength(2);
+    expect(data.buffer.byteLength).toBe(0);
+  });
+
+  it("takes it inline where there is no Worker, leaving the samples", async () => {
+    vi.stubGlobal("Worker", undefined);
+    const { encodeFrameLuma } = await load();
+    const data = values();
+
+    expect(await encodeFrameLuma(data, {})).toEqual(lumaHalves(values()));
+    expect(data.buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  it("keeps a background encode behind an opened photo's work", async () => {
+    FakeWorker.hold = true;
+    const { encodeFrameLuma, finishFrame } = await load();
+
+    const background1 = encodeFrameLuma(values(), { background: true });
+    const background2 = encodeFrameLuma(values(), { background: true });
+    const interactive = finishFrame(job());
+    await settle();
+
+    expect(FakeWorker.all.map((w) => w.queue.length)).toEqual([1, 1]);
+    FakeWorker.all[1].answerNext();
+    await interactive;
+    FakeWorker.all[0].answerNext();
+    await background1;
+    await settle();
+    FakeWorker.hold = false;
+    FakeWorker.all.find((w) => w.queue.length)?.answerNext();
+    await background2;
+  });
+
+  it("fails the call a worker error caught, then encodes inline", async () => {
+    FakeWorker.hold = true;
+    const { encodeFrameLuma } = await load();
+    const failing = encodeFrameLuma(values(), {});
+    await settle();
+
+    FakeWorker.all[0].onerror?.({ message: "boom" });
+
+    await expect(failing).rejects.toThrow(/boom/);
+    FakeWorker.hold = false;
+    expect(await encodeFrameLuma(values(), {})).toEqual(lumaHalves(values()));
+  });
+
+  it("rejects with the message of an encode that threw", async () => {
+    const { encodeFrameLuma } = await load();
+
+    await expect(encodeFrameLuma(null as never, {})).rejects.toThrow(TypeError);
+  });
+
+  it("refuses an encode abandoned before it was asked for", async () => {
+    const { encodeFrameLuma } = await load();
+    const gone = new AbortController();
+    gone.abort();
+
+    await expect(encodeFrameLuma(values(), { signal: gone.signal })).rejects.toMatchObject({ name: "AbortError" });
   });
 });

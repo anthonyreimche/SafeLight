@@ -17,7 +17,12 @@ import {
   type ProgramExit,
   type ShaderVariant,
 } from "./shaders";
-import { RESULT_ARRAY_UNIFORM, type BuiltStageInjection, type ContributedBinding } from "./stage-injection";
+import {
+  RESULT_ARRAY_UNIFORM,
+  VIEW_STAGES_UNIFORM,
+  type BuiltStageInjection,
+  type ContributedBinding,
+} from "./stage-injection";
 
 // Fixed attribute locations (bound before link), so every pipeline variant of
 // the program shares the one VAO — swapping pipelines never rebuilds geometry.
@@ -79,6 +84,12 @@ export interface ProgramBuilds {
 export function buildOutcome(err: unknown): Exclude<StageBuildOutcome, "built"> {
   const message = err instanceof Error ? err.message : "";
   return /^(?:Shader compile|Program link) failed:\s*$/.test(message) ? "suspect" : "failed";
+}
+
+/** How a submitted build let go of unfinished ended: unknown on a lost context,
+ *  which the driver may have lost over it, so the crash guard keeps it in hand. */
+export function letGoOutcome(gl: WebGL2RenderingContext): Exclude<StageBuildOutcome, "built"> {
+  return gl.isContextLost() ? "suspect" : "failed";
 }
 
 // More signatures than this for one stage id inside the window is a stage
@@ -178,7 +189,7 @@ export class ProgramCache {
 
   private letGo(key: string, s: Submitted): void {
     this.submitted.delete(key);
-    this.builds?.ended(s.stageIds, "failed");
+    this.builds?.ended(s.stageIds, letGoOutcome(this.gl));
     const gl = this.gl;
     gl.deleteShader(s.build.vs);
     gl.deleteShader(s.build.fs);
@@ -315,6 +326,14 @@ export class ProgramCache {
   // Delete the programs, and forget the failures, built from a stage that isn't
   // in `current`: its extension was turned off, and should it come back its
   // stage set compiles again like any new one.
+  /** Let go of the builds submitted with a stage not among `current`, before
+   *  the stage set they were asked under changes. */
+  letGoWithout(current: ReadonlySet<string>): void {
+    for (const [key, s] of this.submitted) {
+      if (![...s.stageIds].every((id) => current.has(id))) this.letGo(key, s);
+    }
+  }
+
   releaseWithout(current: ReadonlySet<string>): void {
     const released = new Set<WebGLProgram>();
     for (const [key, s] of this.submitted) {
@@ -427,7 +446,7 @@ export function isolateFailingStages<T>(
 
 /** A program whose compile and link were asked of the driver and not yet waited
  *  on: the driver works on it while the caller goes on (finishProgram). */
-interface SubmittedProgram {
+export interface SubmittedProgram {
   program: WebGLProgram;
   vs: WebGLShader;
   fs: WebGLShader;
@@ -440,7 +459,7 @@ interface SubmittedProgram {
 /** Ask the driver to build a program from `vsSrc` and `fsSrc` without waiting for
  *  it: nothing reads a status until finishProgram. `name` says which program it
  *  is in the slow-build warning. */
-function submitProgram(
+export function submitProgram(
   gl: WebGL2RenderingContext,
   vsSrc: string,
   fsSrc: string,
@@ -463,7 +482,7 @@ function submitProgram(
  *  it failed with: a shader's compile log, else the link log. Warns when the
  *  wait from `since` takes longer than SLOW_BUILD_MS. Either way the shaders
  *  are let go, and a failed program with them. */
-function finishProgram(
+export function finishProgram(
   gl: WebGL2RenderingContext,
   submitted: SubmittedProgram,
   since = performance.now(),
@@ -564,6 +583,7 @@ function uniformLocations(
     "uVizColor",
     "uVizStrength",
     "uSharpenViz",
+    VIEW_STAGES_UNIFORM,
     "uDenoiseReady",
     "uLuminanceNR",
     "uSkipCoreNR",
@@ -581,6 +601,10 @@ function uniformLocations(
     "uMaskTex",
     "uDevelopedSrc",
     "uHaveDeveloped",
+    "uDetail",
+    "uDetailOn",
+    "uDetailRect",
+    "uDetailAmount",
     "uApplyRetouch",
     "uPatchPass",
     "uSplitAt",

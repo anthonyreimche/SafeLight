@@ -65,6 +65,7 @@ import {
 import { isMaskInstance, maskInstances, type MaskInstances } from "./mask-stage-instances";
 import {
   RESULT_ARRAY_UNIFORM,
+  VIEW_STAGES_UNIFORM,
   buildStageInjection,
   dormantRule,
   stageKey,
@@ -73,6 +74,7 @@ import {
   type ContributedBinding,
   type MaskSlotBinding,
   type PrepassStage,
+  type Rebuilder,
   type StageSplit,
   type StageTextureBinding,
 } from "./stage-injection";
@@ -92,8 +94,9 @@ import type {
   StageTextureData,
 } from "@/extensions/types";
 import { coverageItemsFromBag, isDormant, paintLayersFromValue } from "./stage-coverage";
+import { boundStageTextureKey } from "./stage-texture-variant";
 import { brushTipsGeneration } from "./brush-tips";
-import { PaintBaker, type PaintBakeResult } from "./paint-bake";
+import { PaintBaker } from "./paint-bake";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -112,6 +115,7 @@ import {
   bakeCoverage,
   coverageSignature,
   type CoverageItem,
+  type PixelBox,
 } from "./mask-coverage";
 import { sourcePixelsFromLinear } from "../source-pixels";
 import {
@@ -121,6 +125,19 @@ import {
   type SourceSample,
   type StoredSample,
 } from "@/rendering/source-sample";
+import { NATIVE_FRAME_MAX_PIXELS, type DetailGain } from "@/raw/native-frame";
+import {
+  DetailAsks,
+  cutSize,
+  detailView,
+  gainCovers,
+  gainScale,
+  gainServes,
+  rebuildsSource,
+  type DetailRequest,
+  type DetailView,
+  type HeldGain,
+} from "./detail-gain";
 
 /** A live RAW decode, or a camera preview decoded as one (isFallbackPreview). */
 interface LinearImage {
@@ -195,6 +212,14 @@ interface Redirect extends DrawTarget {
 // a larger value (or the image's own long edge) to render at full size.
 const MAX_EDGE = 2560;
 
+// A detail gain on the GPU (setDetailGain): R16F, linear, clamped to its edge.
+interface UploadedGain extends HeldGain {
+  tex: WebGLTexture;
+}
+
+// The unit uDevelopedSrc held in version 1, which version 2 and later give the detail gain.
+const DETAIL_UNIT = 4;
+
 // The bindings of a transform that declares none: one list, so the split
 // tokens, which compare the list by reference, see no change between frames.
 const NO_TRANSFORM_BINDINGS: readonly ContributedBinding[] = [];
@@ -236,6 +261,22 @@ function photoTextureData(value: unknown): StageTextureData | undefined {
   return sized && typed && typeof t.format === "string" && typeof t.version === "number"
     ? (t as StageTextureData)
     : undefined;
+}
+
+/** `box` of tightly packed RGBA8 `data`, `width` × `height`, into the bound
+ *  2D texture: the whole texture, allocated afresh, when the box covers it,
+ *  otherwise only the box into the texture as it is. */
+function uploadRgba8(gl: WebGL2RenderingContext, data: Uint8Array, width: number, height: number, box: PixelBox): void {
+  if (box.w >= width && box.h >= height) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    return;
+  }
+  const rows = new Uint8Array(box.w * box.h * 4);
+  for (let y = 0; y < box.h; y++) {
+    const from = ((box.y + y) * width + box.x) * 4;
+    rows.set(data.subarray(from, from + box.w * 4), y * box.w * 4);
+  }
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, box.x, box.y, box.w, box.h, gl.RGBA, gl.UNSIGNED_BYTE, rows);
 }
 
 export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -303,6 +344,12 @@ export interface WebGLRendererOpts {
    *  stages change. It then builds the program of the stages it was handed
    *  (wakeStages) and the full one, never one for each photo's set. */
   wakeTogether?: boolean;
+  /** Whether the frames this renderer draws for the eye run view-only stages
+   *  (ProcessingStageContribution.viewOnly). For the live view's renderer: an
+   *  export or a thumbnail draws the photo without them. Its measuring frames
+   *  (viewOverlays false), float captures, probes, histogram and Upright's
+   *  downscale leave them out too. Defaults to off. */
+  drawsViewStages?: boolean;
 }
 
 export class WebGLRenderer {
@@ -315,7 +362,6 @@ export class WebGLRenderer {
   private program: WebGLProgram | null = null;
   private imageTexture: WebGLTexture;
   private maskTexture: WebGLTexture;
-  private maskSig = "";
   private maskChannelOf: Record<string, number> = {};
   private maskInputs = new CoverageInputs();
   private readonly maskBaker = new CoverageBaker();
@@ -392,10 +438,10 @@ export class WebGLRenderer {
   private atlasVersion = 0;
   /** Each paint texture's last bake (TextureRequirement "paint"), redone when
    *  its layers or the image's size change. Versions share atlasVersion. */
-  private paints = new Map<
-    string,
-    { inputs: CoverageInputs; baker: PaintBaker; baked: PaintBakeResult | null; data: StageTextureData }
-  >();
+  private paints = new Map<string, { inputs: CoverageInputs; baker: PaintBaker; data: StageTextureData }>();
+  /** Texture data that differs from version `from` of the same key only in
+   *  `box`, so a texture holding `from` takes just that box. */
+  private stageTexturePatches = new WeakMap<StageTextureData, { from: number; box: PixelBox }>();
   private dummyStageTex: WebGLTexture | null = null;
   // The multi-pass prepass framework (prepass-runner.ts) and the stage set's prepass stages.
   private readonly prepass: PrepassRunner;
@@ -405,6 +451,11 @@ export class WebGLRenderer {
   // decided with the program in syncPipeline.
   private skipCoreNR = false;
   private coreNRStandsIn = false;
+  // The stages other than core's that write the colour ahead of the detail
+  // gain, and whether a contributed geometry stage may move srcUv: both decided
+  // with the program in syncPipeline, for the detail gain.
+  private rebuilders: readonly Rebuilder[] = [];
+  private geometryWarped = false;
   // Tokens for the split part of a reads-current stage's prepass signature.
   private splitTokens = new SplitTokens();
   // The drawn source's epoch, which signs its prepass results (showSource),
@@ -446,6 +497,24 @@ export class WebGLRenderer {
    *  default: only the live develop renderer's owner forwards it to the window,
    *  and the others would pay a downscale on every upload for nothing. */
   keepSourcePixels = false;
+  /** Keep the open photo's native luminance (setNativeFrame) and cut detail gains
+   *  from it for zoomed windows. Off by default: only the live view zooms in. */
+  keepNativeFrame = false;
+  // The native luminance of the bound source's photo, under its source key, and
+  // the gain last cut from it, which only live windowed frames of the source it
+  // was cut against draw with.
+  private nativeFrame: { key: string; width: number; height: number } | null = null;
+  private detailGain: UploadedGain | null = null;
+  // The gain the frame being drawn uses: decided in render(), null for any frame
+  // but a live windowed one.
+  private frameDetail: UploadedGain | null = null;
+  // Whether the last live frame wanted a gain the held one doesn't serve, and the
+  // requests for gains, answered by setDetailGain.
+  private wantsDetail = false;
+  private readonly detailAsks = new DetailAsks();
+  // The size a windowed frame would have had without its gain, while the canvas
+  // is sized for one: a probe's patch is measured in it.
+  private windowBase: { w: number; h: number } | null = null;
   private maxEdge = MAX_EDGE;
   // Output colour space. Live develop/thumbnails stay sRGB (a no-op in the
   // shader); export sets a wider space so the encode + ICC match.
@@ -507,6 +576,9 @@ export class WebGLRenderer {
   // frame leaves out, and those the program in use was built without.
   private readonly skipDormant: boolean;
   private readonly wakeTogether: boolean;
+  private readonly drawsViewStages: boolean;
+  // Whether the frame being drawn draws them (VIEW_STAGES_UNIFORM), which a split leaves off.
+  private viewStagesOn = false;
   private allAwake = false;
   private readonly awake = new Set<string>();
   // Stages a prewarm hint named together, by id: one waking wakes the rest, so
@@ -567,6 +639,7 @@ export class WebGLRenderer {
     this.onStageQuarantined = opts?.onStageQuarantined;
     this.skipDormant = opts?.skipDormantStages ?? false;
     this.wakeTogether = opts?.wakeTogether ?? false;
+    this.drawsViewStages = opts?.drawsViewStages ?? false;
 
     const caps = readCaps(gl, { norm16: opts?.highBitDepth ?? true });
     this.caps = caps;
@@ -680,41 +753,35 @@ export class WebGLRenderer {
     );
   }
 
-  // Rebuild a coverage atlas when its geometry changes. Cheap no-op on a
-  // signature match or when there are no brush items. Returns the channel map.
-  private updateCoverageTexture(
-    tex: WebGLTexture,
-    items: CoverageItem[],
-    prevSig: string,
-  ): { sig: string; channelOf: Record<string, number> } {
-    const aspect = this.imageAspect;
-    const sig = coverageSignature(items, aspect);
-    if (sig === prevSig) return { sig, channelOf: this.maskChannelOf };
-    const baked = this.maskBaker.bake(items, aspect);
+  // Rebake the coverage atlas, and upload the pixels the bake changed: the
+  // texture holds the baker's last result, each of which is uploaded. Returns
+  // the channel map.
+  private updateCoverageTexture(tex: WebGLTexture, items: CoverageItem[]): Record<string, number> {
+    const baked = this.maskBaker.bake(items, this.imageAspect);
     const gl = this.gl;
     // With no channel mapped, the texture still holds the empty pixel it was
     // created or last cleared with.
-    if (!baked && Object.keys(this.maskChannelOf).length === 0) return { sig, channelOf: {} };
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (!baked && Object.keys(this.maskChannelOf).length === 0) return {};
     if (!baked) {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
         new Uint8Array([0, 0, 0, 0]),
       );
-      return { sig, channelOf: {} };
+      return {};
     }
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA, baked.size, baked.size, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, baked.data,
-    );
-    return { sig, channelOf: baked.channelOf };
+    if (baked.changed) {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      uploadRgba8(gl, baked.data, baked.size, baked.size, baked.changed);
+    }
+    return baked.channelOf;
   }
 
   // Brush coverage comes from brush COMPONENTS across all masks plus the
   // coverage-kind textures extension stages paint into the bag; the atlas packs
   // up to four into RGBA, the photo's own brushes first. Keyed by component id
-  // or qualified texture key. Signing the dabs is skipped unless a dab array or
-  // bag value was replaced, so callers replace them rather than editing them.
+  // or qualified texture key. The bake is skipped unless a dab array or bag
+  // value was replaced, so callers replace them rather than editing them.
   // A bake that throws is tried again by the next call, whatever changed.
   private updateMaskTexture(masks: Mask[]) {
     const keys = this.coverageKeys();
@@ -736,11 +803,10 @@ export class WebGLRenderer {
       const items = [...brushes];
       const painted = coverageItemsFromBag(keys, this.contributedParams);
       items.push(...painted);
-      const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
-      this.maskSig = r.sig;
-      this.maskChannelOf = r.channelOf;
+      const channelOf = this.updateCoverageTexture(this.maskTexture, items);
+      this.maskChannelOf = channelOf;
       for (const it of painted) {
-        if (it.id in r.channelOf || this.warnedCoverageOverflow.has(it.id)) continue;
+        if (it.id in channelOf || this.warnedCoverageOverflow.has(it.id)) continue;
         this.warnedCoverageOverflow.add(it.id);
         console.warn(
           `[render] coverage texture '${it.id}' does not fit the ${MAX_BRUSH_MASKS}-channel ` +
@@ -818,18 +884,20 @@ export class WebGLRenderer {
   private paint(qk: string, value: unknown): StageTextureData {
     let entry = this.paints.get(qk);
     if (!entry) {
-      entry = { inputs: new CoverageInputs(), baker: new PaintBaker(), baked: null, data: this.emptyPaint() };
+      entry = { inputs: new CoverageInputs(), baker: new PaintBaker(), data: this.emptyPaint() };
       this.paints.set(qk, entry);
     }
     const held = entry;
     held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, brushTipsGeneration(), value], () => {
       const aspect = this.imageAspect;
       const baked = held.baker.bake(paintLayersFromValue(value), aspect);
-      if (baked !== null && baked === held.baked) return;
-      held.baked = baked;
+      if (baked && !baked.changed) return;
+      const from = held.data.version;
       held.data = baked
         ? { data: baked.data, width: baked.size, height: baked.size, format: "rgba8", version: ++this.atlasVersion }
         : this.emptyPaint();
+      const box = baked?.changed;
+      if (box && (box.w < baked.size || box.h < baked.size)) this.stageTexturePatches.set(held.data, { from, box });
     });
     return held.data;
   }
@@ -1045,6 +1113,7 @@ export class WebGLRenderer {
     this.imageTextureOwned = false;
     this.sources.unbind();
     this.hasImage = false;
+    this.dropDetailGain();
   }
 
   // Draws `source` from a texture the renderer owns, held under no key.
@@ -1078,7 +1147,192 @@ export class WebGLRenderer {
     this.sourceSample = source.sample;
     this.fill = source.fill;
     this.hasImage = true;
+    // A gain was cut against the source it was drawn with, so any source shown,
+    // the same one bound again included, needs a new cut. The native frame stays
+    // while its key is bound and it still fits the source.
+    this.dropDetailGain();
+    const held = this.nativeFrame;
+    if (held && (held.key !== this.sources.bound || !this.fitsNativeFrame(held))) this.nativeFrame = null;
     this.resize();
+  }
+
+  // ── Dynamic detail ─────────────────────────────────────────────────────
+
+  /** Keep the size of the native frame of the photo whose source is bound under
+   *  `key`, for the detail gains asked for zoomed windows (requestDetail); the
+   *  frame itself is held and cut elsewhere. True when kept. Whatever was held
+   *  goes first. Refused, with none kept, on a renderer that keeps none
+   *  (keepNativeFrame), for a key other than the bound source's, a source that
+   *  isn't a linear decode (a bitmap, the camera preview, a display-referred
+   *  photo), and a frame over NATIVE_FRAME_MAX_PIXELS, no larger than the
+   *  source on both axes, or one the source isn't the box-averaged copy of. */
+  setNativeFrame(key: string, size: { width: number; height: number }): boolean {
+    this.clearNativeFrame();
+    if (!this.keepNativeFrame || key !== this.sources.bound || !this.fitsNativeFrame(size)) return false;
+    this.nativeFrame = { key, width: size.width, height: size.height };
+    return true;
+  }
+
+  /** Lets go of the native frame and any gain cut from it. */
+  clearNativeFrame(): void {
+    this.nativeFrame = null;
+    this.dropDetailGain();
+  }
+
+  /** True while a native frame is kept for the bound source. */
+  get hasNativeFrame(): boolean {
+    return this.nativeFrame !== null;
+  }
+
+  /** Whether the last live frame wanted a detail gain the held one doesn't
+   *  serve and none is asked for yet: a requestDetail now would ask. */
+  get detailWanted(): boolean {
+    return this.wantsDetail;
+  }
+
+  /** The cut the live view wants of the native frame, under a new request
+   *  number, when the held gain doesn't serve it: null when it wants none, when
+   *  the same cut is already asked for, or when one like it came to nothing. A
+   *  newer request makes the answers to the ones before it go unheard. */
+  requestDetail(): DetailRequest | null {
+    const held = this.nativeFrame;
+    const view = this.detailViewNow();
+    if (!held || !view) return null;
+    const base = { width: this.imageWidth, height: this.imageHeight };
+    if (this.detailGain && gainCovers(this.detailGain, view, this.sourceEpoch, base, held)) return null;
+    const request = this.detailAsks.ask(this.cutSignature(view), this.sourceEpoch);
+    if (request === null) return null;
+    this.wantsDetail = false;
+    const { outW, outH } = cutSize(view, base, held, this.caps.maxTextureSize);
+    return { request, key: held.key, rect: view.cut, outW, outH, baseW: base.width, baseH: base.height };
+  }
+
+  /** The answer to detail request `request`: taken only for the newest request,
+   *  while the source it was asked against is still drawn. True when the gain
+   *  was uploaded, which the next frame draws with. Null, or a gain that can't
+   *  be uploaded, is a cut that came to nothing: it isn't asked for again. */
+  setDetailGain(request: number, gain: DetailGain | null): boolean {
+    if (!this.nativeFrame) return false;
+    const signature = this.detailAsks.answer(request, this.sourceEpoch);
+    if (signature === null) return false;
+    if (!gain || !this.uploadDetailGain(gain)) {
+      this.detailAsks.refuse(signature);
+      return false;
+    }
+    return true;
+  }
+
+  private cutSignature(view: DetailView): string {
+    const { cut, need } = view;
+    return `${this.sourceEpoch}|${cut.x}|${cut.y}|${cut.w}|${cut.h}|${need}`;
+  }
+
+  // The source has to be what averaging the frame down by boxes gives: its size
+  // within a pixel of the frame's scaled on either axis.
+  private fitsNativeFrame(size: { width: number; height: number }): boolean {
+    const { width, height } = size;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return false;
+    if (width * height > NATIVE_FRAME_MAX_PIXELS) return false;
+    if (!this.hasImage || !this.linear || this.isFallbackPreview || this.displayReferred) return false;
+    const baseW = this.imageWidth;
+    const baseH = this.imageHeight;
+    if (width <= baseW || height <= baseH) return false;
+    return (
+      Math.abs(Math.round((width * baseH) / height) - baseW) <= 1 &&
+      Math.abs(Math.round((height * baseW) / width) - baseH) <= 1
+    );
+  }
+
+  private dropDetailGain(): void {
+    if (this.detailGain) this.gl.deleteTexture(this.detailGain.tex);
+    this.detailGain = null;
+    this.frameDetail = null;
+    this.wantsDetail = false;
+    this.detailAsks.reset();
+  }
+
+  /** What the live view's window wants of the native frame: null without a
+   *  window, a native frame for the bound source, a version 2 or later photo,
+   *  or while a retouch or a stage that rebuilds the colour ahead of the gain
+   *  is on; and null when the window is drawn no denser than the source's own
+   *  texels. */
+  private detailViewNow(): DetailView | null {
+    const held = this.nativeFrame;
+    const roi = this.roi;
+    const out = this.roiOut;
+    const p = this.params;
+    if (!held || !roi || !out || !p || held.key !== this.sources.bound || !this.hasImage) return null;
+    if (!this.linear || this.isFallbackPreview || this.displayReferred) return null;
+    if (shaderVariantFor(p.processVersion, this.newestVersion).version < 2) return null;
+    const bag = this.frameBag();
+    if (this.patchOf(bag).active || rebuildsSource(this.rebuilders, this.prepassStages, bag)) return null;
+    return detailView({
+      roi,
+      out,
+      geometry: imageGeometry(bag, geometryKeys(this.currentStages()), this.imageAspect),
+      warped: this.geometryWarped,
+      base: { width: this.imageWidth, height: this.imageHeight },
+      native: held,
+    });
+  }
+
+  /** The gain a live frame draws with, or null; and whether it wants one cut. */
+  private liveDetail(): UploadedGain | null {
+    this.wantsDetail = false;
+    const held = this.nativeFrame;
+    const view = this.detailViewNow();
+    if (!held || !view) return null;
+    const gain = this.detailGain;
+    const base = { width: this.imageWidth, height: this.imageHeight };
+    if (!gain || !gainCovers(gain, view, this.sourceEpoch, base, held)) {
+      this.wantsDetail = this.detailAsks.wants(this.cutSignature(view));
+    }
+    return gain && gainServes(gain, view, this.sourceEpoch, base) ? gain : null;
+  }
+
+  // Into a texture of its own, R16F (filterable in WebGL2), with any unpack
+  // alignment the other uploads rely on put back: a map's rows are any width.
+  private uploadDetailGain(gain: DetailGain): boolean {
+    const gl = this.gl;
+    const max = this.caps.maxTextureSize;
+    if (gain.width > max || gain.height > max) return false;
+    const bound: WebGLTexture | null = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const alignment: number = gl.getParameter(gl.UNPACK_ALIGNMENT);
+    const tex = this.detailGain?.tex ?? created(gl.createTexture());
+    this.detailGain = null;
+    drainErrors(gl);
+    try {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      setSampling(gl, gl.TEXTURE_2D, gl.LINEAR);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, gain.width, gain.height, 0, gl.RED, gl.HALF_FLOAT, gain.data);
+    } catch (err) {
+      gl.deleteTexture(tex);
+      throw err;
+    } finally {
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, alignment);
+      gl.bindTexture(gl.TEXTURE_2D, bound);
+    }
+    if (gl.getError() !== gl.NO_ERROR) {
+      drainErrors(gl);
+      gl.deleteTexture(tex);
+      return false;
+    }
+    this.detailGain = { tex, epoch: this.sourceEpoch, rect: gain.rect, width: gain.width, height: gain.height };
+    return true;
+  }
+
+  // The gain on the unit uDevelopedSrc had, or none. Every develop draw says
+  // which, so no draw can inherit another's.
+  private bindDetail(gain: UploadedGain | null): void {
+    const gl = this.gl;
+    const u = this.uniforms;
+    gl.uniform1i(u.uDetailOn, gain ? 1 : 0);
+    if (!gain) return;
+    gl.activeTexture(gl.TEXTURE0 + DETAIL_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, gain.tex);
+    gl.uniform1i(u.uDetail, DETAIL_UNIT);
+    gl.uniform4f(u.uDetailRect, gain.rect.x, gain.rect.y, gain.rect.w, gain.rect.h);
   }
 
   // ── GPU-resident source cache ──────────────────────────────────────────
@@ -1173,19 +1427,25 @@ export class WebGLRenderer {
 
   // Size the output canvas to the cropped region (capped at maxEdge). Driven by
   // both setImage and setParams, since the crop lives in the develop params.
-  private resize() {
+  // `detail`: the gain a live windowed frame draws with, whose pixels it may hold.
+  private resize(detail: UploadedGain | null = null) {
     if (!this.imageWidth || !this.imageHeight) return;
     const crop = this.drawnCrop;
     const cw = this.imageWidth * crop.width;
     const ch = this.imageHeight * crop.height;
+    this.windowBase = null;
     // Zoom ROI: render the window at the requested screen size, but never allocate
     // more output pixels than the source actually provides within the window
     // (beyond that we'd just be upscaling — wasted memory and no extra detail).
+    // A detail gain provides as many as it holds over the window, which is never
+    // more than the native frame does.
     if (this.roi && this.roiOut) {
       const maxW = Math.max(1, Math.round(cw * this.roi.w));
       const maxH = Math.max(1, Math.round(ch * this.roi.h));
-      const w = Math.min(this.roiOut.w, maxW);
-      const h = Math.min(this.roiOut.h, maxH);
+      const scale = detail ? Math.max(1, gainScale(detail, { width: this.imageWidth, height: this.imageHeight })) : 1;
+      const w = Math.min(this.roiOut.w, Math.max(1, Math.round(cw * this.roi.w * scale)));
+      const h = Math.min(this.roiOut.h, Math.max(1, Math.round(ch * this.roi.h * scale)));
+      if (detail) this.windowBase = { w: Math.min(this.roiOut.w, maxW), h: Math.min(this.roiOut.h, maxH) };
       if (this.canvas.width !== w) this.canvas.width = w;
       if (this.canvas.height !== h) this.canvas.height = h;
       this.gl.viewport(0, 0, w, h);
@@ -1381,6 +1641,10 @@ export class WebGLRenderer {
   }
 
   setStages(stages: ProcessingStageContribution[]) {
+    // Builds asked for ahead of the set this replaces end here, told while
+    // their stages still have their keys, a dormant stage's included.
+    this.prepass.dropAheadPasses();
+    this.programs.letGoWithout(new Set(stages.map((s) => s.id)));
     this.stageSource = () => stages;
     this.allAwake = false;
     this.injectionMemo = null;
@@ -1436,6 +1700,13 @@ export class WebGLRenderer {
     if (!data) return this.ensureDummyStageTex();
     const cached = uploaded.get(qk);
     if (cached && cached.version === data.version) return cached.tex;
+    const patch = this.stageTexturePatches.get(data);
+    if (cached && patch?.from === cached.version && data.format === "rgba8" && data.data instanceof Uint8Array) {
+      gl.bindTexture(gl.TEXTURE_2D, cached.tex);
+      uploadRgba8(gl, data.data, data.width, data.height, patch.box);
+      uploaded.set(qk, { tex: cached.tex, version: data.version });
+      return cached.tex;
+    }
     const max = this.caps.maxTextureSize;
     if (data.width > max || data.height > max) {
       if (this.oversizedStageTex.get(qk) !== data.version) {
@@ -1520,16 +1791,23 @@ export class WebGLRenderer {
    *  rather than starting another; until then the frame is drawn as before.
    *  Stages hinted together wake together, so a frame needing any of them
    *  needs the program built here. Nothing for stages that aren't dormant, or on a renderer that doesn't skip
-   *  dormant stages. */
+   *  dormant stages. The hinted stages' passes start building too, unless
+   *  this renderer never draws them (a view-only stage's, without
+   *  drawsViewStages). */
   prewarmStages(stageIds: readonly string[]): void {
-    if (!this.skipDormant) return;
     const variant = this.params ? shaderVariantFor(this.params.processVersion, this.newestVersion) : this.variant;
     const now = this.stageInjection(variant);
-    const hinted = new Set(stageIds.filter((id) => now.dormant.includes(id)));
-    if (hinted.size === 0) return;
-    for (const id of hinted) this.wakeGroups.set(id, hinted);
-    const woken = this.stageInjection(variant, true, hinted);
-    this.programs.submit(this.pipeline, woken.built, variant, woken.ids);
+    const hinted = new Set(this.skipDormant ? stageIds.filter((id) => now.dormant.includes(id)) : []);
+    let prepass = now.built.prepass;
+    if (hinted.size > 0) {
+      for (const id of hinted) this.wakeGroups.set(id, hinted);
+      const woken = this.stageInjection(variant, true, hinted);
+      this.programs.submit(this.pipeline, woken.built, variant, woken.ids);
+      prepass = woken.built.prepass;
+    }
+    const passes = prepass.filter((s) => stageIds.includes(s.stageId) && (this.drawsViewStages || !s.viewOnly));
+    // Before a photo, the version its passes will be built under is unknown.
+    if (this.params) this.prepass.submitPasses(passes, variant.version);
   }
 
   private derivedFor(params: DevelopParams): Record<string, unknown> {
@@ -1604,8 +1882,9 @@ export class WebGLRenderer {
     const program = this.developProgram();
     const cost = drawCost(target.w, target.h);
     const drawn = this.drawnPrograms.get(program);
+    const detail = this.frameDetail;
     if (!report || drawn?.has(cost) || this.gl.isContextLost()) {
-      this.drawDevelop(srcTex, applyRetouch, target);
+      this.drawDevelop(srcTex, applyRetouch, target, detail);
       return;
     }
     const stages = this.keysOf(this.programStageIds);
@@ -1613,20 +1892,20 @@ export class WebGLRenderer {
     // are not waited on again in a new one.
     if (stages.length > 0 && stages.every((key) => this.drawnStages.has(`${key}|${cost}`))) {
       this.drawnPrograms.set(program, (drawn ?? new Set<string>()).add(cost));
-      this.drawDevelop(srcTex, applyRetouch, target);
+      this.drawDevelop(srcTex, applyRetouch, target, detail);
       return;
     }
     if (stages.length > 0) {
       settleQueuedDraws(this.gl);
       if (this.gl.isContextLost()) {
-        this.drawDevelop(srcTex, applyRetouch, target);
+        this.drawDevelop(srcTex, applyRetouch, target, detail);
         return;
       }
       report({ phase: "drawStart", stages, cost });
     }
     let confirmed = false;
     try {
-      this.drawDevelop(srcTex, applyRetouch, target);
+      this.drawDevelop(srcTex, applyRetouch, target, detail);
       // The canvas reads as 8-bit; a redirect's target says what it reads as. A
       // target it can't read confirms nothing, and is waited on again next time.
       confirmed = stages.length === 0 || readOnePixel(this.gl, target.fbo === null ? this.gl.UNSIGNED_BYTE : undefined);
@@ -1802,7 +2081,9 @@ export class WebGLRenderer {
   /** `stages` bar the dormant ones (skipDormantStages): on a version 2 or later
    *  frame, each stage whose dormantWhen holds on `bag` that no frame has needed
    *  yet. A stage this frame needs is awake from now on, and a mask copy wakes
-   *  its stage with it: the copy's block reads the stage's helpers and textures. */
+   *  its stage with it: the copy's block reads the stage's helpers and textures.
+   *  A renderer that doesn't draw view-only stages never needs one: their
+   *  values in its bag are the live view's. */
   private withoutDormant(
     stages: readonly ProcessingStageContribution[],
     variant: ShaderVariant,
@@ -1815,7 +2096,7 @@ export class WebGLRenderer {
       if (this.awake.has(s.id)) continue;
       const rule = dormantRule(s);
       if (!rule) continue;
-      if (isDormant(rule, bag)) {
+      if (isDormant(rule, bag) || (s.viewOnly === true && !this.drawsViewStages)) {
         asleep.add(s.id);
         continue;
       }
@@ -1921,6 +2202,11 @@ export class WebGLRenderer {
     const denoiserInSet = built.prepass.some((s) => s.stageId === BUILTIN_DENOISE_ID);
     this.coreNRStandsIn = denoiserInSet && !this.prepass.denoiserRunnable();
     this.skipCoreNR = denoiserInSet ? !this.coreNRStandsIn : built.hasNoiseReduction;
+    // The detail gain scales what the built-in kinds leave in `lin`, the built-in
+    // denoiser's result included; a stage that rebuilds the colour ahead of it
+    // hands it a picture it knows nothing of.
+    this.rebuilders = built.rebuilders;
+    this.geometryWarped = built.injection.srcUv.trim() !== "";
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
@@ -1947,8 +2233,12 @@ export class WebGLRenderer {
     if (!this.hasImage || !this.params) return;
     const overlays = options.viewOverlays ?? true;
     this.programs.settle();
+    this.prepass.settle();
     this.syncPipeline();
-    this.resize();
+    // Only a frame for the eye on the canvas draws the detail gain, an as-shown
+    // capture included: a measurement or a probe reads the source's own texels.
+    this.frameDetail = overlays && !this.redirect ? this.liveDetail() : null;
+    this.resize(this.frameDetail);
     const gl = this.gl;
     const p = this.params;
     const u = this.uniforms;
@@ -1989,6 +2279,9 @@ export class WebGLRenderer {
     gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
     gl.uniform1f(u.uVizStrength, this.vizStrength);
     gl.uniform1i(u.uSharpenViz, overlays ? this.sharpenViz : 0);
+    const viewStages = overlays && this.drawsViewStages;
+    this.viewStagesOn = viewStages;
+    gl.uniform1i(u[VIEW_STAGES_UNIFORM], viewStages ? 1 : 0);
     // An output probe and a pre-output measurement (output sharpening, a
     // float capture) read `c` as the output stage receives it, unencoded.
     const raw = this.redirect?.probe?.point === "output" || this.redirect?.measure === "pre-output";
@@ -2000,7 +2293,10 @@ export class WebGLRenderer {
     // mips, which never carry the baseline tone, so behind it the branch shrinks
     // the tone's lift instead of noise and shifts the shadows. Standing in for
     // the denoiser there, the block reduces colour noise only.
-    gl.uniform1f(u.uLuminanceNR, this.coreNRStandsIn && baseCurve ? 0 : p.luminanceNR);
+    const luminanceNR = this.coreNRStandsIn && baseCurve ? 0 : p.luminanceNR;
+    gl.uniform1f(u.uLuminanceNR, luminanceNR);
+    // Luminance NR smooths what the gain would bring back, so the gain gives way to it.
+    gl.uniform1f(u.uDetailAmount, 1 - Math.min(100, Math.max(0, luminanceNR)) / 100);
     gl.uniform1i(u.uSkipCoreNR, this.skipCoreNR ? 1 : 0);
     gl.uniform1f(u.uLumNRDetail, p.luminanceNRDetail);
     gl.uniform1f(u.uLumNRContrast, p.luminanceNRContrast);
@@ -2055,7 +2351,7 @@ export class WebGLRenderer {
               ? this.ensureStageTexture(tb.qualifiedKey, this.atlas(tb.qualifiedKey, bag[tb.qualifiedKey]).data, this.uploadedPhotoTex)
               : tb.kind === "paint"
                 ? this.ensureStageTexture(tb.qualifiedKey, this.paint(tb.qualifiedKey, bag[tb.qualifiedKey]), this.uploadedPhotoTex)
-                : this.ensureStageTexture(tb.qualifiedKey);
+                : this.ensureStageTexture(boundStageTextureKey(tb.qualifiedKey, bag));
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.uniform1i(loc, unit);
       }
@@ -2075,10 +2371,12 @@ export class WebGLRenderer {
 
     gl.uniform1i(u.uHaveDeveloped, 0);
 
-    // Keep unit 4 (uDevelopedSrc) pointed at a valid texture.
+    // Keep unit 4 (uDevelopedSrc, and uDetail from version 2) pointed at a valid
+    // texture; a draw with the detail gain binds the gain there itself.
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     gl.uniform1i(u.uDevelopedSrc, 4);
+    gl.uniform1i(u.uDetail, DETAIL_UNIT);
 
     // The stages that patch the source (Heal's): whether any patches this frame,
     // and what the patched copy depends on, which keys the prepass cache (e.g.
@@ -2107,6 +2405,7 @@ export class WebGLRenderer {
             `|${variantKey(this.variant)}:${this.patchedSource.format}`,
           false,
           p,
+          viewStages,
         ),
       );
       if (this.quarantineFailedPasses()) return this.render(options);
@@ -2117,7 +2416,7 @@ export class WebGLRenderer {
       // No retouch (or no offscreen target): single pass. The in-shader retouch
       // is the fallback when the framebuffer can't be created.
       const imageSize = { w: this.imageWidth, h: this.imageHeight };
-      this.prepass.run(this.prepassFrame(this.imageTexture, imageSize, `e${this.sourceEpoch}`, hasRetouch, p));
+      this.prepass.run(this.prepassFrame(this.imageTexture, imageSize, `e${this.sourceEpoch}`, hasRetouch, p, viewStages));
       if (this.quarantineFailedPasses()) return this.render(options);
       this.drawOutput(this.imageTexture, hasRetouch);
     }
@@ -2130,13 +2429,20 @@ export class WebGLRenderer {
   // One develop draw of the main program over `srcTex` into `target`, with
   // the prepass results produced so far this frame. The main draws and the
   // split draws all go through here, so a per-draw uniform added later can't
-  // reach one and miss another.
-  private drawDevelop(srcTex: WebGLTexture, applyRetouch: boolean, target: DrawTarget): void {
+  // reach one and miss another. `detail`: the gain a live windowed frame draws
+  // with; every other draw, a split's included, draws without.
+  private drawDevelop(
+    srcTex: WebGLTexture,
+    applyRetouch: boolean,
+    target: DrawTarget,
+    detail: UploadedGain | null = null,
+  ): void {
     const gl = this.gl;
     const u = this.uniforms;
     gl.useProgram(this.developProgram());
     this.bindPrepassResults();
     this.bindMaskSlots();
+    this.bindDetail(detail);
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.activeTexture(gl.TEXTURE0);
@@ -2163,6 +2469,18 @@ export class WebGLRenderer {
     const raw = this.drawFloat(w, h);
     if (!raw) return null;
     return { data: topDown(raw, w, h), width: w, height: h };
+  }
+
+  /** captureFloatFrame's frame as 16-bit codes (quantise16), read back in bands
+   *  rather than as a float copy of the whole frame. Null in the same cases. */
+  captureCodes16(): { data: Uint16Array; width: number; height: number } | null {
+    if (!this.hasImage || !this.params || !this.caps.colorBufferFloat) return null;
+    this.syncPipeline();
+    this.resize();
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const data = this.readback.floatCodes(w, h, this.gl.RGBA16F, (fbo) => this.drawRedirected({ fbo, w, h }));
+    return data && { data, width: w, height: h };
   }
 
   /** The current frame as floats at the canvas's size, RGBA, top-down, in
@@ -2290,7 +2608,10 @@ export class WebGLRenderer {
   probe(u: number, v: number, point: ProbePoint): [number, number, number] | null {
     if (!this.hasImage || !this.params || !this.caps.colorBufferFloat) return null;
     const live = this.roi ?? { x: 0, y: 0, w: 1, h: 1 };
-    const roi = probePatch(live, u, v, this.canvas.width, this.canvas.height);
+    // Measured in the frame's pixels as they are without a detail gain, which the
+    // probe's own draw is without.
+    const size = this.windowBase ?? { w: this.canvas.width, h: this.canvas.height };
+    const roi = probePatch(live, u, v, size.w, size.h);
     try {
       const raw = this.drawFloat(PROBE_PX, PROBE_PX, { probe: { roi, point } });
       if (!raw) return null;
@@ -2311,12 +2632,14 @@ export class WebGLRenderer {
 
   // computeHistogram and Upright redraw with what is bound, so every draw away
   // from the live frame puts back what it left: the frame's program, encoding
-  // its output over the live window, at the canvas's size.
+  // its output over the live window, at the canvas's size, without the detail
+  // gain, which only render() turns on.
   private bindFrameState(): void {
     const gl = this.gl;
     const vp = this.roi;
     gl.useProgram(this.developProgram());
     gl.uniform1i(this.uniforms.uRawHistogram, 0);
+    gl.uniform1i(this.uniforms.uDetailOn, 0);
     gl.uniform4f(this.uniforms.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
@@ -2359,10 +2682,13 @@ export class WebGLRenderer {
     gl.uniform1i(this.uniforms.uShowClipping, 0);
     gl.uniform1i(this.uniforms.uVizMask, -1);
     gl.uniform1i(this.uniforms.uSharpenViz, 0);
+    gl.uniform1i(this.uniforms[VIEW_STAGES_UNIFORM], 0);
     this.bindOutputSpace(false);
     // A zoomed render leaves only the visible window bound; Auto Tone and Auto
-    // WB read this histogram, so it measures the whole picture.
+    // WB read this histogram, so it measures the whole picture, which the
+    // window's detail gain doesn't cover.
     gl.uniform4f(this.uniforms.uViewport, 0, 0, 1, 1);
+    gl.uniform1i(this.uniforms.uDetailOn, 0);
 
     const result = this.readback.histogram(extended, this.uniforms.uRawHistogram);
 
@@ -2388,6 +2714,7 @@ export class WebGLRenderer {
       else gl.uniform4f(loc, 0, 0, 1, 1);
     }
     gl.uniform4f(u.uViewport, 0, 0, 1, 1);
+    gl.uniform1i(u.uDetailOn, 0);
 
     // Re-bind the source image on unit 0 so the shader samples it correctly
     gl.activeTexture(gl.TEXTURE0);
@@ -2395,6 +2722,7 @@ export class WebGLRenderer {
     gl.uniform1i(u.uShowClipping, 0);
     gl.uniform1i(u.uVizMask, -1);
     gl.uniform1i(u.uSharpenViz, 0);
+    gl.uniform1i(u[VIEW_STAGES_UNIFORM], 0);
     this.bindOutputSpace(false);
     // Top-down, as the Hough line detector expects.
     const data = this.readback.downscaled(w, h);
@@ -2426,6 +2754,7 @@ export class WebGLRenderer {
     srcSig: string,
     applyRetouch: boolean,
     params: DevelopParams,
+    viewStages: boolean,
   ): PrepassFrame {
     const { w, h } = this.prepassDims();
     const bag = this.frameBag();
@@ -2469,6 +2798,7 @@ export class WebGLRenderer {
       sourceHeight: this.sourceFullHeight,
       srcW: srcSize.w,
       srcH: srcSize.h,
+      viewStages,
     };
   }
 
@@ -2549,7 +2879,11 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.useProgram(this.developProgram());
     gl.uniform1i(this.uniforms.uSplitAt, index);
+    // A pass input never holds a view aid: its result is kept and reused by
+    // frames that leave the aid out.
+    gl.uniform1i(this.uniforms[VIEW_STAGES_UNIFORM], 0);
     this.drawDevelop(srcTex, applyRetouch, target);
+    gl.uniform1i(this.uniforms[VIEW_STAGES_UNIFORM], this.viewStagesOn ? 1 : 0);
     gl.uniform1i(this.uniforms.uSplitAt, -1);
   }
 
@@ -2585,6 +2919,7 @@ export class WebGLRenderer {
     this.sources.dispose();
     if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.noSource);
+    this.clearNativeFrame();
     this.patchedSource.dispose();
     gl.deleteTexture(this.maskTexture);
     // Histogram targets and the sharpening and box-filter programs.

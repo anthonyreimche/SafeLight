@@ -456,6 +456,25 @@ export function checkStageContract(
       readsIgnored = `${stagePrefix}: reads "current" only feeds passes and this stage has none, so it is ignored`;
   }
 
+  const viewOnly: unknown = c.viewOnly;
+  if (viewOnly !== undefined) {
+    if (typeof viewOnly !== "boolean") return fail(`viewOnly must be true or false, got ${formatValue(viewOnly)}`);
+    if (viewOnly && c.phase === "geometry")
+      return fail("geometry stages move what every frame samples, so they can't be viewOnly");
+    if (viewOnly && (c.produces?.length ?? 0) > 0)
+      return fail("a viewOnly stage can't produce values: exports would hand other stages different ones");
+    if (viewOnly && c.mask !== undefined) return fail("a viewOnly stage can't run inside masks");
+    if (viewOnly && c.phase === "noise-reduction")
+      return fail("a noise-reduction stage replaces the built-in denoiser in exports too, so it can't be viewOnly");
+    if (viewOnly && c.anchor !== undefined) return fail("an anchored stage can't be viewOnly");
+    if (viewOnly && c.reads === "current")
+      return fail('a viewOnly stage can\'t set reads: "current": the point it reads at is written into exports too');
+  }
+
+  const keepsDetail: unknown = c.keepsDetail;
+  if (keepsDetail !== undefined && typeof keepsDetail !== "boolean")
+    return fail(`keepsDetail must be true or false, got ${formatValue(keepsDetail)}`);
+
   const mask: unknown = c.mask;
   if (mask !== undefined) {
     if (typeof mask !== "object" || mask === null || (mask as { maskable?: unknown }).maskable !== true) {

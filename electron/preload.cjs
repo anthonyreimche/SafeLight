@@ -48,6 +48,8 @@ const privileged = {
       ),
     externalCatalogVariants: (p, base) =>
       ipcRenderer.invoke("fs:externalCatalogVariants", String(p), base ? String(base) : null),
+    sourceCatalogDir: (key, name) =>
+      ipcRenderer.invoke("fs:sourceCatalogDir", String(key), String(name)),
     listExternalCatalogs: (base) =>
       ipcRenderer.invoke("fs:listExternalCatalogs", base ? String(base) : null),
     setSpilloverPointer: (rp, dir) =>
@@ -61,6 +63,10 @@ const privileged = {
     move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
     exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
     pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),
+    pickKeptFolder: (id, replacing) =>
+      ipcRenderer.invoke("fs:pickKeptFolder", String(id), replacing == null ? null : String(replacing)),
+    keptFolder: (id, token) => ipcRenderer.invoke("fs:keptFolder", String(id), String(token)),
+    forgetKeptFolder: (id, token) => ipcRenderer.invoke("fs:forgetKeptFolder", String(id), String(token)),
     pickFile: (filters) =>
       ipcRenderer.invoke("fs:pickFile", Array.isArray(filters) ? filters : []),
     reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
@@ -92,6 +98,13 @@ const privileged = {
   window: {
     setMaterial: (material) =>
       ipcRenderer.invoke("window:setMaterial", typeof material === "string" ? material : null),
+    // The app's pop-outs, opened by the main process: a page that opens a
+    // window holds its object and could claim this bridge there first.
+    openApp: (kind, module) =>
+      ipcRenderer.invoke("window:openApp", String(kind), module == null ? null : String(module)),
+    closeApp: (kind, module) =>
+      ipcRenderer.invoke("window:closeApp", String(kind), module == null ? null : String(module)),
+    focusMain: () => ipcRenderer.invoke("window:focusMain"),
   },
   // Records the dev folder so the next launch reads its manifests' declared
   // network origins like an installed extension's; resolves with the origins
@@ -99,6 +112,21 @@ const privileged = {
   devtools: {
     syncDevFolder: (folder) =>
       ipcRenderer.invoke("devtools:sync-dev-folder", folder == null ? null : String(folder)),
+  },
+  // Server addresses the person allowed an extension to reach (net-access.cjs).
+  // Privileged so core names the asking extension, not the page.
+  net: {
+    requestOrigin: (id, url) => ipcRenderer.invoke("net:requestOrigin", String(id), String(url)),
+    hasOrigin: (id, url) => ipcRenderer.invoke("net:hasOrigin", String(id), String(url)),
+    revokeOrigin: (id, url) => ipcRenderer.invoke("net:revokeOrigin", String(id), String(url)),
+    fetch: (id, requestId, url, init) =>
+      ipcRenderer.invoke("net:fetch", String(id), String(requestId), String(url), {
+        method: init && typeof init.method === "string" ? init.method : undefined,
+        headers: init && init.headers && typeof init.headers === "object" ? { ...init.headers } : undefined,
+        body: init && (typeof init.body === "string" || init.body instanceof Uint8Array) ? init.body : undefined,
+        timeoutMs: init && Number.isFinite(init.timeoutMs) ? Number(init.timeoutMs) : undefined,
+      }),
+    abort: (requestId) => ipcRenderer.invoke("net:abort", String(requestId)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.

@@ -21,6 +21,7 @@ import {
   createSharpenPrograms,
   deleteSharpenPrograms,
   drawSharpened,
+  readCodes,
   type ExportFramebuffer,
   type Sharpen,
   type SharpenPrograms,
@@ -145,6 +146,29 @@ export class Readback {
       gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
       return ranOutOfMemory(gl) ? null : raw;
+    } finally {
+      releaseTarget(gl, target);
+    }
+  }
+
+  /** floatPixels' RGBA16F frame as 16-bit codes (quantise16), top-down, read in
+   *  bands so no float copy of the whole frame exists. Null as floatPixels is,
+   *  or when the frame is too large for its codes. */
+  floatCodes(w: number, h: number, format: number, draw: (fbo: WebGLFramebuffer) => void): Uint16Array | null {
+    const gl = this.gl;
+    const { target, ok } = allocateChecked(gl, format, format === gl.RGBA32F ? gl.FLOAT : gl.HALF_FLOAT, w, h);
+    try {
+      if (!ok) {
+        drainErrors(gl);
+        return null;
+      }
+      draw(target.fbo);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      const codes = readCodes(gl, gl.FLOAT, w, h);
+      return ranOutOfMemory(gl) ? null : codes;
+    } catch (err) {
+      if (err instanceof RangeError) return null;
+      throw err;
     } finally {
       releaseTarget(gl, target);
     }

@@ -9,6 +9,7 @@ import {
   easeOutCubic,
   interpolateView,
   placeBuffer,
+  recentreView,
   viewWindow,
   type View,
 } from "./viewport-view";
@@ -91,6 +92,29 @@ describe("interpolateView", () => {
   it("moves a pure pan in a line", () => {
     const to = { scale: 1, x: -200, y: -100 };
     expect(interpolateView(FULL, to, 0.5)).toEqual({ scale: 1, x: -300, y: -200 });
+  });
+});
+
+// The image measured in twice the pixels (Develop's Dynamic mode, the photo's own
+// pixels over the source's): a view keeps the image point at the frame's centre.
+describe("recentreView", () => {
+  const DOUBLE = { w: 3200, h: 2400 };
+  const offCentre: View = { scale: 0.625, x: -75, y: -50 };
+
+  it("puts the same picture on screen at half the scale", () => {
+    const v = recentreView(offCentre, FRAME, IMAGE, DOUBLE, 0.3125);
+    expect(v.scale).toBe(0.3125);
+    expect(v.x).toBeCloseTo(-75, 9);
+    expect(v.y).toBeCloseTo(-50, 9);
+  });
+
+  it("keeps the centre's image point at another scale", () => {
+    const v = recentreView(FULL, FRAME, IMAGE, DOUBLE, 1);
+    expect(v).toEqual({ scale: 1, x: -1200, y: -900 });
+    const before = under(offCentre, { x: 400, y: 300 });
+    const after = under(recentreView(offCentre, FRAME, IMAGE, DOUBLE, 2), { x: 400, y: 300 });
+    expect(after.x / DOUBLE.w).toBeCloseTo(before.x / IMAGE.w, 12);
+    expect(after.y / DOUBLE.h).toBeCloseTo(before.y / IMAGE.h, 12);
   });
 });
 

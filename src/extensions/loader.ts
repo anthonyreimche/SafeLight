@@ -22,7 +22,7 @@ import { deleteExtensionSettings } from "./ext-settings";
 import { setExtensionName } from "./param-registry";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { isReservedExtensionId } from "./core-extension";
-import { manifestIdRefusal, officialExtension } from "./official-extensions";
+import { CORE_MODULE_IDS, manifestIdRefusal, officialExtension } from "./official-extensions";
 import { isNewer, isPrerelease } from "@/update/semver";
 import { updateRepoFor } from "./sources";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
@@ -517,6 +517,17 @@ function yieldToEventLoop(): Promise<void> {
   });
 }
 
+/** `list` with the Library and Develop modules ahead of the rest, each group in
+ *  the order given. The window shows only its top bar until its module registers,
+ *  and what a module registers is ordered by its tab, not by when it started. */
+function modulesFirst(list: ExtensionManifest[]): ExtensionManifest[] {
+  const rank = (manifest: ExtensionManifest) => {
+    const at = CORE_MODULE_IDS.indexOf(manifest.id);
+    return at === -1 ? CORE_MODULE_IDS.length : at;
+  };
+  return [...list].sort((a, b) => rank(a) - rank(b));
+}
+
 export async function loadExternalPlugins(): Promise<void> {
   try {
     await queueEnablement(loadExternalPluginsOnce);
@@ -535,10 +546,12 @@ async function loadExternalPluginsOnce(): Promise<void> {
     return;
   }
   useInstalledPlugins.setState({ ids: list.map((m) => m.id) });
-  // Bundles import side by side; the extensions still activate one at a time in
-  // list order, so what they register lands in the same order on every launch.
+  const starting = modulesFirst(list);
+  // Bundles import side by side; the extensions still activate one at a time, the
+  // two modules and then list order, so what they register lands in the same
+  // order on every launch.
   const ahead = importAhead(
-    list.filter(
+    starting.filter(
       (m) =>
         !isExtensionDisabled(m.id) &&
         !bannedReasonForManifest(m) &&
@@ -547,7 +560,7 @@ async function loadExternalPluginsOnce(): Promise<void> {
     ),
   );
   let first = true;
-  for (const manifest of list) {
+  for (const manifest of starting) {
     if (isExtensionDisabled(manifest.id)) continue;
     // Kill-switch check against the cached trust list (seeded synchronously from
     // localStorage) — no fetch to await, so themes and panels activate at once.
@@ -561,9 +574,10 @@ async function loadExternalPluginsOnce(): Promise<void> {
     } catch (e) {
       console.error(`[extensions] failed to load ${manifest.id}:`, e);
     }
+    // The saved theme may belong to the one that just started: the window wears
+    // it from here, not once the rest have started too.
+    applySavedTheme();
   }
-  // The saved theme may belong to a plugin that just registered it.
-  applySavedTheme();
   // Refresh the trust list from the network in the background (force: bypass the
   // cache TTL so registry edits — new bans, new verifications — show up on the
   // next launch, not up to a TTL later), then retire anything it now bans. This

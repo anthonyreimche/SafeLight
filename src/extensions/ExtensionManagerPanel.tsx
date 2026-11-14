@@ -558,16 +558,20 @@ export function ExtensionManagerPanel() {
   const allowlisted = (r: ExtensionSearchResult) =>
     isVerifiedIn(trust, r.fullName);
 
-  // Browse shows only what isn't installed, narrowed to the open category (a
-  // category the vocabulary no longer has falls back to the home page). With
-  // "Only verified extensions" on it also hides what the install gate would
-  // refuse, so the store only ever offers what can actually be installed.
+  // Browse offers what isn't installed, narrowed to the open category (a
+  // category the vocabulary no longer has falls back to the home page). A search
+  // also finds installed extensions, whose cards say Installed. With "Only
+  // verified extensions" on it also hides what the install gate would refuse,
+  // so the store only ever offers what can actually be installed.
   const openInfo = browse === "home" ? null : categoryInfo(browse, vocabulary);
   const browseKey = openInfo ? openInfo.slug : "home";
+  const searched = !!query.trim();
   const notInstalled = results?.filter((r) => !isInstalled(r)) ?? null;
-  const inView =
-    notInstalled && openInfo ? inCategory(notInstalled, browseKey, vocabulary) : notInstalled;
-  const filtered = onlyVerified ? (inView?.filter(allowlisted) ?? null) : inView;
+  const offered = searched ? results : notInstalled;
+  const inView = offered && openInfo ? inCategory(offered, browseKey, vocabulary) : offered;
+  const filtered = onlyVerified
+    ? (inView?.filter((r) => isInstalled(r) || allowlisted(r)) ?? null)
+    : inView;
   const hiddenUnverified = inView && filtered ? inView.length - filtered.length : 0;
   const showOther = !!notInstalled && inCategory(notInstalled, OTHER.slug, vocabulary).length > 0;
   const categoryMembers = results && openInfo ? inCategory(results, browseKey, vocabulary) : [];
@@ -592,7 +596,7 @@ export function ExtensionManagerPanel() {
   // the flat sorted grid above. ISO date strings sort lexically, so localeCompare
   // gives a correct newest-first order. Empty rows (e.g. no verified extensions)
   // are dropped so the user never sees a labelled blank shelf.
-  const shelfView = !query.trim() && !openInfo;
+  const shelfView = !searched && !openInfo;
   const shelves = (() => {
     if (!shelfView || !filtered || filtered.length === 0) return null;
     const byStars = (a: ExtensionSearchResult, b: ExtensionSearchResult) =>
@@ -876,8 +880,8 @@ export function ExtensionManagerPanel() {
                   <div className="text-text-muted">Searching…</div>
                 ) : browsable && browsable.length === 0 ? (
                   <div className="text-text-muted">
-                    {query.trim() || !openInfo
-                      ? `No new extensions found${query ? ` for “${query}”` : ""}${
+                    {searched || !openInfo
+                      ? `${searched ? `No extensions found for “${query}”` : "No new extensions found"}${
                           openInfo ? ` in ${openInfo.label}` : ""
                         } (topic: ${topic}).`
                       : everyInstalled
@@ -917,6 +921,7 @@ export function ExtensionManagerPanel() {
                         result={r}
                         thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
                         installing={busy === r.fullName}
+                        installed={isInstalled(r)}
                         disabled={busy !== null}
                         onOpen={() => openDetail(r.fullName)}
                         onInstall={() => void install(r.fullName, r)}

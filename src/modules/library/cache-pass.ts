@@ -9,7 +9,8 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { fillCacheEntry } from "@/catalog/cache-fill";
 import { isRawFile } from "@/raw/raw-preview";
 import { decodePoolSize, warmDecodePool } from "@/raw/decode-pool";
-import { cacheListing, rawCacheGeneration, rawCacheKey } from "@/raw/raw-cache";
+import { cacheListing, rawCacheGeneration } from "@/raw/raw-cache";
+import { photoCacheKey } from "@/raw/photo-cache-key";
 import { getSettings } from "@/state/settings-store";
 import { useCatalogStore } from "@/state/catalog-store";
 
@@ -81,7 +82,7 @@ export async function preDecodeRawsForCache(
       .getState()
       .photos.flatMap((p) => (p.metadataPending ? [p.id] : [])),
   );
-  const keyOf = (p: CatalogPhoto) => rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0);
+  const keyOf = (p: CatalogPhoto) => photoCacheKey(p);
   const candidates = photos.filter(
     (p) => p.fileHandle && !pending.has(p.id) && isRawFile({ name: p.filename } as File),
   );

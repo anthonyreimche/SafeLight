@@ -343,6 +343,16 @@ describe("writeAtomicSync", () => {
     expect(await leftovers()).toEqual([]);
   });
 
+  it("syncs to disk by default and skips the sync when asked", () => {
+    const fsync = vi.spyOn(fs, "fsyncSync");
+    const file = path.join(dir, "state.json");
+    writeAtomicSync(file, "one");
+    expect(fsync).toHaveBeenCalledTimes(1);
+    writeAtomicSync(file, "two", { durable: false });
+    expect(fsync).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(file, "utf8")).toBe("two");
+  });
+
   it("keeps the old content and removes the temp file when the rename fails", async () => {
     const file = path.join(dir, "state.json");
     fs.writeFileSync(file, "old");

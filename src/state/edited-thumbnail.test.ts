@@ -55,7 +55,15 @@ const catalog = vi.hoisted(() => ({
   mergeRebuiltPhoto: vi.fn<(id: string, change: RebuiltChange) => void>(),
 }));
 
-vi.mock("@/rendering/render-bridge", () => ({ getRenderBridge: () => bridge }));
+const variants = vi.hoisted(() => ({
+  /** needStageVariants: what a frame of a bag waits for, or null for nothing. */
+  need: (_bag: Record<string, unknown>): Promise<{ failure: string | null; release(): void }> | null => null,
+}));
+
+vi.mock("@/rendering/render-bridge", () => ({
+  getRenderBridge: () => bridge,
+  needStageVariants: (bag: Record<string, unknown>) => variants.need(bag),
+}));
 vi.mock("@/catalog/load-image", () => ({
   loadPhotoImage: decode,
   photoSourceKey: (photo: CatalogPhoto) => `${photo.id}:${photo.rotation}`,
@@ -142,6 +150,7 @@ beforeEach(() => {
   bridge.uploadSource.mockReset();
   decode.mockReset();
   decode.mockResolvedValue(null);
+  variants.need = () => null;
   vi.stubGlobal("URL", { createObjectURL: () => "blob:thumb", revokeObjectURL: () => {} });
 });
 
@@ -162,6 +171,22 @@ it("neither renders nor decodes once the renderer has failed, and keeps the prev
   expect(bridge.renderThumbnailAsync).not.toHaveBeenCalled();
   expect(decode).not.toHaveBeenCalled();
   expect(written).toEqual([]);
+});
+
+it("renders nothing, decodes nothing and keeps the preview when a stage texture the edit names can't be had", async () => {
+  catalog.photos = [photo({ thumbnailBlob: new Blob(["camera"]) })];
+  const release = vi.fn();
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  variants.need = () => Promise.resolve({ failure: "Calibration couldn't make what this photo needs: gone", release });
+  regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, { "acme.calib.table": "v1" });
+  await settle();
+
+  expect(bridge.renderThumbnailFromSource).not.toHaveBeenCalled();
+  expect(bridge.renderThumbnailAsync).not.toHaveBeenCalled();
+  expect(decode).not.toHaveBeenCalled();
+  expect(written).toEqual([]);
+  expect(release).toHaveBeenCalledTimes(1);
+  vi.restoreAllMocks();
 });
 
 describe("rendering from the resident source", () => {

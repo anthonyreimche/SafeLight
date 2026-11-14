@@ -8,9 +8,11 @@
 // kept out of the develop-preview cache by either. The same look at the
 // camera's preview gives the photo its camera match (camera-match.ts). A leaf
 // module on purpose: the importers' tests replace it wholesale, which only
-// works while it pulls in nothing from the app beyond that arithmetic.
+// works while it pulls in nothing from the app beyond that arithmetic and the
+// preview's sample (preview-sample.ts, a leaf too).
 
 import { cameraMatch, lumaSamples, type CameraMatch } from "./camera-match";
+import { samplePreview, type LinearPixels, type PreviewSample } from "./preview-sample";
 
 export interface DecodeVerdict {
   /** The decode's colours agree with the camera's own preview. */
@@ -22,22 +24,21 @@ export interface DecodeVerdict {
   match?: CameraMatch;
 }
 
-interface Pixels {
-  data: Float32Array;
-  width: number;
-  height: number;
-}
+type Pixels = LinearPixels;
 
 /**
  * `upright` is the decode as it would be cached (already turned); `preview` the
  * embedded JPEG, or null when the camera stored none (the decode is trusted).
+ * `sampled` is that preview's sample when the caller began it while the RAW
+ * was still decoding (preview-sample.ts); without it the preview is read here.
  */
 export async function acceptDecode(
   decode: { suspicious?: boolean },
   upright: Pixels,
   preview: Blob | null,
+  sampled?: PreviewSample,
 ): Promise<DecodeVerdict> {
-  const sample = preview ? await previewSample(preview) : null;
+  const sample = preview ? await (sampled ?? samplePreview(preview)) : null;
   const use = !sample || rawColorMatchesPreview(upright, sample);
   const verdict: DecodeVerdict = { use, cache: use && !decode.suspicious };
   if (use && sample) {
@@ -51,7 +52,7 @@ export async function acceptDecode(
  *  (camera-match.ts lumaSamples, halfLumaSamples), and the camera's preview.
  *  Undefined when the preview can't be read or gives no usable match. */
 export async function matchCameraPreview(scene: Float32Array, preview: Blob): Promise<CameraMatch | undefined> {
-  const sample = await previewSample(preview);
+  const sample = await samplePreview(preview);
   return sample ? cameraMatch(scene, lumaSamples(sample)) : undefined;
 }
 
@@ -95,26 +96,6 @@ export function compareBalance(raw: ChannelMeans, preview: ChannelMeans): Balanc
   return { rawRG, preRG, rawBG, preBG, rgFactor, bgFactor, ok };
 }
 
-// The embedded JPEG preview as a 64 px linear sample, or null when it can't be
-// read, which leaves the decode trusted.
-async function previewSample(previewBlob: Blob): Promise<Pixels | null> {
-  try {
-    // Use ImageBitmap resize so we don't pull a big JPEG into a canvas.
-    const thumb = await createImageBitmap(previewBlob, {
-      resizeWidth: 64,
-      resizeHeight: 64,
-      resizeQuality: "pixelated",
-    });
-    try {
-      return bitmapToFloat(thumb);
-    } finally {
-      thumb.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
 // Compare the decoded RAW float image's channel balance against the embedded
 // JPEG preview's sample (the camera's own rendering — always colour-correct).
 // Returns true when the decode looks plausible, false when it should be rejected.
@@ -148,61 +129,4 @@ function rawColorMatchesPreview(raw: Pixels, pf: Pixels): boolean {
   );
 
   return balance.ok;
-}
-
-// Read an ImageBitmap into a linear Float32 RGBA image via a temporary WebGL2
-// framebuffer. This is more reliable than OffscreenCanvas.getContext("2d")
-// readback on Mesa/Linux, where accelerated 2D canvas readback can silently
-// return all-zero data.
-//
-// Pixel layout: texImage2D without UNPACK_FLIP_Y places image row 0 at texture
-// y=0 (OpenGL bottom). readPixels reads y=0 first (framebuffer bottom = texture
-// y=0 = image row 0), so the output array is already top-to-bottom — no flip
-// needed. This matches the layout the renderer expects for Float32 images.
-function bitmapToFloat(bitmap: ImageBitmap): Pixels {
-  const { width, height } = bitmap;
-  const canvas = new OffscreenCanvas(width, height);
-  const gl = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
-  if (!gl) throw new Error("WebGL2 unavailable for pixel readback");
-
-  const pixels = new Uint8Array(width * height * 4);
-  let tex: WebGLTexture | null = null;
-  let fb: WebGLFramebuffer | null = null;
-  try {
-    tex = gl.createTexture();
-    if (!tex) throw new Error("createTexture failed");
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-
-    fb = gl.createFramebuffer();
-    if (!fb) throw new Error("createFramebuffer failed");
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-
-    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-  } finally {
-    if (fb) gl.deleteFramebuffer(fb);
-    if (tex) gl.deleteTexture(tex);
-    // Free the context immediately, even after a failed readback: browsers cap
-    // live WebGL contexts (~16), and a batch RAW prefetch calls this once per
-    // decode, so a leaked context per call would evict an older one, including
-    // a live canvas.
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-  }
-
-  // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearize.
-  const data = new Float32Array(width * height * 4);
-  for (let i = 0; i < pixels.length; i += 4) {
-    const r = pixels[i]     / 255;
-    const g = pixels[i + 1] / 255;
-    const b = pixels[i + 2] / 255;
-    data[i]     = r <= 0.04045 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
-    data[i + 1] = g <= 0.04045 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
-    data[i + 2] = b <= 0.04045 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
-    data[i + 3] = 1.0;
-  }
-
-  return { data, width, height };
 }

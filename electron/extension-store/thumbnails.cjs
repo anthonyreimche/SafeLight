@@ -18,10 +18,17 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { validRepo } = require("../window-policy.cjs");
-const { avatarFor } = require("../registry-entry.cjs");
+const { avatarFor, readTextWithin } = require("../registry-entry.cjs");
+const { pruneExpired } = require("../registry-cache.cjs");
 
 const OG_TTL_MS = 6 * 60 * 60 * 1000;
 const ICON_TTL_MS = 6 * 60 * 60 * 1000;
+// A host that didn't answer (offline, rate-limited, cut off midway) is asked
+// again after this long rather than on every Browse open.
+const RETRY_MS = 5 * 60 * 1000;
+const MAX_MANIFEST_BYTES = 256 * 1024;
+// Chromium allows 6 connections per host; more in flight only queue and burn their timeouts.
+const RESOLVE_CONCURRENCY = 8;
 
 // GitHub's auto-generated summary card (repo name, description, stats). Always
 // available, but it is NOT the owner's uploaded social preview.
@@ -71,8 +78,7 @@ function createThumbnails({ net, userData, fileWriter }) {
   let ogCacheLoaded = false;
 
   // Seed the in-memory map from disk on first use (lazy: only the Extensions store
-  // touches og:images, so don't pay this on every launch). Stale entries are kept —
-  // fetchOgImage re-validates against OG_TTL_MS per lookup.
+  // touches og:images, so don't pay this on every launch). Expired entries are dropped.
   function loadOgDisk() {
     if (ogCacheLoaded) return;
     ogCacheLoaded = true;
@@ -83,6 +89,7 @@ function createThumbnails({ net, userData, fileWriter }) {
           if (v && typeof v.url === "string" && typeof v.at === "number")
             ogImageCache.set(k, { url: v.url, at: v.at });
     } catch {}
+    pruneExpired(ogImageCache, OG_TTL_MS, Date.now());
   }
 
   let ogWriteTimer = null;
@@ -91,6 +98,7 @@ function createThumbnails({ net, userData, fileWriter }) {
     if (ogWriteTimer) return;
     ogWriteTimer = setTimeout(() => {
       ogWriteTimer = null;
+      pruneExpired(ogImageCache, OG_TTL_MS, Date.now());
       fileWriter
         .write(ogCacheFile(), JSON.stringify(Object.fromEntries(ogImageCache)))
         .catch(() => {});
@@ -107,12 +115,14 @@ function createThumbnails({ net, userData, fileWriter }) {
     // live, so a just-uploaded social preview shows on reload instead of in ≤6h.
     if (!force && hit && Date.now() - hit.at < OG_TTL_MS) return hit.url;
     let url = autoOgCard(repo);
+    let answered = false;
     try {
       const res = await fetchWithTimeout(
         `https://github.com/${repo}`,
         { headers: { "User-Agent": "Safelight", Accept: "text/html" } },
         6000,
       );
+      const reached = res.ok || res.status === 404;
       if (res.ok && res.body) {
         // og:image lives in <head>, so stop reading once we've seen it (or hit a
         // cap) rather than downloading the whole page for every card. 48 KB is well
@@ -136,11 +146,12 @@ function createThumbnails({ net, userData, fileWriter }) {
           html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
         if (m && /^https:\/\//i.test(m[1])) url = m[1];
       }
+      answered = reached;
     } catch {
       // Network/parse failure → keep the auto card. Never throw: a missing
       // thumbnail must not break the browse grid.
     }
-    ogImageCache.set(key, { url, at: Date.now() });
+    ogImageCache.set(key, { url, at: answered ? Date.now() : Date.now() - OG_TTL_MS + RETRY_MS });
     persistOgDisk();
     return url;
   }
@@ -166,6 +177,7 @@ function createThumbnails({ net, userData, fileWriter }) {
           if (v && typeof v.at === "number" && (v.url === null || typeof v.url === "string"))
             iconUrlCache.set(k, { url: v.url, at: v.at });
     } catch {}
+    pruneExpired(iconUrlCache, ICON_TTL_MS, Date.now());
   }
 
   let iconWriteTimer = null;
@@ -174,6 +186,7 @@ function createThumbnails({ net, userData, fileWriter }) {
     if (iconWriteTimer) return;
     iconWriteTimer = setTimeout(() => {
       iconWriteTimer = null;
+      pruneExpired(iconUrlCache, ICON_TTL_MS, Date.now());
       fileWriter
         .write(iconCacheFile(), JSON.stringify(Object.fromEntries(iconUrlCache)))
         .catch(() => {});
@@ -190,6 +203,7 @@ function createThumbnails({ net, userData, fileWriter }) {
     // `force` (the store's ↻) bypasses the cache so a just-added/changed icon shows.
     if (!force && hit && Date.now() - hit.at < ICON_TTL_MS) return hit.url;
     let url = null;
+    let answered = false;
     try {
       // No @version → jsDelivr serves the repo's default-branch HEAD, off a CDN
       // that isn't subject to GitHub's API rate limit. On a forced refresh, read
@@ -203,8 +217,10 @@ function createThumbnails({ net, userData, fileWriter }) {
         { headers: { "User-Agent": "Safelight", Accept: "application/json" } },
         5000,
       );
+      const reached = res.ok || res.status === 404;
       if (res.ok) {
-        const manifest = await res.json();
+        const text = await readTextWithin(res, MAX_MANIFEST_BYTES);
+        const manifest = text === null ? null : JSON.parse(text);
         const icon =
           manifest && typeof manifest.icon === "string" ? manifest.icon.trim() : "";
         if (/^https:\/\//i.test(icon)) url = icon;
@@ -213,10 +229,11 @@ function createThumbnails({ net, userData, fileWriter }) {
         else if (icon && !icon.startsWith("/") && !icon.includes(".."))
           url = `https://cdn.jsdelivr.net/gh/${repo}/${icon.replace(/^\.?\//, "")}`;
       }
+      answered = reached;
     } catch {
       // Missing manifest / network → no custom icon; the card keeps the avatar.
     }
-    iconUrlCache.set(key, { url, at: Date.now() });
+    iconUrlCache.set(key, { url, at: answered ? Date.now() : Date.now() - ICON_TTL_MS + RETRY_MS });
     persistIconDisk();
     return url;
   }
@@ -259,10 +276,12 @@ function createThumbnails({ net, userData, fileWriter }) {
   async function resolveThumbnails(items, onEach, force = false) {
     const list = Array.isArray(items) ? items.slice(0, 100) : [];
     const out = {};
-    await Promise.all(
-      list.map(async (it) => {
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const it = list[next++];
         const repo = it && typeof it.repo === "string" ? it.repo : null;
-        if (!repo || !validRepo(repo)) return;
+        if (!repo || !validRepo(repo)) continue;
         const avatar = it && typeof it.avatar === "string" ? it.avatar : null;
         let thumb;
         try {
@@ -276,8 +295,9 @@ function createThumbnails({ net, userData, fileWriter }) {
             onEach(repo, thumb);
           } catch {}
         }
-      })
-    );
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(RESOLVE_CONCURRENCY, list.length) }, worker));
     return out;
   }
 

@@ -70,7 +70,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, { error: unknow
       return (
         <div className={this.props.className}>
           {this.props.what} crashed: {messageOf(this.state.error)}{" "}
-          <button type="button" onClick={this.report} className="underline hover:text-text-primary">
+          {/* Takes the pointer itself: the Develop canvas's overlay slot is click-through. */}
+          <button
+            type="button"
+            onClick={this.report}
+            style={{ pointerEvents: "auto" }}
+            className="underline hover:text-text-primary"
+          >
             Report this
           </button>
         </div>

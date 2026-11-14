@@ -152,6 +152,51 @@ describe("PaintBaker", () => {
       expectSameAsFullBake(baker.bake(layers, 1), layers);
     }
   });
+
+  it("matches a full bake dab by dab across colour changes, an erase that clears paint, and four layers", () => {
+    const baker = new PaintBaker();
+    const grown = [
+      ...stroke(6),
+      ...stroke(5, { color: BLUE, strokeStart: false }, 0.52),
+      ...stroke(6, { erase: true, opacity: 1, flow: 1, radius: 0.1 }, 0.5),
+      ...stroke(4, { color: [0, 1, 0], radius: 0.01 }, 0.6),
+      ...stroke(3, { color: [1, 1, 0], radius: 0.5 }, 0.4),
+    ];
+    const others = [layer("b", stroke(3, { color: BLUE }, 0.3)), layer("c", []), layer("d", stroke(2, {}, 0.7))];
+    for (let n = 0; n <= grown.length; n++) {
+      const layers = structuredClone([others[0], layer("a", grown.slice(0, n)), ...others.slice(1)]);
+      expectSameAsFullBake(baker.bake(layers, 1), layers);
+    }
+  });
+
+  it("bakes again a dab whose colour was edited in place, and two layers under one id as a full bake does", () => {
+    const baker = new PaintBaker();
+    const dabs = stroke(6);
+    baker.bake([layer("a", dabs)], 1);
+    dabs[3].color = BLUE;
+    const next = [layer("a", [...dabs])];
+    expectSameAsFullBake(baker.bake(next, 1), next);
+
+    const shared = stroke(4, { color: BLUE }, 0.3);
+    for (const extra of [stroke(2, {}, 0.6), stroke(2, {}, 0.7)]) {
+      const layers = structuredClone([layer("x", [...shared, ...extra]), layer("x", shared)]);
+      expectSameAsFullBake(baker.bake(layers, 1), layers);
+    }
+  });
+
+  it("reports nothing changed for the same layers, and only the added dab's reach for one more", () => {
+    const baker = new PaintBaker();
+    const dabs = stroke(10);
+    const first = baker.bake([layer("a", structuredClone(dabs))], 1);
+    expect(first?.changed).toEqual({ x: 0, y: 0, w: first?.size, h: first?.size });
+    expect(baker.bake([layer("a", structuredClone(dabs))], 1)?.changed).toBeNull();
+
+    const added = stroke(11)[10];
+    const box = baker.bake([layer("a", structuredClone([...dabs, added]))], 1)?.changed;
+    if (!box) throw new Error("one more dab changed nothing");
+    const reach = 2 * added.radius * 768 + 4;
+    expect(box.w * box.h).toBeLessThanOrEqual(reach * reach);
+  });
 });
 
 describe("paint brush tips", () => {

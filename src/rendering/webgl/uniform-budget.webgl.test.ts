@@ -11,13 +11,16 @@
 import { describe, expect, it } from "vitest";
 import { CURRENT_PROCESS_VERSION } from "@/catalog/types";
 import { withProcessVersion } from "./program-cache";
-import { VERTEX_SHADER, shaderVariantFor } from "./shaders";
+import { V2_VARIANT, V3_VARIANT, VERTEX_SHADER, buildFragmentShader, shaderVariantFor } from "./shaders";
+import { buildStageInjection } from "./stage-injection";
 import { shippedProgram } from "./stock-program.test-support";
-import { buildProgram, glHarness, releaseProgram } from "./webgl.test-support";
+import { buildProgram, builtinStages, glHarness, releaseProgram } from "./webgl.test-support";
 
 /** Vector rows the shipped program's active uniforms fill, as last measured.
  *  Raise it deliberately when the program grows. */
-const RECORDED_ROWS = 661;
+// 2026-11-11: 661 -> 665 for the detail gain's uDetail, uDetailOn, uDetailRect
+// and uDetailAmount (Dynamic detail), versions 2 and later.
+const RECORDED_ROWS = 665;
 const COMMON_DRIVER_VECTORS = 1024;
 
 /** The vec4 rows one element of a uniform of `type` takes: a matrix one per
@@ -64,4 +67,52 @@ describe("the shipped develop program's uniform budget", () => {
     expect(RECORDED_ROWS).toBeLessThan(COMMON_DRIVER_VECTORS);
     expect(rows).toBeLessThanOrEqual(RECORDED_ROWS);
   });
+});
+
+// Version 2 and later read uDetail (the detail gain) on the unit uDevelopedSrc
+// had, which the compiler dropped as unread: one more active sampler than
+// before. MAX_TEXTURE_IMAGE_UNITS caps the samplers one shader may declare, and
+// 16 is what common drivers give.
+describe("the develop program's samplers", () => {
+  const SAMPLER_TYPES = (gl: WebGL2RenderingContext): Set<number> =>
+    new Set([
+      gl.SAMPLER_2D,
+      gl.SAMPLER_2D_ARRAY,
+      gl.SAMPLER_3D,
+      gl.SAMPLER_CUBE,
+      gl.INT_SAMPLER_2D,
+      gl.UNSIGNED_INT_SAMPLER_2D,
+      gl.SAMPLER_2D_SHADOW,
+    ]);
+
+  function activeSamplers(gl: WebGL2RenderingContext, program: WebGLProgram): string[] {
+    const types = SAMPLER_TYPES(gl);
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number;
+    const names: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const info = gl.getActiveUniform(program, i);
+      if (info && types.has(info.type)) for (let k = 0; k < info.size; k++) names.push(info.name);
+    }
+    return names;
+  }
+
+  for (const variant of [V2_VARIANT, V3_VARIANT]) {
+    // Core's stages, the built-in denoiser among them, and every Essential.
+    it(`fit in the texture units with every built-in stage, version ${variant.version}`, () => {
+      const { gl } = glHarness();
+      const stages = builtinStages(variant.version === 2 ? 2 : 3);
+      const fragment = withProcessVersion(
+        buildFragmentShader(null, buildStageInjection(stages, variant).injection, variant),
+        variant.version,
+      );
+      const build = buildProgram(gl, VERTEX_SHADER, fragment);
+      expect(build.error).toBeNull();
+      const samplers = activeSamplers(gl, build.program!);
+      releaseProgram(gl, build);
+      console.info(`[uniform-budget] version ${variant.version}: ${samplers.length} active samplers: ${samplers.join(", ")}`);
+      expect(samplers).toContain("uDetail");
+      expect(samplers.length).toBeLessThanOrEqual(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number);
+      expect(samplers.length).toBeLessThanOrEqual(16);
+    });
+  }
 });

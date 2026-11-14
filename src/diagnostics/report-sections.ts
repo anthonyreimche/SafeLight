@@ -126,6 +126,7 @@ export const REPORTED_SETTINGS = [
   "rawCachePrefetch",
   "rawCacheMaxEdge",
   "developMaxEdge",
+  "developDynamicDetail",
   "gpuSourceCacheBytes",
   "developPrefetchNeighbors",
   "highBitDepth",

@@ -8,6 +8,7 @@
 // take none of it.
 
 import type { HandlersFor, WorkerContext } from "./context";
+import { armDetailCut } from "./detail";
 
 type DisplayCmd =
   | "setShowClipping"
@@ -19,7 +20,8 @@ type DisplayCmd =
   | "setSharpenViz"
   | "setViewport";
 
-export function displayHandlers({ state }: WorkerContext): HandlersFor<DisplayCmd> {
+export function displayHandlers(ctx: WorkerContext): HandlersFor<DisplayCmd> {
+  const { state } = ctx;
   return {
     setShowClipping(msg) {
       state.renderer?.setShowClipping(msg.mode);
@@ -46,7 +48,9 @@ export function displayHandlers({ state }: WorkerContext): HandlersFor<DisplayCm
       state.renderer?.setSharpenViz(msg.mode);
     },
     setViewport(msg) {
-      state.renderer?.setViewport(msg.roi, msg.outW, msg.outH);
+      const { renderer } = state;
+      renderer?.setViewport(msg.roi, msg.outW, msg.outH);
+      if (renderer?.hasNativeFrame) armDetailCut(ctx);
     },
   };
 }

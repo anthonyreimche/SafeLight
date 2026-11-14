@@ -15,7 +15,7 @@
 // build a per-photo histogram for batch Auto Tone / Auto WB across a selection.
 
 import type { DevelopParams } from "@/catalog/types";
-import { getRenderBridge, type RenderBridge } from "@/rendering/render-bridge";
+import { getRenderBridge, needStageVariants, type RenderBridge } from "@/rendering/render-bridge";
 import type { SourceImage, ThumbRequest } from "@/rendering/render-protocol";
 import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { frameStageBag } from "@/rendering/stage-bag";
@@ -90,6 +90,29 @@ export async function renderPhotoFloatFrame(
   );
 }
 
+/** measureFrom, once the stage texture variants made on demand that `paramBag`
+ *  names are held, and held across every source it tries: null without decoding
+ *  anything when one can't be had. */
+async function measure<T>(
+  photoId: string,
+  params: DevelopParams,
+  paramBag: Record<string, unknown> | undefined,
+  cameraPreview: boolean,
+  render: (bridge: RenderBridge, request: ThumbRequest) => Promise<T | null>,
+): Promise<T | null> {
+  const needed = paramBag && needStageVariants(paramBag, { worker: true });
+  const lease = needed && (await needed);
+  try {
+    if (lease?.failure) {
+      console.warn(`[render] ${lease.failure}`);
+      return null;
+    }
+    return await measureFrom(photoId, params, paramBag, cameraPreview, render);
+  } finally {
+    lease?.release();
+  }
+}
+
 /** Render `photoId` with `params` small, through the thumb renderer, from the
  *  first source that has it, with the photo's own `paramBag` drawn as the live
  *  view draws it: under the entries the built-in stages take from `params`.
@@ -97,7 +120,7 @@ export async function renderPhotoFloatFrame(
  *  `cameraPreview` lets the grid's camera JPEG stand in, last, for a photo with
  *  no source of its own. Null for a photo the catalogue doesn't hold, or one no
  *  source renders. */
-async function measure<T>(
+async function measureFrom<T>(
   photoId: string,
   params: DevelopParams,
   paramBag: Record<string, unknown> | undefined,

@@ -15,6 +15,8 @@
 //   [central directory header + name] * n
 //   [end of central directory]
 
+import { crc32 } from "@/rendering/color-space";
+
 interface ZipEntry {
   nameBytes: Uint8Array;
   crc: number;
@@ -38,26 +40,6 @@ function hasHighByte(bytes: Uint8Array): boolean {
     if (bytes[i] >= 0x80) return true;
   }
   return false;
-}
-
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) {
-      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    }
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
-
-function crc32(data: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < data.length; i++) {
-    crc = CRC_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
 }
 
 // MS-DOS date/time, the only timestamp format the ZIP local/central records use.

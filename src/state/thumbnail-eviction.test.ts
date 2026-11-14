@@ -22,7 +22,7 @@ vi.mock("@/extensions/registry", () => ({
 }));
 
 import { structureVersion, useCatalogStore } from "./catalog-store";
-import { requestThumbnail, setThumbnailLoader } from "./thumbnail-loader";
+import { adoptThumbnails, requestThumbnail, setThumbnailLoader } from "./thumbnail-loader";
 
 const PHOTOS = 5000;
 const PREVIEW_BYTES = 16 * 1024;
@@ -197,5 +197,45 @@ describe("a prefill of a big catalogue", { timeout: 30_000 }, () => {
     useCatalogStore.getState().dropThumbnails([{ id: idOf(0), blob: new Blob(["old"]) }]);
 
     expect(photos()[0].thumbnailBlob).toBe(edited);
+  });
+});
+
+describe("previews the loader didn't read", () => {
+  /** Photos that came with a preview of their own, as an import's do. */
+  function imported(count: number): { id: string; blob: Blob }[] {
+    const entries = Array.from({ length: count }, (_, i) => ({ id: idOf(i), blob: new Blob([`import ${i}`]) }));
+    const blobs = new Map(entries.map((entry) => [entry.id, entry.blob] as const));
+    useCatalogStore.setState({
+      photos: photos().map((p) => {
+        const blob = blobs.get(p.id);
+        return blob ? { ...p, thumbnailBlob: blob, thumbnailUrl: URL.createObjectURL(blob) } : p;
+      }),
+    });
+    return entries;
+  }
+
+  it("count against the cache once adopted, the oldest let go first", () => {
+    const released: string[] = [];
+    setThumbnailLoader(read, { cacheLimit: 3, onEvict: (ids) => released.push(...ids) });
+    const entries = imported(4);
+
+    adoptThumbnails(entries);
+
+    expect(released).toEqual([idOf(0)]);
+    expect(photos()[0]).toMatchObject({ thumbnailBlob: null, thumbnailUrl: null });
+    expect(held().map((p) => p.id)).toEqual([idOf(1), idOf(2), idOf(3)]);
+    expect(liveUrls.size).toBe(3);
+  });
+
+  it("are read again once let go, when their cell is back in view", async () => {
+    setThumbnailLoader(read, { cacheLimit: 3 });
+    adoptThumbnails(imported(4));
+
+    requestThumbnail(idOf(0), { visible: true });
+    await landed(1);
+
+    expect(reads).toEqual([idOf(0)]);
+    expect(photos()[0].thumbnailUrl).not.toBeNull();
+    expect(held()).toHaveLength(3);
   });
 });

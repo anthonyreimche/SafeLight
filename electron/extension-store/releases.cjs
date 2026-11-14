@@ -14,6 +14,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const zlib = require("node:zlib");
 const { validRepo } = require("../window-policy.cjs");
+const { readTextWithin } = require("../registry-entry.cjs");
 const {
   compareSemver,
   createReleaseListCache,
@@ -34,6 +35,7 @@ const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 // Downloads come from any repo, so they are bounded before they can exhaust the
 // main process's memory. MAX_UNPACKED matches unzip.cjs.
 const MAX_PACKED = 64 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 256 * 1024;
 const MAX_UNPACKED = 256 * 1024 * 1024;
 const MAX_TAR_ENTRIES = 10000;
 
@@ -175,7 +177,8 @@ function createReleases({ net, userData, fileWriter, registryVersionsFor }) {
     if (!res.ok) throw new Error(`GitHub error: ${res.status}`);
     // Read before parsing so a timeout mid-body rejects rather than reading as
     // "no manifest".
-    const text = await res.text();
+    const text = await readTextWithin(res, MAX_MANIFEST_BYTES);
+    if (text === null) return null;
     try {
       return JSON.parse(text);
     } catch {

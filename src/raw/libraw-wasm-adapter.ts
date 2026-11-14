@@ -49,8 +49,9 @@ interface Watched {
   extendTo(limitMs: number): void;
   /** Milliseconds since the instance was lent. */
   elapsed(): number;
-  /** Hands the instance back: released if every call answered, else discarded. */
-  done(): void;
+  /** Hands the instance back: released if every call answered, else discarded.
+   *  `peakBytes`: the most heap the decode may have needed (decode-pool.ts). */
+  done(peakBytes?: number): void;
 }
 
 /** A call still out when the decode's time limit ran down. */
@@ -86,10 +87,10 @@ function watch(raw: LibRawInstance, limitMs: number): Watched {
     elapsed(): number {
       return Date.now() - started;
     },
-    done(): void {
+    done(peakBytes?: number): void {
       clearTimeout(timer);
       if (broken) discardInstance(raw);
-      else releaseInstance(raw);
+      else releaseInstance(raw, peakBytes);
     },
   };
 }
@@ -205,9 +206,20 @@ export function decodeTimeLimitForFrame(width: number, height: number): number {
  */
 const HEAP_BUDGET = 1_950_000_000;
 const FULL_SIZE_BYTES_PER_PIXEL = 16;
+// Half size keeps the 2-byte readout and shrinks the other 14 to a quarter.
+const HALF_SIZE_BYTES_PER_PIXEL = 6;
+
+function heapPeak(
+  frame: NonNullable<RawMetadata["frame"]>,
+  byteLength: number,
+  halfSize: boolean,
+): number {
+  const perPixel = halfSize ? HALF_SIZE_BYTES_PER_PIXEL : FULL_SIZE_BYTES_PER_PIXEL;
+  return frame.width * frame.height * perPixel + byteLength;
+}
 
 function pastHeapBudget(frame: RawMetadata["frame"], byteLength: number): boolean {
-  return !!frame && frame.width * frame.height * FULL_SIZE_BYTES_PER_PIXEL + byteLength > HEAP_BUDGET;
+  return !!frame && heapPeak(frame, byteLength, false) > HEAP_BUDGET;
 }
 
 /** Whether half the frame's long edge, rounded down, still reaches the edge the
@@ -316,7 +328,7 @@ export async function decodeRawFloatViaLibRaw(
   const handBack = (): void => {
     if (handedBack) return;
     handedBack = true;
-    watched.done();
+    watched.done(frame && heapPeak(frame, fileBytes, halfSize));
   };
   try {
     const settings = {
@@ -440,7 +452,14 @@ export async function decodeRawFloatViaLibRaw(
     const bias = rawExposureBias(meta);
     const bits = pixels instanceof Uint16Array ? 16 : 8;
     const turn = request?.turn ? normalizeRotation(request.turn) : 0;
-    if (request?.signal?.aborted) return { failure: "aborted" };
+    // Abandoned while libraw ran: the frame is built only for a caller that
+    // took the decode over, and as that caller's, an opened photo's.
+    let waiting: DecodeRequest | undefined = request;
+    if (request?.signal?.aborted) {
+      const heir = request.heir?.();
+      if (!heir || heir.signal?.aborted) return { failure: "aborted" };
+      waiting = { ...request, signal: heir.signal, background: false };
+    }
     // Sigma Foveon (X3F) stacks three photodiodes per pixel, so its linear
     // pre-matrix output is legitimately channel-imbalanced — the frame worker's
     // Bayer-tuned colour check would false-reject valid X3F decodes.
@@ -455,7 +474,7 @@ export async function decodeRawFloatViaLibRaw(
         foveon: num((meta as Record<string, unknown>).is_foveon) > 0,
         cacheEdge: request?.cacheEdge,
       },
-      request,
+      waiting,
     );
     if ("rejected" in built) {
       console.warn("[libraw]", built.rejected);

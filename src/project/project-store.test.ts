@@ -35,12 +35,15 @@ const h = vi.hoisted(() => ({
   /** The catalogue the window shows, and the selection call. */
   photos: [] as CatalogPhoto[],
   select: vi.fn(),
+  /** What the catalogue store was handed to append. */
+  appended: [] as CatalogPhoto[],
   /** What the preload offers for opening what the OS hands the app. */
   osOpen: null as null | NativeOsOpenBridge,
   /** How the catalogue store reaches the last project, as project-store set it. */
   lastProject: null as null | { openLast(): Promise<void>; reconnectLast(): Promise<boolean> },
   /** The grid-preview requests the idle prefill makes, and the loaders installed. */
   requestThumbnail: vi.fn<(id: string) => void>(),
+  adoptThumbnails: vi.fn<(entries: { id: string; blob: Blob }[]) => void>(),
   setThumbnailLoader: vi.fn<(read: unknown, opts?: { onEvict?: (ids: string[]) => void }) => number>(() => 1),
   /** The recent projects' paths, newest first. */
   recents: [] as string[],
@@ -51,6 +54,9 @@ const h = vi.hoisted(() => ({
   removeRecent: vi.fn(async (_id: string) => {}),
   /** The folder walk a tree refresh runs. */
   scan: vi.fn<typeof import("./scan").scanProject>(),
+  /** The last recent project, and what waiting for its library source gives. */
+  lastRecent: null as null | { id: string; name: string; source?: { extensionId: string; id: string; library: string } },
+  sourceWait: Promise.resolve(null) as Promise<null | { name: string }>,
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedOsOpen: () => h.osOpen }));
@@ -78,6 +84,8 @@ vi.mock("./project-storage", () => ({
 vi.mock("./recent", () => ({
   addRecentProject: async () => {},
   getLastProject: async () => null,
+  lastRecentProject: async () => h.lastRecent,
+  whenRecentSource: () => h.sourceWait,
   recentHandle: () => h.recentHandle,
   removeRecentProject: (id: string) => h.removeRecent(id),
   listRecentProjects: async () => {
@@ -93,6 +101,7 @@ vi.mock("./scan", async (importOriginal) => ({
 }));
 vi.mock("@/raw/raw-cache", () => ({ setRawCacheDir: () => {} }));
 vi.mock("@/state/thumbnail-loader", () => ({
+  adoptThumbnails: h.adoptThumbnails,
   requestThumbnail: h.requestThumbnail,
   setThumbnailLoader: h.setThumbnailLoader,
   thumbnailGen: () => 1,
@@ -104,7 +113,7 @@ vi.mock("@/state/catalog-store", () => ({
       replaceCatalog: (photos: CatalogPhoto[]) => void (h.photos = photos),
       finalizeCatalog: h.finalizeCatalog,
       reconcileCatalog: h.reconcileCatalog,
-      appendPhotos: () => {},
+      appendPhotos: (photos: CatalogPhoto[]) => void h.appended.push(...photos),
       mergeRebuiltPhoto: () => {},
       photos: h.photos,
       select: h.select,
@@ -112,6 +121,7 @@ vi.mock("@/state/catalog-store", () => ({
     setState: () => {},
   },
   setLastProjectOpener: (opener: NonNullable<typeof h.lastProject>) => void (h.lastProject = opener),
+  photoById: (photos: CatalogPhoto[], id: string | null) => photos.find((p) => p.id === id),
 }));
 vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => h.visible }));
 vi.mock("@/state/ui-store", () => ({
@@ -132,6 +142,8 @@ function projectStorage() {
   return {
     readPreview: async () => null,
     forgetPreviews: vi.fn(),
+    heldPhoto: (_id: string): CatalogPhoto | undefined => undefined,
+    mayForgetPreview: (_id: string) => true,
     flush: vi.fn(async (_options?: { unloading?: boolean }) => {}),
     close: vi.fn(),
   };
@@ -196,15 +208,19 @@ beforeEach(async () => {
   h.photos = [];
   h.visible = [];
   h.select.mockReset();
+  h.appended = [];
   h.osOpen = null;
   h.lastProject = null;
   h.requestThumbnail.mockClear();
+  h.adoptThumbnails.mockClear();
   h.setThumbnailLoader.mockClear();
   h.recents = [];
   h.recentsError = null;
   h.recentHandle = null;
   h.removeRecent.mockClear();
   h.scan.mockReset();
+  h.lastRecent = null;
+  h.sourceWait = Promise.resolve(null);
   vi.stubGlobal("window", {
     addEventListener: (type: string, listener: () => void) => {
       if (type === "beforeunload") h.unload.push(listener);
@@ -269,6 +285,52 @@ describe("the catalogue a change goes into while a project opens", () => {
     expect(reading).not.toBe(a);
     expect(aWhileReading).toEqual({ flushed: true, closed: true });
     expect(catalogStorage()).toBe(b);
+  });
+
+  it("takes none of the photos a superseded open found but had not shown yet", async () => {
+    const frames: Array<() => void> = [];
+    vi.stubGlobal("requestAnimationFrame", (run: () => void) => frames.push(run));
+    const a = projectStorage();
+    const { done, finish } = walk();
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, onPhoto: OnPhoto, paint: OnSkeletons) => {
+      paint(a, {}, []);
+      onPhoto(photo("first"));
+      for (const run of frames.splice(0)) run();
+      onPhoto(photo("from-a"));
+      await done;
+      return opened(a);
+    });
+    const openingA = openProject("A");
+    await settle();
+    const b = projectStorage();
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      paint(b, {}, []);
+      return opened(b);
+    });
+    const openingB = openProject("B");
+    await settle();
+
+    for (const run of frames.splice(0)) run();
+    finish();
+    await Promise.all([openingA, openingB]);
+
+    expect(h.appended.map((p) => p.id)).toEqual(["first"]);
+  });
+
+  it("ends an import with the preview the grid shows, not one the storage still holds", async () => {
+    const s = projectStorage();
+    const blob = new Blob(["newer"]);
+    s.heldPhoto = (id: string) => ({ ...photo(id), thumbnailBlob: new Blob(["older"]), thumbnailUrl: "blob:revoked" });
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      paint(s, {}, []);
+      h.photos.push({ ...photo("p"), thumbnailBlob: blob, thumbnailUrl: "blob:shown", previewEdit: "e1" });
+      return opened(s, [photo("p")]);
+    });
+
+    await openProject("New");
+
+    const [finalized] = h.finalizeCatalog.mock.lastCall ?? [];
+    expect(finalized?.[0]).toMatchObject({ thumbnailBlob: blob, thumbnailUrl: "blob:shown", previewEdit: "e1" });
   });
 
   it("reaches the importing project's catalogue when the window closes mid-import", async () => {
@@ -1200,5 +1262,149 @@ describe("the photo open in Develop when its project is left", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// A library source's extension starts after the launch asks for the last project.
+// The launch doesn't wait on it: the source opens once registered, unless the
+// person opened something else first.
+describe("reopening a library source at launch", () => {
+  const SOURCE = { extensionId: "ext.a", id: "test.server", library: "lib-1" };
+
+  function waitForSource() {
+    let arrive: (handle: { name: string } | null) => void = () => {};
+    h.sourceWait = new Promise((resolve) => (arrive = resolve));
+    h.lastRecent = { id: "source:x", name: "Server", source: SOURCE };
+    h.recentHandle = null;
+    return (handle: { name: string } | null) => arrive(handle);
+  }
+
+  it("doesn't hold the launch, and opens the source once its extension registers it", async () => {
+    const arrive = waitForSource();
+    await useProjectStore.getState().openLast();
+    expect(h.open).not.toHaveBeenCalled();
+    h.open.mockImplementationOnce(async () => opened(projectStorage()));
+    arrive(folder("Server"));
+    await settle();
+    expect(h.open).toHaveBeenCalledOnce();
+    expect(h.open.mock.calls[0][0]).toEqual(folder("Server"));
+  });
+
+  it("doesn't open the source over a project opened meanwhile", async () => {
+    const arrive = waitForSource();
+    await useProjectStore.getState().openLast();
+    await openA();
+    arrive(folder("Server"));
+    await settle();
+    expect(h.open).toHaveBeenCalledOnce();
+    expect(useProjectStore.getState().name).toBe("A");
+  });
+});
+
+describe("the buffer a first import appends through", () => {
+  function buffer(held: number) {
+    const appended: string[][] = [];
+    const frames: Array<() => void> = [];
+    let time = 0;
+    const store = { held };
+    return {
+      appended,
+      store,
+      at: (ms: number) => void (time = ms),
+      frame: () => {
+        for (const run of frames.splice(0)) run();
+      },
+      make: async () => {
+        const { createAppendBuffer } = await import("./project-store");
+        return createAppendBuffer<string>({
+          append: (items) => void appended.push(items),
+          size: () => store.held,
+          raf: (run) => void frames.push(run),
+          now: () => time,
+        });
+      },
+    };
+  }
+
+  it("appends what arrived once per frame while the catalogue is small", async () => {
+    const t = buffer(1999);
+    const b = await t.make();
+
+    b.push("a");
+    b.push("b");
+    t.frame();
+    t.at(16);
+    b.push("c");
+    t.frame();
+
+    expect(t.appended).toEqual([["a", "b"], ["c"]]);
+  });
+
+  it("appends at most every 250 ms once the catalogue holds 2000 photos", async () => {
+    const t = buffer(2000);
+    const b = await t.make();
+
+    b.push("a");
+    t.frame();
+    for (let ms = 16; ms < 250; ms += 16) {
+      t.at(ms);
+      b.push(`at ${ms}`);
+      t.frame();
+    }
+    expect(t.appended).toHaveLength(1);
+    t.at(250);
+    t.frame();
+
+    expect(t.appended).toHaveLength(2);
+    expect(t.appended[1]).toHaveLength(15);
+    t.frame();
+    expect(t.appended).toHaveLength(2);
+  });
+
+  it("drains at once when asked, whatever the catalogue holds", async () => {
+    const t = buffer(50_000);
+    const b = await t.make();
+    b.push("a");
+    t.frame();
+    b.push("b");
+    t.at(10);
+
+    b.flush();
+
+    expect(t.appended).toEqual([["a"], ["b"]]);
+  });
+
+  it("appends nothing it was told to discard", async () => {
+    const t = buffer(0);
+    const b = await t.make();
+    b.push("a");
+
+    b.discard();
+    t.frame();
+
+    expect(t.appended).toEqual([]);
+  });
+});
+
+describe("the previews a first import brings", () => {
+  it("are handed to the grid's loader, those the storage can read back only", async () => {
+    const frames: Array<() => void> = [];
+    vi.stubGlobal("requestAnimationFrame", (run: () => void) => frames.push(run));
+    const s = { ...projectStorage(), mayForgetPreview: (id: string) => id !== "unwritten" };
+    const withPreview = (id: string) => ({ ...photo(id), thumbnailBlob: new Blob([id]), thumbnailUrl: `blob:${id}` });
+    const [kept, unwritten] = [withPreview("kept"), withPreview("unwritten")];
+    h.open.mockImplementation(
+      async (_root: unknown, _deps: unknown, onPhoto: OnPhoto, paint: OnSkeletons) => {
+        paint(s, {}, []);
+        for (const found of [kept, unwritten, photo("none")]) onPhoto(found);
+        for (const run of frames.splice(0)) run();
+        return opened(s, [kept, unwritten, photo("none")]);
+      },
+    );
+
+    await openProject("New");
+
+    expect(h.adoptThumbnails.mock.calls).toEqual([[[{ id: "kept", blob: kept.thumbnailBlob }]]]);
+    expect(h.setThumbnailLoader).toHaveBeenCalledOnce();
   });
 });

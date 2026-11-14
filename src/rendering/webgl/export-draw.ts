@@ -47,7 +47,9 @@ export interface ExportPixels {
 
 /** An output-encoded sample as a 16-bit code: clipped to [0, 1], rounded to nearest. */
 export function quantise16(v: number): number {
-  return v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
+  // Not Math.round: this runs per sample of a full-size frame and the add-and-truncate
+  // form is several times faster with identical results for every float32 (NaN gives 0).
+  return v <= 0 ? 0 : v >= 1 ? 65535 : (v * 65535 + 0.5) | 0;
 }
 
 // RGBA16_EXT where the context renders EXT_texture_norm16's RGBA16 and reads it
@@ -111,7 +113,7 @@ const BAND_ROWS = 64;
 
 // The bound w×h target as 16-bit codes, top-down: readPixels hands the rows
 // back bottom-up. A float target is quantized with quantise16.
-function readCodes(gl: WebGL2RenderingContext, read: number, w: number, h: number): Uint16Array {
+export function readCodes(gl: WebGL2RenderingContext, read: number, w: number, h: number): Uint16Array {
   const stride = w * 4;
   const codes = new Uint16Array(stride * h);
   if (read === gl.UNSIGNED_SHORT) {

@@ -23,6 +23,7 @@
 import type { NativeFsBridge } from "@/extensions/types";
 import photoTypes from "../../electron/photo-types.json";
 import { privilegedFs } from "@/native/privileged";
+import { isSourceFile, readSourceFileSlice } from "./library-sources";
 
 type Bridge = NativeFsBridge;
 
@@ -186,6 +187,9 @@ export async function readFileSlice(
   start: number,
   end: number,
 ): Promise<FileSlice> {
+  // A library source's file is read whole only when it is opened; a slice of one
+  // whose original isn't kept yet holds no bytes (library-sources.ts).
+  if (isSourceFile(handle)) return readSourceFileSlice(handle, start, end);
   const path = nativePathOf(handle);
   const fs = nativeFs();
   if (path !== null && fs) {

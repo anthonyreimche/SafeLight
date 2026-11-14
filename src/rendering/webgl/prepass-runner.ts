@@ -13,7 +13,16 @@ import { SCRATCH_UNIT, allocateInto, created, drainErrors, workingFormat, type T
 import { simpleHash } from "./hash";
 import { passDraws, stageDraws } from "./pass-draws";
 import { prefixSig } from "./prepass-signature";
-import { buildOutcome, createProgram, withProcessVersion, type ProgramBuilds } from "./program-cache";
+import {
+  buildOutcome,
+  createProgram,
+  finishProgram,
+  letGoOutcome,
+  submitProgram,
+  withProcessVersion,
+  type ProgramBuilds,
+  type SubmittedProgram,
+} from "./program-cache";
 import type { ProcessVersion } from "./shaders";
 import { isDormant, paramIsActive } from "./stage-coverage";
 import {
@@ -22,6 +31,7 @@ import {
   PASS_VERTEX_SHADER,
   SOURCE_IMAGE_UNIFORM,
   type ContributedBinding,
+  type PrepassPass,
   type PrepassStage,
   type StageSplit,
 } from "./stage-injection";
@@ -59,6 +69,33 @@ function passesPrint(stage: PrepassStage): string {
 }
 
 type PassProgram = { owner: string; program: WebGLProgram; locs: Record<string, WebGLUniformLocation | null> };
+
+/** A pass program asked for ahead of the frame that needs it (submitPasses),
+ *  with the passesPrint of the stage it was asked for. */
+type AheadPass = {
+  owner: string;
+  print: string;
+  name: string;
+  sources: { fragment: string; vertex?: string };
+  bindings: ContributedBinding[];
+};
+
+// Pass programs built ahead at once; the rest wait their turn.
+const MAX_PASSES_AHEAD = 8;
+
+/** Pass `passIdx` of `owner`'s program under `version`: its cache key, name
+ *  and sources. The key holds the index and the source hash: two passes of one
+ *  stage with sources of equal length (a separable blur) once shared a program. */
+function passBuild(owner: string, passIdx: number, pass: PrepassPass, version: ProcessVersion) {
+  return {
+    key: `${owner}|${passIdx}|${simpleHash(pass.fragmentSource + (pass.vertexSource ?? ""))}|pv${version}`,
+    name: `pass ${passIdx + 1} of stage "${owner}"`,
+    sources: {
+      fragment: withProcessVersion(pass.fragmentSource, version),
+      ...(pass.vertexSource === undefined ? {} : { vertex: withProcessVersion(pass.vertexSource, version) }),
+    },
+  };
+}
 type Target = { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number };
 
 /** The state after a kept pass, the prefix signature it was drawn under, and
@@ -109,6 +146,8 @@ export interface PrepassFrame {
   /** srcTex's own size: the passes draw at it only when it is w×h. */
   srcW: number;
   srcH: number;
+  /** Whether the frame draws view-only stages; without, their passes are idle. */
+  viewStages: boolean;
 }
 
 export interface PrepassHost {
@@ -208,6 +247,11 @@ export class PrepassRunner {
   // Cached pass programs, keyed by stageId|passIdx|source hash|process version,
   // with the stage that owns them.
   private passPrograms = new Map<string, PassProgram>();
+  // Pass programs asked for ahead (submitPasses), under the same keys: those
+  // submitted to the driver and not finished yet, at most MAX_PASSES_AHEAD, and
+  // those waiting their turn. A dormant stage's are kept while it is out of the set.
+  private submittedPasses = new Map<string, AheadPass & { build: SubmittedProgram }>();
+  private queuedPasses = new Map<string, AheadPass>();
   // Each stage's passes as the set holding it declared them (passesPrint), so a
   // new set tells the stages it changed from the ones it kept.
   private prints = new Map<string, string>();
@@ -241,6 +285,8 @@ export class PrepassRunner {
   // they apply nothing until it runs.
   private unshown = new Set<string>();
   private copiesPending = false;
+  // The stages that read another member's result last frame (sharedResults).
+  private sharing = new Set<string>();
   // True when the built-in denoise prepass produced a real float result this
   // frame (active, float targets, not failed). Drives uDenoiseReady so the
   // inline swap of `lin` never applies a raw fallback texture.
@@ -312,7 +358,9 @@ export class PrepassRunner {
    *  stage gets a fresh compile attempt. Only the stages that read a layer in
    *  the program now selected keep one: a set within the sampler budget has no
    *  use for the array, the one large result texture, and what it held is stale.
-   *  A stage that reads a layer now gives back the full-size target of its own. */
+   *  A stage that reads a layer now gives back the full-size target of its own.
+   *  Passes asked for ahead (submitPasses) go once their stage's passes change;
+   *  a dormant stage out of the set keeps them (see dropAheadPasses). */
   stageSetChanged(prepass: readonly PrepassStage[]): void {
     const before = this.prints;
     const next = new Map(prepass.map((s) => [s.stageId, passesPrint(s)]));
@@ -326,6 +374,9 @@ export class PrepassRunner {
       this.gl.deleteProgram(pass.program);
       this.passPrograms.delete(key);
     }
+    const stale = (s: AheadPass): boolean => next.has(s.owner) && next.get(s.owner) !== s.print;
+    for (const [key, s] of this.submittedPasses) if (stale(s)) this.letGoPass(key);
+    for (const [key, s] of this.queuedPasses) if (stale(s)) this.queuedPasses.delete(key);
     for (const stageId of [...this.checkpoints.keys()]) if (!kept(stageId)) this.dropCheckpoints(stageId);
     this.uncheckpointed.clear();
     this.inputRefused.clear();
@@ -367,6 +418,72 @@ export class PrepassRunner {
     this.layers.dispose();
     for (const e of this.passPrograms.values()) gl.deleteProgram(e.program);
     this.passPrograms.clear();
+    this.dropAheadPasses();
+  }
+
+  /** Start building the pass programs of `stages` under `processVersion`
+   *  without waiting for the driver, MAX_PASSES_AHEAD at a time, so the first
+   *  frame that runs them finds them built or finishes what is left (a prewarm
+   *  hint). Nothing for a program built or asked for already, or for a mask
+   *  copy, which draws with its stage's programs. */
+  submitPasses(stages: readonly PrepassStage[], processVersion: ProcessVersion): void {
+    for (const stage of stages) {
+      if (stage.passesOf !== undefined) continue;
+      const owner = stage.stageId;
+      stage.passes.forEach((pass, passIdx) => {
+        const { key, name, sources } = passBuild(owner, passIdx, pass, processVersion);
+        if (this.passPrograms.has(key) || this.submittedPasses.has(key) || this.queuedPasses.has(key)) return;
+        this.queuedPasses.set(key, { owner, print: passesPrint(stage), name, sources, bindings: pass.bindings });
+      });
+    }
+    this.submitQueued();
+  }
+
+  /** Finish the passes asked for ahead that the driver says are built
+   *  (KHR_parallel_shader_compile), drawn or not, and start the next. Without
+   *  the extension a build can't be asked about without waiting, and is
+   *  finished by the frame that draws it. */
+  settle(): void {
+    if (this.submittedPasses.size === 0) return;
+    const parallel = this.gl.getExtension("KHR_parallel_shader_compile");
+    if (!parallel) return;
+    for (const [key, s] of [...this.submittedPasses]) {
+      if (!this.gl.getProgramParameter(s.build.program, parallel.COMPLETION_STATUS_KHR)) continue;
+      try {
+        this.passProgram(key, s.owner, s.name, s.sources, s.bindings);
+      } catch {
+        // Told to the crash guard; the frame that draws the stage meets it.
+      }
+    }
+  }
+
+  /** Let go of every pass asked for ahead: the stage set they were asked under
+   *  is gone, and a hint asks again. */
+  dropAheadPasses(): void {
+    this.queuedPasses.clear();
+    for (const key of [...this.submittedPasses.keys()]) this.letGoPass(key);
+  }
+
+  private submitQueued(): void {
+    const gl = this.gl;
+    for (const [key, q] of this.queuedPasses) {
+      if (this.submittedPasses.size >= MAX_PASSES_AHEAD || gl.isContextLost()) return;
+      this.queuedPasses.delete(key);
+      this.host.builds?.started(new Set([q.owner]));
+      const build = submitProgram(gl, q.sources.vertex ?? PASS_VERTEX_SHADER, q.sources.fragment, q.name);
+      this.submittedPasses.set(key, { ...q, build });
+    }
+  }
+
+  private letGoPass(key: string): void {
+    const s = this.submittedPasses.get(key);
+    if (!s) return;
+    this.submittedPasses.delete(key);
+    this.host.builds?.ended(new Set([s.owner]), letGoOutcome(this.gl));
+    const gl = this.gl;
+    gl.deleteShader(s.build.vs);
+    gl.deleteShader(s.build.fs);
+    gl.deleteProgram(s.build.program);
   }
 
   // A prepass target in the working format, (re)allocated on the active unit.
@@ -437,6 +554,9 @@ export class PrepassRunner {
       if (!layered && (active[i] || held.has(i))) return;
       const t = this.resultTargets.get(stage.stageId);
       if (!t) return;
+      // A view aid idle in a frame that draws view aids was turned off: it
+      // holds no full-size result for when it is turned on again.
+      if (stage.viewOnly && frame.viewStages) this.sigs.delete(stage.stageId);
       const last = this.sigs.get(stage.stageId);
       if (last && last.srcSig === frame.srcSig && t.w === frame.w && t.h === frame.h) return;
       this.deleteTarget(t);
@@ -492,10 +612,16 @@ export class PrepassRunner {
     let e = this.passPrograms.get(key);
     if (e) return e;
     const stageIds = new Set([owner]);
-    this.host.builds?.started(stageIds);
+    const submitted = this.submittedPasses.get(key);
+    this.submittedPasses.delete(key);
+    this.queuedPasses.delete(key);
+    if (submitted) this.submitQueued();
+    else this.host.builds?.started(stageIds);
     let program: WebGLProgram;
     try {
-      program = createProgram(this.gl, sources.vertex ?? PASS_VERTEX_SHADER, sources.fragment, name);
+      program = submitted
+        ? finishProgram(this.gl, submitted.build)
+        : createProgram(this.gl, sources.vertex ?? PASS_VERTEX_SHADER, sources.fragment, name);
     } catch (err) {
       this.host.builds?.ended(stageIds, buildOutcome(err));
       throw err;
@@ -529,9 +655,11 @@ export class PrepassRunner {
   // uniform defaults (Moiré's `pattern`/`edge` at 50) don't start every such
   // stage on every photo. A mask copy whose mask applies nothing (hidden, 0
   // opacity) is idle too. A stage that declares dormantWhen is active exactly
-  // while that rule doesn't hold.
+  // while that rule doesn't hold. A view-only stage is idle in a frame that
+  // doesn't draw it.
   private active(stage: PrepassStage, frame: PrepassFrame): boolean {
     if (frame.copySlots.get(stage.stageId) === -1) return false;
+    if (stage.viewOnly && !frame.viewStages) return false;
     const { bag } = frame;
     if (stage.dormant) return !isDormant(stage.dormant, bag);
     const prefix = stage.stageId + ".";
@@ -599,7 +727,8 @@ export class PrepassRunner {
         "Extension prepasses run at 8-bit, clipped to 0–1, because this GPU has no float render targets.",
       );
     }
-    const held = this.putOffCopies(active, frame);
+    const { shares, parted } = this.sharedResults(active, frame);
+    const held = this.putOffCopies(active, frame, shares, parted);
     this.releaseStale(active, held, frame);
     // Layers for every active stage at once, so the array grows at most once a frame.
     if (layered) {
@@ -619,6 +748,7 @@ export class PrepassRunner {
 
     for (let i = 0; i < frame.stages.length; i++) {
       const stage = frame.stages[i];
+      if (shares.has(i)) continue;
       if (stage.layerUniform !== undefined) {
         this.runLayerStage(stage, stage.layerUniform, active[i], frame, held.has(i));
         continue;
@@ -686,25 +816,118 @@ export class PrepassRunner {
     if (fallback) {
       for (let i = 0; i < frame.stages.length; i++) {
         const stage = frame.stages[i];
-        if (stage.layerUniform === undefined && !unitOf.has(i)) {
+        if (stage.layerUniform === undefined && !unitOf.has(i) && !shares.has(i)) {
           this.results.push({ kind: "unit", resultUniform: stage.resultUniform, ...fallback });
         }
       }
     }
+    // A member that shares reads its holder's result where the holder's is bound.
+    for (const [i, of] of shares) {
+      const member = frame.stages[i];
+      const holder = frame.stages[of];
+      const result = this.results.find((r) =>
+        r.kind === "unit" ? r.resultUniform === holder.resultUniform : r.layerUniform === holder.layerUniform,
+      );
+      if (result?.kind === "unit") this.results.push({ ...result, resultUniform: member.resultUniform });
+      else if (result && member.layerUniform !== undefined) this.results.push({ ...result, layerUniform: member.layerUniform });
+    }
+  }
+
+  // The members of a stage's family, the stage and its mask copies, whose passes
+  // would be given the same values this frame (prefixSig names no stage) draw
+  // one result between them: the others read it, by the index of the member
+  // and of the one holding it. The holder is a member whose kept result already
+  // has that signature, else the first of them, the stage before its copies,
+  // which draws it. A result the stage kept for values it has moved on from, or
+  // kept while it is off, goes to the members still at those values, so a stage
+  // dragged past its copies' values leaves them its last result rather than
+  // each drawing it again. A member that reads the current image draws its own
+  // (a copy's split comes after its stage), and a layered program hands over no
+  // layer. A member that reads another's result is idle: it takes no unit,
+  // layer or target, and a copy gives up what it drew and kept before.
+  // `parted`: the members that read another's result last frame and draw their
+  // own now.
+  private sharedResults(active: boolean[], frame: PrepassFrame): { shares: Map<number, number>; parted: Set<number> } {
+    const groups = new Map<string, { sig: string; members: number[] }>();
+    frame.stages.forEach((s, i) => {
+      if (!active[i] || s.split) return;
+      const { sig } = this.prepassKey(s, frame);
+      const key = `${s.passesOf ?? s.stageId}|${s.layerUniform === undefined ? "unit" : "layer"}|${sig}`;
+      const group = groups.get(key);
+      if (group) group.members.push(i);
+      else groups.set(key, { sig, members: [i] });
+    });
+    const shares = new Map<number, number>();
+    for (const { sig, members } of groups.values()) {
+      const first = frame.stages[members[0]];
+      const layered = first.layerUniform !== undefined;
+      let holder = members.find((i) => this.keepsResult(frame.stages[i].stageId, sig, frame, layered));
+      const owner = first.passesOf ?? first.stageId;
+      if (holder === undefined && !layered && first.stageId !== owner && this.keepsResult(owner, sig, frame, false)) {
+        this.handOverResult(owner, first.stageId);
+        holder = members[0];
+      }
+      for (const i of members) if (i !== (holder ?? members[0])) shares.set(i, holder ?? members[0]);
+    }
+    const parted = new Set<number>();
+    frame.stages.forEach((s, i) => {
+      if (active[i] && !shares.has(i) && this.sharing.has(s.stageId)) parted.add(i);
+    });
+    this.sharing = new Set([...shares.keys()].map((i) => frame.stages[i].stageId));
+    for (const i of shares.keys()) {
+      const { stageId, passesOf } = frame.stages[i];
+      active[i] = false;
+      if (passesOf !== undefined) this.dropCheckpoints(stageId);
+      this.sigs.delete(stageId);
+      this.sigs.delete(`${LAYER_KEY}${stageId}`);
+      const t = this.resultTargets.get(stageId);
+      if (t) {
+        this.deleteTarget(t);
+        this.resultTargets.delete(stageId);
+      }
+    }
+    return { shares, parted };
+  }
+
+  // Whether `stageId` keeps a result drawn under `sig` at this frame's size.
+  private keepsResult(stageId: string, sig: string, frame: PrepassFrame, layered: boolean): boolean {
+    if (layered) return this.sigs.get(`${LAYER_KEY}${stageId}`)?.sig === sig;
+    const t = this.resultTargets.get(stageId);
+    return this.sigs.get(stageId)?.sig === sig && t?.w === frame.w && t.h === frame.h;
+  }
+
+  private handOverResult(from: string, to: string): void {
+    const t = this.resultTargets.get(from);
+    const sig = this.sigs.get(from);
+    if (!t || !sig) return;
+    const own = this.resultTargets.get(to);
+    if (own) this.deleteTarget(own);
+    this.resultTargets.set(to, t);
+    this.sigs.set(to, sig);
+    this.resultTargets.delete(from);
+    this.sigs.delete(from);
   }
 
   // At most maskCopyPrepassesPerFrame mask copies run their passes in a frame
   // drawn to the canvas, in mask order; the rest wait for the frames after it
   // (prepassPending). A waiting copy that holds a result from this source at
   // this size shows it meanwhile (held); one that doesn't applies nothing
-  // (unshown, and idle this frame). Cache hits cost nothing and never wait.
-  private putOffCopies(active: boolean[], frame: PrepassFrame): Set<number> {
+  // (unshown, and idle this frame). Cache hits cost nothing and never wait, and
+  // nor does a copy that read another's result last frame (`parted`): it has
+  // none of its own to show. Members reading the result of a copy that shows
+  // nothing show nothing either.
+  private putOffCopies(
+    active: boolean[],
+    frame: PrepassFrame,
+    shares: ReadonlyMap<number, number>,
+    parted: ReadonlySet<number>,
+  ): Set<number> {
     const held = new Set<number>();
     const budget = frame.copyBudget;
     if (budget === Infinity) return held;
     let started = 0;
     frame.stages.forEach((stage, i) => {
-      if (!active[i] || stage.passesOf === undefined) return;
+      if (!active[i] || stage.passesOf === undefined || parted.has(i)) return;
       const layered = stage.layerUniform !== undefined;
       const last = this.sigs.get(layered ? `${LAYER_KEY}${stage.stageId}` : stage.stageId);
       if (last?.sig === this.prepassKey(stage, frame).sig) return;
@@ -727,6 +950,9 @@ export class PrepassRunner {
         this.unshown.add(stage.stageId);
       }
     });
+    for (const [i, holder] of shares) {
+      if (this.unshown.has(frame.stages[holder].stageId)) this.unshown.add(frame.stages[i].stageId);
+    }
     return held;
   }
 
@@ -827,7 +1053,7 @@ export class PrepassRunner {
     let remaining = stageDraws(stage, frame.bag);
     if (remaining === 0) throw new Error(`stage '${stage.stageId}' has no draw to write its result`);
     const { srcTex, applyRetouch, w, h } = frame;
-    const resumed = this.resumePoint(stage, frame, srcSig);
+    const { passIdx: resumed, from } = this.resumePoint(stage, frame, srcSig);
     const first = resumed + 1;
     let drawn = counts.slice(0, first).reduce((a, b) => a + b, 0);
     remaining -= drawn;
@@ -844,7 +1070,7 @@ export class PrepassRunner {
       let prevRaw = true;            // first read linearizes + base-curves the source
       let writeIdx = 0;
       if (resumed >= 0) {
-        this.restoreCheckpoint(stage.stageId, resumed);
+        this.restoreCheckpoint(from, resumed);
         readTex = this.ppTex[0]!;
         prevRaw = false;
         writeIdx = 1;
@@ -862,15 +1088,7 @@ export class PrepassRunner {
       try {
         for (let passIdx = first; passIdx < stage.passes.length; passIdx++) {
           const pass = stage.passes[passIdx];
-          // Distinguish passes by index AND source hash: two passes of one stage
-          // with equal-length sources (separable H/V blur) share a length, so a
-          // length-only key collided and reused the first pass's program.
-          const key = `${owner}|${passIdx}|${simpleHash(pass.fragmentSource + (pass.vertexSource ?? ""))}|pv${frame.processVersion}`;
-          const name = `pass ${passIdx + 1} of stage "${owner}"`;
-          const sources = {
-            fragment: withProcessVersion(pass.fragmentSource, frame.processVersion),
-            ...(pass.vertexSource === undefined ? {} : { vertex: withProcessVersion(pass.vertexSource, frame.processVersion) }),
-          };
+          const { key, name, sources } = passBuild(owner, passIdx, pass, frame.processVersion);
           const prog = this.passProgram(key, owner, name, sources, pass.bindings);
           const draws = counts[passIdx];
           for (let it = 0; it < draws; it++) {
@@ -1042,17 +1260,39 @@ export class PrepassRunner {
     return bound;
   }
 
-  // The kept pass a stage resumes after: the last whose checkpoint was drawn
-  // under this frame's signature up to that pass, or -1 to draw every pass.
-  private resumePoint(stage: PrepassStage, frame: PrepassFrame, srcSig: string): number {
-    if (!this.keepsCheckpoints) return -1;
-    const kept = this.checkpoints.get(stage.stageId);
-    if (!kept) return -1;
+  // The kept pass a stage resumes after, and the stage whose checkpoint it
+  // resumes from: the last pass whose checkpoint was drawn under this frame's
+  // signature up to that pass, the stage's own or, for a mask copy, its stage's
+  // first (the signature names no stage, so the same values sign the same); -1
+  // to draw every pass. A copy that resumes from its stage's gives up its own
+  // checkpoints up to that pass.
+  private resumePoint(stage: PrepassStage, frame: PrepassFrame, srcSig: string): { passIdx: number; from: string } {
+    const none = { passIdx: -1, from: stage.stageId };
+    if (!this.keepsCheckpoints) return none;
+    const owners = stage.passesOf === undefined ? [stage.stageId] : [stage.passesOf, stage.stageId];
     for (let passIdx = stage.passes.length - 2; passIdx >= 0; passIdx--) {
-      const c = kept.get(passIdx);
-      if (c && c.w === frame.w && c.h === frame.h && c.sig === prefixSig(stage, frame, srcSig, passIdx)) return passIdx;
+      let sig: string | undefined;
+      for (const from of owners) {
+        const c = this.checkpoints.get(from)?.get(passIdx);
+        if (!c || c.w !== frame.w || c.h !== frame.h) continue;
+        sig ??= prefixSig(stage, frame, srcSig, passIdx);
+        if (c.sig !== sig) continue;
+        if (from !== stage.stageId) this.dropCheckpointsThrough(stage.stageId, passIdx);
+        return { passIdx, from };
+      }
     }
-    return -1;
+    return none;
+  }
+
+  private dropCheckpointsThrough(stageId: string, passIdx: number): void {
+    const kept = this.checkpoints.get(stageId);
+    if (!kept) return;
+    for (const [i, c] of kept) {
+      if (i > passIdx) continue;
+      this.deleteTarget(c);
+      kept.delete(i);
+    }
+    if (kept.size === 0) this.checkpoints.delete(stageId);
   }
 
   // Copies the state the last draw left in `from` into the pass's checkpoint.

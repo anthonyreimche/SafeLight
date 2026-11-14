@@ -78,6 +78,15 @@ export interface DecodeRequest extends DecodePriority {
   /** Also build the develop-preview cache entry for the frame, its preview
    *  downscaled to this long edge, off the main thread (raw-cache.ts). */
   cacheEdge?: number;
+  /** Asked once libraw has answered a request whose `signal` fired meanwhile:
+   *  the caller that has taken the decode over since, if one has (decode.ts). Its
+   *  frame is then built for that caller instead of being dropped. */
+  heir?: () => DecodeHeir | null;
+}
+
+/** A caller waiting on a decode another caller began and then left. */
+export interface DecodeHeir {
+  signal?: AbortSignal;
 }
 
 // null: the pool was disposed while this request waited.
@@ -151,6 +160,7 @@ export async function acquireInstance(
   if (!background || heldByBackground.size < backgroundLimit()) {
     const inst = takeFree();
     if (inst) {
+      stopRecycleTimer();
       if (background) heldByBackground.add(inst);
       return inst;
     }
@@ -174,11 +184,42 @@ export async function acquireInstance(
   });
 }
 
-export function releaseInstance(inst: LibRawInstance): void {
+// WASM memory only grows: an instance that decoded a big frame keeps that heap
+// for the session. Such an instance is ended once the pool has been idle a while
+// (not at release, which would cost a 45 MP shooter a spawn on every open).
+const HEAVY_PEAK_BYTES = 640_000_000;
+const RECYCLE_IDLE_MS = 30_000;
+const heavy = new Set<LibRawInstance>();
+let recycleTimer: ReturnType<typeof setTimeout> | undefined;
+
+function stopRecycleTimer(): void {
+  clearTimeout(recycleTimer);
+  recycleTimer = undefined;
+}
+
+function recycleHeavy(): void {
+  recycleTimer = undefined;
+  if (free.length !== pool.length) return;
+  for (const inst of [...heavy]) {
+    heavy.delete(inst);
+    free = free.filter((f) => f !== inst);
+    discardInstance(inst);
+    const fresh = ctor && spawn(ctor);
+    if (fresh) free.push(fresh);
+  }
+}
+
+/** `peakBytes` is the most of the instance's heap the decode just finished may
+ *  have needed; a big one marks the instance for recycling. */
+export function releaseInstance(inst: LibRawInstance, peakBytes = 0): void {
   heldByBackground.delete(inst);
   // A discarded instance, or one from before the pool was disposed.
   if (!pool.includes(inst)) return;
+  if (peakBytes > HEAVY_PEAK_BYTES) heavy.add(inst);
   handOn(inst);
+  if (heavy.size > 0 && free.length === pool.length && recycleTimer === undefined) {
+    recycleTimer = setTimeout(recycleHeavy, RECYCLE_IDLE_MS);
+  }
 }
 
 // Interactive waiters first; a background waiter only while background work is
@@ -207,6 +248,7 @@ function handOn(inst: LibRawInstance): void {
  */
 export function discardInstance(inst: LibRawInstance): void {
   heldByBackground.delete(inst);
+  heavy.delete(inst);
   try { inst.worker?.terminate(); } catch {}
   const at = pool.indexOf(inst);
   if (at < 0) return;
@@ -238,6 +280,8 @@ export function disposeDecodePool(): void {
   waitingBackground = [];
   for (const wake of stranded) wake(null);
   heldByBackground.clear();
+  heavy.clear();
+  stopRecycleTimer();
   for (const inst of pool) {
     try { inst.worker?.terminate(); } catch {}
   }

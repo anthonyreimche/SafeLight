@@ -59,7 +59,10 @@ import {
   useDisabledExtensions,
   usePluginRunning,
   useExternalPluginsSettled,
+  useInstalledPlugins,
 } from "./loader";
+import { officialExtension } from "./official-extensions";
+import { THEME_STORAGE_KEY, useThemeStore } from "./themes";
 import { keptVersion, setKept, usePins } from "./pins";
 import { getExtSetting, setExtSetting } from "./ext-settings";
 import { isInstanceLive, startInstance, stopInstances } from "./instance";
@@ -632,6 +635,80 @@ describe("loading several installed extensions", () => {
     await loading;
 
     expect(activated).toEqual(ids);
+  });
+
+  // The window shows nothing under its top bar until its module registers, so
+  // the two modules don't wait behind the extensions listed ahead of them.
+  describe("with the Library and Develop modules among them", () => {
+    const LIBRARY = "safelight.library";
+    const DEVELOP = "safelight.develop";
+    const official = (id: string): ExtensionManifest => ({
+      ...entry(id),
+      repository: officialExtension(id)?.repo,
+    });
+
+    beforeEach(() => {
+      list = [
+        ...ids.slice(0, 4).map(entry),
+        official(DEVELOP),
+        ...ids.slice(4).map(entry),
+        official(LIBRARY),
+      ];
+    });
+    afterEach(async () => {
+      await uninstallPlugin(LIBRARY);
+      await uninstallPlugin(DEVELOP);
+    });
+
+    it("starts the two modules first, then the rest in list order", async () => {
+      importer.mockImplementation(async (url) => noting(idOf(url)));
+
+      await loadExternalPlugins();
+
+      expect(activated).toEqual([LIBRARY, DEVELOP, ...ids]);
+    });
+
+    it("imports the two modules' bundles before any other", async () => {
+      const imported: string[] = [];
+      importer.mockImplementation(async (url) => {
+        imported.push(idOf(url));
+        return noting(idOf(url));
+      });
+
+      await loadExternalPlugins();
+
+      expect(imported.slice(0, 2)).toEqual([LIBRARY, DEVELOP]);
+    });
+
+    it("lists the installed extensions in the order they were given", async () => {
+      importer.mockImplementation(async (url) => noting(idOf(url)));
+
+      await loadExternalPlugins();
+
+      expect(useInstalledPlugins.getState().ids).toEqual(list.map((m) => m.id));
+    });
+  });
+
+  // The saved theme is the person's choice: the window wears it from the moment
+  // its extension starts, not only once every extension after it has started.
+  it("applies a saved theme as its extension starts, before the ones after it", async () => {
+    localStorage.setItem(THEME_STORAGE_KEY, "acme.dusk");
+    let themeAsLastStarted: string | null = null;
+    importer.mockImplementation(async (url) => {
+      const id = idOf(url);
+      return {
+        activate: (api: SafelightAPI) => {
+          if (id === ids[0]) {
+            api.registerTheme({ id: "acme.dusk", name: "Dusk", vars: { "--color-surface-0": "#111" } });
+          }
+          if (id === ids[COUNT - 1]) themeAsLastStarted = useThemeStore.getState().activeId;
+        },
+      };
+    });
+
+    await loadExternalPlugins();
+
+    expect(themeAsLastStarted).toBe("acme.dusk");
   });
 
   it("lets a task queued before loading run before the last one starts", async () => {

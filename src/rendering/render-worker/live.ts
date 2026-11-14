@@ -8,13 +8,15 @@
 
 import { CURRENT_PROCESS_VERSION, type DevelopParams, type Mask } from "@/catalog/types";
 import type { StageTextureData } from "@/extensions/types";
-import type { MaskPatch, WorkerRequest, WorkerResponse } from "../render-protocol";
+import type { MaskPatch, WorkerRequest } from "../render-protocol";
 import { setActiveBrushTips } from "../webgl/brush-tips";
 import { LIVE_MASK_COPY_PREPASSES } from "../webgl/mask-stage-instances";
 import { WebGLRenderer } from "../webgl/renderer";
+import { armDetailCut, cancelDetailCut, yieldToAskedRender } from "./detail";
 import {
   bindLiveView,
   messageOf,
+  postLiveFrame,
   reportQuarantine,
   reportStageBuilds,
   showScreen,
@@ -111,6 +113,7 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
       if (state.canvas !== canvas) return;
       // Without this the context is never restored.
       e.preventDefault();
+      cancelDetailCut(ctx);
       state.renderer?.dispose();
       state.renderer = null;
       state.thumbRenderer?.dispose();
@@ -151,6 +154,9 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
           // Only the live view leaves dormant stages out; the thumbnail renderer
           // draws every photo with one program.
           skipDormantStages: true,
+          // View aids (viewOnly stages) are for the eye: only the frames this
+          // renderer shows draw them.
+          drawsViewStages: true,
           // A retry (after an earlier initError) may land after setPipeline /
           // setStages messages already updated the latest* state — seed from
           // them, the same as ensureThumbRenderer, so recovery doesn't silently
@@ -165,6 +171,8 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
         // would cut a sample from every thumbnail for nothing.
         created.keepSourceSample = true;
         created.keepSourcePixels = true;
+        // Only the live view zooms in, so only it keeps a native frame to cut detail from.
+        created.keepNativeFrame = true;
         warmUp(created, state.lastParams?.processVersion ?? CURRENT_PROCESS_VERSION);
         renderer = created;
         state.renderer = created;
@@ -271,51 +279,9 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
         respond({ type: "frameSkipped", seq: msg.seq });
         return;
       }
-      let bitmap: ImageBitmap | null = null;
-      let framePosted = false;
-      try {
-        renderer.render();
-        state.liveStateStale = false;
-        bitmap = canvas.transferToImageBitmap();
-        const sourceFull = renderer.sourceFullSize;
-        const resp: WorkerResponse = {
-          type: "frame",
-          seq: msg.seq,
-          bitmap,
-          width: renderer.bufferWidth,
-          height: renderer.bufferHeight,
-          sourceWidth: renderer.sourceWidth,
-          sourceHeight: renderer.sourceHeight,
-          sourceGen: state.sourceGen,
-          sourceFullWidth: sourceFull.width,
-          sourceFullHeight: sourceFull.height,
-          sourceNative: renderer.sourceNative,
-          roi: renderer.viewport,
-          wholeWidth: renderer.wholeWidth,
-          wholeHeight: renderer.wholeHeight,
-          crop: renderer.drawnCrop,
-        };
-        if (msg.wantHistogram) resp.histogramFollows = true;
-        if (renderer.overflowedStages.length > 0) {
-          resp.overflowedStages = [...renderer.overflowedStages];
-        }
-        const prepassPending = renderer.prepassPending;
-        if (prepassPending) resp.prepassPending = true;
-        respond(resp, [bitmap]);
-        framePosted = true;
-        // The readback stalls until the GPU drains the frame, so the frame goes first.
-        // A frame with prepasses pending is followed by one that asks again.
-        if (msg.wantHistogram && !prepassPending) {
-          respond({ type: "histogram", histogram: renderer.computeHistogram(!!msg.wantExtended) });
-        }
-      } catch (err) {
-        if (framePosted) {
-          respond({ type: "histogramError", message: `histogram failed: ${messageOf(err)}` });
-        } else {
-          bitmap?.close();
-          respond({ type: "renderError", seq: msg.seq, message: messageOf(err) });
-        }
-      }
+      yieldToAskedRender(ctx);
+      postLiveFrame(ctx, renderer, canvas, msg);
+      if (renderer.detailWanted) armDetailCut(ctx);
     },
 
     computeHistogram(msg) {

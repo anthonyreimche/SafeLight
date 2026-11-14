@@ -43,6 +43,9 @@ export interface CatalogStorage {
    *  carries a new preview; `hold: false` is for a caller that reads many previews
    *  and keeps none, such as a scan of the whole catalogue. */
   readPreview?(photoId: string, options?: { hold?: boolean }): Promise<Blob | null>;
+  /** Remove the grid previews kept for these photos, so each is built again
+   *  when it is next read. */
+  dropStoredPreviews?(photoIds: string[]): Promise<void>;
   /** Read an opaque per-photo binary blob (e.g. an extension's warp field),
    *  or null if none was stored. `key` is the caller-namespaced blob key. */
   getPhotoBlob?(photoId: string, key: string): Promise<Uint8Array | null>;

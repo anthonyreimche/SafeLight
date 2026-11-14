@@ -17,7 +17,8 @@ import {
 } from "@/catalog/orient";
 import { isRawFile } from "@/raw/raw-preview";
 import type { DecodeRequest } from "@/raw/decode-pool";
-import { deleteCachedPreview, hasDecodeMarker, rawCacheKey } from "@/raw/raw-cache";
+import { deleteCachedPreview, hasDecodeMarker } from "@/raw/raw-cache";
+import { photoCacheKey } from "@/raw/photo-cache-key";
 import { getSettings } from "@/state/settings-store";
 import { photoById, useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
 import { catalogStorage, type PutOptions } from "@/catalog/storage";
@@ -31,6 +32,7 @@ import {
   turned,
 } from "./import-decode";
 import { decodeFailureReason, mimeTypeFromName } from "./import-record";
+import { isSourceFile, sourceItemOf } from "@/project/library-sources";
 
 /** Store what a repair, rebuild or re-import worked out for `photo`, on the photo
  *  as the catalogue holds it once the decode is done. The decode takes a while, and
@@ -88,7 +90,9 @@ function changedFields<T extends object>(change: T, photo: T): Partial<T> {
  * a later open. A RAW the decoder has failed on for good (see raw-cache.ts)
  * would only fail again, so it is left alone until a Reimport.
  * Sequential + fire-and-forget, like the RAW pre-decode. `signal` belongs to
- * the project: once the user leaves it, the pass reads and stores no more.
+ * the project: once the user leaves it, the pass reads and stores no more. A
+ * library source's photos are left to the grid, which reads their previews
+ * from the source as they come into view.
  */
 export async function repairMissingPreviews(
   photos: CatalogPhoto[],
@@ -96,11 +100,11 @@ export async function repairMissingPreviews(
   signal?: AbortSignal,
 ): Promise<void> {
   const request: DecodeRequest = { background: true, signal };
-  const todo = photos.filter((p) => p.fileHandle && p.width === 0);
+  const todo = photos.filter((p) => p.fileHandle && p.width === 0 && !isSourceFile(p.fileHandle));
   for (const photo of todo) {
     if (signal?.aborted) return;
     try {
-      const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+      const key = photoCacheKey(photo);
       const raw = isRawFile({ name: photo.filename } as File);
       if (raw && (await hasDecodeMarker(key, "unsupported"))) continue;
       const file = await photo.fileHandle!.getFile();
@@ -259,24 +263,34 @@ async function readMetadataOf(
  * hands `onRebuilt` the fields it changed. Reports progress so a Preferences
  * button can show "12 / 340". Sequential to keep memory sane; one failure doesn't
  * stop the rest. `signal` belongs to the project: once the user leaves it, the
- * rebuild reads and stores no more.
+ * rebuild reads and stores no more. A library source's photos read nothing
+ * here: their kept previews are forgotten at once and the grid reads each from
+ * the source again as it comes into view (leaveToGrid); `refetched` says how
+ * many.
  */
 export async function rebuildThumbnails(
   photos: CatalogPhoto[],
   onProgress?: (done: number, total: number) => void,
   onRebuilt?: (photo: CatalogPhoto, change: RebuiltChange) => void,
   signal?: AbortSignal,
-): Promise<void> {
-  const todo = photos.filter((p) => p.fileHandle);
+): Promise<{ refetched: number }> {
+  const all = photos.filter((p) => p.fileHandle);
+  const fromSource = all.filter((p) => isSourceFile(p.fileHandle));
+  const todo = all.filter((p) => !isSourceFile(p.fileHandle));
   let done = 0;
-  onProgress?.(0, todo.length);
+  onProgress?.(0, all.length);
+  if (fromSource.length > 0 && !signal?.aborted) {
+    await leaveToGrid(fromSource);
+    done += fromSource.length;
+    onProgress?.(done, all.length);
+  }
   // Long enough that the user goes on editing: a photo opened meanwhile goes first.
   const request: DecodeRequest = { background: true, signal };
   for (const photo of todo) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) break;
     try {
       const file = await photo.fileHandle!.getFile();
-      if (signal?.aborted) return;
+      if (signal?.aborted) return { refetched: fromSource.length };
       const bytes = await rawBytesOf(file);
       const decoded = storable(
         await decodeImportBitmap(file, photo.exif.orientation, request, undefined, photo.relPath, bytes),
@@ -284,7 +298,7 @@ export async function rebuildThumbnails(
       if (decoded) {
         if (signal?.aborted) {
           decoded.bitmap.close();
-          return;
+          return { refetched: fromSource.length };
         }
         const rawMeta = await readRawMetadata(file, request, bytes);
         const { bitmap, oriented } = decoded;
@@ -301,7 +315,7 @@ export async function rebuildThumbnails(
         } finally {
           bitmap.close();
         }
-        if (signal?.aborted) return;
+        if (signal?.aborted) return { refetched: fromSource.length };
 
         const updated = await storeOnCurrent(photo, {
           thumbnailBlob: thumb,
@@ -315,9 +329,40 @@ export async function rebuildThumbnails(
     } catch {
       // One failure shouldn't stop the rest.
     }
-    onProgress?.(++done, todo.length);
+    onProgress?.(++done, all.length);
     await new Promise<void>((res) => setTimeout(res, 0));
   }
+  return { refetched: fromSource.length };
+}
+
+/** Forget the previews kept for these library source photos, on disk and in the
+ *  grid, so each is read from the source again when its cell comes into view, as
+ *  on a fresh open. Nothing is fetched here. */
+async function leaveToGrid(photos: CatalogPhoto[]): Promise<void> {
+  await catalogStorage().dropStoredPreviews?.(photos.map((p) => p.id));
+  const ids = new Set(photos.map((p) => p.id));
+  const shown = useCatalogStore
+    .getState()
+    .photos.flatMap((p) => (ids.has(p.id) && p.thumbnailBlob ? [{ id: p.id, blob: p.thumbnailBlob }] : []));
+  if (shown.length > 0) useCatalogStore.getState().dropThumbnails(shown);
+}
+
+/** Re-import a library source's photo from what the source lists of it now,
+ *  keeping the user's curation and rotation, as reimportPhotos does for a file
+ *  on disk. Nothing is read from the source: its preview is left to the grid
+ *  (leaveToGrid). Null when nothing was stored. */
+async function reimportSourcePhoto(
+  photo: CatalogPhoto,
+): Promise<{ photo: CatalogPhoto; change: RebuiltChange } | null> {
+  const item = sourceItemOf(photo.fileHandle);
+  if (!item) return null;
+  const exif = { ...item.exif };
+  return storeOnCurrent(photo, {
+    fileSize: item.size ?? photo.fileSize,
+    mimeType: item.mimeType || mimeTypeFromName(photo.filename) || photo.mimeType,
+    exif,
+    dateCreated: parseExifDate(exif.dateTimeOriginal) ?? item.taken ?? item.modified ?? photo.dateCreated,
+  });
 }
 
 /**
@@ -333,19 +378,40 @@ export async function rebuildThumbnails(
  * turned while its new preview was built, counts as neither: nothing was stored.
  * `signal` belongs to the project: once the user leaves it, the re-import
  * reads, drops and stores no more, and the photos it didn't finish count as
- * neither.
+ * neither. A library source's photos take what the source lists of them now,
+ * and their previews are left to the grid, which reads each again as it comes
+ * into view; `refetched` says how many (left out for a folder project).
  */
 export async function reimportPhotos(
   photos: CatalogPhoto[],
   onProgress?: (done: number, total: number) => void,
   onReimported?: (photo: CatalogPhoto, change: RebuiltChange) => void,
   signal?: AbortSignal,
-): Promise<{ ok: number; failed: number }> {
-  const todo = photos.filter((p) => p.fileHandle);
+): Promise<{ ok: number; failed: number; refetched?: number }> {
+  const all = photos.filter((p) => p.fileHandle);
+  const fromSource = all.filter((p) => isSourceFile(p.fileHandle));
+  const todo = all.filter((p) => !isSourceFile(p.fileHandle));
   let done = 0;
   let ok = 0;
   let failed = 0;
-  onProgress?.(0, todo.length);
+  onProgress?.(0, all.length);
+  if (fromSource.length > 0 && !signal?.aborted) {
+    for (const photo of fromSource) {
+      try {
+        const updated = await reimportSourcePhoto(photo);
+        if (updated) {
+          onReimported?.(updated.photo, updated.change);
+          ok++;
+        }
+      } catch (e) {
+        console.warn(`[import] re-import failed: ${photo.filename}`, e);
+        failed++;
+      }
+    }
+    await leaveToGrid(fromSource);
+    done += fromSource.length;
+    onProgress?.(done, all.length);
+  }
   const request: DecodeRequest = { signal };
   for (const photo of todo) {
     if (signal?.aborted) break;
@@ -359,9 +425,7 @@ export async function reimportPhotos(
       // decoder can't use the file, so the next Develop open re-decodes from
       // the current file. The key folds in fileSize, so a changed file already
       // misses — this also covers a same-size edit.
-      await deleteCachedPreview(
-        rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
-      );
+      await deleteCachedPreview(photoCacheKey(photo));
 
       // Refresh file-derived metadata. Re-parse EXIF (date / orientation /
       // camera) and, for RAW, the frame size and as-shot WB (metadata-only).
@@ -414,7 +478,7 @@ export async function reimportPhotos(
           onReimported?.(updated.photo, updated.change);
           failed++;
         }
-        onProgress?.(++done, todo.length);
+        onProgress?.(++done, all.length);
         continue;
       }
 
@@ -461,8 +525,8 @@ export async function reimportPhotos(
       console.warn(`[import] re-import failed: ${photo.filename}`, e);
       failed++;
     }
-    onProgress?.(++done, todo.length);
+    onProgress?.(++done, all.length);
     await new Promise<void>((res) => setTimeout(res, 0));
   }
-  return { ok, failed };
+  return fromSource.length > 0 ? { ok, failed, refetched: fromSource.length } : { ok, failed };
 }

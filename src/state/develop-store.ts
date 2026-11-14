@@ -9,6 +9,7 @@ import type {
   DevelopParams,
   EditSnapshot,
   EditState,
+  Mask,
   ToneCurveChannel,
 } from "@/catalog/types";
 import {
@@ -25,7 +26,7 @@ import {
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { historyCursor } from "@/catalog/history-cursor";
-import { sameEdit } from "@/catalog/edit-equality";
+import { same, sameEdit } from "@/catalog/edit-equality";
 import { writeInTurn, writePending } from "@/catalog/edit-writes";
 import { fsErrorText } from "@/project/fs-errors";
 import { broadcast } from "./broadcast";
@@ -33,7 +34,7 @@ import { createViewSlice, type ViewSlice } from "./develop-slices/view-slice";
 import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
-import { useCatalogStore } from "./catalog-store";
+import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
 import { getRenderBridge } from "@/rendering/render-bridge";
 
@@ -151,26 +152,25 @@ function moveHistory(
   const { photoId, history, historyIndex, asShotTemperature, editError } = get();
   const newIndex = historyIndex + dir;
   if (editError || newIndex < 0 || newIndex > history.length - 1) return;
-  const { params, paramBag } = lookOf(history[newIndex]);
-  set({ historyIndex: newIndex, params, paramBag });
-  broadcast({ type: "edit-update", payload: { photoId, params } });
+  const look = lookOf(history[newIndex], get());
+  set({ historyIndex: newIndex, ...look });
+  broadcast({ type: "edit-update", payload: { photoId } });
   if (!photoId) return;
 
   // Its writes go to the catalogue open now, or nowhere: not to one opened since.
   const storage = catalogStorage();
-  const store = (editState: EditState) => {
+  const store = (editState: EditState, look = lookOf(editState.stack[editState.currentIndex])) => {
     void storage.putEditState(editState);
-    const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+    const photo = photoById(useCatalogStore.getState().photos, photoId);
     if (photo) void emitEditCommit({ photo, editState });
-    const look = lookOf(editState.stack[editState.currentIndex]);
-    dropWaitingThumbnail(photoId);
-    void regenerateEditedThumbnail(photoId, look.params, asShotTemperature, look.paramBag);
+    // Steps taken in a row (a held Ctrl+Z) draw one thumbnail, once the view rests.
+    refreshThumbnailWhenQuiet(photoId, look.params, asShotTemperature, look.paramBag);
   };
 
   // With none of this photo's writes under way, the history held here is the
   // catalogue's: each change another window makes renews it (see reloadEdit).
   if (!writePending(photoId)) {
-    store({ photoId, stack: history, currentIndex: newIndex });
+    store({ photoId, stack: history, currentIndex: newIndex }, look);
     return;
   }
   void writeInTurn(photoId, async (latest) => {
@@ -183,9 +183,9 @@ function moveHistory(
     if (!held && latest() && get().photoId === photoId) {
       // No step to take in the catalogue's history: show it as it is, rather
       // than the step taken here that was never saved.
-      const look = lookOf(base.stack[steppable ? index : base.index]);
+      const look = lookOf(base.stack[steppable ? index : base.index], get());
       set({ history: base.stack, historyIndex: steppable ? index : base.index, ...look });
-      broadcast({ type: "edit-update", payload: { photoId, params: look.params } });
+      broadcast({ type: "edit-update", payload: { photoId } });
     }
     if (steppable) store({ photoId, stack: base.stack, currentIndex: index });
   });
@@ -194,8 +194,38 @@ function moveHistory(
 // Normalize on the way out, not just at load: a stack read from disk carries
 // snapshots written before newer params existed, and stepping into one must
 // fill today's defaults rather than hand the renderer a half-shaped object.
-function lookOf(snapshot: EditSnapshot): Pick<DevelopState, "params" | "paramBag"> {
-  return { params: normalizeParams(snapshot.params), paramBag: normalizeParamBag(snapshot.paramBag) };
+//
+// With `live` (the look on screen, for a step on the same photo) every field and
+// mask that matches it stays the live object, so the renderer sees only what the
+// step changed: its sync diffs by identity, and a new masks array re-bakes them all.
+function lookOf(snapshot: EditSnapshot, live?: Look): Look {
+  const params = normalizeParams(snapshot.params);
+  const paramBag = normalizeParamBag(snapshot.paramBag);
+  if (!live) return { params, paramBag };
+  const kept = keepEqual(params, live.params);
+  kept.masks = keepMasks(params.masks, live.params.masks);
+  return { params: kept, paramBag: keepEqual(paramBag, live.paramBag) };
+}
+
+type Look = Pick<DevelopState, "params" | "paramBag">;
+
+/** `next` with each top-level value that `live` holds an equal one of replaced by
+ *  `live`'s. */
+function keepEqual<T extends object>(next: T, live: T): T {
+  const out = { ...next };
+  for (const key in next) if (Object.hasOwn(live, key) && same(next[key], live[key])) out[key] = live[key];
+  return out;
+}
+
+/** `next` masks with each one `live` holds an equal mask of (by id) replaced by it,
+ *  and the array itself kept when nothing in it or its order changed. */
+function keepMasks(next: Mask[], live: Mask[]): Mask[] {
+  const held = new Map(live.map((m) => [m.id, m]));
+  const masks = next.map((m) => {
+    const prev = held.get(m.id);
+    return prev && same(m, prev) ? prev : m;
+  });
+  return masks.length === live.length && masks.every((m, i) => m === live[i]) ? live : masks;
 }
 
 interface OpenedHistory {
@@ -417,7 +447,7 @@ async function commitStoredEdit(
   const storage = target ?? catalogStorage();
   // A commit made as the project is left reaches the hooks with the photo as it
   // stood, though the catalogue store is emptied by the time the write lands.
-  const leaving = target && useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  const leaving = target && photoById(useCatalogStore.getState().photos, photoId);
 
   // An unchanged edit costs no step and keeps the redo tail.
   if (!hasUncommittedEdit({ params, paramBag, history, historyIndex })) return;
@@ -461,7 +491,7 @@ async function commitStoredEdit(
   await committed.saved;
 
   // Let extensions persist the committed edit elsewhere.
-  const photo = leaving || useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  const photo = leaving || photoById(useCatalogStore.getState().photos, photoId);
   if (photo) await emitEditCommit({ photo, editState });
 
   // Re-render this one photo's grid thumbnail from its committed look (cheap,
@@ -483,7 +513,7 @@ async function commitStoredEdit(
   // Announce the committed state so the Library refreshes this photo's
   // histogram the moment it's edited — for any visible photo, in any window —
   // instead of waiting on the periodic catalogue poll.
-  broadcast({ type: "edit-update", payload: { photoId, params } });
+  broadcast({ type: "edit-update", payload: { photoId } });
 }
 
 /** Close the open photo as its project is left: the change still uncommitted is
@@ -497,7 +527,7 @@ export function closeOpenPhoto(storage: CatalogStorage): Promise<void> | null {
   // The commit takes the photo's values as this call starts; the reset below
   // follows at once, so a run still going finds no photo to commit to.
   const { getState, setState } = useDevelopStore;
-  const left = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  const left = photoById(useCatalogStore.getState().photos, photoId);
   const rendersOnCommit = !getState().editError && hasUncommittedEdit(getState());
   const committing = commitStoredEdit(getState, setState, "Edit", storage);
   // A thumbnail still waiting for quiet is drawn now, into the catalogue being

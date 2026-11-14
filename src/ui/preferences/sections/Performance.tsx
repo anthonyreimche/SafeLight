@@ -11,6 +11,7 @@ import { btnCls, Field, OptionRow, ToggleField } from "@/ui/preferences/fields";
 import { settings, type PrefSection } from "@/ui/preferences/section-model";
 
 type DevelopMaxEdge = AppSettings["developMaxEdge"];
+type RenderResolution = DevelopMaxEdge | "dynamic";
 
 // Graphics that share the processor's memory pay for every full-size target
 // Develop draws through: a smaller render buffer, a smaller GPU cache, no
@@ -18,6 +19,7 @@ type DevelopMaxEdge = AppSettings["developMaxEdge"];
 // settle.
 const INTEGRATED_GRAPHICS = {
   developMaxEdge: 2560,
+  developDynamicDetail: false,
   gpuSourceCacheBytes: 256 * 1024 * 1024,
   developPrefetchNeighbors: false,
   liveHistogram: false,
@@ -56,19 +58,24 @@ export function PerformanceSection() {
       <IntegratedGraphicsField />
       <Field
         label="Develop render resolution"
-        hint="Cap of the Develop render buffer. Higher keeps 100% zoom true 1:1 on large sensors but uses more GPU memory; lower is faster on integrated graphics. Applies when a photo is reopened."
+        hint="Cap of the Develop render buffer. Higher keeps more detail when zoomed in but uses more GPU memory; lower is faster on integrated graphics. Dynamic keeps a 4096 px buffer, measures zoom against the photo's own pixels (100% is one photo pixel per screen pixel) and, for RAW photos, sharpens the area in view from the original when you zoom in past the buffer, at the cost of one more decode per photo and extra memory while it is open. A size applies when a photo is reopened; Dynamic's zoom scale applies at once."
       >
-        <OptionRow
-          value={s.developMaxEdge}
+        <OptionRow<RenderResolution>
+          value={s.developDynamicDetail ? "dynamic" : s.developMaxEdge}
           options={[
             { value: 2560, label: "2560 px" },
             { value: 3072, label: "3072 px" },
             { value: 4096, label: "4096 px" },
             { value: 6144, label: "6144 px" },
             { value: 8192, label: "8192 px" },
+            { value: "dynamic", label: "Dynamic" },
           ]}
           onChange={(v) =>
-            updateSettings({ developMaxEdge: v as DevelopMaxEdge })
+            updateSettings(
+              v === "dynamic"
+                ? { developDynamicDetail: true, developMaxEdge: 4096 }
+                : { developDynamicDetail: false, developMaxEdge: v },
+            )
           }
         />
       </Field>
@@ -137,6 +144,6 @@ export const performanceSection: PrefSection = {
     "High bit-depth previews",
     "Live histogram",
   ),
-  keywords: ["integrated graphics", "slow", "gpu memory", "laptop"],
+  keywords: ["integrated graphics", "slow", "gpu memory", "laptop", "dynamic", "zoom"],
   render: () => <PerformanceSection />,
 };

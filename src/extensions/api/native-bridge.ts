@@ -81,6 +81,11 @@ export interface NativeFsBridge {
    *  (or the app data dir) that hold a catalogue, ascending. Absent on older
    *  Electron builds — feature-detect. */
   externalCatalogVariants?(rootPath: string, baseOverride?: string | null): Promise<number[]>;
+  /** The .safelight working directory of a library source's catalogue under the
+   *  app's data dir, made if missing: one per `key` (the source and the library
+   *  it shows), its folder named after `name`. Absent on older Electron builds —
+   *  feature-detect. */
+  sourceCatalogDir?(key: string, name: string): Promise<string>;
   /** List the "separate" catalogues stored under `baseOverride` (or the app data
    *  dir) for the Preferences manager. Each entry's `path` is the per-source
    *  folder to reveal or delete. Absent on older Electron builds — feature-detect. */
@@ -100,6 +105,17 @@ export interface NativeFsBridge {
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   pickDirectory(): Promise<string | null>;
+  /** Ask for a folder in the OS dialogue (at the one `replacing` names, when
+   *  it is extension `id`'s) and keep it for that extension across launches
+   *  (electron/kept-folders.cjs); null when cancelled. Absent on older
+   *  Electron builds — feature-detect, as for the two below. */
+  pickKeptFolder?(id: string, replacing: string | null): Promise<{ token: string; path: string } | null>;
+  /** The folder `token` names for extension `id`, or why it can't be used.
+   *  "unwritable" is not found for a Windows folder whose permissions refuse
+   *  writes (nothing is written to check). Rejects when the record of kept
+   *  folders can't be read just now. */
+  keptFolder?(id: string, token: string): Promise<{ path: string } | { error: "unknown" | "gone" | "unwritable" }>;
+  forgetKeptFolder?(id: string, token: string): Promise<void>;
   /** Pick one file with the OS dialogue; null when cancelled. Absent on older
    *  Electron builds — feature-detect. */
   pickFile?(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
@@ -181,6 +197,14 @@ export interface NativeWindowBridge {
   /** Resolves true when the window now draws the material; null clears it.
    *  False on a system or backend that can't draw it. */
   setMaterial(material: "acrylic" | "mica" | null): Promise<boolean>;
+  /** Opens the pop-out, or brings it forward when it is open already. The main
+   *  process opens it: a page that opened it itself would hold its object. */
+  openApp(kind: "module", module: string): Promise<void>;
+  openApp(kind: "devtools"): Promise<void>;
+  closeApp(kind: "module", module: string): Promise<void>;
+  closeApp(kind: "devtools"): Promise<void>;
+  /** Brings the main window forward, from a pop-out. */
+  focusMain(): Promise<void>;
 }
 
 /** The Developer Tools dev folder. Privileged because the folder's manifests
@@ -219,6 +243,28 @@ export interface NativePluginsBridge {
   ): Promise<ExtensionManifest | null>;
 }
 
+/** What a request through NativeNetBridge.fetch came back with. */
+export type NativeNetResult =
+  | { status: number; statusText: string; headers: [string, string][]; body: Uint8Array<ArrayBuffer> }
+  | { error: { kind: "refused" | "timeout" | "aborted" | "too-large" | "network"; message: string } };
+
+/** Server addresses the person allowed an extension to reach (api.network).
+ *  Privileged so core, not the page, names the asking extension. */
+export interface NativeNetBridge {
+  /** Ask the person, unless already allowed, whether extension `id` may reach
+   *  the address of `url`; resolves with whether it may. */
+  requestOrigin(id: string, url: string): Promise<boolean>;
+  hasOrigin(id: string, url: string): Promise<boolean>;
+  revokeOrigin(id: string, url: string): Promise<void>;
+  fetch(
+    id: string,
+    requestId: string,
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number },
+  ): Promise<NativeNetResult>;
+  abort(requestId: string): Promise<void>;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
   fs: NativeFsBridge;
@@ -235,6 +281,8 @@ export interface PrivilegedBridge {
   window?: NativeWindowBridge;
   /** Optional: absent in older Electron builds. */
   devtools?: NativeDevtoolsBridge;
+  /** Optional: absent in older Electron builds. */
+  net?: NativeNetBridge;
 }
 
 declare global {

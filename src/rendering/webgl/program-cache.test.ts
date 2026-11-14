@@ -116,6 +116,7 @@ function fakeGl(link: () => void = () => {}, busyPolls?: number) {
     bindAttribLocation: () => {},
     linkProgram: link,
     deleteShader: () => {},
+    deleteProgram: () => {},
     getProgramParameter: (program: object, pname: number) => {
       if (pname === COMPLETION_STATUS_KHR) {
         const n = (polls.get(program) ?? 0) + 1;
@@ -262,5 +263,25 @@ describe("ProgramCache.whenBuilt", () => {
     const { gl, sources } = fakeGl();
     await new ProgramCache(gl).whenBuilt(BUILTIN_RESOLVED, BUILT, V2_VARIANT, NONE);
     expect(sources.size).toBe(0);
+  });
+});
+
+// A build let go of says how it ended to the GPU crash guard. On a lost context
+// that is unknown: the driver may have died over it, so the guard keeps blaming it.
+describe("a submitted build let go of", () => {
+  const BUILT = buildStageInjection([], V2_VARIANT);
+  const STAGES_OF = new Set(["acme.blur"]);
+
+  it.each([
+    [false, "failed"],
+    [true, "suspect"],
+  ])("ends as %s-lost: %s", (lost, outcome) => {
+    const { gl } = fakeGl();
+    const ended: string[] = [];
+    const cache = new ProgramCache(gl, undefined, { started: () => {}, ended: (_ids, o) => void ended.push(o) });
+    cache.submit(BUILTIN_RESOLVED, BUILT, V2_VARIANT, STAGES_OF);
+    Object.assign(gl, { isContextLost: () => lost });
+    cache.dispose();
+    expect(ended).toEqual([outcome]);
   });
 });

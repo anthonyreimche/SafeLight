@@ -1519,3 +1519,54 @@ describe("paint textures", () => {
     expect(layersAt(2)).toEqual([undefined]);
   });
 });
+
+// The detail gain (Dynamic detail) scales what reaches it in `lin`; a stage ahead
+// of it that rebuilds the colour from base-resolution passes would have the gain
+// put the original's native noise back.
+describe("rebuilders", () => {
+  const stage = (id: string, phase: ProcessingStageContribution["phase"]): ProcessingStageContribution => ({
+    id,
+    name: id,
+    phase,
+    glsl: "",
+    uniforms: [],
+  });
+
+  it("names an extension's decode stage", () => {
+    expect(buildStageInjection([stage("ext.raw-denoise", "decode")], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.raw-denoise", defaults: {} },
+    ]);
+  });
+
+  it("names an extension's noise-reduction stage", () => {
+    expect(buildStageInjection([stage("ext.wavelet", "noise-reduction")], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.wavelet", defaults: {} },
+    ]);
+  });
+
+  it("leaves out a stage that keeps the photo's detail", () => {
+    const ca = { ...stage("ext.ca", "decode"), keepsDetail: true };
+    expect(buildStageInjection([ca, stage("ext.moire", "decode")], V2_VARIANT).rebuilders.map((r) => r.id)).toEqual([
+      "ext.moire",
+    ]);
+  });
+
+  it("carries where each uniform starts, under the bag's keys", () => {
+    const denoise: ProcessingStageContribution = {
+      ...stage("ext.denoise", "decode"),
+      uniforms: [
+        { key: "on", glslType: "float", default: 0 },
+        { key: "threshold", glslType: "float", default: 0.2 },
+      ],
+    };
+    expect(buildStageInjection([denoise], V2_VARIANT).rebuilders).toEqual([
+      { id: "ext.denoise", defaults: { "ext.denoise.on": 0, "ext.denoise.threshold": 0.2 } },
+    ]);
+  });
+
+  it("names no display stage, nor the built-in denoiser", () => {
+    expect(buildStageInjection([stage("ext.look", "display-adjust")], V2_VARIANT).rebuilders).toEqual([]);
+    expect(buildStageInjection([DENOISE_STAGE], V2_VARIANT).rebuilders).toEqual([]);
+    expect(buildStageInjection([], V2_VARIANT).rebuilders).toEqual([]);
+  });
+});

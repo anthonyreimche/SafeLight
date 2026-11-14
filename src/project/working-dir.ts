@@ -81,12 +81,14 @@ import {
   isUnreachable,
 } from "./catalog-errors";
 import { newer, readChangeStamps, type ChangeStamp } from "./change-stamps";
-import { fileTimestamp, isNotFound, parseJSONObject } from "./fs";
+import { fileTimestamp, isNotFound, parseJSONObject, safeName } from "./fs";
+import { bindSourceCache, isSourceRoot, sourceRefOf } from "./library-sources";
 import { isNativeFS, nativeDirectoryHandle, nativeFs, nativePathOf } from "./native-fs";
 import { ACCESS_DENIED } from "./scan";
 import { judgeVolume } from "./volume-print";
 
-export type WorkingDirLocation = "in-folder" | "external";
+/** "source": a library source's catalogue, which always lives in the app's data. */
+export type WorkingDirLocation = "in-folder" | "external" | "source";
 
 export interface WorkingDir {
   /** The .safelight directory handle (writeable) — the catalogue's working dir. */
@@ -515,10 +517,12 @@ async function promoteSeparateCatalog(
  *  ReadOnlyProjectError when no writeable location can be established,
  *  CatalogUnreadableError when a catalogue a promotion or a seed needs can't be read,
  *  and CatalogTooNewError when the spillover a promotion would fold was saved by a
- *  newer version. */
+ *  newer version. A library source's is always its own in the app's data
+ *  (sourceWorkingDir). */
 export async function resolveWorkingDir(
   root: FileSystemDirectoryHandle,
 ): Promise<WorkingDir> {
+  if (isSourceRoot(root)) return sourceWorkingDir(root);
   const fs = nativeFs();
   const rootPath = nativePathOf(root);
   const canRedirect =
@@ -633,4 +637,39 @@ export async function resolveWorkingDir(
     if (e instanceof ReadOnlyProjectError) throw e;
     throw new ReadOnlyProjectError(root.name, true, e);
   }
+}
+
+/** A short, stable folder name for a source's catalogue: its name, then a hash of
+ *  the source and library it shows. */
+async function sourceStem(key: string, name: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(key));
+  const tag = [...new Uint8Array(digest).slice(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${safeName(name).slice(0, 40) || "source"}-${tag}`;
+}
+
+/** A library source's working dir: on the desktop the app data's catalogue for
+ *  the extension's source and the library it shows, in the browser its private
+ *  storage. It
+ *  also keeps the source's listing and originals (library-sources.ts). */
+async function sourceWorkingDir(root: FileSystemDirectoryHandle): Promise<WorkingDir> {
+  const ref = sourceRefOf(root)!;
+  const key = `${ref.extensionId}\n${ref.id}\n${ref.library}`;
+  const fs = nativeFs();
+  let sl: FileSystemDirectoryHandle;
+  try {
+    if (fs && typeof fs.sourceCatalogDir === "function") {
+      sl = nativeDirectoryHandle(await fs.sourceCatalogDir(key, ref.name));
+    } else {
+      const storage = globalThis.navigator?.storage;
+      if (typeof storage?.getDirectory !== "function") throw new ReadOnlyProjectError(root.name, false);
+      const catalogs = await (await storage.getDirectory()).getDirectoryHandle("source-catalogs", { create: true });
+      const own = await catalogs.getDirectoryHandle(await sourceStem(key, ref.name), { create: true });
+      sl = await own.getDirectoryHandle(".safelight", { create: true });
+    }
+  } catch (e) {
+    if (e instanceof ReadOnlyProjectError) throw e;
+    throw new ReadOnlyProjectError(root.name, true, e);
+  }
+  bindSourceCache(root, sl);
+  return { sl, location: "source", externalPath: null };
 }

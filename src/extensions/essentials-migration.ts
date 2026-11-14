@@ -16,6 +16,7 @@
 import { create } from "zustand";
 import type { ExtensionManifest } from "./types";
 import {
+  CORE_MODULE_IDS,
   OFFICIAL_EXTENSIONS,
   officialExtension,
   type OfficialExtension,
@@ -371,9 +372,6 @@ export function retryEssentials(deps: EssentialsInstallDeps = liveDeps()): Promi
 }
 
 // ─── Core modules ────────────────────────────────────────────────────────────
-
-/** Library and Develop are the two modules; with neither there is no app. */
-const CORE_MODULE_IDS = ["safelight.library", "safelight.develop"];
 
 /** The modules this profile has had installed. One missing after that was
  *  uninstalled by the person, so it is not installed again. */

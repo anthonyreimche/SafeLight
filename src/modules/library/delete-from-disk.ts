@@ -11,7 +11,8 @@
 
 import { useCatalogStore } from "@/state/catalog-store";
 import { nativeFs, nativePathOf } from "@/project/native-fs";
-import { deleteCachedPreview, rawCacheKey } from "@/raw/raw-cache";
+import { deleteCachedPreview } from "@/raw/raw-cache";
+import { photoCacheKey } from "@/raw/photo-cache-key";
 import { SIDECAR_SUFFIX } from "@/project/folder-ops";
 import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 import { fsErrorText } from "@/project/fs-errors";
@@ -109,9 +110,7 @@ export async function deletePhotosFromDisk(
         /* sidecar is gone or locked — the photo itself is already trashed */
       }
       try {
-        await deleteCachedPreview(
-          rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
-        );
+        await deleteCachedPreview(photoCacheKey(photo));
       } catch (e) {
         console.warn("[library] couldn't drop the cached decode:", photo.filename, e);
       }

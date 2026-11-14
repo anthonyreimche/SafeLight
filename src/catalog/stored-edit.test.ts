@@ -158,7 +158,7 @@ describe("appendStoredSnapshot", () => {
     expect(labelsOf(editState.stack)).toEqual(["Original", "Test step"]);
     expect(broadcast).toHaveBeenCalledWith({
       type: "edit-update",
-      payload: { photoId: PHOTO, params: editState.stack[1].params },
+      payload: { photoId: PHOTO },
     });
   });
 
@@ -432,7 +432,7 @@ describe("appendStoredSnapshots", () => {
       expect(editState).toEqual(state);
       expect(broadcast).toHaveBeenCalledWith({
         type: "edit-update",
-        payload: { photoId: state.photoId, params: state.stack[state.currentIndex].params },
+        payload: { photoId: state.photoId },
       });
     });
     expect(broadcast).toHaveBeenCalledTimes(2);

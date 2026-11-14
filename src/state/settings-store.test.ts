@@ -367,6 +367,15 @@ describe("validation", () => {
     expect(s.exportPresets).toEqual([]);
   });
 
+  it("defaults developDynamicDetail off, keeps a stored boolean and refuses other types", async () => {
+    expect((await boot("{}")).getSettings().developDynamicDetail).toBe(false);
+    expect((await boot('{"developDynamicDetail":true}')).getSettings().developDynamicDetail).toBe(true);
+    expect((await boot('{"developDynamicDetail":"yes"}')).getSettings().developDynamicDetail).toBe(false);
+    const { updateSettings } = await boot("{}");
+    updateSettings({ developDynamicDetail: true });
+    expect(persisted()).toMatchObject({ developDynamicDetail: true });
+  });
+
   it("keeps a key from a newer build through a load and save", async () => {
     const { updateSettings } = await boot(JSON.stringify({ fromTheFuture: { a: 1 } }));
     updateSettings({ exportBundle: false });

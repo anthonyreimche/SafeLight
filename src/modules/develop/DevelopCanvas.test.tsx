@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { useDevelopOverlay } from "@/extensions/develop-host";
@@ -19,6 +20,7 @@ import { registerProcessingStage, registerSlot, unregisterExtension } from "@/ex
 import type { RenderBridge } from "@/rendering/render-bridge";
 import { essentialStages } from "@/rendering/webgl/essential-stages.fixtures";
 import { useDevelopStore } from "@/state/develop-store";
+import { useSettings } from "@/state/settings-store";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 import { setCanvasTool, useCanvasToolStore } from "./canvas-tool";
 import { DevelopCanvas } from "./DevelopCanvas";
@@ -217,6 +219,100 @@ describe("DevelopCanvas's viewport", () => {
     expect(before).toBeGreaterThan(0);
     drag();
     expect(viewportRenders() - before).toBe(0);
+  });
+});
+
+// Dynamic mode measures the zoom in the photo's own pixels: the source the
+// buffer is drawn from is a capped copy, `fullWidth` the decoded photo's width.
+// The canvas buffer here is 1000 px wide, so at zoom 1 its scale on screen is the
+// number of photo pixels each of its pixels stands for.
+describe("DevelopCanvas's zoom in Dynamic mode", () => {
+  const SOURCE = { width: 3072, height: 2048, fullWidth: 6000, fullHeight: 4000, native: true };
+  const NO_SIZE = { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false };
+  const settingsBefore = useSettings.getState();
+
+  function Host() {
+    const [zoom, setZoom] = useState<number | null>(null);
+    return <DevelopCanvas photo={PHOTO} zoom={zoom} onZoomChange={setZoom} />;
+  }
+
+  const shownScale = () => {
+    const m = /scale\(([^,)]+)\)/.exec(document.querySelector("canvas")?.style.transform ?? "");
+    if (!m) throw new Error("canvas not placed");
+    return Number(m[1]);
+  };
+
+  afterEach(() => {
+    useSettings.setState({
+      developDynamicDetail: settingsBefore.developDynamicDetail,
+      developOpenZoom: settingsBefore.developOpenZoom,
+    });
+    useDevelopStore.setState({ sourceSize: NO_SIZE });
+  });
+
+  it.each([
+    ["off, whatever the sizes", false, SOURCE, 1],
+    ["on, the photo larger than its source", true, SOURCE, 6000 / 3072],
+    ["on, the source the photo's own size", true, { ...SOURCE, fullWidth: 3072, fullHeight: 2048 }, 1],
+  ])("scales zoom 1 by the photo's pixels with Dynamic %s", (_label, dynamic, size, factor) => {
+    useSettings.setState({ developDynamicDetail: dynamic });
+    useDevelopStore.setState({ sourceSize: size });
+    render(<DevelopCanvas photo={PHOTO} zoom={1} onZoomChange={() => {}} />);
+    expect(shownScale()).toBeCloseTo(factor, 12);
+  });
+
+  // Only a photo native detail can reach is measured in its own pixels: anything
+  // else would show 100% as an upscale of the source.
+  it.each([
+    ["a JPEG whose file is larger than its source", { ...PHOTO, filename: "p.jpg", relPath: "p.jpg" }, SOURCE],
+    ["a RAW shown from its camera preview", PHOTO, { ...SOURCE, native: false }],
+  ])("keeps the source's scale for %s", (_label, shown, size) => {
+    useSettings.setState({ developDynamicDetail: true });
+    useDevelopStore.setState({ sourceSize: size });
+    render(<DevelopCanvas photo={shown} zoom={1} onZoomChange={() => {}} />);
+    expect(shownScale()).toBe(1);
+  });
+
+  it("measures a RAW from its own decode in its own pixels", () => {
+    useSettings.setState({ developDynamicDetail: true });
+    useDevelopStore.setState({ sourceSize: SOURCE });
+    render(<DevelopCanvas photo={PHOTO} zoom={1} onZoomChange={() => {}} />);
+    expect(shownScale()).toBeCloseTo(6000 / 3072, 12);
+  });
+
+  // 100% is one pixel per device pixel, as in other editors: on a screen scaled
+  // 2x that is half a CSS pixel, of the photo in Dynamic mode and of the buffer
+  // otherwise.
+  it.each([
+    ["the photo's pixels in Dynamic mode", true, 6000 / 3072 / 2],
+    ["the buffer's pixels at a fixed size", false, 1 / 2],
+  ])("measures %s against device pixels on a scaled screen", (_label, dynamic, factor) => {
+    const before = Object.getOwnPropertyDescriptor(window, "devicePixelRatio");
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    try {
+      useSettings.setState({ developDynamicDetail: dynamic });
+      useDevelopStore.setState({ sourceSize: SOURCE });
+      render(<DevelopCanvas photo={PHOTO} zoom={1} onZoomChange={() => {}} />);
+      expect(shownScale()).toBeCloseTo(factor, 12);
+    } finally {
+      if (before) Object.defineProperty(window, "devicePixelRatio", before);
+      else Reflect.deleteProperty(window, "devicePixelRatio");
+    }
+  });
+
+  it("opens a photo at one photo pixel per CSS px when set to open at 100%", () => {
+    useSettings.setState({ developDynamicDetail: true, developOpenZoom: "100" });
+    useDevelopStore.setState({ sourceSize: SOURCE });
+    render(<Host />);
+    expect(shownScale()).toBeCloseTo(6000 / 3072, 12);
+  });
+
+  it("still does when the photo's full size comes after its first picture", () => {
+    useSettings.setState({ developDynamicDetail: true, developOpenZoom: "100" });
+    render(<Host />);
+    expect(shownScale()).toBe(1);
+    act(() => useDevelopStore.setState({ sourceSize: SOURCE }));
+    expect(shownScale()).toBeCloseTo(6000 / 3072, 12);
   });
 });
 

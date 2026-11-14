@@ -6,7 +6,7 @@
 // Photo record construction: the supported-format tables, and the import of a
 // file into a catalogue record with its grid preview, EXIF and orientation.
 
-import type { CatalogPhoto, ExifData } from "@/catalog/types";
+import type { CatalogPhoto, ExifData, LoadedPreview } from "@/catalog/types";
 import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
 import { bakeFor, orientationToRotation } from "@/catalog/orient";
 import {
@@ -20,12 +20,14 @@ import { isTiffName } from "@/raw/tiff-image";
 import type { DecodeFailure } from "@/raw/decode";
 import { getSettings } from "@/state/settings-store";
 import { readFileSlice, type FileSlice } from "@/project/native-fs";
+import { isSourceFile, readSourcePreview, sourceItemOf } from "@/project/library-sources";
 import { createThumbnail } from "./import-thumb-task";
 import {
   catalogSize,
   decodeImportBitmap,
   rawBytesOf,
   readRawMetadata,
+  turned,
   workerThumb,
 } from "./import-decode";
 
@@ -60,13 +62,22 @@ function generateId(): string {
 
 /** Build a grid preview blob for a photo straight from its source file, at the
  *  current Thumbnail quality. Used to rebuild previews on demand when "Store
- *  previews on disk" is off (memory-only mode). Returns null if it can't decode.
- *  Its decode is background work: a photo opened meanwhile goes first. */
+ *  previews on disk" is off (memory-only mode), and to make a library source's
+ *  photo's from the source's own preview when the grid first shows it, with the
+ *  size that preview came at (LoadedPreview.frame). Returns
+ *  null if it can't decode, or once `signal` aborts. Its decode is background
+ *  work: a photo opened meanwhile goes first. */
 export async function buildPreviewBlob(
   photo: CatalogPhoto,
   signal?: AbortSignal,
-): Promise<Blob | null> {
+): Promise<LoadedPreview | null> {
   if (!photo.fileHandle) return null;
+  if (isSourceFile(photo.fileHandle)) {
+    // The source's preview is upright already: only a manual turn is baked.
+    const { bake } = bakeFor(photo, true);
+    const pix = await sourcePreviewOf(photo.fileHandle, getSettings().thumbMaxEdge, bake, signal);
+    return pix && Object.assign(pix.thumb, { frame: turned(pix, bake) });
+  }
   try {
     const file = await photo.fileHandle.getFile();
     const decoded = await decodeImportBitmap(
@@ -210,6 +221,7 @@ export async function importPhoto(
   fileHandle: FileSystemFileHandle,
   directoryHandle: FileSystemDirectoryHandle | null,
 ): Promise<CatalogPhoto | null> {
+  if (isSourceFile(fileHandle)) return importSourcePhoto(fileHandle, directoryHandle);
   const whole = async () => buildPhoto(await fileHandle.getFile(), directoryHandle, fileHandle);
   const named = { name: fileHandle.name } as File;
   const { previewSource, thumbMaxEdge } = getSettings();
@@ -234,6 +246,56 @@ export async function importPhoto(
     height: pix.height,
     rotation: orientationToRotation(tags.exif.orientation),
     metadataPending: true,
+  };
+}
+
+/** A grid preview made from a library source's own preview of the photo: upright
+ *  already, turned by `bake` more and re-encoded at the Thumbnail quality like any
+ *  other, with the size the source's came at. Null when the source can't give one
+ *  now, or once `signal` aborts. */
+export async function sourcePreviewOf(
+  fileHandle: FileSystemFileHandle,
+  maxEdge: number,
+  bake = 0,
+  signal?: AbortSignal,
+): Promise<{ thumb: Blob; width: number; height: number } | null> {
+  try {
+    const bitmap = await createImageBitmap(await readSourcePreview(fileHandle, maxEdge, signal));
+    try {
+      if (signal?.aborted) return null;
+      return { thumb: await createThumbnail(bitmap, bake, maxEdge), width: bitmap.width, height: bitmap.height };
+    } finally {
+      bitmap.close();
+    }
+  } catch (e) {
+    if (!signal?.aborted) console.warn(`[import] no preview of ${fileHandle.name} from its source for now:`, e);
+    return null;
+  }
+}
+
+/** Import a library source's photo from its listing alone: nothing is read from
+ *  the source, so a library of any size imports at once. The grid reads the
+ *  source's preview when the photo comes into view (the project's preview
+ *  reader, ProjectStorage.readPreview), and the original stays on the source
+ *  until something reads the file. */
+async function importSourcePhoto(
+  fileHandle: FileSystemFileHandle,
+  directoryHandle: FileSystemDirectoryHandle | null,
+): Promise<CatalogPhoto> {
+  const item = sourceItemOf(fileHandle)!;
+  const exif: ExifData = { ...item.exif };
+  const rating = item.rating === undefined ? undefined : Math.max(0, Math.min(5, Math.round(item.rating)));
+  const named = { name: fileHandle.name, type: item.mimeType ?? "", lastModified: item.taken ?? item.modified ?? Date.now() };
+  const { width = 0, height = 0 } = item;
+  const sized = width > 0 && height > 0;
+  return {
+    ...newRecord(named, item.size ?? 0, { exif, xmp: { rating, keywords: item.keywords } }, directoryHandle, fileHandle),
+    thumbnailBlob: null,
+    thumbnailUrl: null,
+    width: sized ? width : 0,
+    height: sized ? height : 0,
+    rotation: orientationToRotation(exif.orientation),
+    sourceKey: item.key,
   };
 }
 

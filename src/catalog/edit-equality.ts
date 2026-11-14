@@ -20,7 +20,8 @@ export function sameEdit(a: Edit, b: Edit): boolean {
   return same(a.params, b.params) && same(a.paramBag, b.paramBag);
 }
 
-function same(a: unknown, b: unknown): boolean {
+/** sameEdit's comparison for any one value. */
+export function same(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
     return false;

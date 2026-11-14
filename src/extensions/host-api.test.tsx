@@ -32,6 +32,7 @@ import { ContextMenu } from "@/ui/components/ContextMenu";
 import { ScaleStepper } from "@/ui/components/ScaleStepper";
 import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { confirmDialog } from "@/ui/components/ConfirmDialog";
+import { popEscapeHandler } from "@/ui/escape-stack";
 import { Field, OptionRow, ToggleField, useFieldVisible } from "@/ui/components/PreferencesDialog";
 import { useSettings } from "@/state/settings-store";
 import { broadcast } from "@/state/broadcast";
@@ -85,6 +86,33 @@ describe("core components and stores for the panels", () => {
     const { ui } = api();
     expect(ui.confirmDialog).toBe(confirmDialog);
     expect(ui.Button).toBe(uiKit.Button);
+  });
+
+  describe("ui.onEscape", () => {
+    it("takes Escape while held, newest first, and gives it back when let go", () => {
+      const first = vi.fn();
+      const second = vi.fn();
+      const offFirst = api().ui.onEscape(first);
+      const offSecond = api().ui.onEscape(second);
+      expect(popEscapeHandler()).toBe(true);
+      expect([first.mock.calls.length, second.mock.calls.length]).toEqual([0, 1]);
+      offSecond();
+      expect(popEscapeHandler()).toBe(true);
+      expect(first).toHaveBeenCalledTimes(1);
+      offFirst();
+      expect(popEscapeHandler()).toBe(false);
+    });
+
+    it("still takes the key when the handler throws, and says so", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const off = api().ui.onEscape(() => {
+        throw new Error("boom");
+      });
+      expect(popEscapeHandler()).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Escape"), expect.any(Error));
+      off();
+      warn.mockRestore();
+    });
   });
 
   it("names the colour-label and white tokens", () => {

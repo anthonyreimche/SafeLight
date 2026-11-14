@@ -66,6 +66,7 @@ import type {
 } from "./devtools";
 import type {
   BitDepthSettings,
+  ExportJob,
   ExportPhotosOptions,
   ExportProgress,
   ExportResult,
@@ -75,6 +76,7 @@ import type {
 } from "./export";
 import type {
   CullingShortcutOptions,
+  KeptDirectory,
   PhotoActions,
   PresetDiff,
   PresetField,
@@ -96,6 +98,9 @@ import type {
   UIState,
 } from "./stores";
 import type { SharedVariablesAPI } from "./variables";
+import type { NetworkAPI } from "./network";
+import type { LibrarySourceContribution, LibrarySourceEntry } from "./sources";
+import type { DevelopOverlayState } from "../develop-host";
 
 export interface SafelightAPI {
   version: 1;
@@ -124,12 +129,47 @@ export interface SafelightAPI {
    *  `version` to swap the data without recompiling the shader. Disabling,
    *  updating or reloading the extension drops its stages' textures and frees
    *  their GPU copies, so supply them from `activate`, not only from module
-   *  top-level code (a re-enabled extension's module is not re-run). */
+   *  top-level code (a re-enabled extension's module is not re-run).
+   *  `variant` (1 to 64 letters, digits, `-` or `_`) files the data as one of
+   *  the texture's variants instead: a photo whose param bag holds that name
+   *  under "{stageId}.{key}" draws with it, in the live view, thumbnails and
+   *  exports alike, and one naming a variant with no data draws with opaque
+   *  black. Clear each variant by name. Needs Safelight 3.2.4. */
   setStageTexture(
     stageId: string,
     key: string,
     tex: StageTextureData | null,
+    variant?: string,
   ): void;
+  /** Make the variants of a stage texture on demand instead of supplying each:
+   *  `provide(variant)` resolves with the data of the variant a frame's param
+   *  bag names (as setStageTexture takes it), or null when there is none, and
+   *  the frame then draws without it. Safelight asks when a frame first needs a
+   *  variant it doesn't hold, once however many frames need it. Exports and
+   *  headless renders wait for it, and one that fails (or takes over 30 s)
+   *  fails that photo with your error's message; the live view never waits
+   *  and draws again once it lands. What you provide counts against your
+   *  stage textures' 256 MB, and the least recently drawn is let go to make
+   *  room (never one the open photo or a frame in flight draws with), to be
+   *  asked for again when needed. `signal` aborts once nothing needs the
+   *  variant any more (one a drag passed by): skip work not started yet. Pass
+   *  null to stop. Dropped with the
+   *  extension. Needs Safelight 3.2.4. */
+  setStageTextureProvider(
+    stageId: string,
+    key: string,
+    provide: ((variant: string, signal: AbortSignal) => Promise<StageTextureData | null>) | null,
+  ): void;
+  /** Let go of a variant made by setStageTextureProvider (every variant of the
+   *  key when `variant` is left out), so it is asked for again when next
+   *  needed: what it was made from changed or is gone. Needs Safelight 3.2.4. */
+  dropStageTextureVariants(stageId: string, key: string, variant?: string): void;
+  /** Have a variant made by setStageTextureProvider held before you put its
+   *  name in the open photo's bag, so the live view never draws a frame
+   *  without it (a slider drag that changes the variant, say). Resolves once
+   *  it is held; rejects with the reason it couldn't be had. Needs Safelight
+   *  3.2.4. */
+  prepareStageTextureVariant(stageId: string, key: string, variant: string): Promise<void>;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialogue (⚙ in the Extensions panel). */
@@ -253,6 +293,13 @@ export interface SafelightAPI {
     /** Tell the person something in the app's dialogue card; resolves when they
      *  close it. Use it instead of `window.alert`. */
     alertDialog: typeof import("@/ui/components/ConfirmDialog").alertDialog;
+    /** Take the Escape key while something of yours is open that Escape should
+     *  close (an edit mode whose handles sit over the photo, a popover): the
+     *  newest taker gets the key, ahead of an on-image tool, and a slider's
+     *  value field keeps it for its own revert. Returns the function that
+     *  gives the key back: call it as soon as there is nothing left to close,
+     *  from a React effect's cleanup. Needs Safelight 3.2.4. */
+    onEscape(handler: () => void): () => void;
   };
   /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
    *  that must escape its panel's clipping. Extension bundles can't import
@@ -368,14 +415,12 @@ export interface SafelightAPI {
     resolve(token: string): string;
   };
   /** Develop-canvas integration for overlays (e.g. before/after comparison).
-   *  `useDevelopOverlay` returns the displayed image rect + a change nonce
-   *  (call from a "develop-canvas-overlay" component); `captureFrame` renders an
-   *  off-screen frame with arbitrary params, aligned to the live view. */
+   *  `useDevelopOverlay` returns where the image sits on the canvas, the
+   *  mappings between image and screen points, and a change nonce (call from a
+   *  "develop-canvas-overlay" component); `captureFrame` renders an off-screen
+   *  frame with arbitrary params, aligned to the live view. */
   develop: {
-    useDevelopOverlay(): {
-      rect: { x: number; y: number; w: number; h: number } | null;
-      nonce: number;
-    };
+    useDevelopOverlay(): DevelopOverlayState;
     /** The mask a sub-panel instance belongs to (valid only inside a
      *  PanelContribution.mask component). Core local adjustments go through
      *  adj/setAdj; extension params through getParam/setParam/setParams, kept in
@@ -577,6 +622,13 @@ export interface SafelightAPI {
      *  preview off drops them with its stages' values. Cleared when the
      *  extension stops. Needs Safelight 3.2.1. */
     setViewValues(values: Record<string, unknown> | null): void;
+    /** A hint that this extension's stages are about to be needed (a view aid
+     *  the user may turn on at any moment): the live view starts building, in
+     *  the background, the programs their first frame would build (their
+     *  passes', and while they are dormant the program with them in), so that
+     *  frame waits for none. Already built, it costs nothing. Needs Safelight
+     *  3.2.4. */
+    prewarmStages(): void;
     /** Offer a brush tip: a shape (an alpha image, at most 128 px an edge) a
      *  brush can stamp in place of its round disc. Name it by `id` in the `tip`
      *  of the dab that starts a stroke, with an optional `angle`; an id nothing
@@ -684,6 +736,18 @@ export interface SafelightAPI {
       destDir?: FileSystemDirectoryHandle,
       options?: ExportPhotosOptions,
     ): Promise<ExportResult>;
+    /** The same run for several jobs at once (an archive TIFF and a web JPEG,
+     *  say), each with its own settings and folder: every photo is decoded
+     *  once and drawn once per job. Resolves with one result per job, in
+     *  order. Progress counts every file of every job and names the job. A
+     *  job that stops (its disk is full) leaves the others running; a signal
+     *  stops them all before their next file. Needs Safelight 3.2.4. */
+    exportPhotos(
+      photos: import("@/catalog/types").CatalogPhoto[],
+      jobs: ExportJob[],
+      onProgress?: (p: ExportProgress) => void,
+      options?: ExportPhotosOptions,
+    ): Promise<ExportResult[]>;
     /** True when these settings write ProPhoto RGB at 8 bits a channel, where
      *  smooth gradients band: the export asks for 16 bits only for a TIFF or
      *  PNG set to 16. */
@@ -825,13 +889,37 @@ export interface SafelightAPI {
     /** Ask the person for a folder to write into; null when they cancel. On
      *  the desktop the handle carries its absolute path (`pathOf`). */
     pickDirectory(id: string): Promise<FileSystemDirectoryHandle | null>;
+    /** Ask the person for a folder to write into and keep it across launches:
+     *  resolves with the folder and a token to store (in `api.settings`, say),
+     *  or null when they cancel. Only a folder picked here is ever kept; the
+     *  record of it stays with Safelight, and the token opens it for your
+     *  extension alone. Pass the token of the folder it replaces to open the
+     *  dialogue there; that one stays kept until you forget it. In the browser
+     *  build a token lasts until the page is loaded again. Needs Safelight
+     *  3.2.4. */
+    pickKeptDirectory(
+      id: string,
+      replacing?: string | null,
+    ): Promise<{ token: string; folder: FileSystemDirectoryHandle } | null>;
+    /** The folder a token names, or why it can't be written into now. Asks the
+     *  disk each call, so call it when the folder is about to be used or shown,
+     *  not on every render. It writes nothing to find out, so on Windows a
+     *  folder whose permissions refuse writes still opens: the first file
+     *  written there fails (an export stops with the reason), and that is when
+     *  to offer another folder. Rejects when Safelight can't read its record
+     *  of kept folders just now (another program holds the file); try again
+     *  later. Uninstalling the extension forgets its kept folders. */
+    openKeptDirectory(token: string): Promise<KeptDirectory>;
+    /** Let a kept folder go once nothing of yours uses its token. */
+    forgetKeptDirectory(token: string): Promise<void>;
     /** The absolute path behind a desktop folder handle, else null. */
     pathOf(handle: unknown): string | null;
     /** Show a path in the OS file manager; false outside the desktop app. */
     reveal(path: string): Promise<boolean>;
   };
   /** Bring files into the open project from outside it (a tether, a watch
-   *  folder, a download). */
+   *  folder, a download), and open photos kept elsewhere as a project of their
+   *  own (library sources). */
   library: {
     /** Write each file into `folder` of the open project (relative to its root,
      *  "/" between names; created if missing; the root when omitted) and import
@@ -844,7 +932,37 @@ export interface SafelightAPI {
      *  and a read-only folder are all refused with a message; nothing is
      *  overwritten. Calls run one at a time. */
     importFiles: typeof import("@/modules/library/import-files").importFiles;
+    /** Offer photos kept somewhere other than a folder on disk (a photo server)
+     *  as a project the person opens like a folder: the source's folders are
+     *  the Folders tree, its photos the grid, rated, edited and exported as any
+     *  others. The catalogue, previews and edits stay in Safelight's own data;
+     *  the source is only read, never written. Registering an id you hold
+     *  replaces it; another extension's is refused. A project stays bound to
+     *  the extension and the `library` it opened with: registering another
+     *  library closes it, and while no registration matches (the extension
+     *  stopped) it reads as offline. Needs Safelight 3.2.4. */
+    registerSource(source: LibrarySourceContribution): void;
+    /** Remove a source you registered. A project open on it closes. */
+    unregisterSource(id: string): void;
+    /** React hook: every registered source, in registration order. */
+    useSources(): LibrarySourceEntry[];
+    /** Open source `id` as the project, as Open Folder opens a folder. */
+    openSource(id: string): Promise<void>;
+    /** React hook: the source the open project is, or null for a folder (or no
+     *  project). */
+    useOpenSource(): { id: string; name: string } | null;
+    /** The originals kept for source `id`'s library (one of yours): how many,
+     *  and the bytes they take on this computer. Needs Safelight 3.2.4. */
+    keptOriginals(id: string): Promise<{ count: number; bytes: number }>;
+    /** Remove the originals kept for source `id`'s library (one of yours), but
+     *  for those in use (the photo open in Develop, photos being exported). Each
+     *  is read from the source again when it is next needed. Needs Safelight
+     *  3.2.4. */
+    clearKeptOriginals(id: string): Promise<{ removed: number; kept: number }>;
   };
+  /** Reach a server whose address the person typed in: see NetworkAPI. The
+   *  manifest declares `permissions.userOrigins`. Needs Safelight 3.2.4. */
+  network: NetworkAPI;
   /** Presets: the file formats and the descriptions the Presets panel and
    *  Copy Settings share. */
   presets: {

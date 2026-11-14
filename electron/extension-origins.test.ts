@@ -21,6 +21,7 @@ import {
   isReservedExtensionId,
   listDevManifests,
   listInstalledManifests,
+  listInstalledManifestsAsync,
   pendingConnectHosts,
   readDevFolder,
   validManifest,
@@ -175,6 +176,24 @@ describe("listInstalledManifests", () => {
 
   it("is empty when the folder does not exist", () => {
     expect(listInstalledManifests(path.join(root, "missing"))).toEqual([]);
+  });
+});
+
+describe("listInstalledManifestsAsync", () => {
+  it("lists exactly what the synchronous reader lists", async () => {
+    writeExt(path.join(root, "acme.a"), manifest("acme.a"));
+    writeExt(path.join(root, "acme.b"), manifest("acme.b"));
+    writeExt(path.join(root, "renamed"), manifest("acme.a"));
+    writeExt(path.join(root, "broken"), "{ not json");
+    writeExt(path.join(root, "core"), manifest("core"));
+    fs.writeFileSync(path.join(root, "safelight.json"), JSON.stringify(manifest("loose")));
+    const sync = listInstalledManifests(root);
+    expect(sync.length).toBe(2);
+    expect(await listInstalledManifestsAsync(root)).toEqual(sync);
+  });
+
+  it("is empty when the folder does not exist", async () => {
+    expect(await listInstalledManifestsAsync(path.join(root, "missing"))).toEqual([]);
   });
 });
 

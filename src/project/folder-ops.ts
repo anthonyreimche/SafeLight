@@ -17,6 +17,7 @@ import { nativeFs, nativePathOf, revealNativePath } from "./native-fs";
 import { writeJSON } from "./fs";
 import type { CatalogPhoto } from "@/catalog/types";
 import { SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
+import { isSourceRoot } from "./library-sources";
 
 export { SIDECAR_SUFFIX };
 
@@ -33,8 +34,11 @@ function basename(p: string): string {
   return i === -1 ? p : p.slice(i + 1);
 }
 
+/** The open project's folder, or null with none open or a library source open:
+ *  a source is never changed from here. */
 function root(): FileSystemDirectoryHandle | null {
-  return useProjectStore.getState().root;
+  const open = useProjectStore.getState().root;
+  return open && !isSourceRoot(open) ? open : null;
 }
 
 /** Split a filename into [base, ext] where ext keeps its leading dot (or ""). A
@@ -427,7 +431,13 @@ export async function renamePhoto(
   newBaseName: string,
 ): Promise<RenamePhotoResult> {
   const rootHandle = root();
-  if (!rootHandle) return { ok: false, reason: "No project is open." };
+  if (!rootHandle) {
+    const source = isSourceRoot(useProjectStore.getState().root);
+    return {
+      ok: false,
+      reason: source ? "Photos from a library source can't be renamed from Safelight." : "No project is open.",
+    };
+  }
   const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
   if (!photo) return { ok: false, reason: "Photo not found." };
   // A virtual copy owns no file — renaming would hit the master's actual file.

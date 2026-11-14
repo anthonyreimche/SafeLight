@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDockStore } from "./store";
 import { useRegistry, type RegisteredPanel, type RegisteredProcessingStage } from "../registry";
-import { initStagePrewarm, prewarmPanel } from "./prewarm";
+import { initStagePrewarm, prewarmExtension, prewarmPanel } from "./prewarm";
 
 const panel = (id: string, extensionId: string) => ({ id, extensionId }) as RegisteredPanel;
 const stage = (id: string, extensionId: string) => ({ id, extensionId }) as RegisteredProcessingStage;
@@ -51,6 +51,15 @@ describe("stage prewarm", () => {
   it("hints on hover, once per panel until another is hovered", () => {
     prewarmPanel("acme.grain", hint);
     prewarmPanel("acme.grain", hint);
+
+    expect(hint).toHaveBeenCalledTimes(1);
+    expect(hint.mock.calls[0][0].sort()).toEqual(["acme.grain", "acme.halo"]);
+  });
+
+  // api.develop.prewarmStages: an extension's own hint, with no panel behind it.
+  it("hints an extension's own stages when it asks, and nothing for one without", () => {
+    prewarmExtension("acme", hint);
+    prewarmExtension("other", hint);
 
     expect(hint).toHaveBeenCalledTimes(1);
     expect(hint.mock.calls[0][0].sort()).toEqual(["acme.grain", "acme.halo"]);

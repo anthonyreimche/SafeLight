@@ -52,6 +52,10 @@ vi.mock("@/raw/accept-decode", () => ({
 vi.mock("@/raw/raw-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => new Blob(["jpeg"], { type: "image/jpeg" }),
+  extractRawPreviewDecoded: async () => {
+    const blob = new Blob(["jpeg"], { type: "image/jpeg" });
+    return { blob, bitmap: await createImageBitmap(blob), width: 6000, height: 4000 };
+  },
 }));
 
 vi.mock("@/state/settings-store", () => ({

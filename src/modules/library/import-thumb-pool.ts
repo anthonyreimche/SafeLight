@@ -6,7 +6,7 @@
 // Pool of import workers running the pixel stage (import-thumb-task) off the
 // main thread, so a folder import scales across cores instead of queueing
 // decode/rotate/encode work behind React. Workers spawn lazily on first use
-// and stay for the session (imports recur: open, re-import, repair).
+// and are ended after a minute idle (imports recur: open, re-import, repair).
 //
 // Degradation, not failure: with no Worker support the task runs inline, and
 // any worker-level error or stall resolves as { ok: false } — the caller's
@@ -34,7 +34,11 @@ const TASK_TIMEOUT_MS = 60_000;
 // on load must not respawn forever.
 const MAX_CONSECUTIVE_FAILURES = 3;
 
+// With no job queued or running for this long, the workers are ended.
+const IDLE_MS = 60_000;
+
 const slots: WorkerSlot[] = [];
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
 const queue: { input: ThumbTaskInput; resolve: (r: ThumbTaskResult) => void }[] = [];
 let broken = false;
 let failures = 0;
@@ -48,6 +52,19 @@ export function importPoolSize(): number {
 
 const inline = (input: ThumbTaskInput): Promise<ThumbTaskResult> =>
   runThumbTask(input).catch((): ThumbTaskResult => ({ ok: false }));
+
+// Imports come in bursts; between them the workers (each with a decoder's heap)
+// are only held memory. The next job spawns them again.
+function armIdleTimer(): void {
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
+  if (slots.length === 0 || queue.length > 0 || slots.some((s) => s.busy)) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = undefined;
+    for (const s of slots) s.worker.terminate();
+    slots.length = 0;
+  }, IDLE_MS);
+}
 
 function spawnSlot(): WorkerSlot | null {
   try {
@@ -65,6 +82,7 @@ function spawnSlot(): WorkerSlot | null {
       failures = 0;
       resolve?.(e.data);
       drain(slot);
+      armIdleTimer();
     };
     worker.onerror = () => failAll();
     slots.push(slot);
@@ -97,6 +115,7 @@ function failAll(): void {
     s.worker.terminate();
   }
   slots.length = 0;
+  armIdleTimer();
   flushQueueInline();
 }
 
@@ -117,6 +136,7 @@ function timeOut(slot: WorkerSlot): void {
     if (replacement) drain(replacement);
   }
   if (broken) flushQueueInline();
+  armIdleTimer();
 }
 
 function dispatch(
@@ -124,6 +144,8 @@ function dispatch(
   input: ThumbTaskInput,
   resolve: (r: ThumbTaskResult) => void,
 ): void {
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
   slot.busy = true;
   slot.currentResolve = resolve;
   slot.timer = setTimeout(() => timeOut(slot), TASK_TIMEOUT_MS);
