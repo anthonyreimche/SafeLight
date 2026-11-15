@@ -208,10 +208,10 @@ export function controlDefault(c: DevelopControl, asShot: number): unknown {
 
 /** DevelopParams keys never settable by slu this round, with the user-facing reason. */
 export const READ_ONLY_PARAMS: Readonly<Record<string, string>> = {
-  toneCurve: "Edit Tone Curve's points in Safelight; slu can't set them yet.",
-  masks: "Edit masks in Safelight; slu can't set them yet.",
-  retouch: "Edit Heal spots in Safelight; slu can't set them yet.",
-  crop: "Draw the crop in Safelight; slu can't set it yet.",
-  guidedLines: "Draw Upright's guide lines in Safelight; slu can't set them yet.",
+  toneCurve: "Edit Tone Curve's points in Safelight; safelight can't set them yet.",
+  masks: "Edit masks in Safelight; safelight can't set them yet.",
+  retouch: "Edit Heal spots in Safelight; safelight can't set them yet.",
+  crop: "Draw the crop in Safelight; safelight can't set it yet.",
+  guidedLines: "Draw Upright's guide lines in Safelight; safelight can't set them yet.",
   processVersion: "The processing version changes only with Update processing in Safelight.",
 };
