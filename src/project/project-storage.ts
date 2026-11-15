@@ -506,6 +506,8 @@ export class ProjectStorage implements CatalogStorage {
    *  rebuild found the file damaged or missing, or it held entries this build
    *  couldn't open, or this is a pop-out window). */
   private backup: Blob | null = null;
+  /** The backup's write, from the save it follows until it has landed. */
+  private backingUp: Promise<void> | null = null;
   /** The history snapshots putEditStates has found catalog.json can hold. A history
    *  keeps its earlier snapshots as they are, so each is checked once, not with
    *  every step added after it. */
@@ -1783,14 +1785,15 @@ export class ProjectStorage implements CatalogStorage {
 
   /** Whether this copy may still write catalog.json: its open is still walking the
    *  folder, a save is pending or running, a try again of a failed write among
-   *  them (retryLater keeps it in saveTimer), or a preview is still being written
-   *  (previewWrites). */
+   *  them (retryLater keeps it in saveTimer), the backup a save keeps is still
+   *  being written (backingUp), or a preview is (previewWrites). */
   private mayWrite(): boolean {
     return (
       this.walking ||
       this.saveTimer !== null ||
       this.writing !== null ||
       this.nextWrite !== null ||
+      this.backingUp !== null ||
       this.previewWrites.size > 0
     );
   }
@@ -2013,7 +2016,8 @@ export class ProjectStorage implements CatalogStorage {
   }
 
   private startWrite(): Promise<void> {
-    this.writing = this.writeCatalog().finally(() => {
+    const written = this.writeCatalog();
+    this.writing = written.finally(() => {
       this.writing = null;
       this.lastWriteEnded = Date.now();
       this.letGoIfIdle();
@@ -2023,8 +2027,14 @@ export class ProjectStorage implements CatalogStorage {
     this.backup = null;
     // Written once this save has landed, not before it: a save held back could land
     // after a write another window started meanwhile, and undo it. Later saves
-    // don't wait for the backup; whoever asked for this one does.
-    return this.writing.then(() => this.writeBackup(backup));
+    // don't wait for the backup; whoever asked for this one does, and so does
+    // letting go (mayWrite), so nothing is still writing once released.
+    const backingUp = written.then(() => this.writeBackup(backup)).finally(() => {
+      this.backingUp = null;
+      this.letGoIfIdle();
+    });
+    this.backingUp = backingUp;
+    return backingUp;
   }
 
   /** Never rejects: the save it follows stands either way. The older backups move

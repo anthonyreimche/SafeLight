@@ -22,7 +22,7 @@ const askOnTerminal: Ask = async (question) => {
  *  `update` asks the same question for the permissions an update adds. */
 export function confirmFor(
   ctx: CommandContext,
-  ask: Ask = askOnTerminal,
+  ask: Ask = ctx.ask ?? askOnTerminal,
   update = false,
 ): (risk: InstallRisk) => Promise<boolean> {
   return async (risk) => {

@@ -66,6 +66,7 @@ export interface ContextOptions {
   yes: boolean;
   waitSeconds: number | null;
   stdin: NodeJS.ReadableStream;
+  ask?: (question: string) => Promise<string>;
   /** The fs bridge the host shims hand to core (host.ts). */
   bridge: NativeFsBridge;
 }
@@ -147,6 +148,7 @@ export function createContext(opts: ContextOptions, factories: ServiceFactories 
     engine: engine.get,
     get preview() { return preview.get(); },
     readStdin: stdinText.get,
+    ask: opts.ask,
     async dispose() {
       stopping.abort();
       await Promise.allSettled([

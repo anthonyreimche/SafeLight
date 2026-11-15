@@ -90,6 +90,8 @@ export interface CommandContext {
   engine: () => EngineClient;
   preview: PreviewService;
   readStdin(): Promise<string>;
+  /** Asks a question on the terminal; the prompt supplies it, otherwise a command reads stdin itself. */
+  ask?(question: string): Promise<string>;
 }
 
 // ---- projects (P1.3 implements) -------------------------------------------

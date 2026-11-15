@@ -30,6 +30,7 @@ import type {
 import { COMMAND } from "../types";
 
 export type * from "./types";
+export { formatHome, formatPrompt, formatReplNote } from "./home";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -59,6 +60,13 @@ function rendersUnicode(streams: OutputStreams, env: Env): boolean {
   return locale === "" || /utf-?8/i.test(locale);
 }
 
+/** Terminals that say they take 24-bit colour. The rest get the 256-colour reds. */
+function rendersTrueColour(env: Env): boolean {
+  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return true;
+  if (env.WT_SESSION !== undefined) return true;
+  return /^(iTerm\.app|vscode|WezTerm|ghostty)$/.test(env.TERM_PROGRAM ?? "") || /kitty|ghostty|direct/.test(env.TERM ?? "");
+}
+
 export function resolveOutputOptions(
   streams: OutputStreams,
   env: Readonly<Record<string, string | undefined>>,
@@ -68,6 +76,7 @@ export function resolveOutputOptions(
     colour: { stdout: streamColour(streams.stdout, env), stderr: streamColour(streams.stderr, env) },
     unicode: rendersUnicode(streams, env),
     width: streams.stdout.columns > 0 ? streams.stdout.columns : 80,
+    trueColour: rendersTrueColour(env),
     verbosity,
   };
 }

@@ -14,6 +14,8 @@ export interface OutputOptions {
   colour: { stdout: boolean; stderr: boolean };
   unicode: boolean;         // false on legacy consoles: "..." for "…", "*" for "✱"
   width: number;            // terminal columns, 80 when unknown
+  /** 24-bit colour reaches the screen. Unset means 256 colours, which every colour terminal has. */
+  trueColour?: boolean;
   verbosity: "quiet" | "normal" | "verbose" | "debug";
 }
 
@@ -65,5 +67,22 @@ export interface Output {
   progress(p: ProgressState | null): void;                       // stderr TTY only, \r line; null clears
   writeRaw(bytes: Uint8Array): void;                             // stdout, for images
 }
+
+export interface HomeStatus {
+  version: string;
+  cwd: string;
+  /** The project holding cwd, if any. */
+  project: { root: string; name: string; photos: number; edited: number } | null;
+  /** Safelight has that project open, so writes will be refused. */
+  guiHasProjectOpen: boolean;
+  /** GPU backend from the app, e.g. "d3d11"; null = not known yet. */
+  graphics: string | null;
+  /** The app has written its settings file. */
+  settingsShared: boolean;
+  /** updates null = not checked. */
+  extensions: { installed: number; updates: number | null };
+}
+export interface PromptState { projectName: string | null; /** A command is running. */ busy?: boolean }
+export type ReplNoteKind = "interrupt" | "bye" | "cancelled" | "unknown";
 
 export interface OutputStreams { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream }

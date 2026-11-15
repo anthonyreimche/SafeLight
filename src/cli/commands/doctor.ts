@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { backendChoices, backendCacheFiles, parseBackendCache, SOFTWARE_BACKEND } from "../../../electron/gpu-backend.cjs";
 import { readLock, STALE_MS } from "../../../electron/file-lock.cjs";
+import type { SharedSettings } from "@/state/shared-settings";
 import { readDescriptors, readSharedSettings } from "../mirror";
 import type { DoctorItem } from "../output/types";
 import { detectGraphicsMode } from "../terminal-image";
@@ -17,6 +18,11 @@ import { COMMAND } from "../types";
 // rewrites the file every 60 s).
 const HEARTBEAT_FRESH_MS = 3 * 60 * 1000;
 
+/** The app looks to be running: its settings carry a pid and a fresh heartbeat. */
+export function guiLooksRunning(shared: SharedSettings | null, now: number = Date.now()): boolean {
+  return shared !== null && shared.guiPid !== null && now - shared.writtenAt < HEARTBEAT_FRESH_MS;
+}
+
 function ago(ms: number): string {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 1) return "just now";
@@ -25,7 +31,7 @@ function ago(ms: number): string {
   return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
 }
 
-async function gpuItem(ctx: CommandContext): Promise<DoctorItem> {
+export async function gpuItem(ctx: Pick<CommandContext, "env">): Promise<DoctorItem> {
   const { userData, platform } = ctx.env;
   const file = backendCacheFiles(userData, platform, ctx.env.env).file;
   const text = file ? await readFile(file, "utf8").catch(() => null) : null;
@@ -107,7 +113,7 @@ export async function doctorItems(ctx: CommandContext): Promise<DoctorItem[]> {
     items.push({ label: "Settings", value: "not shared yet: open Safelight once", status: "warn" });
   } else {
     const age = Date.now() - shared.writtenAt;
-    const running = shared.guiPid !== null && age < HEARTBEAT_FRESH_MS;
+    const running = guiLooksRunning(shared);
     items.push({
       label: "Settings",
       value: `shared ${ago(age)}${running ? "; Safelight looks to be running" : ""}`,

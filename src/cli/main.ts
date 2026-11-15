@@ -34,6 +34,10 @@ export interface MainIO {
   /** Tests swap the verbs or services; the bin entry uses the real ones. */
   commands?: readonly CommandSpec[];
   services?: Partial<ServiceFactories>;
+  /** The prompt says what happened to a stopped command itself. */
+  quietStop?: boolean;
+  /** The prompt answers a command's questions from its own lines. */
+  ask?: (question: string) => Promise<string>;
 }
 
 function verbosityOf(options: ParsedArgs["options"]): Verbosity {
@@ -72,6 +76,10 @@ function report(error: unknown, out: Output, json: boolean): ExitCode {
 }
 
 export async function main(argv: string[], io: MainIO): Promise<ExitCode> {
+  if (argv.length === 0 && io.stdin.isTTY === true && io.stdout.isTTY === true) {
+    const { runRepl } = await import("./repl");
+    return runRepl(io);
+  }
   const streams = { stdout: io.stdout, stderr: io.stderr };
   const outputFor = (verbosity: Verbosity) => createOutput(streams, resolveOutputOptions(streams, io.env, verbosity));
 
@@ -132,6 +140,7 @@ export async function main(argv: string[], io: MainIO): Promise<ExitCode> {
         yes: args.options.yes === true,
         waitSeconds: waitSecondsOf(args.options),
         stdin: io.stdin,
+        ask: io.ask,
         bridge,
       },
       { ...DEFAULT_FACTORIES, ...io.services },
@@ -146,7 +155,7 @@ export async function main(argv: string[], io: MainIO): Promise<ExitCode> {
       if (outcome === null) {
         // What was stored is written whole and the locks are given back; the rest is dropped.
         await ctx.dispose();
-        out.error({ message: "Stopped." });
+        if (io.quietStop !== true) out.error({ message: "Stopped." });
         return 130;
       }
       if (json && outcome.json !== undefined) out.json(outcome.json);

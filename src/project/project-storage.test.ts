@@ -1287,6 +1287,32 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
     expect(labelsOnDisk(p)).toEqual({ [photos[0].id]: "Two" });
   });
 
+  it("has written the backup before it says it is released", async () => {
+    // A process that exits once released (`slu`) would otherwise cut the
+    // backups short as they move down.
+    const { p, before, storage, photos } = await reopened();
+    let landBackup = () => {};
+    const backupMayLand = new Promise<void>((land) => (landBackup = land));
+    const write = p.fs.write.bind(p.fs);
+    vi.spyOn(p.fs, "write").mockImplementation(async (path, data) => {
+      if (/[\\/]catalog\.bak\.json$/.test(path)) await backupMayLand;
+      return write(path, data);
+    });
+    await storage.putPhoto({ ...photos[0], rating: 4 });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await storage.flush();
+    storage.close();
+    let released = false;
+    void storage.released().then(() => (released = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(released).toBe(false);
+
+    landBackup();
+    await storage.released();
+    expect(backupText(p)).toBe(before);
+  });
+
   it("keeps the catalogues of the last three sessions, the newest as catalog.bak.json", async () => {
     const p = mount(cfg, FILES);
     const first = await open(p);

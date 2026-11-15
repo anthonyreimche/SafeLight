@@ -250,3 +250,83 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
 
   return { request, shutdown };
 }
+
+/** One engine shared by the commands of a prompt session. */
+export interface EngineSession {
+  /** A client for one command. It reuses the session's engine; its shutdown leaves the engine running. */
+  client(out: Output): EngineClient;
+  /** Stops the engine now, if one is running. */
+  close(): Promise<void>;
+}
+
+const SESSION_IDLE_MS = 10 * 60 * 1000;
+
+/** Keeps one engine alive between commands. The engine serves one request at a time over
+ *  the same wire, so a second command only needs the first's engine to still be healthy:
+ *  one that failed, died or was abandoned mid-request is dropped and the next use starts a new one. */
+export function createEngineSession(makeClient: (out: Output) => EngineClient, idleMs: number = SESSION_IDLE_MS): EngineSession {
+  let live: EngineClient | null = null;
+  let current: Output | null = null;
+  let idle: ReturnType<typeof setTimeout> | null = null;
+
+  // The engine logs through whichever command is running now.
+  const forwarded = new Proxy({} as Output, {
+    get(_target, key) {
+      const value: unknown = current ? Reflect.get(current, key) : undefined;
+      return typeof value === "function" ? value.bind(current) : value;
+    },
+  });
+
+  const stopIdleTimer = () => {
+    if (idle) clearTimeout(idle);
+    idle = null;
+  };
+
+  async function drop(): Promise<void> {
+    stopIdleTimer();
+    const engine = live;
+    live = null;
+    await engine?.shutdown();
+  }
+
+  function startIdleTimer(): void {
+    stopIdleTimer();
+    idle = setTimeout(() => { void drop(); }, idleMs);
+    idle.unref();
+  }
+
+  async function* request(req: EngineRequest): AsyncGenerator<EngineEvent | EngineFrame> {
+    stopIdleTimer();
+    for (let attempt = 0; ; attempt++) {
+      const reused = live !== null;
+      const engine = (live ??= makeClient(forwarded));
+      let yielded = false;
+      let finished = false;
+      try {
+        for await (const item of engine.request(req)) {
+          yielded = true;
+          yield item;
+        }
+        finished = true;
+        return;
+      } catch (error) {
+        // An engine that died while idle fails before saying anything: one fresh start is free.
+        const retry = reused && !yielded && attempt === 0 && error instanceof CliError && error.code === 3;
+        await drop();
+        finished = true;
+        if (!retry) throw error;
+      } finally {
+        if (!finished) await drop();
+        else if (live) startIdleTimer();
+      }
+    }
+  }
+
+  return {
+    client(out) {
+      current = out;
+      return { request, shutdown: async () => { if (live) startIdleTimer(); } };
+    },
+    close: drop,
+  };
+}

@@ -1,14 +1,34 @@
 # Safelight Unplugged
 
-Safelight Unplugged, `safelight` for short, is Safelight without the window. You type a command and some values, and your photos change: `safelight set IMG_4021.ARW exposure=+0.7`. It is for batches, for scripts, for a machine with no screen worth looking at, and for anyone who would rather type than drag a slider.
+Safelight Unplugged is Safelight without the window, and its command is `safelight`. You type a command and some values, and your photos change: `safelight set IMG_4021.ARW exposure=+0.7`. It is for batches, for scripts, for a machine with no screen worth looking at, and for anyone who would rather type than drag a slider.
 
 It is the same Safelight underneath. It reads and writes the same catalogue, so an edit made with `safelight` is a step in the photo's history that you can undo in the app, and the other way round. Exports render through the app's own engine, so a file from `safelight export` matches a file from the Export panel.
 
 There is no terminal screen to learn and no question it asks, except one: whether to trust an extension you are installing. You name what you want, `safelight` does it and says what it did.
 
+## The home screen and prompt
+
+Type `safelight` on its own and it opens a home screen: the bulb, the version, the project in this folder with its photo and edit counts, the graphics backend, your extensions, and a few commands to try. Below it is a prompt where you type the same commands without `safelight` in front:
+
+```
+Iceland 2026 › tools DSC_0412.NEF
+Iceland 2026 › set DSC_0412.NEF exposure=+0.5 shadows+=20
+Iceland 2026 › export DSC_0412.NEF -o out
+```
+
+- **Tab** completes commands, options, file names, value names after a photo, and installed extension names.
+- **Up and Down** go through what you typed before, kept between sessions.
+- **`cd <folder>`** moves to another folder, and the prompt shows its project. **`home`** shows the home screen again. **`clear`** clears the screen.
+- **Ctrl+C** stops the command that is running and keeps you at the prompt. At an empty prompt, press it twice, type `exit`, or press Ctrl+D to leave.
+- Pasting several lines runs them one after another.
+
+The prompt keeps one engine running once you export or preview, so only the first one waits for it to start. It closes after 10 idle minutes or when you leave. Nothing else is held between commands, so the app can open the project while the prompt sits there.
+
+When the output goes to a file or another program, `safelight` on its own prints the help instead.
+
 ## Running it today
 
-For now `safelight` runs from a copy of the Safelight repository. Packaged launchers come later.
+For now `safelight` runs from a copy of the Safelight repository. Packaged launchers come later. On Linux the packaged app's binary is also called `safelight`; the command-line edition is still run from the repo today.
 
 1. Build the app and the command line once: `npm run build:app`, then `npm run build:cli`. On Windows, `build-scripts\build-safelight-unplugged.bat` does both and checks the result.
 2. Run the launcher: `scripts\safelight.cmd` on Windows, `scripts/safelight.sh` on macOS and Linux.
@@ -18,7 +38,7 @@ scripts\safelight.cmd help
 scripts/safelight.sh version
 ```
 
-Everything below writes `safelight` for the launcher.
+On Windows, `build-scripts\build-safelight-unplugged.bat` offers to add the `scripts` folder to your user PATH. Say yes and, in a new terminal, you type `safelight` from anywhere. Everything below writes `safelight` for the launcher.
 
 ## Choosing photos
 
@@ -212,5 +232,5 @@ A lock left by a program that has closed or crashed on this computer counts as l
 - Photos that aren't in a catalogue: `safelight` doesn't import them or start a catalogue.
 - Sixel images, and running several commands against one warm engine.
 - Attaching to a running Safelight, so changes appear live.
-- Packaged launchers, a `safelight` on your PATH from the installer, and shell completion.
+- Packaged launchers, a `safelight` on your PATH from an installer, and shell completion.
 - Extensions' own commit hooks. They are skipped, with a warning; `safelight doctor` lists the extensions that have them.

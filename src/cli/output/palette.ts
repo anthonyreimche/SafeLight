@@ -23,7 +23,7 @@ export interface Palette {
 // bright enough for a black one (5.6:1). The 16-colour yellow is neither.
 const AMBER = "38;5;166";
 
-const sgr = (open: string, close: string) => (text: string): string =>
+export const sgr = (open: string, close: string) => (text: string): string =>
   text === "" ? "" : `\x1b[${open}m${text}\x1b[${close}m`;
 
 const same = (text: string): string => text;
