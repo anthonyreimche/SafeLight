@@ -22,7 +22,7 @@ import {
   type OfficialExtension,
 } from "./official-extensions";
 import { isBuiltinExtension, isReservedExtensionId } from "./core-extension";
-import { InstallSupersededError, installFromGitHub, useDisabledExtensions } from "./loader";
+import { InstallSupersededError, installFromGitHub, persistDisabled } from "./loader";
 import { useUserLayouts, type UserLayout } from "./dock";
 import { bannedReason } from "./trust";
 import { rememberSource } from "./sources";
@@ -222,8 +222,8 @@ function readUserLayouts(): Record<string, UserLayout> {
 
 /** prepareEssentialsMigration on this profile, before loadBuiltins. The
  *  disabled list and the saved layouts were read into memory as their modules
- *  loaded, so they are read again when the renames changed them. Main window
- *  only. */
+ *  loaded, so they are read again when the renames changed them; renames in the
+ *  disabled list also go to the file `slu` shares. Main window only. */
 export function startEssentialsMigration(
   extracted: readonly OfficialExtension[] = extractedEssentials(),
 ): OfficialExtension[] {
@@ -231,7 +231,7 @@ export function startEssentialsMigration(
   const layouts = localStorage.getItem(USER_LAYOUTS_KEY);
   const pending = prepareEssentialsMigration(localStorage, extracted);
   if (localStorage.getItem(DISABLED_KEY) !== disabled)
-    useDisabledExtensions.setState({ ids: stringList(readJson(localStorage, DISABLED_KEY)) });
+    persistDisabled(stringList(readJson(localStorage, DISABLED_KEY)));
   if (localStorage.getItem(USER_LAYOUTS_KEY) !== layouts)
     useUserLayouts.setState({ layouts: readUserLayouts() });
   return pending;

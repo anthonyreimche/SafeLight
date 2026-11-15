@@ -1766,6 +1766,20 @@ export class WebGLRenderer {
     return this.programs.whenBuilt(this.pipeline, stages.built, variant, stages.ids);
   }
 
+  /** The develop program with every stage in and no mask copies, which a frame
+   *  drawing every stage needs (wakeAllStages, or a renderer that doesn't skip
+   *  dormant stages): built as prepareProgramAsync builds, and like it nothing
+   *  without KHR_parallel_shader_compile. Neither the program the photo is drawn
+   *  with nor its dormant stages change. Chromium keeps the program it links, so
+   *  a frame drawing every stage in another context, this launch or a later one,
+   *  finds it there instead of building it. */
+  prepareFullProgramAsync(processVersion: number): Promise<void> {
+    const variant = shaderVariantFor(processVersion, this.newestVersion);
+    const stages = this.stagesFor(variant);
+    const built = buildStageInjection(stages, variant, this.samplerBudget);
+    return this.programs.whenBuilt(this.pipeline, built, variant, new Set(stages.map((s) => s.id)));
+  }
+
   /** Build the stock develop program for a process version: the built-in transform
    *  with Safelight's own stages from the stage set the renderer holds (the core
    *  ones and the built-in denoiser) and nothing an extension contributes. It fails

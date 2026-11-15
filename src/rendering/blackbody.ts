@@ -126,6 +126,17 @@ export function kelvinForGainRatio(
   return best;
 }
 
+/** A camera's white-balance multipliers (red, green, blue) scaled to green 1,
+ *  or undefined when a channel isn't a positive number. */
+export function whiteBalanceMultipliers(
+  gainR: number,
+  gainG: number,
+  gainB: number,
+): [number, number, number] | undefined {
+  if (!(gainR > 0) || !(gainG > 0) || !(gainB > 0)) return undefined;
+  return [gainR / gainG, 1, gainB / gainG];
+}
+
 /**
  * As-shot Kelvin implied by a camera's white-balance gains (red, green, blue).
  * Only a ratio match against the blackbody curve — it knows nothing of the

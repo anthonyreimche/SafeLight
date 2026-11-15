@@ -86,15 +86,18 @@ import {
 } from "./catalog-file";
 import { catalogText, forgetStepTexts, sameRecordText } from "./catalog-json";
 import { fsErrorText } from "./fs-errors";
+import { CATALOG_VERSION } from "./catalog-errors";
 import { openableEdit, SAVE_RETRY_DELAYS } from "./edit-files";
-import { nativeFs } from "./native-fs";
+import { nativeDirectoryHandle, nativeFs, nativePathOf } from "./native-fs";
 import { PhotoBlobs } from "./photo-blobs";
 import { findMoved, namesFoldCase, shotDiffers } from "./reattach";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
-import { recordVolume } from "./volume-print";
+import { judgeVolume, recordVolume } from "./volume-print";
 import { adoptSidecar, SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
-import { resolveWorkingDir, type WorkingDirLocation } from "./working-dir";
+import { resolveWorkingDir, type WorkingDir, type WorkingDirLocation } from "./working-dir";
 import { isSourceFile, isSourceRoot, pairSourceRecords } from "./library-sources";
+import { ProjectLockedError, type StorageOpenOptions } from "./storage-options";
+import { getSettings } from "@/state/settings-store";
 
 export { catalogKey, type CatalogRecovery } from "./catalog-file";
 
@@ -233,6 +236,148 @@ function folderOf(relPath: string): string {
   return i === -1 ? "" : relPath.slice(0, i);
 }
 
+/** Thrown by a read-only open (StorageOpenOptions.readOnly) of a folder that has
+ *  no catalogue: one would have to be made, and a read-only open makes nothing. */
+export class NoCatalogError extends Error {
+  readonly folderName: string;
+  constructor(folderName: string) {
+    super(`“${folderName}” has no Safelight catalogue`);
+    this.name = "NoCatalogError";
+    this.folderName = folderName;
+  }
+}
+
+const readOnlyRefusal = () => new Error("[project] this catalogue was opened read-only");
+
+/** `dir`, and the folders reached through it, with every way to write refused. A
+ *  read-only open reads its catalogue through this, so nothing it does writes:
+ *  reading a damaged catalogue would otherwise keep a copy of it aside. */
+function readOnlyDir(dir: FileSystemDirectoryHandle): FileSystemDirectoryHandle {
+  return new Proxy(dir, {
+    get(target, key) {
+      if (key === "removeEntry") return () => Promise.reject(readOnlyRefusal());
+      if (key === "getFileHandle")
+        return async (name: string, options?: { create?: boolean }) => {
+          if (options?.create) throw readOnlyRefusal();
+          return target.getFileHandle(name);
+        };
+      if (key === "getDirectoryHandle")
+        return async (name: string, options?: { create?: boolean }) => {
+          if (options?.create) throw readOnlyRefusal();
+          return readOnlyDir(await target.getDirectoryHandle(name));
+        };
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** Where a read-only open finds the catalogue of `root`, making nothing: the
+ *  folder's own .safelight when it holds catalog.json, else the separate catalogue
+ *  resolveWorkingDir would take of those already made (the first the folder shows
+ *  to be its own, else the first it shows nothing of either way). Edits from a
+ *  read-only spell are not folded back. Throws NoCatalogError when there is none. */
+async function existingWorkingDir(root: FileSystemDirectoryHandle): Promise<WorkingDir> {
+  const fs = nativeFs();
+  const rootPath = nativePathOf(root);
+  if (!fs || rootPath === null || isSourceRoot(root)) throw new NoCatalogError(root.name);
+  const inFolder = `${rootPath.replace(/[/\\]+$/, "")}/.safelight`;
+  if (await fs.exists(`${inFolder}/catalog.json`))
+    return { sl: nativeDirectoryHandle(inFolder), location: "in-folder", externalPath: null };
+  if (fs.externalCatalogDir) {
+    const base = getSettings().externalCatalogDir.trim() || null;
+    const variants = fs.externalCatalogVariants
+      ? await fs.externalCatalogVariants(rootPath, base)
+      : [1];
+    let chosen: string | null = null;
+    for (const variant of variants) {
+      const dir = await fs.externalCatalogDir(rootPath, base, false, variant);
+      if (!dir) continue;
+      const verdict = await judgeVolume(fs, rootPath, dir);
+      if (verdict === "same") {
+        chosen = dir;
+        break;
+      }
+      if (verdict === "unknown") chosen ??= dir;
+    }
+    if (chosen !== null)
+      return { sl: nativeDirectoryHandle(chosen), location: "external", externalPath: chosen };
+  }
+  throw new NoCatalogError(root.name);
+}
+
+/** How often a lock someone else holds is tried again while waiting on it, and how
+ *  often a lock held is refreshed so it doesn't go stale (file-lock.cjs), in ms. */
+const LOCK_POLL_MS = 200;
+const LOCK_REFRESH_MS = 60_000;
+/** The app's lock when an open names none: `slu` holds it only while a command
+ *  writes, so the app waits a few seconds for it, then takes it. */
+const APP_LOCK: Exclude<StorageOpenOptions["lock"], false | undefined> = {
+  owner: "safelight",
+  whenHeld: "wait-then-take",
+  waitMs: 3000,
+};
+
+interface HeldLock {
+  workingDir: string;
+  token: string;
+}
+
+/** Take the writer lock on the working dir `sl` as `wanted` says (storage-options),
+ *  or none (null): for a pop-out window, whose main window holds it; for a bridge
+ *  without locks; or when it can't be taken and the open wasn't asked to fail. */
+async function takeWriterLock(
+  sl: FileSystemDirectoryHandle,
+  wanted: StorageOpenOptions["lock"],
+): Promise<HeldLock | null> {
+  if (wanted === false || (wanted === undefined && !isMainWindow())) return null;
+  const fs = nativeFs();
+  const workingDir = nativePathOf(sl);
+  if (!fs?.lockProject || workingDir === null) return null;
+  const { owner, whenHeld, waitMs } = wanted ?? APP_LOCK;
+  const deadline = Date.now() + waitMs;
+  try {
+    for (;;) {
+      const got = await fs.lockProject(workingDir, owner);
+      if (got.ok) {
+        const left = got.tookOverStale;
+        if (left) console.warn(`[project] took over the writer lock ${left.app} (pid ${left.pid}) left`);
+        return { workingDir, token: got.token };
+      }
+      const { heldBy } = got;
+      // The app's own earlier copy of this catalogue (the window reloaded, or opened
+      // the project again) is let go of at once, as before there was a lock.
+      const ours = whenHeld === "wait-then-take" && heldBy.app === owner;
+      if (!ours && Date.now() < deadline) {
+        const wait = Math.min(LOCK_POLL_MS, deadline - Date.now());
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      if (whenHeld === "fail") throw new ProjectLockedError(heldBy);
+      if (!ours)
+        console.warn(
+          `[project] ${heldBy.app} (pid ${heldBy.pid}) still held the catalogue after ${waitMs} ms; taking its writer lock over`,
+        );
+      await fs.remove(`${workingDir}/writer.lock`);
+      const taken = await fs.lockProject(workingDir, owner);
+      if (!taken.ok) throw new ProjectLockedError(taken.heldBy);
+      return { workingDir, token: taken.token };
+    }
+  } catch (error) {
+    if (whenHeld === "fail") throw error;
+    console.warn("[project] the catalogue opens without its writer lock:", error);
+    return null;
+  }
+}
+
+/** Give a writer lock back; one that can't be is left to go stale. */
+function releaseWriterLock(lock: HeldLock): Promise<void> {
+  const released = nativeFs()?.releaseProjectLock?.(lock.workingDir, lock.token);
+  return (released ?? Promise.resolve()).catch((error: unknown) =>
+    console.warn("[project] the catalogue's writer lock couldn't be given back:", error),
+  );
+}
+
 export interface OpenedProject {
   storage: ProjectStorage;
   tree: FolderNode;
@@ -363,6 +508,16 @@ export class ProjectStorage implements CatalogStorage {
    *  keeps its earlier snapshots as they are, so each is checked once, not with
    *  every step added after it. */
   private writable = new WeakSet<EditState["stack"][number]>();
+  /** Set by a read-only open (StorageOpenOptions.readOnly): every write is refused. */
+  private readOnly = false;
+  /** The writer lock this copy holds on its catalogue, and the timer keeping it fresh. */
+  private lock: HeldLock | null = null;
+  private lockRefresh: ReturnType<typeof setInterval> | null = null;
+  private refreshing: Promise<void> = Promise.resolve();
+  /** Resolves `settled`, once this copy is closed, won't write again, and has given
+   *  its writer lock back. */
+  private letGo: () => void = () => {};
+  private readonly settled = new Promise<void>((resolve) => (this.letGo = resolve));
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
@@ -394,7 +549,11 @@ export class ProjectStorage implements CatalogStorage {
     // Fires once with done=0 when the new-file count is known, then per file.
     onProgress?: (done: number, total: number) => void,
     signal?: AbortSignal,
+    options: StorageOpenOptions = {},
   ): Promise<OpenedProject> {
+    const readOnly = options.readOnly === true;
+    // The walk imports the files it finds new, which writes.
+    const recordsOnly = readOnly || options.recordsOnly === true;
     // Resolve a writeable .safelight working dir. Normally <project>/.safelight,
     // but redirected to the app data dir when the folder is read-only (e.g. a
     // memory card). Throws ReadOnlyProjectError if no writeable dir is possible —
@@ -404,14 +563,29 @@ export class ProjectStorage implements CatalogStorage {
       location: storageLocation,
       externalPath,
       promotedFromExternal = null,
-    } = await resolveWorkingDir(root);
-    const previews = await sl.getDirectoryHandle("previews", { create: true });
-    const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
-    const storage = new ProjectStorage(sl, previews, deps);
+    } = readOnly ? await existingWorkingDir(root) : await resolveWorkingDir(root);
+    const lock = readOnly ? null : await takeWriterLock(sl, options.lock);
+    let previews: FileSystemDirectoryHandle;
+    let rawCacheDir: FileSystemDirectoryHandle;
+    try {
+      previews = await sl.getDirectoryHandle("previews", { create: !readOnly });
+      rawCacheDir = await sl.getDirectoryHandle("raw", { create: !readOnly });
+    } catch (error) {
+      if (lock) await releaseWriterLock(lock);
+      throw error;
+    }
+    const storage = readOnly
+      ? new ProjectStorage(readOnlyDir(sl), readOnlyDir(previews), deps)
+      : new ProjectStorage(sl, previews, deps);
+    if (readOnly) {
+      storage.readOnly = true;
+      rawCacheDir = readOnlyDir(rawCacheDir);
+    }
+    if (lock) storage.holdLock(lock);
     // Follow the other windows from before catalog.json is read: which catalogue what
     // they write belongs to is only known once it is read, so it waits until then
-    // (see hold).
-    storage.listen();
+    // (see hold). A read-only copy takes nothing on, as it could save none of it.
+    if (!readOnly) storage.listen();
     try {
       // Read the saved catalogue first (one quick read) and paint the grid from it
       // immediately as skeleton records — no live handles, no previews — so the UI
@@ -419,7 +593,7 @@ export class ProjectStorage implements CatalogStorage {
       // first paint, attaching handles and finding new/removed files. A catalogue that
       // can't be read, or is too new, stops the open here: nothing is written,
       // sent or installed.
-      const { catalog: opened, recovered, bytes } = await readSavedCatalog(sl);
+      const { catalog: opened, recovered, bytes } = await readSavedCatalog(storage.sl, { readOnly });
       const saved = opened?.file ?? null;
       storage.extra = opened?.extra ?? {};
       if (bytes && opened?.skipped === 0 && isMainWindow()) storage.backup = new Blob([bytes]);
@@ -485,7 +659,28 @@ export class ProjectStorage implements CatalogStorage {
         skeletons.flatMap((sk) => storage.photos.get(sk.id) ?? []),
       );
       // Ask the others for what they changed that the file may not hold yet.
-      storage.greet();
+      if (!readOnly) storage.greet();
+
+      // The records as saved, files unvisited: a record whose file is gone stays,
+      // with its edits, and a new file stays out.
+      if (recordsOnly) {
+        storage.applyWaiting();
+        storage.walking = false;
+        storage.letGoIfIdle();
+        return {
+          storage,
+          tree: { name: root.name, path: "", children: [], count: 0 },
+          unreadable: [],
+          skipped: {},
+          photos: skeletons.flatMap((sk) => storage.photos.get(sk.id) ?? []),
+          newPhotos: [],
+          rawCacheDir,
+          storageLocation,
+          externalPath,
+          promotedFromExternal,
+          recovered,
+        };
+      }
 
       const scan = await scanProject(root, deps.isSupportedName);
       const scanPaths = new Set(scan.files.map((f) => f.path));
@@ -973,6 +1168,7 @@ export class ProjectStorage implements CatalogStorage {
    *  catalog.json can't hold (savable) is not stored, the one held before it stays,
    *  and once the rest are stored this rejects naming its photo. */
   async putPhotos(photos: CatalogPhoto[], options?: { lazy?: boolean }): Promise<void> {
+    if (this.readOnly) throw readOnlyRefusal();
     const { records, refused } = savable(photos, "photo record", (photo) => photo.id, storedPhoto);
     await this.storePhotos(records, options);
     if (refused) throw refused;
@@ -1158,6 +1354,7 @@ export class ProjectStorage implements CatalogStorage {
    *  records are gone once this is called; what it returns settles when their
    *  previews and blobs are removed too. */
   deletePhotos(ids: readonly string[]): Promise<void> {
+    if (this.readOnly) return Promise.reject(readOnlyRefusal());
     if (ids.length === 0) return Promise.resolve();
     const since = Date.now();
     const dropped = ids.flatMap((id) => this.forget(id).dropped);
@@ -1313,6 +1510,7 @@ export class ProjectStorage implements CatalogStorage {
   }
 
   putPhotoBlob(photoId: string, key: string, data: Uint8Array | null): Promise<void> {
+    if (this.readOnly) return Promise.reject(readOnlyRefusal());
     return this.blobs.put(photoId, key, data);
   }
 
@@ -1325,6 +1523,7 @@ export class ProjectStorage implements CatalogStorage {
    *  can't hold (savable) is not stored, the one held before it stays, and once the
    *  rest are saved this rejects naming its photo. */
   async putEditStates(editStates: EditState[]): Promise<void> {
+    if (this.readOnly) throw readOnlyRefusal();
     const { records, refused } = savable(
       editStates,
       "edit",
@@ -1528,6 +1727,41 @@ export class ProjectStorage implements CatalogStorage {
     this.letGoIfIdle();
   }
 
+  /** Resolves once this copy is closed, won't write catalog.json again, and has
+   *  given its writer lock back: what a process that exits after close waits for. */
+  released(): Promise<void> {
+    return this.settled;
+  }
+
+  private holdLock(lock: HeldLock): void {
+    this.lock = lock;
+    this.lockRefresh = setInterval(() => {
+      this.refreshing = this.refreshLock(lock);
+    }, LOCK_REFRESH_MS);
+  }
+
+  /** Keep the lock from going stale. A refresh that fails is tried again on the next
+   *  tick; one refused means another writer took the lock over, and it is let go. */
+  private async refreshLock(lock: HeldLock): Promise<void> {
+    const kept = await nativeFs()
+      ?.refreshProjectLock?.(lock.workingDir, lock.token)
+      .catch(() => true);
+    if (kept !== false || this.lock !== lock) return;
+    console.warn("[project] another writer took this catalogue's writer lock over");
+    this.lock = null;
+    void this.releaseLock();
+  }
+
+  /** Stop refreshing the writer lock and give it back, if this copy still holds it.
+   *  A refresh still running rewrites the lock file, so the release waits for it. */
+  private releaseLock(): Promise<void> {
+    if (this.lockRefresh !== null) clearInterval(this.lockRefresh);
+    this.lockRefresh = null;
+    const lock = this.lock;
+    this.lock = null;
+    return lock ? this.refreshing.then(() => releaseWriterLock(lock)) : Promise.resolve();
+  }
+
   /** Whether this copy may still write catalog.json: its open is still walking the
    *  folder, a save is pending or running, a try again of a failed write among
    *  them (retryLater keeps it in saveTimer), or a preview is still being written
@@ -1549,6 +1783,7 @@ export class ProjectStorage implements CatalogStorage {
   private letGoIfIdle(): void {
     if (!this.closed || this.mayWrite()) return;
     leftCopies.delete(this);
+    void this.releaseLock().then(this.letGo);
     const stop = this.stopListening;
     if (!stop) return;
     this.stopListening = null;
@@ -1714,6 +1949,7 @@ export class ProjectStorage implements CatalogStorage {
    *  once the write still running, if any, has landed, and write again if it
    *  failed. A copy holding a change it couldn't send (unsent) always writes. */
   async flush(options?: { unloading?: boolean }): Promise<void> {
+    if (this.readOnly) throw readOnlyRefusal();
     if (!options?.unloading) {
       if (this.dirty) return this.save();
       const running = this.nextWrite ?? this.writing;
@@ -1728,9 +1964,13 @@ export class ProjectStorage implements CatalogStorage {
     // newest last. In the browser build the two race: each lands whole, and the
     // one that finishes last wins, which may be the older.
     this.foldWaiting();
-    if (!this.dirty && !this.unsent && !this.writing) return;
+    // What waits on a reply here never runs once the page has gone, so the writer
+    // lock is given back now, beside the last write rather than after it.
+    if (!this.dirty && !this.unsent && !this.writing) return this.releaseLock();
     this.cancelScheduledSave();
-    await this.writeCatalog();
+    const written = this.writeCatalog();
+    void this.releaseLock();
+    await written;
     // A page that stays open after all (its unload was cancelled) is still a copy
     // the window left: once idle it stops following, and answering, the others.
     this.letGoIfIdle();
@@ -1801,7 +2041,7 @@ export class ProjectStorage implements CatalogStorage {
       const stamped = Object.keys(changed.photos).length + Object.keys(changed.edits).length > 0;
       const text = catalogText({
         ...this.extra,
-        version: 1,
+        version: CATALOG_VERSION,
         id: this.catalogId,
         photos,
         edits,

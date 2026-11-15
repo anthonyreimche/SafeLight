@@ -93,8 +93,8 @@ export function createHistogramScheduler(host: HistogramHost): HistogramSchedule
       } else {
         // Off: debounce — reset on every frame so we only recompute after the
         // edit settles, instead of on each intermediate frame. Counted from the
-        // edit, not the frame: Auto Tone/WB give each step's histogram 450 ms,
-        // and a slow render would otherwise use that up.
+        // edit, not the frame: Auto Tone/WB wait for each step's histogram, and
+        // a slow render would otherwise add the whole debounce to every step.
         if (timer) clearTimeout(timer);
         const sinceEdit = performance.now() - dirtyAt;
         timer = setTimeout(recompute, Math.max(0, HIST_SETTLE - sinceEdit));

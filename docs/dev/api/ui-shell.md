@@ -68,6 +68,8 @@ interface PanelContribution {
 
 Read where the panel is docked with `api.dock.usePanelPlacement().side` (`"left" | "right" | "bottom" | "float"`).
 
+Open or close a panel with `api.dock.togglePanel(id)`. A panel with a `defaultDock` for the current module opens there; any other floats. Pass a placement, `togglePanel(id, { direction: "bottom", height: 240 })`, to open a panel without one in a rail instead, in whichever module is showing: a console a shortcut opens, say. It joins the side's first rail, or a new rail of that width or height (clamped to the rail limits), and a side the person hid is shown again. A panel open on a hidden side is shown rather than closed. The bottom rail still needs `allowBottomDock`; without it the panel floats. Needs Safelight 3.2.5; older builds ignore the placement.
+
 Notes:
 
 - Panels dock left or right unless they set `allowBottomDock` (implied by `direction: "bottom"`). Bottom-rail panels sit side by side at full strip height.

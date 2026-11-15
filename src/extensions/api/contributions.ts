@@ -31,6 +31,15 @@ export interface PanelDockDefault {
   height?: number;
 }
 
+/** Where `dock.togglePanel` opens a panel that has no `defaultDock` in the
+ *  current module: the side's first rail, else a new rail of this width (side)
+ *  or height (bottom). Needs Safelight 3.2.5. */
+export interface DockPanelPlacement {
+  direction: "left" | "right" | "bottom";
+  width?: number;
+  height?: number;
+}
+
 export interface PanelContribution {
   /** Globally unique, e.g. "core.histogram" or "my-ext.fancy-curves". */
   id: string;

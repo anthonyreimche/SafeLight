@@ -1,0 +1,190 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
+// `slu`: Safelight Unplugged. Finds the verb, applies the global options, runs
+// the verb and turns what it throws into a message and an exit code.
+
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { findCommand, parseArgs } from "./args";
+import { DEFAULT_FACTORIES, createContext, type ServiceFactories } from "./context";
+import { cliEnv } from "./env";
+import { installNodeHost } from "./host";
+import { readSharedSettings } from "./mirror";
+import { createNodeFsBridge } from "./node-fs";
+import { createOutput, resolveOutputOptions } from "./output";
+import type { Output } from "./output/types";
+import { closest } from "./suggest";
+import { CliError, type CommandSpec, type ExitCode, type ParsedArgs, type Verbosity } from "./types";
+
+export interface MainIO {
+  stdout: NodeJS.WriteStream;
+  stderr: NodeJS.WriteStream;
+  stdin: NodeJS.ReadStream;
+  env: Readonly<Record<string, string | undefined>>;
+  cwd: string;
+  platform: NodeJS.Platform;
+  home: string;
+  /** The running bundle, to find the app beside it. */
+  moduleFile: string;
+  /** Calls `handler` on Ctrl+C; returns the unsubscribe. */
+  onInterrupt(handler: () => void): () => void;
+  /** Tests swap the verbs or services; the bin entry uses the real ones. */
+  commands?: readonly CommandSpec[];
+  services?: Partial<ServiceFactories>;
+}
+
+function verbosityOf(options: ParsedArgs["options"]): Verbosity {
+  if (options.quiet === true) return "quiet";
+  if (options.verbose === 2) return "debug";
+  if (options.verbose === 1) return "verbose";
+  return "normal";
+}
+
+function waitSecondsOf(options: ParsedArgs["options"]): number | null {
+  const wait = options.wait;
+  if (wait === undefined) return null;
+  if (wait === true) return Infinity;
+  const seconds = Number(wait);
+  if (typeof wait !== "string" || wait.trim() === "" || !(seconds >= 0)) {
+    throw new CliError(1, `--wait needs seconds, not "${String(wait)}".`, "Add --wait to wait as long as it takes.");
+  }
+  return seconds;
+}
+
+function unknownVerb(word: string, commands: readonly CommandSpec[]): CliError {
+  const names = commands.flatMap((c) => [c.verb, ...(c.aliases ?? [])]);
+  const guess = closest(word, names);
+  const message = guess ? `"${word}" isn't a slu verb. Did you mean ${guess}?` : `"${word}" isn't a slu verb.`;
+  return new CliError(1, message, "slu help lists them.");
+}
+
+function report(error: unknown, out: Output, json: boolean): ExitCode {
+  const failure = error instanceof CliError
+    ? error
+    : new CliError(1, error instanceof Error ? error.message : String(error));
+  const problem = failure.hint === undefined ? { message: failure.message } : { message: failure.message, hint: failure.hint };
+  out.error(problem);
+  if (json) out.json({ slu: 1, ok: false, error: { code: failure.code, ...problem } });
+  return failure.code;
+}
+
+export async function main(argv: string[], io: MainIO): Promise<ExitCode> {
+  const streams = { stdout: io.stdout, stderr: io.stderr };
+  const outputFor = (verbosity: Verbosity) => createOutput(streams, resolveOutputOptions(streams, io.env, verbosity));
+
+  const dashDash = argv.indexOf("--");
+  let json = (dashDash < 0 ? argv : argv.slice(0, dashDash)).includes("--json");
+  let out = outputFor("normal");
+
+  try {
+    const env = cliEnv({
+      cwd: io.cwd,
+      env: io.env,
+      platform: io.platform,
+      home: io.home,
+      isTTY: { stdin: io.stdin.isTTY === true, stdout: io.stdout.isTTY === true, stderr: io.stderr.isTTY === true },
+      moduleFile: io.moduleFile,
+    });
+    // Core modules read window and localStorage, so the shims go in before the verbs load them.
+    const bridge = createNodeFsBridge(env.userData);
+    installNodeHost({ bridge, platform: env.platform, storage: readSharedSettings(env.userData)?.storage ?? {} });
+    const commands = io.commands ?? (await import("./commands")).COMMANDS;
+
+    const first = parseArgs(argv, null);
+    json = first.options.json === true;
+    out = outputFor(verbosityOf(first.options));
+
+    let spec: CommandSpec | null;
+    if (first.verb === null) {
+      spec = findCommand(commands, first.options.version === true ? "version" : "help");
+    } else {
+      spec = findCommand(commands, first.verb);
+      if (!spec) throw unknownVerb(first.verb, commands);
+    }
+    if (!spec) throw unknownVerb(first.verb ?? "help", commands);
+
+    let args = parseArgs(argv, spec);
+    json = args.options.json === true;
+    const verbosity = verbosityOf(args.options);
+    out = outputFor(verbosity);
+
+    // --help and --version on any verb mean the help or version verb.
+    const redirect = args.options.help === true && spec.verb !== "help" ? "help"
+      : args.options.version === true && spec.verb !== "version" ? "version"
+      : null;
+    if (redirect) {
+      const target = findCommand(commands, redirect);
+      if (!target) throw unknownVerb(redirect, commands);
+      args = { ...args, verb: target.verb, positionals: redirect === "help" ? [spec.verb] : [], assignments: [] };
+      spec = target;
+    }
+
+    const ctx = createContext(
+      {
+        env,
+        out,
+        json,
+        verbosity,
+        strict: args.options.strict === true,
+        yes: args.options.yes === true,
+        waitSeconds: waitSecondsOf(args.options),
+        stdin: io.stdin,
+        bridge,
+      },
+      { ...DEFAULT_FACTORIES, ...io.services },
+    );
+
+    let stopInterrupt = () => {};
+    const interrupted = new Promise<null>((resolve) => {
+      stopInterrupt = io.onInterrupt(() => resolve(null));
+    });
+    try {
+      const outcome = await Promise.race([spec.run(ctx, args), interrupted]);
+      if (outcome === null) {
+        // What was stored is written whole and the locks are given back; the rest is dropped.
+        await ctx.dispose();
+        out.error({ message: "Stopped." });
+        return 130;
+      }
+      if (json && outcome.json !== undefined) out.json(outcome.json);
+      return outcome.code;
+    } finally {
+      stopInterrupt();
+    }
+  } catch (error) {
+    return report(error, out, json);
+  }
+}
+
+/** The real process, for the bin entry. */
+export function processIO(moduleFile: string): MainIO {
+  return {
+    stdout: process.stdout,
+    stderr: process.stderr,
+    stdin: process.stdin,
+    env: process.env,
+    cwd: process.cwd(),
+    platform: process.platform,
+    home: homedir(),
+    moduleFile,
+    onInterrupt(handler) {
+      process.on("SIGINT", handler);
+      return () => process.off("SIGINT", handler);
+    },
+  };
+}
+
+function flushed(stream: NodeJS.WriteStream): Promise<void> {
+  return new Promise((resolve) => stream.write("", () => resolve()));
+}
+
+// Defined only by vite.cli.config.ts, so importing this module (tests) runs nothing.
+declare const __SLU_BIN__: boolean | undefined;
+if (typeof __SLU_BIN__ !== "undefined" && __SLU_BIN__) {
+  const code = await main(process.argv.slice(2), processIO(fileURLToPath(import.meta.url)));
+  await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+  process.exit(code);
+}

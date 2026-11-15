@@ -17,7 +17,12 @@ import { sourceItemOf } from "@/project/library-sources";
 export type DecodeLearned = Partial<
   Pick<
     ExifData,
-    "colorTemperature" | "rawExposureBias" | "baselineExposure" | "baselineShadows" | "cameraMatchVersion"
+    | "colorTemperature"
+    | "asShotMultipliers"
+    | "rawExposureBias"
+    | "baselineExposure"
+    | "baselineShadows"
+    | "cameraMatchVersion"
   >
 >;
 

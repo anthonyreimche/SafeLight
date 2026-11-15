@@ -7,6 +7,7 @@ import {
   TEMPERATURE_MAX_K,
   TEMPERATURE_MIN_K,
   kelvinFromWhiteBalanceGains,
+  whiteBalanceMultipliers,
 } from "@/rendering/blackbody";
 import type { ExifData } from "./types";
 
@@ -543,6 +544,8 @@ function parseTiff(view: DataView, base: number): ExifData {
     const asn = readRationals(r, asnEntry);
     if (asn.length >= 3 && asn[0] > 0 && asn[1] > 0 && asn[2] > 0) {
       const neutral: Vec3 = [asn[0], asn[1], asn[2]];
+      const multipliers = whiteBalanceMultipliers(1 / neutral[0], 1 / neutral[1], 1 / neutral[2]);
+      if (multipliers) exif.asShotMultipliers = multipliers;
       const kelvin =
         cctFromCameraNeutral(neutral, readCalibrations(r, ifd0)) ??
         kelvinFromWhiteBalanceGains(1 / neutral[0], 1 / neutral[1], 1 / neutral[2]);

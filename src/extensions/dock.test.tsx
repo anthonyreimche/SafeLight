@@ -664,6 +664,89 @@ describe("reopening a panel", () => {
   });
 });
 
+describe("toggling a panel at a placement", () => {
+  const BOTTOM = { direction: "bottom", height: 240 } as const;
+
+  it("opens a panel without a default dock in a new rail of that side and size", () => {
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot("library");
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(rails()).toEqual([
+      { id: expect.any(String), side: "bottom", width: 280, height: 240, panels: ["ext.console"] },
+    ]);
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(useDockStore.getState().open).toEqual([]);
+    close();
+  });
+
+  it("joins the side's first rail when there is one", () => {
+    panel("ext.strip", { allowBottomDock: true, defaultDock: { module: "develop", direction: "bottom" } });
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot();
+    expect(rails().map((r) => r.panels)).toEqual([["ext.strip"]]);
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(rails().map((r) => r.panels)).toEqual([["ext.strip", "ext.console"]]);
+    close();
+  });
+
+  it("keeps a panel's default dock in its own module", () => {
+    panel("ext.side", { defaultDock: { module: "develop", direction: "right" } });
+    const { close } = boot();
+    act(() => toggleDockPanel("ext.side"));
+    act(() => toggleDockPanel("ext.side", { direction: "left", width: 300 }));
+    expect(rails().map((r) => [r.side, r.panels])).toEqual([["right", ["ext.side"]]]);
+    close();
+  });
+
+  it("clamps the size into the rail's limits", () => {
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot();
+    act(() => toggleDockPanel("ext.console", { direction: "bottom", height: 5000 }));
+    expect(rails()[0].height).toBe(320);
+    close();
+  });
+
+  it("floats a panel that doesn't allow the bottom rail, as without a placement", () => {
+    panel("ext.column");
+    const { close } = boot();
+    act(() => toggleDockPanel("ext.column", BOTTOM));
+    expect(rails()).toEqual([]);
+    expect(Object.keys(useDockStore.getState().floating)).toEqual(["ext.column"]);
+    close();
+  });
+
+  it("shows a hidden side when it opens a panel there", () => {
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot();
+    act(() => toggleDockSide("bottom"));
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(useDockStore.getState().hidden.bottom).toBe(false);
+    close();
+  });
+
+  it("shows a floating panel hidden with the others instead of closing it", () => {
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot();
+    act(() => toggleDockPanelFloating("ext.console"));
+    act(() => toggleDockVisibility());
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(useDockStore.getState().hidden.floating).toBe(false);
+    expect(useDockStore.getState().open).toEqual(["ext.console"]);
+    close();
+  });
+
+  it("shows an open panel on a hidden side instead of closing it", () => {
+    panel("ext.console", { allowBottomDock: true });
+    const { close } = boot();
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    act(() => toggleDockSide("bottom"));
+    act(() => toggleDockPanel("ext.console", BOTTOM));
+    expect(useDockStore.getState().hidden.bottom).toBe(false);
+    expect(useDockStore.getState().open).toEqual(["ext.console"]);
+    close();
+  });
+});
+
 describe("a panel that throws while rendering", () => {
   it("shows its crash in its own body while the rest of the dock renders", () => {
     // React still logs an error a boundary caught.

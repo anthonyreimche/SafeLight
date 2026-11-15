@@ -104,6 +104,12 @@ export interface DevelopState {
   resetParams: (keys: (keyof DevelopParams)[], label: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
+  /** Show the open photo's history at step `index` as one move, the way undo
+   *  and redo show the step before or after: stored, and announced to other
+   *  windows and extensions once. Does nothing for the step shown, an index
+   *  outside `history` or not a whole number, or while `editError` is set.
+   *  Safelight 3.2.5 and later. */
+  goToHistory: (index: number) => void;
   reset: () => Promise<void>;
   /** Move the open photo from the older processing to the current one, as one
    *  undoable step that keeps every other setting. */

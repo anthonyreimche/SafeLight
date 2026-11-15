@@ -10,6 +10,7 @@ import type { WorkerRequest, WorkerResponse } from "./render-protocol";
 import { captureHandlers } from "./render-worker/capture";
 import { initialState, messageOf, type Cmd, type Handler, type HandlersFor, type WorkerContext } from "./render-worker/context";
 import { detailHandlers } from "./render-worker/detail";
+import { afterMessage } from "./render-worker/full-program";
 import { displayHandlers } from "./render-worker/display";
 import { liveHandlers } from "./render-worker/live";
 import { sourceHandlers } from "./render-worker/sources";
@@ -54,4 +55,5 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   } catch (err) {
     respond({ type: "error", message: messageOf(err) });
   }
+  afterMessage(ctx);
 };

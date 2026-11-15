@@ -3,6 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import type { LockOwner, LockInfo } from "@/project/storage-options";
+import type { ExtensionDescriptors, SharedSettings } from "@/state/shared-settings";
 import type { SafelightAPI } from "./scoped-api";
 import type { NativeOpenTarget } from "./stores";
 import type {
@@ -122,7 +124,21 @@ export interface NativeFsBridge {
   /** Reveal a path in the OS file manager — open a directory, or select a file
    *  inside its parent folder. Resolves true on success. */
   reveal(path: string): Promise<boolean>;
+  /** Take the writer lock on a project's working directory, so the app and `slu`
+   *  never write one catalogue at once. Resolves with a token, or with who holds
+   *  it. A lock whose holder stopped refreshing it is taken over. Absent on older
+   *  Electron builds — feature-detect. */
+  lockProject?(workingDir: string, owner: LockOwner): Promise<ProjectLockResult>;
+  /** Keep a lock this token holds from going stale; false when it no longer does. */
+  refreshProjectLock?(workingDir: string, token: string): Promise<boolean>;
+  /** Give the lock back. Only the holder's token releases it. */
+  releaseProjectLock?(workingDir: string, token: string): Promise<void>;
 }
+
+/** The answer to NativeFsBridge.lockProject. */
+export type ProjectLockResult =
+  | { ok: true; token: string; tookOverStale?: LockInfo }
+  | { ok: false; heldBy: LockInfo };
 
 /** In-app updater. Privileged: install() fetches and runs a release installer
  *  (arbitrary code execution), so it's claimed at boot rather than exposed. */
@@ -176,6 +192,17 @@ export interface NativeGpuBackendState {
   choice: string | null;
   /** This platform's backends, in the order Automatic tries them. */
   backends: string[];
+  /** The selection that last worked ("auto" for Automatic), which the next
+   *  launch goes back to if the pick fails or isn't kept. Null once the user
+   *  has kept the pick, or when nothing was changed. */
+  revertTo: string | null;
+  /** The change this launch went back from ("auto" for Automatic), and why:
+   *  it "failed", or it was "unkept" in time. Null when nothing went back, or
+   *  once the setting is changed again. */
+  reverted: { from: string; because: "failed" | "unkept" } | null;
+  /** When the change this launch is trying goes back unless kept (epoch ms).
+   *  Null when this launch isn't trying one, or it was kept. */
+  keepBy: number | null;
 }
 
 /** Preferences ▸ Rendering ▸ Graphics backend. Privileged so extensions
@@ -189,6 +216,12 @@ export interface NativeGpuBridge {
   /** The develop renderer couldn't start on this launch's graphics backend
    *  however often it tried: the next launch draws in software. */
   rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
+  /** Keeps the change this launch is trying. */
+  keepChange(): Promise<NativeGpuBackendState | null>;
+  /** Goes back from the change this launch is trying, restarting Safelight. */
+  revertChange(): Promise<NativeGpuBackendState | null>;
+  /** Restarts Safelight, so a graphics change waiting on the next start applies. */
+  restart(): Promise<void>;
 }
 
 /** The window's system-drawn backdrop. Privileged so extensions can't change
@@ -241,6 +274,17 @@ export interface NativePluginsBridge {
     id: string,
     outcome: "keep" | "rollback",
   ): Promise<ExtensionManifest | null>;
+  /** The ids of the extensions turned off, from the file `slu` shares; null when
+   *  no list has been written yet. Optional: absent in older Electron builds. */
+  readDisabled?(): Promise<string[] | null>;
+  writeDisabled?(ids: string[]): Promise<void>;
+}
+
+/** Copies of the app's state written to userData for the command-line tool.
+ *  Privileged so an extension can't forge what `slu` reads. */
+export interface NativeMirrorBridge {
+  writeSharedSettings?(doc: SharedSettings): Promise<void>;
+  writeDescriptors?(doc: ExtensionDescriptors): Promise<void>;
 }
 
 /** What a request through NativeNetBridge.fetch came back with. */
@@ -313,6 +357,8 @@ export interface PrivilegedBridge {
   devtools?: NativeDevtoolsBridge;
   /** Optional: absent in older Electron builds. */
   net?: NativeNetBridge;
+  /** Optional: absent in older Electron builds. */
+  mirror?: NativeMirrorBridge;
   /** Optional: absent in older Electron builds. */
   secrets?: NativeSecretsBridge;
   /** Optional: absent in older Electron builds. */

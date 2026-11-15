@@ -181,6 +181,7 @@ import { trackSubscription } from "./guard";
 import { ensureCoreModules, startEssentialsMigration } from "./essentials-migration";
 import { DEVTOOLS_EXTENSION_ID } from "./official-extensions";
 import { windowRole } from "@/diagnostics/environment";
+import { initSettingsMirror } from "@/state/settings-mirror";
 import { initVariables, variableRegistry } from "./variables-host";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
@@ -643,6 +644,7 @@ export function initExtensionHost(): void {
   initStagePrewarm();
   // One window redraws the edited thumbnails a resolver change leaves stale.
   if (windowRole() === "main") watchInputProfiles();
+  initSettingsMirror();
   // Load external plugins, then quietly check them for updates (and auto-update
   // if the user opted in). The check is gated on a setting and rate-limited.
   void loadExternalPlugins().then(() => {

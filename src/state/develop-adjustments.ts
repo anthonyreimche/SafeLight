@@ -13,6 +13,7 @@
 
 import { useDevelopStore } from "./develop-store";
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import { DEVELOP_CONTROLS } from "@/catalog/develop-controls";
 
 export interface NestedAdjustment {
   /** Stable id "<parent>.<field>" — also the dotted value path into params. */
@@ -29,18 +30,13 @@ export interface NestedAdjustment {
   step: number;
 }
 
-// Ranges mirror the Effects extension's sliders (safelight.effects).
-export const NESTED_ADJUSTMENTS: NestedAdjustment[] = [
-  { key: "vignette.amount",     label: "Amount",     group: "Vignette", parent: "vignette", field: "amount",     min: -100, max: 100, step: 1 },
-  { key: "vignette.midpoint",   label: "Midpoint",   group: "Vignette", parent: "vignette", field: "midpoint",   min: 0,    max: 100, step: 1 },
-  { key: "vignette.roundness",  label: "Roundness",  group: "Vignette", parent: "vignette", field: "roundness",  min: -100, max: 100, step: 1 },
-  { key: "vignette.feather",    label: "Feather",    group: "Vignette", parent: "vignette", field: "feather",    min: 0,    max: 100, step: 1 },
-  { key: "vignette.highlights", label: "Highlights", group: "Vignette", parent: "vignette", field: "highlights", min: 0,    max: 100, step: 1 },
-  { key: "grain.amount",        label: "Amount",     group: "Grain",    parent: "grain",    field: "amount",     min: 0,    max: 100, step: 1 },
-  { key: "grain.size",          label: "Size",       group: "Grain",    parent: "grain",    field: "size",       min: 25,   max: 100, step: 1 },
-  { key: "grain.roughness",     label: "Roughness",  group: "Grain",    parent: "grain",    field: "roughness",  min: 0,    max: 100, step: 1 },
-  { key: "grain.color",         label: "Colour",     group: "Grain",    parent: "grain",    field: "color",      min: 0,    max: 100, step: 1 },
-];
+// Ranges come from the core control table (catalog/develop-controls.ts), which
+// mirrors the Effects extension's sliders (safelight.effects).
+export const NESTED_ADJUSTMENTS: NestedAdjustment[] = DEVELOP_CONTROLS.flatMap((c) => {
+  const [parent, field] = c.key.split(".");
+  if ((parent !== "vignette" && parent !== "grain") || c.min === undefined || c.max === undefined || c.step === undefined) return [];
+  return [{ key: c.key, label: c.label, group: c.group, parent, field, min: c.min, max: c.max, step: c.step }];
+});
 
 const byKey = new Map(NESTED_ADJUSTMENTS.map((a) => [a.key, a]));
 

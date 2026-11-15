@@ -322,6 +322,21 @@ describe("mutating fs channels", () => {
   });
 });
 
+describe("project lock channels", () => {
+  type Lock = (event: unknown, dir: string, owner: string) => Promise<{ ok: boolean; token?: string }>;
+
+  it("take, refresh and release <workingDir>/writer.lock", async () => {
+    const dir = tempDir();
+    const got = await channel<Lock>("fs:lockProject")({}, dir, "slu");
+    expect(got.ok).toBe(true);
+    expect(fs.existsSync(path.join(dir, "writer.lock"))).toBe(true);
+    await expect(channel<Lock>("fs:lockProject")({}, dir, "safelight")).resolves.toMatchObject({ ok: false });
+    await expect(channel<(e: unknown, d: string, t: string) => Promise<boolean>>("fs:refreshProjectLock")({}, dir, got.token!)).resolves.toBe(true);
+    await channel<(e: unknown, d: string, t: string) => Promise<void>>("fs:releaseProjectLock")({}, dir, got.token!);
+    expect(fs.existsSync(path.join(dir, "writer.lock"))).toBe(false);
+  });
+});
+
 describe("fs:setSpilloverPointer", () => {
   type Set = (event: unknown, rootPath: string, spilloverDir: string) => Promise<void>;
   type Get = (event: unknown, rootPath: string) => Promise<string | null>;

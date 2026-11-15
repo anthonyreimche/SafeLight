@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 const h = vi.hoisted(() => ({
   backend: null as { software: boolean; nextSoftware: boolean; reason: string | null } | null,
   setSoftware: null as unknown as (on: boolean) => Promise<unknown>,
+  restart: null as unknown as () => Promise<void>,
   openReportIssue: null as unknown as (prefill?: { title?: string }) => Promise<void>,
 }));
 
@@ -22,6 +23,7 @@ vi.mock("@/native/privileged", () => ({
     h.backend && {
       backend: async () => h.backend,
       setSoftware: (on: boolean) => h.setSoftware(on),
+      restart: () => h.restart(),
     },
 }));
 vi.mock("./report-issue-store", () => ({
@@ -44,6 +46,7 @@ beforeEach(() => {
   h.backend = null;
   h.setSoftware = vi.fn(async (on: boolean) => ({ software: false, nextSoftware: on, reason: "chosen" }));
   h.openReportIssue = vi.fn(async () => {});
+  h.restart = vi.fn(async () => {});
   window.history.replaceState({}, "", "/");
 });
 
@@ -92,6 +95,16 @@ describe("GraphicsNotice", () => {
       "Software rendering takes effect when you restart Safelight.",
     );
     expect(screen.queryByRole("button", { name: "Try software rendering" })).toBeNull();
+  });
+
+  it("restarts Safelight into software rendering", async () => {
+    h.backend = { software: false, nextSoftware: false, reason: null };
+    render(<GraphicsNotice />);
+    await settle();
+    expect(screen.queryByRole("button", { name: "Restart Safelight" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Try software rendering" }));
+    await userEvent.click(screen.getByRole("button", { name: "Restart Safelight" }));
+    expect(h.restart).toHaveBeenCalledTimes(1);
   });
 
   it("offers no software rendering when this launch already draws in software", async () => {

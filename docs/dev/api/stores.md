@@ -72,6 +72,7 @@ applyPreset(params, paramBag?);  // takes full params
 setPreviewParams(params, paramBag?);
 commitEdit(label);               // one undo step, then saved
 resetParams(keys, label); undo; redo; reset; canUndo; canRedo;
+goToHistory(index);              // show history[index], one move (3.2.5)
 updateProcessing();              // version 1 to current, one undo step
 setShowClipping(mode); setPanelBypass(panelId, on);
 ```
@@ -84,6 +85,7 @@ setShowClipping(mode); setPanelBypass(panelId, on);
 - Opening another photo commits a live change you haven't committed yet to the photo you left, labelled "Edit". Commit with your own label before then if the label matters.
 - `reloadEdit` reads the open photo's edit back from the catalogue after something else wrote it. If a live change is still uncommitted, the change stays and only the history behind it is renewed.
 - If the open photo's stored edit can't be read, `loadEdit` still opens the photo, but with no history and `editError` set to the reason. Commits, undo and redo do nothing for it until it opens again (`reloadEdit` retries) or another photo opens.
+- `history` holds every step of the open photo's edit, oldest first: `history[0]` is the photo as opened before any edit, and each entry is the whole edit after that step, with the `label` it was committed under. A History list shows them and calls `goToHistory(i)`, which stores and announces the move once, like a single undo. Undo and redo are `goToHistory(historyIndex ∓ 1)`.
 - Commits build on the edit the catalogue holds, one at a time per photo, so steps another window stored are kept under yours.
 - Derive image aspect from `sourceSize`, not `photo.width/height`. It is `{0, 0}` until a frame is drawn. `fullWidth`/`fullHeight` are the decoded size before the upload cap; `native` is true while `api.develop.readSourceSample` has a sample (3.1.0).
 

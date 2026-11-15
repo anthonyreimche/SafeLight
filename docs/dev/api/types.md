@@ -36,7 +36,7 @@ interface CatalogPhoto {
 }
 ```
 
-`ExifData` holds camera and lens identity, exposure, authorship, `dateTimeOriginal`, `orientation`, the as-shot `colorTemperature` (Kelvin) and GPS (decimal degrees, altitude in metres). Every field is optional.
+`ExifData` holds camera and lens identity, exposure, authorship, `dateTimeOriginal`, `orientation`, the as-shot `colorTemperature` (Kelvin), the camera's `asShotMultipliers` (red, green, blue with green at 1, RAW and DNG only; a photo imported before 3.2.5 gets them the next time it opens in Develop) and GPS (decimal degrees, altitude in metres). Every field is optional.
 
 Notes:
 

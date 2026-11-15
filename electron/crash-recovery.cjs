@@ -78,6 +78,11 @@ const RESTART_MESSAGES = {
     message: "Safelight's window couldn't load.",
     detail: "Trying again didn't help. Restart Safelight, or reinstall it if this keeps happening.",
   },
+  // A graphics backend changed in Preferences failed before it was kept.
+  revert: {
+    message: "The graphics setting you changed didn't work.",
+    detail: "After a restart Safelight goes back to the setting that last worked.",
+  },
 };
 
 const SOFTWARE_NEXT_DETAIL =

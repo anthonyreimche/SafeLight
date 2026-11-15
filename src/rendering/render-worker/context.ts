@@ -14,6 +14,7 @@ import type { ColorSpaceId, DisplaySpace } from "../color-space";
 import type { MonitorTransform } from "../display-profile";
 import type { WorkerRequest, WorkerResponse } from "../render-protocol";
 import type { QuarantinedStage, StageBuildEvent, WebGLRenderer } from "../webgl/renderer";
+import type { FullProgramFor } from "./full-program";
 
 export interface WorkerState {
   canvas: OffscreenCanvas | null;
@@ -71,6 +72,11 @@ export interface WorkerState {
   detailTimer: ReturnType<typeof setTimeout> | null;
   // A frame the worker draws unasked after one that put off prepasses (detail.ts).
   detailFollowUp: ReturnType<typeof setTimeout> | null;
+  // The wait before the program with every stage in is built ahead, what it was
+  // last built for, and whether a build is in progress (full-program.ts).
+  fullProgramTimer: ReturnType<typeof setTimeout> | null;
+  fullProgramFor: FullProgramFor | null;
+  fullProgramBuilding: boolean;
 }
 
 export function initialState(): WorkerState {
@@ -95,6 +101,9 @@ export function initialState(): WorkerState {
     cacheBudgetBytes: 0,
     detailTimer: null,
     detailFollowUp: null,
+    fullProgramTimer: null,
+    fullProgramFor: null,
+    fullProgramBuilding: false,
   };
 }
 

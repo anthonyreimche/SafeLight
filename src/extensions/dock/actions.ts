@@ -7,9 +7,15 @@
 // extensions) and the mutations drags and resizes apply. Edits go through
 // commit(), which turns an active preset into Custom and queues the save.
 
+import type { DockPanelPlacement } from "../api/contributions";
 import { useRegistry } from "../registry";
 import {
+  allowsBottom,
   DEFAULT_BOTTOM,
+  MAX_BOTTOM,
+  MAX_RAIL,
+  MIN_BOTTOM,
+  MIN_RAIL,
   openList,
   scheduleSave,
   useDockStore,
@@ -42,9 +48,17 @@ export function without(id: string) {
 // Public dock API (View menu, Tab toggle, extensions)
 // ---------------------------------------------------------------------------
 
-export function toggleDockPanel(id: string): void {
+/** `at` places a panel that has no default dock in the current module (an
+ *  extension's console that any module may open). */
+export function toggleDockPanel(id: string, at?: DockPanelPlacement): void {
   const s = useDockStore.getState();
   if (s.open.includes(id)) {
+    // Open on a side the person hid: the toggle means "show it".
+    const side = id in s.floating ? "floating" : s.rails.find((r) => r.panels.includes(id))?.side;
+    if (at && side && s.hidden[side]) {
+      useDockStore.setState({ hidden: { ...s.hidden, [side]: false } });
+      return;
+    }
     commit(without(id));
     return;
   }
@@ -52,11 +66,17 @@ export function toggleDockPanel(id: string): void {
   // appended to the first rail on its side, or in a fresh rail — instead of
   // floating, so extension togglePanel calls land panels where they belong.
   // (The View menu opens panels centred instead: toggleDockPanelFloating.)
-  const def = useRegistry.getState().panels[id]?.defaultDock;
-  if (def && def.module === s.module) {
-    const rail = s.rails.find((r) => r.side === def.direction);
+  const registered = useRegistry.getState().panels[id];
+  const def = registered?.defaultDock;
+  const place =
+    def && def.module === s.module ? def : placementFor(at, allowsBottom(registered));
+  if (place) {
+    const rail = s.rails.find((r) => r.side === place.direction);
     if (rail) dropToRail(id, rail.id, rail.panels.length);
-    else dropToNewRail(id, def.direction, 0);
+    else dropToNewRail(id, place.direction, 0, place);
+    if (useDockStore.getState().hidden[place.direction]) {
+      useDockStore.setState((st) => ({ hidden: { ...st.hidden, [place.direction]: false } }));
+    }
     return;
   }
   const n = Object.keys(s.floating).length;
@@ -67,6 +87,23 @@ export function toggleDockPanel(id: string): void {
     },
     zOrder: [...s.zOrder, id],
   });
+}
+
+/** An extension's placement, checked and its size clamped into the rail's
+ *  limits; null for one that isn't usable (bad input, or the bottom rail for a
+ *  panel that doesn't lay out across it). */
+function placementFor(at: DockPanelPlacement | undefined, bottomOk: boolean): DockPanelPlacement | null {
+  if (!at || typeof at !== "object") return null;
+  const { direction } = at;
+  if (direction !== "left" && direction !== "right" && direction !== "bottom") return null;
+  if (direction === "bottom" && !bottomOk) return null;
+  const clamp = (v: unknown, lo: number, hi: number, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback;
+  return {
+    direction,
+    width: clamp(at.width, MIN_RAIL, MAX_RAIL, 280),
+    height: clamp(at.height, MIN_BOTTOM, MAX_BOTTOM, DEFAULT_BOTTOM),
+  };
 }
 
 /** View-menu toggle. Closing matches toggleDockPanel, but opening always
@@ -160,14 +197,19 @@ export function dropToRail(id: string, railId: string, index: number) {
   commit({ rails, floating, zOrder: s.zOrder.filter((p) => p !== id) });
 }
 
-export function dropToNewRail(id: string, side: RailState["side"], index: number) {
+export function dropToNewRail(
+  id: string,
+  side: RailState["side"],
+  index: number,
+  size?: { width?: number; height?: number },
+) {
   const s = useDockStore.getState();
   const rails = s.rails
     .map((r) => ({ ...r, panels: r.panels.filter((p) => p !== id) }))
     .filter((r) => r.panels.length > 0);
   const floating = { ...s.floating };
   delete floating[id];
-  const def = useRegistry.getState().panels[id]?.defaultDock;
+  const def = size ?? useRegistry.getState().panels[id]?.defaultDock;
   const rail: RailState = {
     id: `rail-${Date.now().toString(36)}`,
     side,

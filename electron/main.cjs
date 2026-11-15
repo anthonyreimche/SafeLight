@@ -12,6 +12,13 @@
 // isolation headers to every response. This is the load-bearing part — without
 // it RAW decoding silently falls back / fails.
 
+// `slu` starts the app with --engine for export and preview: a hidden page and
+// a relay, on its own profile (engine-mode.cjs). Nothing below may run first.
+if (process.argv.includes("--engine")) {
+  require("./engine-mode.cjs").run();
+  return;
+}
+
 const {
   app,
   protocol,
@@ -43,7 +50,14 @@ const {
 const {
   SOFTWARE_BACKEND,
   gpuLadder,
-  angleSwitches,
+  backendChoices,
+  launchBackend,
+  CONFIRM_WITHIN_MS,
+  AUTOMATIC,
+  pickCache,
+  revertTargetFor,
+  revertCache,
+  provenCache,
   webgl2Lost,
   softwareFallbackFor,
   rendererFallbackFor,
@@ -52,13 +66,12 @@ const {
   backendState,
   backendCacheFiles,
   retriesHardware,
-  startRung,
   readyCache,
   fallbackCache,
-  chosenCache,
   relaunchRung,
   relaunchOptions,
 } = require("./gpu-backend.cjs");
+const { appendSwitches, chromiumSwitches } = require("./chromium-switches.cjs");
 const { sweepPluginWork, retry } = require("./plugin-files.cjs");
 const { createAtomicWriter, writeAtomicSync } = require("./atomic-write.cjs");
 const { argvPaths, createRequestOrder, openTargetFor, withoutPaths } = require("./os-open.cjs");
@@ -95,13 +108,8 @@ const {
   registerAppScheme,
   serveAppProtocol,
 } = require("./app-protocol.cjs");
-const { createTrustList } = require("./extension-store/trust.cjs");
-const { createRegistryIndex, createKitsIndex } = require("./extension-store/registry.cjs");
-const { createThumbnails } = require("./extension-store/thumbnails.cjs");
-const { createSearch } = require("./extension-store/search.cjs");
-const { createReleases } = require("./extension-store/releases.cjs");
-const { createInstaller } = require("./extension-store/install.cjs");
-const { createRepoInfo } = require("./extension-store/readme.cjs");
+const { createExtensionStore, pluginsLockFile } = require("./extension-store/index.cjs");
+const { withLock } = require("./file-lock.cjs");
 const { ipcChannels, registerIpc } = require("./ipc/index.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
@@ -155,12 +163,19 @@ const fileWriter = createAtomicWriter({
 //      for the next launch. Software Safelight chose for itself tries the
 //      graphics card again after a while, in case the failure was passing;
 //      software the user chose stays.
+//   6. A change made in Preferences is on trial until the user keeps it, from
+//      a bar in the first window it draws. Any of the failures above before
+//      then sends the next launch back to the selection that last worked
+//      instead, and so does nobody pressing Keep in time: a window that opens
+//      but draws nothing reports no error.
 // ---------------------------------------------------------------------------
 // Vulkan + ozone-platform=wayland is incompatible (Chromium warns and may
 // crash), so under a native Wayland compositor the Linux ladder has no Vulkan
 // and a stale cached "vulkan" from a prior X11 session is ignored.
 const isWayland = process.platform === "linux" && !!process.env.WAYLAND_DISPLAY;
 const ANGLE_BACKENDS = gpuLadder(process.platform, isWayland);
+// What Preferences offers: Automatic's ladder and, on Windows, more.
+const BACKEND_CHOICES = backendChoices(process.platform, isWayland);
 const userDataDir = () => {
   try {
     return app.getPath("userData");
@@ -173,10 +188,10 @@ const readCache = () => {
   for (const file of [backendCache.file, backendCache.legacy]) {
     if (!file) continue;
     try {
-      return parseBackendCache(fs.readFileSync(file, "utf8"), ANGLE_BACKENDS);
+      return parseBackendCache(fs.readFileSync(file, "utf8"), BACKEND_CHOICES);
     } catch { /* not there */ }
   }
-  return parseBackendCache("", ANGLE_BACKENDS);
+  return parseBackendCache("", BACKEND_CHOICES);
 };
 const writeCache = (cache) => {
   if (!backendCache.file) return;
@@ -195,22 +210,16 @@ const clearCache = () => {
 const startCache = readCache();
 const startedAt = Date.now();
 const relaunchIdx = relaunchRung(process.argv);
-const angleIdx = startRung(ANGLE_BACKENDS, startCache, relaunchIdx, startedAt, app.getVersion());
-const backend = ANGLE_BACKENDS[angleIdx];
+const backend = launchBackend(ANGLE_BACKENDS, BACKEND_CHOICES, startCache, relaunchIdx, startedAt, app.getVersion());
+// -1 for a pick Automatic doesn't try, so a probe relaunch after it starts Automatic's ladder.
+const angleIdx = ANGLE_BACKENDS.indexOf(backend);
 if (relaunchIdx === null && retriesHardware(startCache, startedAt, app.getVersion())) {
   console.warn(`[safelight] software rendering (${startCache.reason || "probe"}) is due a retry; trying ANGLE "${backend}"`);
 }
 
-for (const [name, value] of angleSwitches(backend)) {
-  if (value === undefined) app.commandLine.appendSwitch(name);
-  else app.commandLine.appendSwitch(name, value);
-}
-if (process.platform === "linux") {
-  app.commandLine.appendSwitch("disable-gpu-sandbox");
-  app.commandLine.appendSwitch("enable-webgl");
-  // Native Wayland rendering (no XWayland overhead); auto-detects X11 too.
-  app.commandLine.appendSwitch("ozone-platform-hint", "auto");
-}
+// The backend's switches, then SharedArrayBuffer, no background throttling and
+// no Chromium background network services; the slu engine appends the same.
+appendSwitches(app.commandLine, chromiumSwitches(backend, process.platform));
 
 // Persists the working backend once the app reaches ready (GPU confirmed OK),
 // keeping why a software launch is in software. Called from the instance that
@@ -224,22 +233,54 @@ const cacheWorkingBackend = () => {
   if (!fellBack && !userChose && !startCache.elsewhere) writeCache(readyCache(backend, startCache, Date.now()));
 };
 
+// `kept`: the user kept this launch's change, or changed the setting again,
+// either of which shows its window draws. `reverted`: this session sent the
+// next launch back to the selection that last worked. `keepBy`: when a change
+// this launch is trying goes back unless kept (epoch ms), while that runs.
+let kept = false;
+let reverted = false;
+let keepBy = null;
+let keepTimer;
+
+// A change made in Preferences that fails or isn't kept sends the next launch
+// back to the selection it came from; `because` is what the launch after says,
+// null when the user asked. True when that changed where the next launch goes.
+const revertTrial = (why, because) => {
+  if (fellBack || kept || startCache.elsewhere) return false;
+  const back = revertCache(startCache, Date.now(), app.getVersion(), because);
+  if (!back) return false;
+  clearTimeout(keepTimer);
+  keepBy = null;
+  fellBack = true;
+  reverted = true;
+  writeCache(back);
+  console.error(`[safelight] ${why} on ANGLE "${backend}", just picked in Preferences; the next launch goes back to "${startCache.revertTo}"`);
+  return true;
+};
+
 // Sends the next launch to software once this one proves the GPU path
-// unusable. True when that changed where the next launch goes. A renderer that
-// couldn't start steps to the next hardware rung first, since another backend
-// may link what this one couldn't.
-const fallBackToSoftware = (reason, why) => {
+// unusable, or back to the selection that last worked when this launch is a
+// change on trial. True when that changed where the next launch goes. A
+// renderer that couldn't start steps to the next hardware rung first, since
+// another backend may link what this one couldn't.
+const fallBack = (reason, why) => {
+  if (revertTrial(why, "failed")) return true;
   const next = reason === "renderer-failed" ? rendererFallbackFor(ANGLE_BACKENDS, backend) : softwareFallbackFor(backend);
   if (!next || fellBack) return false;
   fellBack = true;
   const software = next === SOFTWARE_BACKEND;
-  writeCache(software ? fallbackCache(reason, Date.now(), app.getVersion()) : readyCache(next, startCache, Date.now()));
+  writeCache(software ? fallbackCache(reason, Date.now(), app.getVersion()) : readyCache(next, provenCache(startCache), Date.now()));
   console.error(`[safelight] ${why} on ANGLE "${backend}"; the next launch renders ${software ? "in software " : "on "}("${next}")`);
   return true;
 };
 
-// Preferences ▸ Rendering ▸ Graphics backend.
-const gpuBackendState = () => backendState(backend, readCache(), ANGLE_BACKENDS, Date.now(), app.getVersion());
+// Preferences ▸ Rendering ▸ Graphics backend. The change this launch went back
+// from stays named until the user changes the setting again.
+const gpuBackendState = () =>
+  backendState(backend, readCache(), ANGLE_BACKENDS, Date.now(), app.getVersion(), BACKEND_CHOICES, {
+    reverted: userChose ? null : startCache.reverted ?? null,
+    keepBy,
+  });
 
 // Off clears the cache, so the next launch probes the graphics card from the
 // first rung; a machine that still fails there falls back again by itself.
@@ -250,12 +291,17 @@ const setSoftwareRendering = (on) => {
   return gpuBackendState();
 };
 
-// Null is Automatic: clearing the cache sends the next launch through the probe
-// from the first rung. A pick stays until the user changes it or it fails.
+// Null is Automatic, which sends the next launch through the probe from the
+// first rung. A pick stays until the user changes it or it fails. Either is on
+// trial until the user keeps it, going back to the selection that last worked
+// if they don't.
 const setGraphicsBackend = (choice) => {
-  if (choice === null) clearCache();
-  else if (ANGLE_BACKENDS.includes(choice)) writeCache(chosenCache(choice, Date.now(), app.getVersion()));
-  else return gpuBackendState();
+  if (choice !== null && !BACKEND_CHOICES.includes(choice)) return gpuBackendState();
+  clearTimeout(keepTimer);
+  keepBy = null;
+  kept = true;
+  const target = revertTargetFor(startCache, kept, fellBack);
+  writeCache(pickCache(choice ?? AUTOMATIC, target, Date.now(), app.getVersion()));
   userChose = true;
   return gpuBackendState();
 };
@@ -265,8 +311,33 @@ const setGraphicsBackend = (choice) => {
 // Chromium keeps reporting WebGL2, so only the renderer can say so. Already in
 // software there is nowhere further to go, and no restart is offered.
 const rendererFailed = (detail) => {
-  if (fallBackToSoftware("renderer-failed", `Develop renderer couldn't start (${detail})`)) offerRestart("gpu");
+  if (fallBack("renderer-failed", `Develop renderer couldn't start (${detail})`)) offerRestart("gpu");
   return gpuBackendState();
+};
+
+// The user kept the change this launch is trying: it stays.
+const keepChange = () => {
+  clearTimeout(keepTimer);
+  keepBy = null;
+  if (!kept && startCache.revertTo !== undefined && !fellBack && !userChose && !startCache.elsewhere) writeCache(provenCache(readCache()));
+  kept = true;
+  return gpuBackendState();
+};
+
+// The user asked to go back from the change this launch is trying.
+const revertChange = () => {
+  if (revertTrial("Go back pressed", null)) restartNow();
+  return gpuBackendState();
+};
+
+// The first window on a change starts its time to be kept. A window that opens
+// but draws nothing reports no error, and nobody can press Keep in it.
+const awaitKeep = () => {
+  if (startCache.revertTo === undefined || startCache.elsewhere || kept || fellBack || keepBy !== null) return;
+  keepBy = Date.now() + CONFIRM_WITHIN_MS;
+  keepTimer = setTimeout(() => {
+    if (revertTrial(`not kept within ${CONFIRM_WITHIN_MS / 1000} s`, "unkept")) restartNow();
+  }, CONFIRM_WITHIN_MS);
 };
 
 // Before the first window opens a failure is the startup probe's to handle.
@@ -279,6 +350,11 @@ app.on("browser-window-created", () => {
 // A relaunch is not a second request to open what the OS first asked for.
 const relaunchArgv = () => withoutPaths(process.argv, { defaultApp: process.defaultApp });
 const relaunchWith = (rung) => relaunchOptions(relaunchArgv(), process.env, rung);
+// A normal quit, so pending writes finish before the next launch starts.
+const restartNow = () => {
+  app.relaunch(relaunchWith());
+  app.quit();
+};
 const relaunchOn = (rung) => {
   app.relaunch(relaunchWith(rung));
   app.exit(0);
@@ -290,47 +366,23 @@ const relaunchOn = (rung) => {
 // crashing, so this session moves to software too rather than staying blank.
 app.on("gpu-info-update", () => {
   if (!webgl2Lost(app.getGPUFeatureStatus())) return;
-  if (!fallBackToSoftware("webgl2-unavailable", "WebGL2 unavailable")) return;
+  if (!fallBack("webgl2-unavailable", "WebGL2 unavailable")) return;
   if (windowOpened) offerRestart("gpu");
-  else relaunchOn(ANGLE_BACKENDS.length - 1);
+  else relaunchOn(reverted ? undefined : ANGLE_BACKENDS.length - 1);
 });
 
-// On GPU process failure at startup: clear the stale cache and relaunch on
-// the next rung.
+// On GPU process failure at startup: a change on trial goes back to the
+// selection that last worked, which the cache then names; otherwise clear the
+// stale cache and relaunch on the next rung.
 app.on("child-process-gone", (_event, details) => {
   const failReasons = new Set(["crashed", "launch-failed", "abnormal-exit"]);
-  if (
-    details.type === "GPU" &&
-    failReasons.has(details.reason) &&
-    !windowOpened &&
-    angleIdx + 1 < ANGLE_BACKENDS.length
-  ) {
+  if (details.type !== "GPU" || !failReasons.has(details.reason) || windowOpened) return;
+  if (revertTrial("the graphics process failed at startup", "failed")) relaunchOn();
+  else if (angleIdx + 1 < ANGLE_BACKENDS.length) {
     clearCache();
     relaunchOn(angleIdx + 1);
   }
 });
-app.commandLine.appendSwitch("force_high_performance_gpu"); // discrete GPU on dual-GPU machines
-app.commandLine.appendSwitch("enable-gpu-rasterization");
-app.commandLine.appendSwitch("enable-zero-copy");
-// SharedArrayBuffer: Chromium only grants crossOriginIsolated on http(s)
-// origins, so the COOP/COEP headers on app:// are not honoured and libraw-wasm
-// would fall back to the slow CPU decoder / embedded JPEG preview. This flag
-// re-enables SAB unconditionally (safe here — we only load our own bundle).
-app.commandLine.appendSwitch(
-  "enable-features",
-  "CanvasOopRasterization,SharedArrayBuffer"
-);
-// Keep RAW-decode workers and renders at full speed when the window is occluded
-// or in the background (Lightroom-style apps keep processing).
-app.commandLine.appendSwitch("disable-renderer-backgrounding");
-app.commandLine.appendSwitch("disable-background-timer-throttling");
-app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
-// Privacy: Safelight ships no telemetry of its own. Belt-and-suspenders, turn off
-// Chromium's own background network services so no component-update or
-// domain-reliability traffic leaves the machine without an explicit user action.
-app.commandLine.appendSwitch("disable-domain-reliability");
-app.commandLine.appendSwitch("disable-component-update");
-app.commandLine.appendSwitch("disable-features", "Translate,MediaRouter,OptimizationHints");
 
 // The app shell's CSP (app-protocol.cjs). connect-src takes the HTTPS and wss:
 // origins extensions declare in their manifest's permissions.network: the
@@ -395,50 +447,14 @@ function listPlugins() {
   return listInstalledManifestsAsync(pluginsDir());
 }
 
-const trust = createTrustList({ net, userData, fileWriter });
-const registry = createRegistryIndex({ net, userData, fileWriter });
-const thumbnails = createThumbnails({ net, userData, fileWriter });
-const releases = createReleases({
+const extensionStore = createExtensionStore({
   net,
   userData,
   fileWriter,
-  registryVersionsFor: registry.registryVersionsFor,
-});
-const { searchExtensions } = createSearch({
-  net,
-  userData,
-  fileWriter,
-  registry,
-  cachedThumbnail: thumbnails.cachedThumbnail,
-});
-const { fetchRepoMeta, fetchReadme } = createRepoInfo({
-  net,
-  fetchOgImage: thumbnails.fetchOgImage,
-});
-const { installPlugin, settleUpdate, uninstallPlugin } = createInstaller({
+  appVersion,
   pluginsDir,
   pluginWorkDir,
-  appVersion,
-  fetchTrustList: trust.fetchTrustList,
-  registryVersionsFor: registry.registryVersionsFor,
-  releases,
 });
-const extensionStore = {
-  fetchTrustList: trust.fetchTrustList,
-  storeVocabulary: registry.storeVocabulary,
-  kits: createKitsIndex({ net, userData }),
-  searchExtensions,
-  resolveThumbnails: thumbnails.resolveThumbnails,
-  fetchRepoMeta,
-  fetchReadme,
-  fetchReleases: releases.fetchReleases,
-  fetchRemoteManifest: releases.fetchRemoteManifest,
-  fetchReleasesForStore: releases.fetchReleasesForStore,
-  fetchReleaseManifest: releases.fetchReleaseManifest,
-  installPlugin,
-  settleUpdate,
-  uninstallPlugin,
-};
 
 // ---------------------------------------------------------------------------
 // In-app updater. Downloads Safelight's release asset for this platform,
@@ -512,10 +528,17 @@ function handlePrivileged(channel, handler) {
   ipcMain.handle(channel, guardPrivileged(channel, handler, { committedUrls }));
 }
 
-function registerIpcChannels() {
+async function registerIpcChannels() {
   // Nothing is in flight before the first window: a previous version still in
   // the work area belongs to an update that was never settled, so it goes back.
-  sweepPluginWork({ pluginsDir: pluginsDir(), workDir: pluginWorkDir() });
+  // `slu` may be installing right now, and its files are not unsettled: wait a
+  // few seconds for it, then leave the sweep to the next launch.
+  await withLock(
+    pluginsLockFile(userData()),
+    "safelight",
+    async () => sweepPluginWork({ pluginsDir: pluginsDir(), workDir: pluginWorkDir() }),
+    { waitMs: 3000 },
+  ).catch((e) => console.warn("[extensions] skipped the startup sweep:", e instanceof Error ? e.message : e));
   const channels = ipcChannels({
     app,
     BrowserWindow,
@@ -539,6 +562,9 @@ function registerIpcChannels() {
     setSoftwareRendering,
     setGraphicsBackend,
     rendererFailed,
+    keepChange,
+    revertChange,
+    restartApp: restartNow,
     appWindows,
   });
   registerIpc(channels, { ipcMain, handlePrivileged });
@@ -726,6 +752,8 @@ function createWindow() {
 
   trackWindowState(win);
   appWindows.setMain(win);
+  // Before the page loads, so the page reads the deadline its bar counts down to.
+  awaitKeep();
 
   // The minimum follows whichever display the window is on now; a smaller
   // screen (or a resolution change) must not leave the frame bigger than it.
@@ -781,7 +809,7 @@ function offerRestart(kind) {
   restartOffered = true;
   const gpu = gpuBackendState();
   const softwareNext = gpu.nextSoftware && !gpu.software;
-  dialog.showMessageBox(restartPrompt(kind, softwareNext)).then(({ response }) => {
+  dialog.showMessageBox(restartPrompt(kind === "gpu" && reverted ? "revert" : kind, softwareNext)).then(({ response }) => {
     if (response === RESTART) app.relaunch(relaunchWith());
     app.quit();
   });
@@ -870,7 +898,7 @@ if (!app.requestSingleInstanceLock()) {
     console.error(`[safelight] GPU process gone (${details.reason}); ${action[recover]}`);
     if (recover === "ok") for (const win of windows) win.webContents.reload();
     else if (recover === "spent") {
-      fallBackToSoftware("gpu-crashes", "GPU crash recovery gave up");
+      fallBack("gpu-crashes", "GPU crash recovery gave up");
       offerRestart("gpu");
     }
   });
@@ -925,7 +953,7 @@ if (!app.requestSingleInstanceLock()) {
     );
     await loadLaunchHosts();
     serveAppProtocol({ protocol, net, dist: DIST, pluginsDir, csp: appCSP });
-    registerIpcChannels();
+    await registerIpcChannels();
     createWindow();
 
     app.on("activate", () => {

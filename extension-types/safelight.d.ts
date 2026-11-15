@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.2.5. GPL-3.0-only.
+// Safelight 3.3.0. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -120,6 +120,11 @@ export interface ExifData {
     subSecTimeOriginal?: string;
     orientation?: number;
     colorTemperature?: number;
+    /** The camera's as-shot white balance multipliers (red, green, blue), green
+     *  at 1: libraw's cam_mul, or 1 / AsShotNeutral for a DNG. The decode bakes
+     *  them into the pixels; a white balance tool can measure against them.
+     *  Photos imported before 3.2.5 learn them at their next Develop open. */
+    asShotMultipliers?: [number, number, number];
     rawExposureBias?: number;
     baselineExposure?: number | null;
     baselineShadows?: number | null;
@@ -177,6 +182,15 @@ export interface PanelDockDefault {
     /** Side-rail column width. */
     width?: number;
     /** Bottom-rail strip height. */
+    height?: number;
+}
+
+/** Where `dock.togglePanel` opens a panel that has no `defaultDock` in the
+ *  current module: the side's first rail, else a new rail of this width (side)
+ *  or height (bottom). Needs Safelight 3.2.5. */
+export interface DockPanelPlacement {
+    direction: "left" | "right" | "bottom";
+    width?: number;
     height?: number;
 }
 
@@ -1564,7 +1578,11 @@ export interface SafelightAPI {
         get(qualifiedKey: string): ParamDescriptor | undefined;
     };
     dock: {
-        togglePanel(id: string): void;
+        /** Open or close a panel. `at` places a panel that has no `defaultDock` in
+         *  the current module in a rail instead of floating it (see
+         *  DockPanelPlacement); a hidden side is shown. Needs Safelight 3.2.5 for
+         *  `at`. */
+        togglePanel(id: string, at?: DockPanelPlacement): void;
         /** Where the calling panel component is docked right now ("float" when
          *  floating or rendered outside the dock). React hook — call it from the
          *  panel's component to adapt its layout to its rail. */
@@ -2568,6 +2586,12 @@ export interface DevelopState {
     resetParams: (keys: (keyof DevelopParams)[], label: string) => Promise<void>;
     undo: () => void;
     redo: () => void;
+    /** Show the open photo's history at step `index` as one move, the way undo
+     *  and redo show the step before or after: stored, and announced to other
+     *  windows and extensions once. Does nothing for the step shown, an index
+     *  outside `history` or not a whole number, or while `editError` is set.
+     *  Safelight 3.2.5 and later. */
+    goToHistory: (index: number) => void;
     reset: () => Promise<void>;
     /** Move the open photo from the older processing to the current one, as one
      *  undoable step that keeps every other setting. */
@@ -3045,7 +3069,26 @@ export interface NativeFsBridge {
     /** Reveal a path in the OS file manager — open a directory, or select a file
      *  inside its parent folder. Resolves true on success. */
     reveal(path: string): Promise<boolean>;
+    /** Take the writer lock on a project's working directory, so the app and `slu`
+     *  never write one catalogue at once. Resolves with a token, or with who holds
+     *  it. A lock whose holder stopped refreshing it is taken over. Absent on older
+     *  Electron builds — feature-detect. */
+    lockProject?(workingDir: string, owner: LockOwner): Promise<ProjectLockResult>;
+    /** Keep a lock this token holds from going stale; false when it no longer does. */
+    refreshProjectLock?(workingDir: string, token: string): Promise<boolean>;
+    /** Give the lock back. Only the holder's token releases it. */
+    releaseProjectLock?(workingDir: string, token: string): Promise<void>;
 }
+
+/** The answer to NativeFsBridge.lockProject. */
+export type ProjectLockResult = {
+    ok: true;
+    token: string;
+    tookOverStale?: LockInfo;
+} | {
+    ok: false;
+    heldBy: LockInfo;
+};
 
 /** In-app updater. Privileged: install() fetches and runs a release installer
  *  (arbitrary code execution), so it's claimed at boot rather than exposed. */
@@ -3099,6 +3142,20 @@ export interface NativeGpuBackendState {
     choice: string | null;
     /** This platform's backends, in the order Automatic tries them. */
     backends: string[];
+    /** The selection that last worked ("auto" for Automatic), which the next
+     *  launch goes back to if the pick fails or isn't kept. Null once the user
+     *  has kept the pick, or when nothing was changed. */
+    revertTo: string | null;
+    /** The change this launch went back from ("auto" for Automatic), and why:
+     *  it "failed", or it was "unkept" in time. Null when nothing went back, or
+     *  once the setting is changed again. */
+    reverted: {
+        from: string;
+        because: "failed" | "unkept";
+    } | null;
+    /** When the change this launch is trying goes back unless kept (epoch ms).
+     *  Null when this launch isn't trying one, or it was kept. */
+    keepBy: number | null;
 }
 
 /** Preferences ▸ Rendering ▸ Graphics backend. Privileged so extensions
@@ -3112,6 +3169,12 @@ export interface NativeGpuBridge {
     /** The develop renderer couldn't start on this launch's graphics backend
      *  however often it tried: the next launch draws in software. */
     rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
+    /** Keeps the change this launch is trying. */
+    keepChange(): Promise<NativeGpuBackendState | null>;
+    /** Goes back from the change this launch is trying, restarting Safelight. */
+    revertChange(): Promise<NativeGpuBackendState | null>;
+    /** Restarts Safelight, so a graphics change waiting on the next start applies. */
+    restart(): Promise<void>;
 }
 
 /** The window's system-drawn backdrop. Privileged so extensions can't change
@@ -3163,6 +3226,17 @@ export interface NativePluginsBridge {
      *  install() kept aside; "rollback" puts it back and returns its manifest
      *  (null when there was none — the install is then removed). */
     settleUpdate(id: string, outcome: "keep" | "rollback"): Promise<ExtensionManifest | null>;
+    /** The ids of the extensions turned off, from the file `slu` shares; null when
+     *  no list has been written yet. Optional: absent in older Electron builds. */
+    readDisabled?(): Promise<string[] | null>;
+    writeDisabled?(ids: string[]): Promise<void>;
+}
+
+/** Copies of the app's state written to userData for the command-line tool.
+ *  Privileged so an extension can't forge what `slu` reads. */
+export interface NativeMirrorBridge {
+    writeSharedSettings?(doc: SharedSettings): Promise<void>;
+    writeDescriptors?(doc: ExtensionDescriptors): Promise<void>;
 }
 
 /** What a request through NativeNetBridge.fetch came back with. */
@@ -3249,6 +3323,8 @@ export interface PrivilegedBridge {
     devtools?: NativeDevtoolsBridge;
     /** Optional: absent in older Electron builds. */
     net?: NativeNetBridge;
+    /** Optional: absent in older Electron builds. */
+    mirror?: NativeMirrorBridge;
     /** Optional: absent in older Electron builds. */
     secrets?: NativeSecretsBridge;
     /** Optional: absent in older Electron builds. */
@@ -3622,7 +3698,8 @@ export interface LibrarySourceItem {
      *  `orientation` (the EXIF tag, 1 to 8) when the original carries one: the
      *  photo is turned upright by it. Fields of another type than ExifData's are
      *  left out, and so are the ones the RAW decode learns (colorTemperature,
-     *  rawExposureBias, baselineExposure, baselineShadows, cameraMatchVersion). */
+     *  asShotMultipliers, rawExposureBias, baselineExposure, baselineShadows,
+     *  cameraMatchVersion). */
     exif?: ExifData;
     /** 0 to 5 stars, as the photo arrives in the catalogue. */
     rating?: number;
@@ -5337,6 +5414,61 @@ export interface WebGLInfo {
     fragmentUniformVectors: number;
     /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
     colorBufferFloat: boolean;
+}
+
+// src/project/storage-options.ts
+
+export type LockOwner = "safelight" | "slu";
+
+export interface LockInfo {
+    app: LockOwner;
+    pid: number;
+    host: string;
+    since: number;
+    refreshedAt: number;
+}
+
+// src/state/shared-settings.ts
+
+export interface SharedSettings {
+    version: 1;
+    appVersion: string;
+    writtenAt: number;
+    guiPid: number | null;
+    recentProjects: string[];
+    storage: Record<string, string>;
+}
+
+export interface ExtensionDescriptors {
+    version: 1;
+    id: string;
+    extVersion: string;
+    name: string;
+    writtenAt: number;
+    stages: {
+        id: string;
+        phase: string;
+        priority?: number;
+        after?: string[];
+        anchor?: string;
+    }[];
+    uniforms: {
+        key: string;
+        glslType: string;
+        default: unknown;
+        range?: {
+            min: number;
+            max: number;
+            step?: number;
+        };
+        label?: string;
+    }[];
+    panels: {
+        id: string;
+        title: string;
+        owns?: string[];
+    }[];
+    hasCatalogHooks: boolean;
 }
 
 // src/project/folder-node.ts

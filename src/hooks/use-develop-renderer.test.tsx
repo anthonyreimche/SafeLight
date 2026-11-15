@@ -2052,8 +2052,8 @@ describe("useDevelopRenderer during an edit", () => {
       expect(lastIndexOf(worker, "computeHistogram")).toBeGreaterThan(lastIndexOf(worker, "render"));
     });
 
-    // Auto Tone and Auto WB wait 450 ms for each step's histogram (use-auto-adjust.ts)
-    // before measuring again; a slow render must not push it past that.
+    // Auto Tone and Auto WB wait for each step's histogram (use-auto-adjust.ts) before
+    // measuring again; a slow render must not add the whole debounce to each step.
     it("with live histogram off, settles counted from the edit, not from a slow frame", async () => {
       useSettings.setState({ liveHistogram: false });
       const worker = await opened();
@@ -3809,6 +3809,14 @@ describe("DevelopCanvas eyedroppers", () => {
       await act(async () => {
         fireEvent.pointerDown(frame(), at(0.25, 0.75));
         fireEvent.pointerUp(frame(), at(0.25, 0.75));
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      // The worker draws the step, then measures it: the run probes again only then.
+      expect(probes(worker)).toHaveLength(1);
+      await answerRenders(worker, LANDSCAPE);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        worker.reply({ type: "histogram", histogram: histogram() });
         await vi.advanceTimersByTimeAsync(1000);
       });
 

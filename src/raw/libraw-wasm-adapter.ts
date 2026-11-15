@@ -29,7 +29,7 @@
 // unsupported is remembered under raw-cache.ts's DECODER_ID: bump that with the
 // vendored LibRaw or with any change to what counts as unsupported here.
 
-import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
+import { kelvinFromWhiteBalanceGains, whiteBalanceMultipliers } from "@/rendering/blackbody";
 import type { DecodeFailure, RawFloatImage } from "./decode-result";
 import { normalizeRotation } from "@/catalog/orient";
 import { finishFrame, isAbandoned } from "./frame-bridge";
@@ -105,13 +105,17 @@ const num = (v: unknown): number =>
 // multipliers can only be matched against the blackbody curve — a ratio fit that
 // ignores the camera's primaries. DNGs take the exact colour-matrix route in
 // catalog/exif.ts instead.
-function kelvinFromCamMul(colorData: unknown): number | undefined {
-  if (typeof colorData !== "object" || colorData === null) return undefined;
+function asShotOf(colorData: unknown): Pick<RawMetadata, "colorTemperature" | "asShotMultipliers"> {
+  if (typeof colorData !== "object" || colorData === null) return {};
   const camMul: unknown = (colorData as Record<string, unknown>).cam_mul;
-  if (!Array.isArray(camMul)) return undefined;
+  if (!Array.isArray(camMul)) return {};
   const [r, g, b] = camMul as unknown[];
-  if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return undefined;
-  return kelvinFromWhiteBalanceGains(r, g, b);
+  if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return {};
+  const asShotMultipliers = whiteBalanceMultipliers(r, g, b);
+  return {
+    colorTemperature: kelvinFromWhiteBalanceGains(r, g, b),
+    ...(asShotMultipliers ? { asShotMultipliers } : {}),
+  };
 }
 
 // The multipliers libraw's scale_colors() divides the frame by: the camera's
@@ -159,6 +163,8 @@ function rawExposureBias(meta: Record<string, unknown>): number {
 export interface RawMetadata {
   /** As-shot Kelvin from the camera WB multipliers, when libraw exposes them. */
   colorTemperature?: number;
+  /** Those multipliers, green at 1. */
+  asShotMultipliers?: [number, number, number];
   /** EV the sensor sat below the tagged ISO (Fujifilm DR modes); the float
    *  decode compensates it, so this is informational. */
   rawExposureBias?: number;
@@ -261,7 +267,7 @@ export async function extractRawMetadata(
     const meta = await watched.call(raw.metadata(true));
     if (!meta) return undefined;
     return {
-      colorTemperature: kelvinFromCamMul(meta.color_data),
+      ...asShotOf(meta.color_data),
       frame: frameOf(meta),
       rawExposureBias: rawExposureBias(meta) || undefined,
     };
@@ -484,7 +490,7 @@ export async function decodeRawFloatViaLibRaw(
     // Libraw ignores half_size for a sensor with no mosaic to bin (Foveon), and
     // hands back the whole frame.
     const reduced = halfSize && !!frame && 2 * width <= frame.width + 2;
-    const colorTemperature = kelvinFromCamMul(meta.color_data);
+    const asShot = asShotOf(meta.color_data);
 
     const status =
       `libraw ${bits}-bit ${stride}ch ${width}×${height}` +
@@ -498,7 +504,7 @@ export async function decodeRawFloatViaLibRaw(
       width: built.width,
       height: built.height,
       suspicious: inferredDims,
-      colorTemperature,
+      ...asShot,
       rawExposureBias: bias || undefined,
       ...(reduced ? { halfSize: true, sourceWidth: frame?.width, sourceHeight: frame?.height } : {}),
       ...(turn ? { turned: turn } : {}),

@@ -221,6 +221,7 @@ describe("render entry points", () => {
       .map((path) => relative(SRC, path).replaceAll("\\", "/"))
       .sort();
     expect(callers).toEqual([
+      "engine/session.ts",
       "hooks/use-develop-renderer.ts",
       "modules/export/export-image.ts",
       "rendering/render-worker.ts",

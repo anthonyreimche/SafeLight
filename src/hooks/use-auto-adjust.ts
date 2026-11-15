@@ -19,24 +19,38 @@ import type { CanvasPoint } from "@/modules/develop/pick-drag";
 // automatically inside a single click, and only one history entry is written.
 
 const MAX_ITERS = 8;
-const SETTLE_TIMEOUT_MS = 450; // fallback if the histogram debounce is slow
+/** How long a step waits for the histogram of its own render. Long, since a slow
+ *  graphics card or software rendering takes seconds per frame; a step measured on
+ *  the frame before it repeats the last correction and overshoots. */
+export const SETTLE_TIMEOUT_MS = 10_000;
 
-// Resolve once the next render has produced a fresh histogram.
-function settle(): Promise<void> {
+interface Step {
+  done: boolean;
+  /** The step moved a value. One that didn't gets no new render to measure. */
+  changed: boolean;
+}
+
+/** True once a new histogram measures the step just applied; false when
+ *  another photo opens first or none comes within SETTLE_TIMEOUT_MS. */
+function nextHistogram(photoId: string | null): Promise<boolean> {
+  // Closing the project leaves the photo synchronously, which can land between
+  // the step and this wait.
+  if (useDevelopStore.getState().photoId !== photoId) return Promise.resolve(false);
   return new Promise((resolve) => {
     const prev = useDevelopStore.getState().histogram;
     let finished = false;
-    const finish = () => {
+    const finish = (fresh: boolean) => {
       if (finished) return;
       finished = true;
       unsub();
       clearTimeout(timer);
-      resolve();
+      resolve(fresh);
     };
     const unsub = useDevelopStore.subscribe((s) => {
-      if (s.histogram !== prev) finish();
+      if (s.photoId !== photoId) finish(false);
+      else if (s.histogram !== prev) finish(true);
     });
-    const timer = setTimeout(finish, SETTLE_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(false), SETTLE_TIMEOUT_MS);
   });
 }
 
@@ -44,10 +58,7 @@ function settle(): Promise<void> {
 // extension): a second press while one runs does nothing.
 let running = false;
 
-async function run(
-  apply: () => boolean | Promise<boolean>, // applies one step, returns true when converged
-  label: string,
-): Promise<void> {
+async function run(apply: () => Step | Promise<Step>, label: string): Promise<void> {
   if (running) return;
   running = true;
   const { photoId, params, paramBag } = useDevelopStore.getState();
@@ -58,12 +69,12 @@ async function run(
     try {
       for (let i = 0; i < MAX_ITERS; i++) {
         if (!useDevelopStore.getState().histogram) break;
-        const done = await apply();
-        if (!done) await settle();
+        const { done, changed } = await apply();
+        const measured = !done && changed && (await nextHistogram(photoId));
         // Another photo opened mid-run; committing would add this run's step
         // to that photo's history.
         if (useDevelopStore.getState().photoId !== photoId) return;
-        if (done) break;
+        if (!measured) break;
       }
     } catch (e) {
       // The steps applied so far are in the live params but not in history,
@@ -83,14 +94,22 @@ async function run(
   }
 }
 
+const TONE_KEYS = ["exposure", "contrast", "highlights", "shadows", "whites", "blacks"] as const;
+
+function applyWhiteBalance(temperature: number, tint: number, done: boolean): Step {
+  const s = useDevelopStore.getState();
+  const changed = temperature !== s.params.temperature || tint !== s.params.tint;
+  s.setParam("temperature", temperature);
+  s.setParam("tint", tint);
+  return { done, changed };
+}
+
 /** Grey-world white balance from the frame's histogram. */
 function whiteBalance(): Promise<void> {
   return run(() => {
     const s = useDevelopStore.getState();
     const step = autoWhiteBalanceStep(s.histogram!, s.params, s.asShotTemperature);
-    s.setParam("temperature", step.temperature);
-    s.setParam("tint", step.tint);
-    return step.done;
+    return applyWhiteBalance(step.temperature, step.tint, step.done);
   }, "Auto White Balance");
 }
 
@@ -104,11 +123,9 @@ export function whiteBalanceFromSample(sample: () => Promise<readonly [number, n
     const rgb = await sample();
     // The photo changed while the worker answered; `run` sees it and stops.
     const s = useDevelopStore.getState();
-    if (!rgb || s.photoId !== photoId) return true;
+    if (!rgb || s.photoId !== photoId) return { done: true, changed: false };
     const step = whiteBalanceStepFromLinear(rgb[0], rgb[1], rgb[2], s.params, s.asShotTemperature);
-    s.setParam("temperature", step.temperature);
-    s.setParam("tint", step.tint);
-    return step.done;
+    return applyWhiteBalance(step.temperature, step.tint, step.done);
   }, "White Balance");
 }
 
@@ -117,13 +134,9 @@ function tone(): Promise<void> {
   return run(() => {
     const s = useDevelopStore.getState();
     const step = autoToneStep(s.histogram!, s.params);
-    s.setParam("exposure", step.exposure);
-    s.setParam("contrast", step.contrast);
-    s.setParam("highlights", step.highlights);
-    s.setParam("shadows", step.shadows);
-    s.setParam("whites", step.whites);
-    s.setParam("blacks", step.blacks);
-    return step.done;
+    const changed = TONE_KEYS.some((key) => step[key] !== s.params[key]);
+    for (const key of TONE_KEYS) s.setParam(key, step[key]);
+    return { done: step.done, changed };
   }, "Auto Tone");
 }
 

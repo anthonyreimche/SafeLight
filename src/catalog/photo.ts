@@ -152,6 +152,11 @@ export interface ExifData {
   subSecTimeOriginal?: string; // fractional-second digits of dateTimeOriginal
   orientation?: number; // EXIF Orientation tag (1..8)
   colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)
+  /** The camera's as-shot white balance multipliers (red, green, blue), green
+   *  at 1: libraw's cam_mul, or 1 / AsShotNeutral for a DNG. The decode bakes
+   *  them into the pixels; a white balance tool can measure against them.
+   *  Photos imported before 3.2.5 learn them at their next Develop open. */
+  asShotMultipliers?: [number, number, number];
   rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes); the decode compensates it
   // EV the camera baseline adds to a RAW to reach its camera's brightness,
   // learned from the embedded JPEG at its first decode (raw/camera-match.ts);

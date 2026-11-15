@@ -21,6 +21,7 @@ import type {
   NativeDevtoolsBridge,
   NativeFsBridge,
   NativeGpuBridge,
+  NativeMirrorBridge,
   NativeNetBridge,
   NativeOsOpenBridge,
   NativePluginsBridge,
@@ -40,6 +41,7 @@ let osOpenBridge: NativeOsOpenBridge | null = null;
 let windowBridge: NativeWindowBridge | null = null;
 let devtoolsBridge: NativeDevtoolsBridge | null = null;
 let netBridge: NativeNetBridge | null = null;
+let mirrorBridge: NativeMirrorBridge | null = null;
 let secretsBridge: NativeSecretsBridge | null = null;
 let socketsBridge: NativeSocketsBridge | null = null;
 
@@ -58,6 +60,7 @@ export function claimPrivileged(): void {
   windowBridge = priv?.window ?? null;
   devtoolsBridge = priv?.devtools ?? null;
   netBridge = priv?.net ?? null;
+  mirrorBridge = priv?.mirror ?? null;
   secretsBridge = priv?.secrets ?? null;
   socketsBridge = priv?.sockets ?? null;
 }
@@ -116,6 +119,13 @@ export function privilegedDevtools(): NativeDevtoolsBridge | null {
 export function privilegedNet(): NativeNetBridge | null {
   if (!claimed) claimPrivileged();
   return netBridge;
+}
+
+/** Writing the copies of app state the command-line tool reads, or null
+ *  outside Electron. */
+export function privilegedMirror(): NativeMirrorBridge | null {
+  if (!claimed) claimPrivileged();
+  return mirrorBridge;
 }
 
 /** The secrets extensions keep encrypted by the OS keychain, or null outside

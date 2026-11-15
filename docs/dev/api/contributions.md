@@ -301,6 +301,7 @@ A stage that declares `dormantWhen` is left out of the live view's develop progr
 - Once a stage is needed, it stays in the program for the rest of the session, so moving between photos doesn't rebuild it again and again.
 - Opening or hovering your panel starts building the program with your stages in it, in the background, so the first slider move rarely waits for a compile.
 - It applies to the live view on version 2 photos. Thumbnails, exports and version 1 photos run every stage, as before.
+- Each distinct set of stages is a program of its own, built the first time it is needed. Chromium keeps every program it builds, so a set seen before builds in milliseconds, in any window and after a restart. A few seconds after the stages change and Develop goes quiet, Safelight builds the program with every stage in, in the background, for exports and thumbnails.
 - Prepasses follow the same rule.
 - Declare it only where the stage is an exact no-op. Leaving a dormant stage out may differ from running it by float rounding, and nothing more.
 - The rule is ignored, with a warning, on `geometry` and `noise-reduction` stages, stages that `produces` values, and patch stages. It is also ignored on display stages without a `space`, whose input is clipped on version 2 photos, unless they are official Safelight extensions' stages, which never are. A malformed rule refuses the stage.

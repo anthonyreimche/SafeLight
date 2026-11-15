@@ -445,7 +445,7 @@ describe("resolveWorkingDir", () => {
   });
 
   it("changes nothing, and stops the open, when a newer version saved the spillover", async () => {
-    const newer = '{"version":2,"photos":[],"edits":[]}';
+    const newer = '{"version":3,"photos":[],"edits":[]}';
     const b = nativeBridge({
       inFolderCatalog: true,
       files: {

@@ -17,6 +17,7 @@ import type {
   ModuleContribution,
   ModuleId,
   PanelContribution,
+  DockPanelPlacement,
   PanelHeaderAccessoryContribution,
   PanelPlacement,
   PipelineContribution,
@@ -351,7 +352,11 @@ export interface SafelightAPI {
     get(qualifiedKey: string): ParamDescriptor | undefined;
   };
   dock: {
-    togglePanel(id: string): void;
+    /** Open or close a panel. `at` places a panel that has no `defaultDock` in
+     *  the current module in a rail instead of floating it (see
+     *  DockPanelPlacement); a hidden side is shown. Needs Safelight 3.2.5 for
+     *  `at`. */
+    togglePanel(id: string, at?: DockPanelPlacement): void;
     /** Where the calling panel component is docked right now ("float" when
      *  floating or rendered outside the dock). React hook — call it from the
      *  panel's component to adapt its layout to its rail. */

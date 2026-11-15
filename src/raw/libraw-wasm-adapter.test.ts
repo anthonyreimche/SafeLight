@@ -131,12 +131,13 @@ describe("extractRawMetadata", () => {
       height: 4160,
       raw_width: 6384,
       raw_height: 4182,
-      color_data: { cam_mul: [2.1, 1, 1.6, 1] },
+      color_data: { cam_mul: [4.2, 2, 3.2, 2] },
     };
 
     await expect(extractRawMetadata(rawBytes())).resolves.toEqual({
       frame: { width: 6240, height: 4160 },
       colorTemperature: kelvinFromWhiteBalanceGains(2.1, 1, 1.6),
+      asShotMultipliers: [2.1, 1, 1.6],
     });
   });
 
@@ -160,6 +161,7 @@ describe("extractRawMetadata", () => {
 
     expect(meta?.frame).toEqual({ width: 10, height: 10 });
     expect(meta?.colorTemperature).toBeUndefined();
+    expect(meta?.asShotMultipliers).toBeUndefined();
   });
 
   it("reports the exposure bias a Fujifilm DR mode left in the raw", async () => {
@@ -285,6 +287,16 @@ describe("decodeRawFloatViaLibRaw", () => {
     h.pixels = litPixelFrame(code(0.222));
 
     expect((await decodedImage()).data[1]).toBeCloseTo(0.222, 3);
+  });
+
+  it("reports the camera's as-shot multipliers with the image", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [4.2, 2, 3.2, 0] } };
+    h.pixels = litPixelFrame(code(0.222));
+
+    const image = await decodedImage();
+
+    expect(image.asShotMultipliers).toEqual([2.1, 1, 1.6]);
+    expect(image.colorTemperature).toBe(kelvinFromWhiteBalanceGains(2.1, 1, 1.6));
   });
 
   it("linearizes the toe of that transfer too", async () => {

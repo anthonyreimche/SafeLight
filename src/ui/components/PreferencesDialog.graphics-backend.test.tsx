@@ -19,7 +19,7 @@ import type { NativeGpuBackendState } from "@/extensions/types";
 
 // Claimed once, at the first privileged call, so it's in place before any import.
 const native = vi.hoisted(() => {
-  const gpu = { backend: vi.fn(), setSoftware: vi.fn(), setBackend: vi.fn() };
+  const gpu = { backend: vi.fn(), setSoftware: vi.fn(), setBackend: vi.fn(), restart: vi.fn() };
   const claim = vi.fn(() => ({ fs: {}, updates: {}, gpu }));
   const bridge = { platform: "linux", claimPrivileged: claim };
   (globalThis as { safelightNative?: unknown }).safelightNative = bridge;
@@ -45,6 +45,9 @@ const ON_GL: NativeGpuBackendState = {
   next: "gl",
   choice: null,
   backends: LADDER,
+  revertTo: null,
+  reverted: null,
+  keepBy: null,
 };
 const state = (over: Partial<NativeGpuBackendState> = {}) => Promise.resolve({ ...ON_GL, ...over });
 
@@ -55,6 +58,8 @@ beforeEach(() => {
   native.bridge.platform = "linux";
   native.gpu.backend.mockReset();
   native.gpu.setBackend.mockReset();
+  native.gpu.restart.mockReset();
+  native.gpu.restart.mockImplementation(() => Promise.resolve());
   native.gpu.backend.mockImplementation(() => state());
 });
 
@@ -116,9 +121,50 @@ describe("Preferences ▸ Rendering ▸ Graphics backend", () => {
       "OpenGL",
       "OpenGL ES",
       "Vulkan",
-      "Software (processor)",
+      "SwiftShader (processor)",
     ]);
     expect(screen.queryByText(/restart Safelight/i)).toBeNull();
+    expect(screen.queryByText(/goes back to|went back to/)).toBeNull();
+  });
+
+  // Chromium's own backend menu on macOS has OpenGL beside Metal.
+  it("offers OpenGL beside Metal on macOS", async () => {
+    const user = userEvent.setup();
+    native.bridge.platform = "darwin";
+    native.gpu.backend.mockImplementation(() =>
+      state({ backend: "metal", next: "metal", backends: ["metal", "gl", "swiftshader"] }),
+    );
+    showRendering();
+    const menu = await backendMenu();
+    expect(screen.getByText("Drawing with Metal.")).toBeTruthy();
+    await user.click(menu);
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Automatic",
+      "Metal",
+      "OpenGL",
+      "SwiftShader (processor)",
+    ]);
+  });
+
+  // Two of Windows' picks draw on the processor, so each says which.
+  it("offers Windows' picks by name, both processor ones told apart", async () => {
+    const user = userEvent.setup();
+    native.bridge.platform = "win32";
+    native.gpu.backend.mockImplementation(() =>
+      state({ backend: "d3d11", next: "d3d11", backends: ["d3d11", "d3d11on12", "gl", "d3d11-warp", "swiftshader"] }),
+    );
+    showRendering();
+    const menu = await backendMenu();
+    expect(screen.getByText("Drawing with Direct3D 11.")).toBeTruthy();
+    await user.click(menu);
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Automatic",
+      "Direct3D 11",
+      "Direct3D 11 on 12",
+      "OpenGL",
+      "WARP (processor)",
+      "SwiftShader (processor)",
+    ]);
   });
 
   it("pins a backend for the next start", async () => {
@@ -129,6 +175,79 @@ describe("Preferences ▸ Rendering ▸ Graphics backend", () => {
     expect(native.gpu.setBackend).toHaveBeenCalledWith("vulkan");
     expect((await backendMenu()).textContent).toContain("Vulkan");
     expect(screen.getByText("Takes effect when you restart Safelight.")).toBeTruthy();
+  });
+
+  it("restarts Safelight from the field once the backend is changed", async () => {
+    const user = userEvent.setup();
+    native.gpu.setBackend.mockImplementation(() => state({ next: "vulkan", choice: "vulkan" }));
+    showRendering();
+    await backendMenu();
+    expect(screen.queryByRole("button", { name: "Restart Safelight" })).toBeNull();
+    await pick("Vulkan");
+    await user.click(await screen.findByRole("button", { name: "Restart Safelight" }));
+    expect(native.gpu.restart).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so when Safelight couldn't restart", async () => {
+    const user = userEvent.setup();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.gpu.setBackend.mockImplementation(() => state({ next: "vulkan", choice: "vulkan" }));
+    native.gpu.restart.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    showRendering();
+    await pick("Vulkan");
+    await user.click(await screen.findByRole("button", { name: "Restart Safelight" }));
+    expect(await screen.findByText("Couldn't restart Safelight. Close it and open it again.")).toBeTruthy();
+    warn.mockRestore();
+  });
+
+  // Going back to what this launch already uses needs no restart.
+  it("offers no restart once the change is undone", async () => {
+    native.gpu.setBackend
+      .mockImplementationOnce(() => state({ next: "vulkan", choice: "vulkan" }))
+      .mockImplementationOnce(() => state());
+    showRendering();
+    await pick("Vulkan");
+    expect(await screen.findByRole("button", { name: "Restart Safelight" })).toBeTruthy();
+    await pick("Automatic");
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Restart Safelight" })).toBeNull();
+  });
+
+  // A change is on trial until it is kept from the window it draws.
+  it("says what a pick goes back to if it doesn't work", async () => {
+    native.gpu.backend.mockImplementation(() => state({ choice: "gl", next: "gl" }));
+    native.gpu.setBackend.mockImplementation(() => state({ next: "vulkan", choice: "vulkan", revertTo: "gl" }));
+    showRendering();
+    await pick("Vulkan");
+    expect(await screen.findByText("If it doesn't work or isn't kept, Safelight goes back to OpenGL.")).toBeTruthy();
+    expect(screen.getByText("Takes effect when you restart Safelight.")).toBeTruthy();
+  });
+
+  it("says Automatic is on trial too", async () => {
+    native.gpu.backend.mockImplementation(() => state({ choice: "gles", backend: "gles", next: "gles" }));
+    native.gpu.setBackend.mockImplementation(() => state({ backend: "gles", next: "gl", choice: null, revertTo: "gles" }));
+    showRendering();
+    await pick("Automatic");
+    expect(await screen.findByText("If it doesn't work or isn't kept, Safelight goes back to OpenGL ES.")).toBeTruthy();
+  });
+
+  it.each([
+    [
+      { choice: null, reverted: { from: "vulkan", because: "failed" } },
+      "Vulkan didn't work on this computer, so Safelight went back to Automatic.",
+    ],
+    [
+      { choice: "gl", reverted: { from: "auto", because: "failed" } },
+      "Automatic didn't work on this computer, so Safelight went back to OpenGL.",
+    ],
+    [
+      { choice: null, reverted: { from: "gles", because: "unkept" } },
+      "OpenGL ES wasn't kept within 20 seconds, so Safelight went back to Automatic.",
+    ],
+  ] as const)("says which change didn't work and what Safelight went back to", async (over, text) => {
+    native.gpu.backend.mockImplementation(() => state(over));
+    showRendering();
+    expect(await screen.findByText(text)).toBeTruthy();
   });
 
   it("goes back to Automatic", async () => {
@@ -196,7 +315,7 @@ describe("Preferences ▸ Rendering ▸ Graphics backend", () => {
       state({ nextSoftware: true, reason: "chosen", next: "swiftshader", choice: "swiftshader" }),
     );
     showRendering();
-    await pick("Software (processor)");
+    await pick("SwiftShader (processor)");
     await act(async () => {});
     expect(useGraphics.getState()).toMatchObject({ software: false, nextSoftware: true });
   });
@@ -206,8 +325,8 @@ describe("Preferences ▸ Rendering ▸ Graphics backend", () => {
       state({ software: true, nextSoftware: true, reason: "chosen", backend: "swiftshader", next: "swiftshader", choice: "swiftshader" }),
     );
     showRendering();
-    expect((await backendMenu()).textContent).toContain("Software (processor)");
-    expect(screen.getByText("Drawing with Software (processor).")).toBeTruthy();
+    expect((await backendMenu()).textContent).toContain("SwiftShader (processor)");
+    expect(screen.getByText("Drawing with SwiftShader (processor).")).toBeTruthy();
     expect(screen.queryByText(/switched to software/)).toBeNull();
     expect(screen.queryByText(/restart Safelight/i)).toBeNull();
   });

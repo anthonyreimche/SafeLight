@@ -20,6 +20,7 @@ import {
   tintGain,
   whiteBalanceGain,
   whiteBalanceGains,
+  whiteBalanceMultipliers,
   type LinearRgb,
 } from "./blackbody";
 import { FRAGMENT_SHADER, V2_VARIANT, V3_VARIANT, buildFragmentShader } from "./webgl/shaders";
@@ -222,6 +223,18 @@ describe("blackbody — the gains applyWhiteBalance multiplies by", () => {
       const wb = glslFunction("applyWhiteBalance", buildFragmentShader(null, undefined, variant));
       expect(wb.indexOf(normalize), `version ${variant.version}`).toBeGreaterThan(wb.indexOf("gain.g *="));
     }
+  });
+});
+
+describe("blackbody — a camera's white balance multipliers", () => {
+  it("scales them to green 1", () => {
+    expect(whiteBalanceMultipliers(4.2, 2, 3.2)).toEqual([2.1, 1, 1.6]);
+  });
+
+  it("has none when a channel is missing or not positive", () => {
+    expect(whiteBalanceMultipliers(2, 0, 1)).toBeUndefined();
+    expect(whiteBalanceMultipliers(-1, 1, 1)).toBeUndefined();
+    expect(whiteBalanceMultipliers(NaN, 1, 1)).toBeUndefined();
   });
 });
 
