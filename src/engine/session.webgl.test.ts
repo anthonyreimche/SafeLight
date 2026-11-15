@@ -71,7 +71,7 @@ describe("an engine preview on the real renderer", () => {
   it("is the frame a capture of the same look draws, at the same size", async () => {
     for (const stage of essentialStages()) registerProcessingStage(stage.extensionId, stage);
     const engine = new EngineSession({
-      openProject: async () => ({ photos: [PHOTO], storage }),
+      openProject: async () => ({ photos: [PHOTO], storage, readPreview: async () => null }),
       loadImage: async () => scene(),
     });
     const sent: PortMessage[] = [];

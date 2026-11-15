@@ -3,7 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { ResultLine } from "../output/types";
 import { freshParams, type CatalogPhoto, type DevelopParams, type EditState } from "@/catalog/types";
 import { parseArgs } from "../args";
 import {
@@ -50,32 +52,36 @@ function editWith(photoId: string, labels: string[], currentIndex: number): Edit
 
 function harness(photos: CatalogPhoto[], edits: Record<string, EditState> = {}, over: { missing?: { spec: string; reason: "not-found" | "not-in-catalogue" | "no-match" }[] } = {}) {
   const written = { edits: [] as EditState[], photos: [] as CatalogPhoto[] };
-  const log = { printed: [] as string[], warned: [] as string[], errors: [] as string[], infos: [] as string[], json: [] as unknown[] };
+  const log = { printed: [] as string[], warned: [] as string[], errors: [] as string[], hints: [] as (string | undefined)[], infos: [] as string[], json: [] as unknown[], results: [] as ResultLine[] };
+  const line = (r: ResultLine) =>
+    `${r.photo}|${r.changes.map((c) => `${c.label}=${c.value}`).join(",")}|${r.step ?? ""}|${r.note ?? ""}`;
   let closed = 0;
   let requested: unknown = null;
   const session: WriteSession = {
     project: PROJECT,
     photos: () => photos,
-    photoByRelPath: () => undefined,
+    photoByRelPath: () => undefined, previewFile: () => null,
     edit: async (id) => edits[id],
     putEdits: async (s) => { written.edits.push(...s); },
     putPhotos: async (p) => { written.photos.push(...p); },
+    removePhotos: async () => undefined,
     close: async () => undefined,
   };
   const value = (look: Look, key: string): unknown => (look.params as unknown as Record<string, unknown>)[key];
   const ctx = {
+    env: { cwd: path.resolve("/p/day"), platform: process.platform },
     json: false,
     strict: false,
     waitSeconds: null,
     out: {
-      resultLine: (r: { photo: string; changes: { label: string; value: string }[]; note?: string; step?: number }) =>
-        `${r.photo}|${r.changes.map((c) => `${c.label}=${c.value}`).join(",")}|${r.step ?? ""}|${r.note ?? ""}`,
+      resultLine: line,
+      result: (r: ResultLine) => { log.results.push(r); log.printed.push(line(r)); },
       summary: (s: { photos: number; failed: number; skipped: number }) => `summary ${s.photos} failed ${s.failed} skipped ${s.skipped}`,
       formatValue: (_i: ValueInfo, v: unknown) => String(v),
       toolTable: () => "table",
       print: (t: string) => log.printed.push(t),
       warn: (p: { message: string }) => log.warned.push(p.message),
-      error: (p: { message: string }) => log.errors.push(p.message),
+      error: (p: { message: string; hint?: string }) => { log.errors.push(p.message); log.hints.push(p.hint); },
       info: (t: string) => log.infos.push(t),
       json: (d: unknown) => log.json.push(d),
     },
@@ -140,6 +146,22 @@ describe("set", () => {
     expect(h.closed()).toBe(1);
   });
 
+  it("sends one photo's result through out.result with what each bar needs", async () => {
+    const h = harness([photo("a")]);
+    await run(setCommand, h.ctx, ["a.ARW", "exposure=7"]);
+    expect(h.log.results).toHaveLength(1);
+    expect(h.log.results[0].changes).toEqual([
+      { label: "Exposure", value: "5", info: EXPOSURE, before: 0, after: 5, clamped: true },
+    ]);
+  });
+
+  it("keeps many photos on plain lines, one per photo", async () => {
+    const h = harness([photo("a"), photo("b")]);
+    await run(setCommand, h.ctx, ["a.ARW", "b.ARW", "exposure=0.5"]);
+    expect(h.log.results).toEqual([]);
+    expect(h.log.printed).toEqual(["a.ARW|Exposure=0.5|1|", "b.ARW|Exposure=0.5|1|", "summary 2 failed 0 skipped 0"]);
+  });
+
   it("passes the photo specs and filters to the selector", async () => {
     const h = harness([photo("a")]);
     await run(setCommand, h.ctx, ["a.ARW", "exposure=1", "--rating", "3+", "--flag", "pick", "--unedited", "-r"]);
@@ -192,9 +214,73 @@ describe("set", () => {
     const h = harness([], {}, { missing: [{ spec: "x.ARW", reason: "not-in-catalogue" }] });
     const outcome = await run(setCommand, h.ctx, ["x.ARW", "exposure=1"]);
     expect(outcome.code).toBe(2);
-    expect(h.log.errors[0]).toContain("isn't in a Safelight catalogue");
+    expect(h.log.errors[0]).toBe("x.ARW isn't imported, so safelight won't change it.");
+    expect(h.log.hints[0]).toBe("safelight import x.ARW");
     expect(h.written.edits).toHaveLength(0);
     expect(h.closed()).toBe(1);
+  });
+
+  it("changes the current open photo when none is named, and every open one with @all", async () => {
+    const set = { paths: ["/p/day/a.ARW", "/p/day/b.ARW"], index: 1, root: "/p" };
+    const h = harness([photo("b")]);
+    (h.ctx as { working?: unknown }).working = set;
+    await run(setCommand, h.ctx, ["exposure=0.5"]);
+    expect(h.requested()).toMatchObject({ specs: ["/p/day/b.ARW"] });
+    await run(setCommand, h.ctx, ["@all", "exposure=0.5"]);
+    expect(h.requested()).toMatchObject({ specs: ["/p/day/a.ARW", "/p/day/b.ARW"] });
+    await run(setCommand, h.ctx, ["@", "exposure=0.5"]);
+    expect(h.requested()).toMatchObject({ specs: ["/p/day/b.ARW"] });
+  });
+
+  it("still asks for photos when no set is open", async () => {
+    const h = harness([photo("a")]);
+    await expect(run(setCommand, h.ctx, ["exposure=1"])).rejects.toMatchObject({ code: 1 });
+    await expect(run(setCommand, h.ctx, ["@", "exposure=1"])).rejects.toMatchObject({ code: 1 });
+  });
+
+  describe("a RAW whose camera data is still to be read", () => {
+    const pending = (id: string) => photo(id, { metadataPending: true, exif: {} });
+
+    it("refuses a first edit with the import that fixes it, and writes nothing", async () => {
+      const h = harness([pending("a")]);
+      const outcome = await run(setCommand, h.ctx, ["a.ARW", "exposure=0.5"]);
+      expect(outcome.code).toBe(2);
+      expect(h.log.errors[0]).toBe("a.ARW: its camera data hasn't been read yet, so its white balance isn't known.");
+      expect(h.log.hints[0]).toBe("safelight import a.ARW");
+      expect(h.written.edits).toHaveLength(0);
+    });
+
+    it("names the photo in the fix as a path from where the command ran, quoted when it has spaces", async () => {
+      const h = harness([photo("a", { relPath: "day 2/a.ARW", metadataPending: true, exif: {} })]);
+      (h.ctx as { env: { cwd: string } }).env.cwd = path.resolve("/p");
+      await run(setCommand, h.ctx, ["day 2/a.ARW", "exposure=0.5"]);
+      expect(h.log.hints[0]).toBe(`safelight import "${path.join("day 2", "a.ARW")}"`);
+    });
+
+    it("refuses on every verb that adds a step", async () => {
+      for (const [spec, argv] of [[resetCommand, ["a.ARW", "exposure"]], [removeCommand, ["a.ARW", "basic"]]] as const) {
+        const h = harness([pending("a")]);
+        const outcome = await run(spec, h.ctx, [...argv]);
+        expect(outcome.code).toBe(2);
+        expect(h.written.edits).toHaveLength(0);
+      }
+    });
+
+    it("lets a photo that already has edits go on, and the record fields on a pending photo", async () => {
+      const h = harness([pending("a")], { a: editWith("a", ["Original", "Exposure"], 1) });
+      expect((await run(setCommand, h.ctx, ["a.ARW", "exposure=0.5"])).code).toBe(0);
+      expect(h.written.edits).toHaveLength(1);
+      const rated = harness([pending("a")]);
+      expect((await run(rateCommand, rated.ctx, ["a.ARW", "4"])).code).toBe(0);
+      expect(rated.written.photos).toHaveLength(1);
+    });
+
+    it("fails only that photo in a batch", async () => {
+      const h = harness([pending("a"), photo("b")]);
+      const outcome = await run(setCommand, h.ctx, ["a.ARW", "b.ARW", "exposure=0.5"]);
+      expect(outcome.code).toBe(6);
+      expect(h.written.edits.map((e) => e.photoId)).toEqual(["b"]);
+    });
   });
 
   it("exits 6 when some photos were done and some missing", async () => {
@@ -218,8 +304,8 @@ describe("a usage error part-way through a batch", () => {
     const h = harness([photo("a")]);
     const putEdits = vi.fn(async () => undefined);
     const sessionFor = (): WriteSession => ({
-      project: PROJECT, photos: () => [], photoByRelPath: () => undefined, edit: async () => undefined,
-      putEdits, putPhotos: async () => undefined, close: async () => undefined,
+      project: PROJECT, photos: () => [], photoByRelPath: () => undefined, previewFile: () => null, edit: async () => undefined,
+      putEdits, putPhotos: async () => undefined, removePhotos: async () => undefined, close: async () => undefined,
     });
     h.ctx.select.write = async () => ({
       groups: [{ session: sessionFor(), photos: [photo("a")] }, { session: sessionFor(), photos: [photo("b")] }],
@@ -248,7 +334,7 @@ describe("add", () => {
   it("lists a core tool's keys without taking the write lock", async () => {
     const h = harness([photo("a")]);
     h.ctx.select.write = async () => { throw new Error("add only reads"); };
-    h.ctx.select.read = async () => ({ groups: [{ session: { project: PROJECT, photos: () => [], photoByRelPath: () => undefined, edit: async () => undefined, close: async () => undefined }, photos: [photo("a")] }], missing: [], close: async () => undefined });
+    h.ctx.select.read = async () => ({ groups: [{ session: { project: PROJECT, photos: () => [], photoByRelPath: () => undefined, previewFile: () => null, edit: async () => undefined, close: async () => undefined }, photos: [photo("a")] }], missing: [], close: async () => undefined });
     expect((await run(addCommand, h.ctx, ["a.ARW", "basic"])).code).toBe(0);
   });
 

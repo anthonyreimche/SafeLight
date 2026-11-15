@@ -23,6 +23,7 @@ import {
   type SelectRequest,
   type Selection,
   type SelectedGroup,
+  type WorkingSet,
   type WriteSession, COMMAND } from "./types";
 
 const FLAGS = ["pick", "reject", "none"] as const;
@@ -75,9 +76,28 @@ export function buildSelectRequest(args: ParsedArgs, specs: string[], stdinPaths
   };
 }
 
+/** The prompt's open photos folded into a request: `@` is the current photo, `@all` every open one, and
+ *  a request naming no photo is for the current one. Verbs that don't call this ignore the set. */
+export function applyWorkingSet(request: SelectRequest, working: WorkingSet | undefined): SelectRequest {
+  const open = working && working.paths.length > 0 ? working : undefined;
+  if (!open) {
+    if (request.specs.some((s) => s === "@" || s === "@all")) throw new CliError(1, "No photo is open.", "open <photo> opens one.");
+    return request;
+  }
+  const current = open.paths[open.index] ?? open.paths[0];
+  const specs = request.specs.flatMap((s) => (s === "@" ? [current] : s === "@all" ? open.paths : [s]));
+  const unnamed = specs.length === 0 && request.stdinPaths.length === 0 && !request.all;
+  return { ...request, specs: unnamed ? [current] : specs };
+}
+
 /** The photo paths a command line gives: `-` reads them from stdin. */
 export async function stdinPathsOf(ctx: CommandContext, args: ParsedArgs): Promise<string[]> {
   return args.stdinList ? stdinPhotoPaths(await ctx.readStdin()) : [];
+}
+
+/** The command that brings a photo into the catalogue. */
+export function importFix(spec: string): string {
+  return `${COMMAND} import ${/\s/.test(spec) ? `"${spec}"` : spec}`;
 }
 
 /** What a photo spec that selected nothing means, as a user-facing error. */
@@ -86,7 +106,7 @@ export function missingError(m: Selection<ReadSession>["missing"][number]): CliE
     case "not-found":
       return new CliError(2, `${m.spec} wasn't found.`);
     case "not-in-catalogue":
-      return new CliError(2, `${m.spec} isn't in a Safelight catalogue.`, "Open its folder in Safelight first.");
+      return new CliError(2, `${m.spec} isn't imported.`, importFix(m.spec));
     case "no-match":
       return new CliError(2, `Nothing matches ${m.spec}.`);
   }
@@ -106,7 +126,7 @@ export async function selectOnePhoto(
   spec: string | undefined,
   opts: { allMeansEverything?: boolean } = {},
 ): Promise<OnePhoto> {
-  const built = buildSelectRequest(args, spec === undefined ? [] : [spec], await stdinPathsOf(ctx, args));
+  const built = applyWorkingSet(buildSelectRequest(args, spec === undefined ? [] : [spec], await stdinPathsOf(ctx, args)), ctx.working);
   const request = opts.allMeansEverything === false ? { ...built, all: false } : built;
   if (request.specs.length === 0 && request.stdinPaths.length === 0 && !request.all) {
     throw new CliError(1, `Name a photo for ${args.verb ?? "this"}.`, `${COMMAND} help ${args.verb ?? ""}`.trim() + " shows how.");

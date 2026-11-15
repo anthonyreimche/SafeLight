@@ -8,20 +8,24 @@
 import type { CatalogPhoto, EditState, DevelopParams } from "@/catalog/types";
 import type { Output } from "./output/types";
 import type { EngineClient } from "./engine-client";
+import type { LookOverride } from "@/engine/protocol";
 
 /** The shell command, as users type it. The one place a rename touches. */
 export const COMMAND = "safelight";
 
 export type ExitCode =0 | 1 | 2 | 3 | 4 | 5 | 6 | 130;
 
-/** Every expected failure. `hint` is the second line ("safelight tools X lists them."). */
+/** Every expected failure. `hint` is the second line ("safelight tools X lists them."); `fix` a line that
+ *  puts it right, which a terminal shows on the error card and the prompt offers to run. */
 export class CliError extends Error {
   readonly code: ExitCode;
   readonly hint: string | undefined;
-  constructor(code: ExitCode, message: string, hint?: string) {
+  readonly fix: string | undefined;
+  constructor(code: ExitCode, message: string, hint?: string, fix?: string) {
     super(message);
     this.code = code;
     this.hint = hint;
+    this.fix = fix;
   }
 }
 
@@ -43,7 +47,7 @@ export interface ParsedArgs {
   options: Record<string, string | boolean | number | string[]>;
 }
 
-export type HelpGroup = "Look" | "Edit" | "Share" | "Organize" | "Output" | "Extensions" | "More";
+export type HelpGroup = "Look" | "Library" | "Edit" | "Share" | "Organize" | "Output" | "Extensions" | "More";
 
 export interface CommandSpec {
   verb: string;
@@ -55,6 +59,8 @@ export interface CommandSpec {
   options: OptionSpec[];
   /** Takes the project writer lock. */
   writes: boolean;
+  /** Winds down by itself on the first Ctrl+C, through `ctx.stops`; without it main stops the command where it stands. */
+  ownsStop?: boolean;
   run(ctx: CommandContext, args: ParsedArgs): Promise<CommandOutcome>;
 }
 
@@ -68,6 +74,8 @@ export interface CliEnv {
   userData: string;
   /** Repo root in dev (has package.json), else <resources>/app.asar. */
   appRoot: string;
+  /** The Electron binary the engine runs on; null when none was found. */
+  electronBinary: string | null;
   appVersion: string;
   platform: NodeJS.Platform;
   isTTY: { stdin: boolean; stdout: boolean; stderr: boolean };
@@ -92,7 +100,17 @@ export interface CommandContext {
   readStdin(): Promise<string>;
   /** Asks a question on the terminal; the prompt supplies it, otherwise a command reads stdin itself. */
   ask?(question: string): Promise<string>;
+  /** The photos the prompt has open: a command naming none acts on the current one. */
+  working?: WorkingSet;
+  /** Ctrl+C, for a command that `ownsStop`. */
+  stops?: Stops;
 }
+
+/** The first Ctrl+C aborts `signal`: finish what is in flight, keep it, and stop. The second aborts `force`: stop now. */
+export interface Stops { signal: AbortSignal; force: AbortSignal }
+
+/** The prompt's open photos, in order: absolute paths, the current index and the project they are in. */
+export interface WorkingSet { paths: string[]; index: number; root: string }
 
 // ---- projects (P1.3 implements) -------------------------------------------
 
@@ -108,6 +126,8 @@ export interface ReadSession {
   readonly project: ProjectRef;
   photos(): readonly CatalogPhoto[];
   photoByRelPath(relPath: string): CatalogPhoto | undefined;
+  /** The grid preview the app stored for this photo (a JPEG), or null: the picture without an engine. */
+  previewFile(photo: CatalogPhoto): string | null;
   edit(photoId: string): Promise<EditState | undefined>;
   close(): Promise<void>;
 }
@@ -115,6 +135,8 @@ export interface ReadSession {
 export interface WriteSession extends ReadSession {
   putEdits(states: EditState[]): Promise<void>;
   putPhotos(photos: CatalogPhoto[]): Promise<void>;
+  /** Removes the records, their edits and virtual copies; the files are tombstoned, not deleted. */
+  removePhotos(ids: string[]): Promise<void>;
   /** Flush, release the lock, close. Always call, also after an error. */
   close(): Promise<void>;
 }
@@ -197,6 +219,10 @@ export interface ValueInfo {
   notSettableReason?: string;
   /** Ranges unknown: extension installed but no descriptor file. */
   rangeUnknown?: boolean;
+  /** Where the default sits, for slider bars; the control's default when known. */
+  default?: number;
+  /** Maps a value to 0…1 along the slider when the panel's slider isn't linear (temperature). */
+  position?: (value: number) => number;
 }
 
 export interface ValueChange {
@@ -233,10 +259,14 @@ export interface InstalledExtension {
   repo: string | null;
   /** What it may reach, as install lists it. */
   permissions: string[];
+  /** The manifest's one line about it. */
+  description?: string;
 }
 
 export interface SearchHit {
   id: string; name: string; version: string; category: string; trust: Trust; repo: string; installName: string;
+  /** The registry's one line about it. */
+  description?: string;
 }
 
 export interface ExtensionService {
@@ -258,9 +288,16 @@ export interface InstallRisk { name: string; trust: Trust; permissions: string[]
 
 // ---- preview (P1.10 implements) -------------------------------------------
 
-export type GraphicsMode = "kitty" | "iterm" | "blocks" | "none";
+export type GraphicsMode = "kitty" | "iterm" | "sixel" | "blocks" | "none";
 
 export interface PreviewService {
   /** Render and print one photo after the command's own output. */
-  show(project: ProjectRef, photo: CatalogPhoto, opts: { widthCols?: number; tryAssigns?: Assignment[]; mode?: GraphicsMode }): Promise<void>;
+  show(project: ProjectRef, photo: CatalogPhoto, opts: {
+    widthCols?: number;
+    tryAssigns?: Assignment[];
+    mode?: GraphicsMode;
+    overrides?: LookOverride;
+    /** The stored look's key (preview-cache.ts lookKey), so a rendered one can be shown again without the engine. */
+    look?: string;
+  }): Promise<void>;
 }

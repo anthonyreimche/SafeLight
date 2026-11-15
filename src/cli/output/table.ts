@@ -179,7 +179,7 @@ function trustBadge(style: Style) {
   };
 }
 
-const STATE_UNKNOWN_NOTE = `Open Safelight once so ${COMMAND} can see which extensions are on.`;
+export const STATE_UNKNOWN_NOTE = `Open Safelight once so ${COMMAND} can see which extensions are on.`;
 
 const stateText = (enabled: boolean | null): string => (enabled === null ? "?" : enabled ? "on" : "off");
 

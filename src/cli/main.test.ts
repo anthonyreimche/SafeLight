@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { CURRENT_PROCESS_VERSION } from "@/catalog/process-version";
 import { main, type MainIO } from "./main";
 import { COMMANDS } from "./commands";
-import { CliError, type CommandSpec, type ParsedArgs } from "./types";
+import { CliError, type CommandSpec, type ParsedArgs, type Stops } from "./types";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +61,21 @@ describe("main", () => {
       expect(h.out()).toBe(VERSION_LINE);
       expect(h.err()).toBe("");
     }
+  });
+
+  it("tells a bare Electron-as-Node run on Windows that the prompt needs Node", async () => {
+    const note = "The interactive prompt needs Node 22 or newer on PATH.";
+    const bare = harness({ platform: "win32", underElectron: true });
+    await main([], bare.io);
+    expect(bare.err()).toContain(note);
+    for (const extra of [{ platform: "win32" as const }, { platform: "linux" as const, underElectron: true }]) {
+      const h = harness(extra);
+      await main([], h.io);
+      expect(h.err()).not.toContain(note);
+    }
+    const withArgs = harness({ platform: "win32", underElectron: true });
+    await main(["version"], withArgs.io);
+    expect(withArgs.err()).not.toContain(note);
   });
 
   it("answers an unknown verb with exit 1 and a suggestion", async () => {
@@ -177,6 +192,50 @@ describe("main", () => {
     await new Promise((r) => setTimeout(r, 0));
     h.interrupt();
     expect(await code).toBe(130);
+  });
+
+  it("lets a command that stops itself wind down on the first Ctrl+C, and its exit code stand", async () => {
+    let stops: Stops | undefined;
+    const spec: CommandSpec = {
+      ...fake("import", async (ctx) => {
+        stops = ctx.stops;
+        await new Promise((resolve) => ctx.stops?.signal.addEventListener("abort", resolve));
+        await new Promise((r) => setTimeout(r, 5));
+        ctx.out.print("Stopped after 1 of 3.");
+        return { code: 130 };
+      }),
+      ownsStop: true,
+    };
+    const h = harness({ commands: [spec] });
+    const code = main(["import"], h.io);
+    await new Promise((r) => setTimeout(r, 0));
+    h.interrupt();
+    expect(await code).toBe(130);
+    expect(stops?.signal.aborted).toBe(true);
+    expect(stops?.force.aborted).toBe(false);
+    expect(h.out()).toBe("Stopped after 1 of 3.\n");
+    expect(h.err()).toBe("");
+  });
+
+  it("stops such a command at once on a second Ctrl+C", async () => {
+    let stops: Stops | undefined;
+    const spec: CommandSpec = { ...fake("import", (ctx) => { stops = ctx.stops; return new Promise(() => {}); }), ownsStop: true };
+    const h = harness({ commands: [spec] });
+    const code = main(["import"], h.io);
+    await new Promise((r) => setTimeout(r, 0));
+    h.interrupt();
+    await new Promise((r) => setTimeout(r, 0));
+    h.interrupt();
+    expect(await code).toBe(130);
+    expect(stops?.force.aborted).toBe(true);
+  });
+
+  it("gives the prompt's open photos to the command", async () => {
+    let seen: unknown;
+    const working = { paths: ["/p/a.ARW"], index: 0, root: "/p" };
+    const h = harness({ commands: [fake("get", async (ctx) => { seen = ctx.working; return { code: 0 }; })], working });
+    expect(await main(["get"], h.io)).toBe(0);
+    expect(seen).toEqual(working);
   });
 
   it("reports an unexpected failure as safelight: and exit 1", async () => {

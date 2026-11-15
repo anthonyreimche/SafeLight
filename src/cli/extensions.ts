@@ -53,11 +53,12 @@ export interface Manifest {
   id: string;
   name: string;
   version: string;
+  description?: string;
   repository?: string;
   permissions?: { network?: string[]; userOrigins?: boolean; userSockets?: boolean };
 }
 
-interface CatalogueItem { fullName: string; name?: string; categories?: string[] }
+interface CatalogueItem { fullName: string; name?: string; description?: string | null; categories?: string[] }
 interface Vocabulary { categories: { slug: string; label: string }[] }
 interface Kit { id: string; repos: string[] }
 
@@ -252,6 +253,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
       trust: declaredBanned ? "banned" : trustOf(list, repo, m.version),
       repo,
       permissions: permissionLines(m),
+      ...(m.description && { description: m.description }),
     };
   }
 
@@ -364,6 +366,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
           trust: trustOf(list, item.fullName, remote?.version ?? null),
           repo: item.fullName,
           installName: row ? stripPrefix(row.id) : repoName(item.fullName).toLowerCase(),
+          ...(item.description && { description: item.description }),
         };
       }));
     });

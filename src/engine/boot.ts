@@ -79,8 +79,10 @@ export async function boot(channel: EngineChannel): Promise<void> {
     extensions: await extensionStates(),
   });
   serveEngine(channel, {
-    export: (req, out) => session.export(req, out),
-    preview: (req, out) => session.preview(req, out),
+    export: (req, out, signal) => session.export(req, out, signal),
+    preview: (req, out, signal) => session.preview(req, out, signal),
+    import: (req, out, signal) => session.import(req, out, signal),
+    thumbs: (req, out, signal) => session.thumbs(req, out, signal),
     shutdown: () => session.close(),
   });
 }

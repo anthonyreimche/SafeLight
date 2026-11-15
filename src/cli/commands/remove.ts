@@ -25,9 +25,9 @@ export const removeCommand: CommandSpec = {
   writes: true,
   async run(ctx, args) {
     const { tool, photos } = toolOperand(ctx, args);
-    return runOnPhotos(ctx, args, photos, false, ({ photo, state, asShot }) => {
-      const look = ctx.values.resetTool(currentLook(state, asShot), tool.id, asShot);
-      return stepOutcome(ctx, photo, state, asShot, look, `Reset ${tool.name}`, []);
+    return runOnPhotos(ctx, args, photos, false, (work) => {
+      const look = ctx.values.resetTool(currentLook(work.state, work.asShot), tool.id, work.asShot);
+      return stepOutcome(ctx, work, look, `Reset ${tool.name}`, []);
     });
   },
 };

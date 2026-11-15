@@ -53,15 +53,16 @@ export const resetCommand: CommandSpec = {
     const names = keys.map((k) => k.key);
     const label = keys.length === 0 ? "Reset" : `Reset ${keys.map((k) => k.label).join(", ")}`;
     const kept = new Set<string>();
-    const outcome = await runOnPhotos(ctx, args, photos, false, ({ photo, state, asShot }) => {
-      const look = ctx.values.resetKeys(currentLook(state, asShot), keys.length === 0 ? "all" : names, asShot);
+    const outcome = await runOnPhotos(ctx, args, photos, false, (work) => {
+      const { asShot } = work;
+      const look = ctx.values.resetKeys(currentLook(work.state, asShot), keys.length === 0 ? "all" : names, asShot);
       if (keys.length === 0) {
         const fresh = freshParams(asShot);
         for (const [key, name] of KEPT_BY_RESET) {
           if (JSON.stringify(look.params[key]) !== JSON.stringify(fresh[key])) kept.add(name);
         }
       }
-      return stepOutcome(ctx, photo, state, asShot, look, label, []);
+      return stepOutcome(ctx, work, look, label, []);
     });
     if (kept.size > 0 && !ctx.json) ctx.out.info(`Kept what ${COMMAND} can't edit: ${[...kept].join(", ")}. Edit those in Safelight.`);
     return outcome;

@@ -17,7 +17,9 @@ import { main, type MainIO } from "./main";
 import { setCommand } from "./commands/set";
 import { buildSelectRequest } from "./select";
 import type { EngineRequest } from "@/engine/protocol";
-import type { EngineClient } from "./engine-client";
+import type { EngineClient, RequestOptions } from "./engine-client";
+import { forgetCommand } from "./commands/forget";
+import { importCommand } from "./commands/import";
 import type { CommandSpec } from "./types";
 
 class FakeChannel {
@@ -243,6 +245,77 @@ describe("safelight end to end", () => {
     expect(fs.existsSync(path.join(project, ".safelight", "writer.lock"))).toBe(false);
   });
 
+  it("takes a forgotten photo back only when it is named to import", async () => {
+    expect((await slu(["forget", "a.ARW"], project, { commands: [forgetCommand] })).code).toBe(0);
+    const dry = async (argv: string[]) => JSON.parse((await slu(["import", ...argv, "--dry-run", "--json"], project, { commands: [importCommand] })).out) as { new: string[] };
+    expect((await dry([])).new).toEqual([]);
+    expect((await dry(["a.ARW"])).new).toEqual([path.join(project, "a.ARW")]);
+    const requests: EngineRequest[] = [];
+    const engine: EngineClient = {
+      async *request(req) {
+        requests.push(req);
+        yield { id: req.id, type: "done" };
+      },
+      shutdown: async () => {},
+    };
+    await slu(["import", "a.ARW"], project, { commands: [importCommand], services: { engine: () => engine } });
+    expect(requests).toMatchObject([{ type: "import", scope: { kind: "some", files: ["a.ARW"], folders: [] } }]);
+  });
+
+  describe("Ctrl+C on an import", () => {
+    /** An engine that imports a.ARW, then waits for the cancel and answers as the engine does: done, stopped. */
+    function stoppingEngine(seen: { options: RequestOptions[]; shutdowns: number }, gotFirst: () => void): EngineClient {
+      return {
+        async *request(req, options = {}) {
+          seen.options.push(options);
+          if (req.type !== "import") return;
+          fs.writeFileSync(path.join(project, "c.ARW"), "C");
+          yield { id: req.id, type: "import-plan", workingDir: path.join(project, ".safelight"), location: "in-folder", created: false, newFiles: 2 };
+          yield { id: req.id, type: "import-file", relPath: "c.ARW", photoId: "c", state: "ok" };
+          gotFirst();
+          await new Promise((resolve) => options.signal?.addEventListener("abort", resolve, { once: true }));
+          if (options.force?.aborted) return;
+          yield { id: req.id, type: "import-done", moved: [], dropped: [], pending: 0, stopped: "interrupted" };
+          yield { id: req.id, type: "done" };
+        },
+        shutdown: async () => { seen.shutdowns++; },
+      };
+    }
+
+    async function importWithPresses(presses: number) {
+      const seen = { options: [] as RequestOptions[], shutdowns: 0 };
+      let interrupt = () => {};
+      let gotFirst = () => {};
+      const first = new Promise<void>((resolve) => (gotFirst = resolve));
+      const run = slu(["import", "--json"], project, {
+        commands: [importCommand],
+        services: { engine: () => stoppingEngine(seen, gotFirst) },
+        onInterrupt: (handler) => {
+          interrupt = handler;
+          return () => {};
+        },
+      });
+      await first;
+      for (let i = 0; i < presses; i++) interrupt();
+      return { r: await run, seen };
+    }
+
+    it("asks the engine to stop, waits for the files in flight, says what was imported and exits 130", async () => {
+      const { r, seen } = await importWithPresses(1);
+      expect(r.code).toBe(130);
+      expect(seen.options[0].signal?.aborted).toBe(true);
+      expect(seen.options[0].force?.aborted).toBe(false);
+      expect(seen.shutdowns).toBe(1);
+      expect(JSON.parse(r.out)).toMatchObject({ imported: [{ relPath: "c.ARW", id: "c" }], stopped: "interrupted" });
+    });
+
+    it("stops the engine at once on a second Ctrl+C", async () => {
+      const { r, seen } = await importWithPresses(2);
+      expect(r.code).toBe(130);
+      expect(seen.options[0].force?.aborted).toBe(true);
+    });
+  });
+
   it("previews --try values through the engine without storing them", async () => {
     const requests: EngineRequest[] = [];
     const engine: EngineClient = {
@@ -270,7 +343,8 @@ describe("safelight end to end", () => {
     fs.writeFileSync(path.join(loose, "c.ARW"), "C");
     const r = await slu(["set", "c.ARW", "exposure=1"], loose);
     expect(r.code).toBe(2);
-    expect(r.err).toContain("isn't in a Safelight catalogue");
+    expect(r.err).toContain("c.ARW isn't imported");
+    expect(r.err).toContain("safelight import c.ARW");
   });
 
   it("suggests a key for a misspelt reset key, not a missing photo", async () => {

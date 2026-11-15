@@ -9,14 +9,16 @@ import { backendChoices, backendCacheFiles, parseBackendCache, SOFTWARE_BACKEND 
 import { readLock, STALE_MS } from "../../../electron/file-lock.cjs";
 import type { SharedSettings } from "@/state/shared-settings";
 import { readDescriptors, readSharedSettings } from "../mirror";
-import type { DoctorItem } from "../output/types";
+import type { DoctorCheck, DoctorItem } from "../output/types";
 import { detectGraphicsMode } from "../terminal-image";
-import type { CommandContext, CommandSpec, InstalledExtension } from "../types";
+import type { CommandContext, CommandSpec, GraphicsMode, InstalledExtension } from "../types";
 import { COMMAND } from "../types";
 
 // A GUI is taken to be running while its mirror's heartbeat is this fresh (it
 // rewrites the file every 60 s).
 const HEARTBEAT_FRESH_MS = 3 * 60 * 1000;
+
+const OPEN_ONCE = "Open Safelight once.";
 
 /** The app looks to be running: its settings carry a pid and a fresh heartbeat. */
 export function guiLooksRunning(shared: SharedSettings | null, now: number = Date.now()): boolean {
@@ -36,13 +38,16 @@ export async function gpuItem(ctx: Pick<CommandContext, "env">): Promise<DoctorI
   const file = backendCacheFiles(userData, platform, ctx.env.env).file;
   const text = file ? await readFile(file, "utf8").catch(() => null) : null;
   if (text === null) {
-    return { label: "Graphics", value: "not known yet: open Safelight once", status: "info" };
+    return { label: "Graphics", value: "not known yet: open Safelight once", status: "info", hint: "Open Safelight once so it records its graphics backend." };
   }
   const cache = parseBackendCache(text, backendChoices(platform, false));
   const backend = cache.backend ?? cache.elsewhere;
-  if (!backend) return { label: "Graphics", value: "not known yet: open Safelight once", status: "info" };
+  if (!backend) return { label: "Graphics", value: "not known yet: open Safelight once", status: "info", hint: "Open Safelight once so it records its graphics backend." };
   if (backend === SOFTWARE_BACKEND) {
-    return { label: "Graphics", value: "software rendering (exports are slower)", status: "warn" };
+    return {
+      label: "Graphics", value: "software rendering (exports are slower)", status: "warn",
+      hint: "A graphics driver update usually lets Safelight use the GPU.",
+    };
   }
   return { label: "Graphics", value: backend, status: "ok" };
 }
@@ -53,7 +58,7 @@ async function extensionItems(ctx: CommandContext): Promise<DoctorItem[]> {
     installed = await ctx.extensions.installed();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return [{ label: "Extensions", value: `can't list them: ${reason}`, status: "warn" }];
+    return [{ label: "Extensions", value: `can't list them: ${reason}`, status: "warn", hint: "Check the network; HTTPS_PROXY sets a proxy." }];
   }
   const descriptors = readDescriptors(ctx.env.userData, installed);
   const missing = installed.filter((e) => !descriptors.has(e.id));
@@ -64,6 +69,7 @@ async function extensionItems(ctx: CommandContext): Promise<DoctorItem[]> {
       label: "Extension ranges",
       value: `unknown for ${missing.map((e) => e.name).join(", ")}: open Safelight once`,
       status: "warn",
+      hint: "Safelight writes each extension's ranges the first time it runs with it.",
     });
   }
   if (hooks.length > 0) {
@@ -71,6 +77,7 @@ async function extensionItems(ctx: CommandContext): Promise<DoctorItem[]> {
       label: "Catalogue hooks",
       value: `${hooks.map((e) => e.name).join(", ")} run when Safelight saves an edit, not for ${COMMAND}`,
       status: "warn",
+      hint: "Make edits that need them in Safelight.",
     });
   }
   return items;
@@ -86,6 +93,7 @@ async function lockItem(ctx: CommandContext): Promise<DoctorItem> {
     label: "Project",
     value: `${project.root}: ${fresh ? `held by ${lock.app} (pid ${lock.pid})` : `stale lock from ${lock.app}, ${COMMAND} will take it over`}`,
     status: fresh ? "warn" : "info",
+    ...(fresh && { hint: "Close the folder in Safelight, or add --wait to a command." }),
   };
 }
 
@@ -100,33 +108,52 @@ function networkItem(ctx: CommandContext): DoctorItem {
   return { label: "Network", value: parts.join("; "), status: "info" };
 }
 
-export async function doctorItems(ctx: CommandContext): Promise<DoctorItem[]> {
-  const items: DoctorItem[] = [
-    { label: "Version", value: `Safelight Unplugged ${ctx.env.appVersion}`, status: "info" },
-    { label: "App", value: ctx.env.appRoot, status: "info" },
-    { label: "Profile", value: ctx.env.userData, status: "info" },
-    await gpuItem(ctx),
-  ];
+/** Where real pictures come from, for a terminal that is left with blocks. */
+function picturesHint(ctx: CommandContext, mode: GraphicsMode): { hint: string } | Record<string, never> {
+  if (mode !== "blocks") return {};
+  if (ctx.env.platform === "win32" && ctx.env.env.WT_SESSION) return { hint: "Windows Terminal 1.22 or newer shows real pictures." };
+  return { hint: "A terminal with kitty, iTerm2 or sixel pictures shows real ones; --graphics picks a mode." };
+}
 
+function settingsItem(ctx: CommandContext): DoctorItem {
   const shared = readSharedSettings(ctx.env.userData);
-  if (!shared) {
-    items.push({ label: "Settings", value: "not shared yet: open Safelight once", status: "warn" });
-  } else {
-    const age = Date.now() - shared.writtenAt;
-    const running = guiLooksRunning(shared);
-    items.push({
-      label: "Settings",
-      value: `shared ${ago(age)}${running ? "; Safelight looks to be running" : ""}`,
-      status: "ok",
-    });
-  }
+  if (!shared) return { label: "Settings", value: "not shared yet: open Safelight once", status: "warn", hint: OPEN_ONCE };
+  const running = guiLooksRunning(shared);
+  return { label: "Settings", value: `shared ${ago(Date.now() - shared.writtenAt)}${running ? "; Safelight looks to be running" : ""}`, status: "ok" };
+}
 
-  items.push(...(await extensionItems(ctx)));
+/** What doctor checks, in order; each settles into one item or a few. */
+export function doctorChecks(ctx: CommandContext): DoctorCheck[] {
+  return [
+    {
+      label: "Safelight",
+      run: async () => [
+        { label: "Version", value: `Safelight Unplugged ${ctx.env.appVersion}`, status: "info" },
+        { label: "App", value: ctx.env.appRoot, status: "info" },
+        ctx.env.electronBinary === null
+          ? { label: "Engine", value: "not found: build the app first, or set SAFELIGHT_ELECTRON", status: "fail", hint: "Build the app, or set SAFELIGHT_ELECTRON to its Electron binary." }
+          : { label: "Engine", value: ctx.env.electronBinary, status: "info" },
+        { label: "Profile", value: ctx.env.userData, status: "info" },
+      ],
+    },
+    { label: "Graphics", run: () => gpuItem(ctx) },
+    { label: "Settings", run: async () => settingsItem(ctx) },
+    { label: "Extensions", run: () => extensionItems(ctx) },
+    {
+      label: "Terminal images",
+      run: async () => {
+        const mode = await detectGraphicsMode(ctx.env);
+        return { label: "Terminal images", value: `${mode.mode} (${mode.reason})`, status: "info", ...picturesHint(ctx, mode.mode) };
+      },
+    },
+    { label: "Project", run: () => lockItem(ctx) },
+    { label: "Network", run: async () => networkItem(ctx) },
+  ];
+}
 
-  const mode = await detectGraphicsMode(ctx.env);
-  items.push({ label: "Terminal images", value: `${mode.mode} (${mode.reason})`, status: "info" });
-  items.push(await lockItem(ctx));
-  items.push(networkItem(ctx));
+export async function doctorItems(ctx: CommandContext): Promise<DoctorItem[]> {
+  const items: DoctorItem[] = [];
+  for (const check of doctorChecks(ctx)) items.push(...[await check.run()].flat());
   return items;
 }
 
@@ -141,10 +168,8 @@ export const doctorCommand: CommandSpec = {
   options: [],
   writes: false,
   async run(ctx) {
-    const items = await doctorItems(ctx);
-    const failed = items.some((i) => i.status === "fail");
-    if (ctx.json) return { code: failed ? 1 : 0, json: { slu: 1, items } };
-    ctx.out.print(ctx.out.doctor(items));
-    return { code: failed ? 1 : 0 };
+    const items = ctx.json ? await doctorItems(ctx) : await ctx.out.checklist(doctorChecks(ctx));
+    const code = items.some((i) => i.status === "fail") ? 1 : 0;
+    return ctx.json ? { code, json: { slu: 1, items } } : { code };
   },
 };

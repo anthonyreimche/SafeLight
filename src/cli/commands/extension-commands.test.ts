@@ -53,20 +53,21 @@ function fakeService(overrides: Partial<ExtensionService> = {}): ExtensionServic
   };
 }
 
-interface Rig { ctx: CommandContext; printed: string[]; errors: string[]; warned: string[]; json: unknown[] }
+interface Rig { ctx: CommandContext; printed: string[]; errors: string[]; warned: string[]; json: unknown[]; rows: unknown[][] }
 
 function rig(extensions: ExtensionService, opts: { yes?: boolean; json?: boolean; tty?: boolean } = {}): Rig {
   const printed: string[] = [];
   const errors: string[] = [];
   const warned: string[] = [];
   const json: unknown[] = [];
+  const rows: unknown[][] = [];
   const out = {
     print: (t: string) => printed.push(t),
     error: (p: { message: string }) => errors.push(p.message),
     warn: (p: { message: string }) => warned.push(p.message),
     json: (d: unknown) => json.push(d),
-    searchTable: (rows: unknown[]) => `search:${rows.length}`,
-    extensionTable: (rows: { id: string; update?: string }[]) => rows.map((r) => `${r.id}${r.update ? `>${r.update}` : ""}`).join(","),
+    searchTable: (found: unknown[]) => { rows.push(found); return `search:${found.length}`; },
+    extensionTable: (found: { id: string; update?: string }[]) => (rows.push(found), found).map((r) => `${r.id}${r.update ? `>${r.update}` : ""}`).join(","),
   } as unknown as Output;
   const ctx = {
     env: { isTTY: { stdin: opts.tty ?? false, stdout: false, stderr: false } },
@@ -75,7 +76,7 @@ function rig(extensions: ExtensionService, opts: { yes?: boolean; json?: boolean
     yes: opts.yes ?? false,
     extensions,
   } as unknown as CommandContext;
-  return { ctx, printed, errors, warned, json };
+  return { ctx, printed, errors, warned, json, rows };
 }
 
 describe("install", () => {
@@ -256,6 +257,18 @@ describe("search and extensions", () => {
     expect(r.printed).toEqual(["search:25"]);
     expect(r.warned[0]).toMatch(/first 25/);
     await expect(searchCommand.run(r.ctx, args([]))).rejects.toMatchObject({ code: 1 });
+  });
+
+  it("hands the registry's and the manifest's one-line descriptions to the tables", async () => {
+    const hit: SearchHit = {
+      id: "x", name: "X", version: "1.0.0", category: "tone", trust: "verified", repo: "o/x", installName: "x", description: "Lifts detail.",
+    };
+    const found = rig(fakeService({ search: async () => [hit] }));
+    await searchCommand.run(found.ctx, args(["x"]));
+    expect(found.rows[0]).toEqual([expect.objectContaining({ installName: "x", description: "Lifts detail." })]);
+    const listed = rig(fakeService({ installed: async () => [{ ...basic, description: "Exposure and tone." }] }));
+    await extensionsCommand.run(listed.ctx, args([]));
+    expect(listed.rows[0]).toEqual([expect.objectContaining({ id: "safelight.basic", description: "Exposure and tone." })]);
   });
 
   it("gives enabled: null in --json while the app hasn't said which extensions are on", async () => {

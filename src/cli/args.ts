@@ -39,6 +39,9 @@ export const PHOTO_OPTIONS: readonly OptionSpec[] = [
 /** Switches that may also carry a value (`--wait=30`). */
 const OPTIONAL_VALUE = new Set(["wait"]);
 
+// "-90" is a word (rotate's turn), never an option: no alias is a digit.
+const NEGATIVE_NUMBER = /^-\d+(\.\d+)?$/;
+
 // A key starts with a letter, so drive paths (C:\a=b) and ./a=b stay photos.
 const ASSIGNMENT = /^([A-Za-z][\w.-]*?)(\+=|-=|=)(.*)$/s;
 
@@ -90,7 +93,7 @@ export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs
       continue;
     }
 
-    if (token.startsWith("-")) {
+    if (token.startsWith("-") && !NEGATIVE_NUMBER.test(token)) {
       const long = token.startsWith("--");
       const eq = long ? token.indexOf("=") : -1;
       const name = long ? token.slice(2, eq < 0 ? undefined : eq) : token.slice(1);

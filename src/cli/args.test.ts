@@ -162,4 +162,12 @@ describe("parseArgs", () => {
   it("refuses a value on a switch that takes none", () => {
     expect(usageError(() => parseArgs(["export", "--try=yes"], spec)).code).toBe(1);
   });
+
+  it("reads a negative number as a word, not an option", () => {
+    const rotate = { ...spec, verb: "rotate", options: [...PHOTO_OPTIONS] };
+    expect(parseArgs(["rotate", "a.ARW", "-90"], rotate).positionals).toEqual(["a.ARW", "-90"]);
+    expect(parseArgs(["rotate", "a.ARW", "-90"], null).positionals).toEqual(["a.ARW", "-90"]);
+    expect(parseArgs(["rotate", "a.ARW", "-1.5"], rotate).positionals).toEqual(["a.ARW", "-1.5"]);
+    expect(parseArgs(["export", "--quality", "-5"], spec).options.quality).toBe(-5);
+  });
 });

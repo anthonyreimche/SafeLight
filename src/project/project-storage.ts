@@ -73,7 +73,7 @@ import {
   type ChangeStamps,
   type PhotoStamps,
 } from "./change-stamps";
-import { mapLimit, readBlobIfThere, readJSON, removeEntry, writeBlob } from "./fs";
+import { listNames, mapLimit, readBlobIfThere, readJSON, removeEntry, writeBlob } from "./fs";
 import {
   BACKUP,
   CATALOG,
@@ -88,15 +88,21 @@ import { catalogText, forgetStepTexts, sameRecordText } from "./catalog-json";
 import { fsErrorText } from "./fs-errors";
 import { CATALOG_VERSION } from "./catalog-errors";
 import { openableEdit, SAVE_RETRY_DELAYS } from "./edit-files";
-import { nativeDirectoryHandle, nativeFs, nativePathOf } from "./native-fs";
+import { nativeDirectoryHandle, nativeFs, nativePathOf, readFileSlice } from "./native-fs";
 import { PhotoBlobs } from "./photo-blobs";
-import { findMoved, namesFoldCase, shotDiffers } from "./reattach";
+import { findMoved, namesFoldCase, pathKey, shotDiffers } from "./reattach";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
 import { judgeVolume, recordVolume } from "./volume-print";
 import { adoptSidecar, SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
 import { resolveWorkingDir, type WorkingDir, type WorkingDirLocation } from "./working-dir";
 import { isSourceFile, isSourceRoot, pairSourceRecords } from "./library-sources";
-import { ProjectLockedError, type StorageOpenOptions } from "./storage-options";
+import {
+  LockLostError,
+  ProjectLockedError,
+  type DroppedPhoto,
+  type MovedPhoto,
+  type StorageOpenOptions,
+} from "./storage-options";
 import { getSettings } from "@/state/settings-store";
 
 export { catalogKey, type CatalogRecovery } from "./catalog-file";
@@ -142,6 +148,8 @@ const TOMBSTONE_ANSWERED_FOR = 60_000;
 /** How many previews one storage writes at once. Each write holds its whole preview
  *  in memory on both sides of the desktop bridge, whose queue is per file. */
 const PREVIEW_WRITES_AT_ONCE = 4;
+/** How old a preview no record holds must be before an open removes it (ms). */
+const ORPHAN_PREVIEW_AGE = 10 * 60_000;
 
 /** Hears the records a storage took on from another window. */
 type RemoteRecordsListener = (records: CatalogRecords, storage: ProjectStorage) => void;
@@ -234,6 +242,32 @@ function madeAt(record: Pick<StoredPhoto, "rotation" | "previewRotation">): numb
 function folderOf(relPath: string): string {
   const i = relPath.lastIndexOf("/");
   return i === -1 ? "" : relPath.slice(0, i);
+}
+
+/** The new files an open may import (StorageOpenOptions.importOnly), every one
+ *  without a scope, and those it names one by one, which it takes back from the
+ *  catalogue's removals. Paths are matched as the file system names them. */
+function importScope(scope: StorageOpenOptions["importOnly"]): {
+  inScope: (file: ScannedFile) => boolean;
+  isNamed: (file: ScannedFile) => boolean;
+} {
+  if (!scope) return { inScope: () => true, isNamed: () => false };
+  const foldCase = namesFoldCase();
+  const files = new Set(scope.files.map((relPath) => pathKey(relPath, foldCase)));
+  const folders = scope.folders.map(({ relPath, recursive }) => ({
+    key: pathKey(relPath, foldCase),
+    recursive,
+  }));
+  const isNamed = (file: ScannedFile) => files.has(pathKey(file.path, foldCase));
+  const inScope = (file: ScannedFile) => {
+    if (isNamed(file)) return true;
+    const folder = pathKey(folderOf(file.path), foldCase);
+    return folders.some(
+      ({ key, recursive }) =>
+        folder === key || (recursive && (key === "" || folder.startsWith(`${key}/`))),
+    );
+  };
+  return { inScope, isNamed };
 }
 
 /** Thrown by a read-only open (StorageOpenOptions.readOnly) of a folder that has
@@ -402,6 +436,10 @@ export interface OpenedProject {
   promotedFromExternal: string | null;
   /** How a catalogue that couldn't be used as saved was recovered, else null. */
   recovered: CatalogRecovery | null;
+  /** The saved photos the walk found on another path, and those it dropped as
+   *  their file is gone. */
+  moved: MovedPhoto[];
+  dropped: DroppedPhoto[];
 }
 
 export class ProjectStorage implements CatalogStorage {
@@ -517,6 +555,12 @@ export class ProjectStorage implements CatalogStorage {
   /** The writer lock this copy holds on its catalogue, and the timer keeping it fresh. */
   private lock: HeldLock | null = null;
   private lockRefresh: ReturnType<typeof setInterval> | null = null;
+  /** Set by an open asked to prove its lock before each write (verifyBeforeWrite),
+   *  and lockLost once that proof failed: nothing is written from then on. */
+  private verifyLock = false;
+  private lockLost = false;
+  /** Stops the open's walk once the lock is lost. */
+  private readonly stopWalk = new AbortController();
   private refreshing: Promise<void> = Promise.resolve();
   /** Gives the writer lock back as the page leaves, once a closing window's flush
    *  has asked for it (releaseOnPageHide). */
@@ -588,6 +632,7 @@ export class ProjectStorage implements CatalogStorage {
       storage.readOnly = true;
       rawCacheDir = readOnlyDir(rawCacheDir);
     }
+    storage.verifyLock = options.lock ? options.lock.verifyBeforeWrite === true : false;
     if (lock) storage.holdLock(lock);
     // Follow the other windows from before catalog.json is read: which catalogue what
     // they write belongs to is only known once it is read, so it waits until then
@@ -603,7 +648,8 @@ export class ProjectStorage implements CatalogStorage {
       const { catalog: opened, recovered, bytes } = await readSavedCatalog(storage.sl, { readOnly });
       const saved = opened?.file ?? null;
       storage.extra = opened?.extra ?? {};
-      if (bytes && opened?.skipped === 0 && isMainWindow()) storage.backup = new Blob([bytes]);
+      if (bytes && opened?.skipped === 0 && (options.keepBackup ?? isMainWindow()))
+        storage.backup = new Blob([bytes]);
       storage.catalogId = catalogIdOf(saved);
       storage.catalog = catalogKey(root, sl, storage.catalogId);
       for (const [id, stamps] of Object.entries(saved?.changed.photos ?? {})) {
@@ -686,13 +732,19 @@ export class ProjectStorage implements CatalogStorage {
           externalPath,
           promotedFromExternal,
           recovered,
+          moved: [],
+          dropped: [],
         };
       }
 
+      const walkSignal = signal
+        ? AbortSignal.any([signal, storage.stopWalk.signal])
+        : storage.stopWalk.signal;
       const scan = await scanProject(root, deps.isSupportedName);
       const scanPaths = new Set(scan.files.map((f) => f.path));
       const underUnreadable = (rel: string) =>
         scan.unreadable.some((folder) => rel === folder || rel.startsWith(`${folder}/`));
+      const { inScope, isNamed } = importScope(options.importOnly);
 
       const importStarted = Date.now();
       // A library source names each photo by a key of its own, which follows the photo
@@ -718,7 +770,7 @@ export class ProjectStorage implements CatalogStorage {
           ),
           scan.files.filter((f) => !byRel.has(f.path) && !storage.removed.has(f.path)),
           namesFoldCase(),
-          { signal, onProgress },
+          { signal: walkSignal, onProgress },
         ).catch((error: unknown) => {
           // A search that fails costs its photos one import again, never the open.
           console.warn("[project] the search for moved photos failed:", error);
@@ -758,9 +810,11 @@ export class ProjectStorage implements CatalogStorage {
         });
 
       // New files (not in the saved catalogue, not tombstoned) are the ones that get
-      // decoded — the slow part of opening. Report progress against that count.
+      // decoded — the slow part of opening. Report progress against that count. An
+      // import of only some files counts those, a tombstoned one it names among them.
+      const tombstoned = (f: ScannedFile) => storage.removed.has(f.path) && !isNamed(f);
       const counted = new Set(
-        scan.files.flatMap((f) => (known.has(f) || storage.removed.has(f.path) ? [] : [f])),
+        scan.files.flatMap((f) => (known.has(f) || !inScope(f) || tombstoned(f) ? [] : [f])),
       );
       const newTotal = counted.size;
       let newDone = 0;
@@ -784,16 +838,17 @@ export class ProjectStorage implements CatalogStorage {
           storage.show(photo);
           return photo.id;
         }
+        if (!inScope(f)) return null;
         // Tombstoned: the user removed this photo from the catalogue while its file
         // stayed on disk. Honour that removal instead of re-importing it as new,
         // one another window's answer told of after the count too.
-        if (storage.removed.has(f.path)) {
+        if (tombstoned(f)) {
           if (counted.has(f)) onProgress?.(++newDone, newTotal);
           return null;
         }
         // New file: decode, thumbnail, cache the preview on disk. The import reads
         // only as much of the file as its preview needs.
-        if (signal?.aborted) {
+        if (walkSignal.aborted) {
           onProgress?.(++newDone, newTotal);
           return null;
         }
@@ -866,6 +921,7 @@ export class ProjectStorage implements CatalogStorage {
             }
           }
           if (previewHeld) storage.lastThumb.set(photo.id, photo.thumbnailBlob);
+          if (storage.removed.has(photo.relPath)) storage.revive(photo);
           storage.show(photo);
           storage.changedPhotos.add(photo.id);
           newIds.push(photo.id);
@@ -883,9 +939,10 @@ export class ProjectStorage implements CatalogStorage {
       });
 
       storage.scanning = false;
+      if (storage.lockLost) throw new LockLostError();
       // A cancelled search for moved photos pairs none of the files it had yet to
       // read, so only an open that ran to the end may take a missing file for gone.
-      const finished = !signal?.aborted;
+      const finished = !walkSignal.aborted;
       // Each photo the walk reached, as this copy holds it now: a change stored
       // after the walk passed it stays, and a photo removed meanwhile stays out.
       const masters = results.flatMap((id) => {
@@ -974,6 +1031,11 @@ export class ProjectStorage implements CatalogStorage {
       // for files that have since vanished from disk are dropped.
       for (const id of [...storage.photos.keys()]) storage.drop(id);
       for (const p of photos) storage.show(p);
+      const dropped = savedPhotos.flatMap((r): DroppedPhoto[] =>
+        storage.photos.has(r.id) || storage.removedIds.has(r.id)
+          ? []
+          : [{ id: r.id, relPath: r.relPath }],
+      );
 
       // Drop edit histories whose photo no longer exists (file gone, or a virtual
       // copy whose master is gone). Surviving copies are in storage.photos, so kept.
@@ -1016,6 +1078,7 @@ export class ProjectStorage implements CatalogStorage {
           externalPath,
           masters.filter((m) => m.fileHandle),
         ).catch((error: unknown) => console.warn("[project] the card's print wasn't kept:", error));
+      if (finished) await storage.prunePreviews();
 
       storage.applyWaiting();
       storage.walking = false;
@@ -1046,6 +1109,10 @@ export class ProjectStorage implements CatalogStorage {
         externalPath,
         promotedFromExternal,
         recovered,
+        moved: [...moved].flatMap(([file, record]): MovedPhoto[] =>
+          storage.photos.has(record.id) ? [{ id: record.id, from: record.relPath, to: file.path }] : [],
+        ),
+        dropped,
       };
     } catch (error) {
       storage.walking = false;
@@ -1454,6 +1521,32 @@ export class ProjectStorage implements CatalogStorage {
     return { ...photo, fileSize: file.size };
   }
 
+  /** Remove the previews of photos this copy holds no record of, which an import
+   *  stopped before its next save, or a crash, leaves behind. Only the writer-lock
+   *  holder prunes, and only previews older than ORPHAN_PREVIEW_AGE: another
+   *  window's import writes each preview before its record is saved. Never fails
+   *  the open. */
+  private async prunePreviews(): Promise<void> {
+    if (!this.lock) return;
+    try {
+      const unheld: string[] = [];
+      for await (const name of listNames(this.previews)) {
+        const id = name.endsWith(".jpg") ? name.slice(0, -".jpg".length) : null;
+        if (id !== null && !this.photos.has(id) && !this.unshown.has(id)) unheld.push(name);
+      }
+      const before = Date.now() - ORPHAN_PREVIEW_AGE;
+      const orphans = (
+        await mapLimit(unheld, 8, async (name) => {
+          const file = await this.previews.getFileHandle(name);
+          return (await readFileSlice(file, 0, 0)).lastModified < before ? [name] : [];
+        })
+      ).flat();
+      await mapLimit(orphans, 8, (name) => removeEntry(this.previews, name));
+    } catch (error) {
+      console.warn("[project] previews of photos no longer held couldn't be removed:", error);
+    }
+  }
+
   /** `saved` on the path open()'s scan found its file under, as the photo held for
    *  it is from now on, the location stamped as changed now. */
   private relocate(saved: StoredPhoto, file: ScannedFile): StoredPhoto {
@@ -1754,9 +1847,30 @@ export class ProjectStorage implements CatalogStorage {
       ?.refreshProjectLock?.(lock.workingDir, lock.token)
       .catch(() => true);
     if (kept !== false || this.lock !== lock) return;
+    this.loseLock();
+  }
+
+  /** Whether this copy may write: with verifyBeforeWrite, only while the lock is
+   *  still its own, proved now. A proof that can't be made is no proof it was lost. */
+  private async lockStillHeld(): Promise<boolean> {
+    const lock = this.lock;
+    if (!this.verifyLock || this.lockLost || !lock) return !this.lockLost;
+    const kept = await nativeFs()
+      ?.refreshProjectLock?.(lock.workingDir, lock.token)
+      .catch(() => true);
+    if (kept === false && this.lock === lock) this.loseLock();
+    return !this.lockLost;
+  }
+
+  /** Another writer took the lock over: it is let go. With verifyBeforeWrite this
+   *  copy also writes nothing more and its walk stops. */
+  private loseLock(): void {
     console.warn("[project] another writer took this catalogue's writer lock over");
     this.lock = null;
     void this.releaseLock();
+    if (!this.verifyLock) return;
+    this.lockLost = true;
+    this.stopWalk.abort();
   }
 
   /** Stop refreshing the writer lock and give it back, if this copy still holds it.
@@ -1969,9 +2083,15 @@ export class ProjectStorage implements CatalogStorage {
 
   /** Write any pending changes now (see CatalogStorage.flush). With none, resolve
    *  once the write still running, if any, has landed, and write again if it
-   *  failed. A copy holding a change it couldn't send (unsent) always writes. */
+   *  failed. A copy holding a change it couldn't send (unsent) always writes.
+   *  Rejects with LockLostError once a verified lock was taken over. */
   async flush(options?: { unloading?: boolean }): Promise<void> {
     if (this.readOnly) throw readOnlyRefusal();
+    await this.flushWrites(options);
+    if (this.lockLost) throw new LockLostError();
+  }
+
+  private async flushWrites(options?: { unloading?: boolean }): Promise<void> {
     if (!options?.unloading) {
       if (this.dirty) return this.save();
       const running = this.nextWrite ?? this.writing;
@@ -2041,6 +2161,7 @@ export class ProjectStorage implements CatalogStorage {
    *  down first, the oldest being replaced, so a write that fails part way loses
    *  no backup that was there. */
   private async writeBackup(backup: Blob): Promise<void> {
+    if (this.lockLost) return;
     try {
       const generations = [BACKUP, ...OLDER_BACKUPS];
       // The same catalogue again would only push an older one out.
@@ -2060,6 +2181,10 @@ export class ProjectStorage implements CatalogStorage {
   /** Never rejects: how the write ended is reported (onSaveStatus), and a failed
    *  one is logged, kept to save and tried again (retryLater). */
   private async writeCatalog(): Promise<void> {
+    if (this.verifyLock && !(await this.lockStillHeld())) {
+      this.dirty = false;
+      return;
+    }
     this.dirty = false;
     const unsavedSince = this.unsavedSince;
     this.unsavedSince = null;

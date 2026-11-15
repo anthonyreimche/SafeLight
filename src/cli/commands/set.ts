@@ -28,15 +28,15 @@ export const setCommand: CommandSpec = {
       throw new CliError(1, "Give at least one value to set, like exposure=0.5.", `${COMMAND} help set shows how.`);
     }
     const warned = new Set<string>();
-    return runOnPhotos(ctx, args, args.positionals, false, ({ photo, state, asShot }) => {
-      const look = currentLook(state, asShot);
-      const result = ctx.values.apply(look, args.assignments, { asShot, strict: ctx.strict });
+    return runOnPhotos(ctx, args, args.positionals, false, (work) => {
+      const { state, asShot } = work;
+      const result = ctx.values.apply(currentLook(state, asShot), args.assignments, { asShot, strict: ctx.strict });
       for (const c of result.changes) {
         if (!c.clamped || warned.has(c.info.key)) continue;
         warned.add(c.info.key);
         ctx.out.warn({ message: `${c.info.label} ${c.clamped.requested} is past its limit, so it was set to ${ctx.out.formatValue(c.info, c.after)}.` });
       }
-      return stepOutcome(ctx, photo, state, asShot, result.look, result.label, result.changes);
+      return stepOutcome(ctx, work, result.look, result.label, result.changes);
     });
   },
 };

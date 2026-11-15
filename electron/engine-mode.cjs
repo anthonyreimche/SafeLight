@@ -8,15 +8,20 @@
 // with the app's own bundle, extensions and graphics backend; this process
 // relays between `slu` and that page.
 //
-//   slu --stdin, JSON lines--> main --MessagePort--> engine page
-//   slu <--stdout, wire------- main <--MessagePort-- engine page
+//   slu --socket, JSON lines--> main --MessagePort--> engine page
+//   slu <--socket, wire-------- main <--MessagePort-- engine page
+//
+// `slu` listens on a local socket and passes its path as --slu-pipe=<path>; the
+// engine connects to it as it starts. Not stdio: on Windows, Electron's main
+// process sees a stdin pipe end at once. When the socket closes, the engine
+// exits 0.
 //
 // The first port message is { mirror: SharedSettings | null }, the app's
-// settings for the page to load before it boots. After it, each stdin line is
+// settings for the page to load before it boots. After it, each socket line is
 // posted as the parsed EngineRequest. The page posts EngineEvent objects, which
 // go out as wire kind 0, and image bytes as { frame: number, bytes:
 // ArrayBuffer | Uint8Array }, which go out as kind 1 (src/engine/protocol.ts).
-// stdout carries the wire only: console.log and console.info go to stderr.
+// console.log and console.info go to stderr, which `slu -vv` prints.
 //
 // Its own Chromium profile at <app userData>/engine, so its storage and RAW
 // cache never touch the app's. Everything else is the app's, read: the
@@ -30,6 +35,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const nodeNet = require("node:net");
 const path = require("node:path");
 const readline = require("node:readline");
 const util = require("node:util");
@@ -145,8 +151,9 @@ const isRequest = (value) =>
   !!value && typeof value === "object" && Number.isInteger(value.id) && typeof value.type === "string";
 
 /** Relays `input`'s JSON lines to `port` and `port`'s messages to `output` as
- *  wire. `end` runs once: on stdin EOF, after a shutdown request is passed on,
- *  or when `output` fails (`slu` went away). */
+ *  wire; both are `slu`'s socket in engine mode. `end` runs once: on the input's
+ *  end, after a shutdown request is passed on, or when `output` fails (`slu`
+ *  went away). */
 function createRelay({ input, output, port, end }) {
   let ended = false;
   const finish = () => {
@@ -155,7 +162,7 @@ function createRelay({ input, output, port, end }) {
     end();
   };
   const send = (bytes) => {
-    if (!output.destroyed) output.write(bytes);
+    if (!output.destroyed && !output.writableEnded) output.write(bytes);
   };
   output.on("error", finish);
   port.on("message", ({ data }) => {
@@ -235,6 +242,14 @@ function sendConsoleToStderr(con, stderr) {
   con.debug = toStderr;
 }
 
+const PIPE_ARG = "--slu-pipe=";
+
+/** The socket path `slu` passed, or null. */
+function pipeArg(argv) {
+  const arg = argv.find((a) => a.startsWith(PIPE_ARG));
+  return arg ? arg.slice(PIPE_ARG.length) : null;
+}
+
 const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(resolve, ms))]);
 
 /** Starts engine mode. Must run before app `ready`. Resolves once the engine
@@ -269,20 +284,38 @@ function run({
     retry,
   });
 
+  /** `slu`'s socket, which carries the wire both ways. */
+  let link = null;
+  const linkOpen = () => link !== null && !link.destroyed;
+  const endLink = () =>
+    new Promise((resolve) => {
+      if (linkOpen()) link.end(resolve);
+      else resolve();
+    });
+
   let stopping = false;
   const stop = async (code) => {
     if (stopping) return;
     stopping = true;
     await within(fileWriter.drain(), 5000);
-    await within(new Promise((resolve) => proc.stdout.write("", resolve)), 2000);
+    await within(endLink(), 2000);
     app.exit(code);
   };
   const fail = (code, message) => {
     if (stopping) return;
     con.error(`[engine] ${message}`);
-    proc.stdout.write(eventWire({ id: 0, type: "error", code, message }));
+    if (linkOpen()) link.write(eventWire({ id: 0, type: "error", code, message }));
     void stop(ENGINE_FAILED);
   };
+
+  const pipe = pipeArg(proc.argv);
+  if (!pipe) {
+    fail("internal", "Started without --slu-pipe: the engine runs only for the safelight command.");
+    return Promise.resolve();
+  }
+  link = nodeNet.connect(pipe);
+  link.on("error", (e) => con.error(`[engine] the connection to safelight failed: ${e.message}`));
+  link.on("close", () => void stop(0));
 
   // Electron's default for an uncaught exception is a dialogue nobody can see.
   proc.on("uncaughtException", (e) => fail("internal", e instanceof Error ? e.message : String(e)));
@@ -388,7 +421,7 @@ function run({
       win.webContents.once("did-finish-load", () => {
         win.webContents.postMessage("engine:port", null, [port2]);
         port1.postMessage({ mirror: readMirror(readFile, appUserData) });
-        createRelay({ input: proc.stdin, output: proc.stdout, port: port1, end: () => void stop(0) });
+        createRelay({ input: link, output: link, port: port1, end: () => void stop(0) });
       });
       win.webContents.on("did-fail-load", (_e, errorCode, description, url, isMainFrame) => {
         if (isMainFrameLoadFailure(errorCode, isMainFrame)) fail("internal", `${url} did not load (${errorCode} ${description}).`);

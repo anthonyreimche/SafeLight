@@ -8,13 +8,15 @@ import { extname, resolve } from "node:path";
 import type { EngineEvent, ExportTarget, ExportWireSettings, LookOverride } from "@/engine/protocol";
 import { PHOTO_OPTIONS } from "../args";
 import {
+  createExportTracker,
   engineError,
   isFrame,
   newRequestId,
   projectWire,
   tryOverrides,
+  withLamp,
 } from "../preview";
-import { buildSelectRequest, missingError, stdinPathsOf } from "../select";
+import { applyWorkingSet, buildSelectRequest, missingError, stdinPathsOf } from "../select";
 import { CliError, type CommandSpec, type ParsedArgs, COMMAND } from "../types";
 import { TRY_OPTION, requireTry } from "./shared";
 
@@ -109,12 +111,15 @@ export const exportPhotosCommand: CommandSpec = {
     TRY_OPTION,
   ],
   writes: false,
+  ownsStop: true,
   async run(ctx, args) {
     const settings = exportSettings(args);
     requireTry(args);
-    const request = buildSelectRequest(args, args.positionals, await stdinPathsOf(ctx, args));
+    const request = applyWorkingSet(buildSelectRequest(args, args.positionals, await stdinPathsOf(ctx, args)), ctx.working);
     const selection = await ctx.select.read(request);
     const results: PhotoResult[] = [];
+    const stops = ctx.stops;
+    const startedAt = Date.now();
     try {
       const total = selection.groups.reduce((n, g) => n + g.photos.length, 0);
       if (total === 0 && selection.missing[0]) throw missingError(selection.missing[0]);
@@ -128,9 +133,15 @@ export const exportPhotosCommand: CommandSpec = {
       if (target.kind === "stdout" && (ctx.env.isTTY.stdout || ctx.json)) {
         throw new CliError(1, "Not writing an image to the terminal.", `Redirect it: ${COMMAND} export IMG_4021.ARW -o - > out.jpg`);
       }
-      let done = 0;
+      const tracker = createExportTracker(
+        selection.groups.flatMap((g) => g.photos.map((p) => ({ id: p.id, name: p.relPath.split(/[\/]/).pop() ?? p.relPath }))),
+        target.kind === "dir" ? target.dir : undefined,
+      );
+      const showProgress = (): void => ctx.out.progress(tracker.snapshot("Exporting"));
+      tracker.begin();
 
       for (const group of selection.groups) {
+        if (stops?.signal.aborted) break;
         const project = group.session.project;
         const names = new Map(group.photos.map((p) => [p.id, p.relPath]));
         let overrides: LookOverride | undefined;
@@ -153,19 +164,23 @@ export const exportPhotosCommand: CommandSpec = {
           settings,
           target,
           overrides,
-        });
-        for await (const item of events) {
+        }, stops);
+        for await (const item of withLamp(ctx.out, "Starting the engine…", events)) {
           if (isFrame(item)) {
             frames.set(item.frame, item.bytes);
           } else if (item.type === "progress") {
-            ctx.out.progress({ label: "Exporting", done: done + item.done, total });
+            showProgress();
           } else if (item.type === "exported") {
+            tracker.exported(item.photoId, { path: item.path, bytes: item.bytes });
             noteExported(item);
+            showProgress();
           } else if (item.type === "error") {
             if (item.photoId === undefined) throw engineError(item);
             const photo = names.get(item.photoId) ?? item.photoId;
             results.push({ photo, ok: false, error: item.message });
+            tracker.failed(item.photoId, item.message);
             ctx.out.error({ message: `${photo}: ${item.message}` });
+            showProgress();
           }
         }
         for (const frame of stdoutFrames) {
@@ -173,7 +188,6 @@ export const exportPhotosCommand: CommandSpec = {
           if (!bytes) throw new CliError(3, "The engine finished without sending the image.");
           ctx.out.writeRaw(bytes);
         }
-        done += group.photos.length;
 
         function noteExported(item: Extract<EngineEvent, { type: "exported" }>): void {
           if (item.frame !== undefined) stdoutFrames.push(item.frame);
@@ -187,16 +201,26 @@ export const exportPhotosCommand: CommandSpec = {
             bytes: item.bytes,
           });
           if (item.path !== undefined && !ctx.json) {
-            ctx.out.print(ctx.out.exported({ path: item.path, width: item.width, height: item.height, colourSpace: item.colourSpace, bytes: item.bytes }));
+            ctx.out.finished(ctx.out.exported({ path: item.path, width: item.width, height: item.height, colourSpace: item.colourSpace, bytes: item.bytes }));
           }
         }
       }
       ctx.out.progress(null);
 
-      const failed = results.filter((r) => !r.ok).length;
+      const failed = results.filter((r) => !r.ok);
       if (ctx.json) ctx.out.json({ slu: 1, photos: results });
-      else if (total > 1) ctx.out.print(ctx.out.summary({ photos: total, stepEach: false, failed, skipped: 0 }));
-      return { code: failed === 0 ? 0 : failed === results.length ? 2 : 6 };
+      else if (total > 1 || ctx.out.options.caps?.rich.stdout === true) {
+        const written = results.filter((r) => r.ok);
+        ctx.out.print(ctx.out.exportSummary({
+          exported: written.length,
+          failed: failed.map((r) => ({ name: r.photo, error: r.error ?? "" })),
+          ...(target.kind === "dir" && { folder: target.dir }),
+          bytes: written.reduce((sum, r) => sum + (r.bytes ?? 0), 0),
+          ms: Date.now() - startedAt,
+        }));
+      }
+      if (stops?.signal.aborted) return { code: 130 };
+      return { code: failed.length === 0 ? 0 : failed.length === results.length ? 2 : 6 };
     } finally {
       ctx.out.progress(null);
       await selection.close();

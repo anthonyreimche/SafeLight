@@ -23,8 +23,10 @@ import type {
   PreviewService,
   ProjectService,
   ReadSession,
+  Stops,
   ValueService,
   Verbosity,
+  WorkingSet,
 } from "./types";
 import { createValueService } from "./values";
 
@@ -69,6 +71,8 @@ export interface ContextOptions {
   ask?: (question: string) => Promise<string>;
   /** The fs bridge the host shims hand to core (host.ts). */
   bridge: NativeFsBridge;
+  working?: WorkingSet;
+  stops?: Stops;
 }
 
 /** A context, plus what main needs to stop it early. */
@@ -149,6 +153,8 @@ export function createContext(opts: ContextOptions, factories: ServiceFactories 
     get preview() { return preview.get(); },
     readStdin: stdinText.get,
     ask: opts.ask,
+    ...(opts.working && { working: opts.working }),
+    ...(opts.stops && { stops: opts.stops }),
     async dispose() {
       stopping.abort();
       await Promise.allSettled([

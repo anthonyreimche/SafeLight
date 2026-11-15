@@ -41,13 +41,7 @@ const SUPPORTED_TYPES = new Set([
 
 const SUPPORTED_EXTENSIONS = new Set(Object.keys(photoTypes.standard));
 
-/** Name-only check used by the project scanner (no File object needed). */
-export function isSupportedName(name: string): boolean {
-  const ext = getExtension(name);
-  return (
-    SUPPORTED_EXTENSIONS.has(ext) || isRawFile({ name } as File)
-  );
-}
+export { isSupportedName } from "@/catalog/photo-names";
 
 function isSupported(file: File): boolean {
   const ext = getExtension(file.name);

@@ -13,7 +13,7 @@ import type { Style } from "./palette";
 import type { HelpScreen, VerbHelp } from "./types";
 import { COMMAND } from "../types";
 
-const HELP_GROUPS: readonly HelpGroup[] = ["Look", "Edit", "Share", "Organize", "Output", "Extensions", "More"];
+const HELP_GROUPS: readonly HelpGroup[] = ["Look", "Library", "Edit", "Share", "Organize", "Output", "Extensions", "More"];
 const GROUP_COLUMN = Math.max(...HELP_GROUPS.map((group) => group.length)) + 3;
 
 const TITLE = "Safelight Unplugged";
