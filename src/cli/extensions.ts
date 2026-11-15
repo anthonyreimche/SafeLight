@@ -9,12 +9,13 @@
 // are in place, so nothing is left for the app's startup sweep to roll back.
 
 import { readdirSync, readFileSync } from "node:fs";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { readDisabled, writeDisabled } from "../../electron/extension-state.cjs";
 import { createExtensionStore } from "../../electron/extension-store/index.cjs";
 import officialExtensions from "../../electron/official-extensions.json";
+import { APP_SOURCES_KEY, GUI_HEARTBEAT_FRESH_MS } from "@/state/shared-settings";
 import { isNewer } from "@/update/semver";
+import { guiHeartbeatAt, readSharedSettings } from "./mirror";
 import { fileWriter } from "./node-fs";
 import { closest } from "./suggest";
 import {
@@ -30,7 +31,6 @@ import {
 /** The most hits `search` returns; the command says when it stopped there. */
 export const SEARCH_LIMIT = 25;
 
-const HEARTBEAT_FRESH_MS = 150_000;
 const PROXY_HINT = "If this network uses a proxy, set HTTPS_PROXY and try again.";
 const NETWORK_CODES = new Set([
   "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN",
@@ -85,6 +85,38 @@ function repoFromManifest(value: unknown): string | null {
   return /^[^/\s]+\/[^/\s]+$/.test(value.trim()) ? value.trim() : null;
 }
 
+const SOURCES_FILE = "slu-sources.json";
+
+function sourceRecord(text: string): Record<string, string> {
+  try {
+    const doc: unknown = JSON.parse(text);
+    if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return {};
+    return Object.fromEntries(Object.entries(doc).filter((e): e is [string, string] => typeof e[1] === "string"));
+  } catch {
+    return {};
+  }
+}
+
+/** The repository slu downloaded each extension from, by id: slu's own record, which only slu writes. */
+function readSluSources(userData: string): Record<string, string> {
+  try {
+    return sourceRecord(readFileSync(path.join(userData, SOURCES_FILE), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Where each extension was downloaded from, by id: slu's record beside the one the app keeps and
+ *  mirrors (shared-settings). An id the two give different repositories has none, as either may be
+ *  the older install. An extension's manifest is never a source. */
+function readSources(userData: string): Record<string, string> {
+  const app = sourceRecord(readSharedSettings(userData)?.storage[APP_SOURCES_KEY] ?? "{}");
+  const slu = readSluSources(userData);
+  const same = (a: string, b: string): boolean => lower(canonicalRepo(a)) === lower(canonicalRepo(b));
+  const merged = { ...app, ...slu };
+  return Object.fromEntries(Object.entries(merged).filter(([id, repo]) => !app[id] || same(app[id], repo)));
+}
+
 const officialByRepo = (repo: string): OfficialRow | undefined =>
   OFFICIAL.find((e) => [e.repo, ...(e.aliases ?? [])].some((r) => lower(r) === lower(repo)));
 
@@ -103,6 +135,9 @@ function trustOf(list: TrustData, repo: string | null, version: string | null): 
   }
   return "unverified";
 }
+
+const isBanned = (list: TrustData, repo: string | null): boolean =>
+  repo !== null && trustOf(list, repo, null) === "banned";
 
 function bannedReasonOf(list: TrustData, repo: string): string {
   const r = lower(repo);
@@ -195,21 +230,36 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
 
   const manifests = async (): Promise<Manifest[]> => installedManifests(userData);
 
-  const disabledIds = async (): Promise<string[]> => (await readDisabled(userData)) ?? [];
+  /** Null until the app has written its list. */
+  const disabledList = (): Promise<string[] | null> => readDisabled(userData);
+  const disabledIds = async (): Promise<string[]> => (await disabledList()) ?? [];
 
-  function describe(m: Manifest, list: TrustData, disabled: readonly string[]): InstalledExtension {
-    const repo = repoFromManifest(m.repository);
+  /** Where an installed extension came from: what slu recorded, or the list's row for an official
+   *  id whose manifest names that row. The manifest alone is not enough for anything else. */
+  function sourceOf(m: Manifest, sources: Record<string, string>): string | null {
+    const recorded = sources[m.id];
+    if (recorded) return canonicalRepo(recorded);
+    const row = OFFICIAL.find((e) => e.id === m.id);
+    const declared = repoFromManifest(m.repository);
+    return row && declared && officialByRepo(declared)?.id === row.id ? row.repo : null;
+  }
+
+  function describe(m: Manifest, list: TrustData, disabled: readonly string[] | null, sources: Record<string, string>): InstalledExtension {
+    const repo = sourceOf(m, sources);
+    const declaredBanned = isBanned(list, repoFromManifest(m.repository));
     return {
       id: m.id, name: m.name, version: m.version,
-      enabled: !disabled.includes(m.id),
-      trust: trustOf(list, repo, m.version),
-      repo: repo ? canonicalRepo(repo) : null,
+      enabled: disabled ? !disabled.includes(m.id) : null,
+      trust: declaredBanned ? "banned" : trustOf(list, repo, m.version),
+      repo,
+      permissions: permissionLines(m),
     };
   }
 
   async function installed(): Promise<InstalledExtension[]> {
-    const [found, list, disabled] = await Promise.all([manifests(), trustList(), disabledIds()]);
-    return found.map((m) => describe(m, list, disabled));
+    const [found, list, disabled] = await Promise.all([manifests(), trustList(), disabledList()]);
+    const sources = readSources(userData);
+    return found.map((m) => describe(m, list, disabled, sources));
   }
 
   async function catalogue(): Promise<{ items: CatalogueItem[]; vocabulary: Vocabulary | null } | null> {
@@ -243,10 +293,11 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
       id: e.id,
       names: [e.id, stripPrefix(e.id), e.repo, repoName(e.repo), ...(e.aliases ?? []), ...(e.aliases ?? []).map(repoName)],
     }));
+    const sources = readSources(userData);
     const local = found.map((m): Candidate => {
-      const repo = repoFromManifest(m.repository);
+      const repo = sourceOf(m, sources);
       return {
-        repo: repo ? canonicalRepo(repo) : null,
+        repo,
         id: m.id,
         names: [m.id, stripPrefix(m.id), slugOf(m.name), ...(repo ? [repo, repoName(repo)] : [])],
       };
@@ -319,6 +370,15 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     });
   }
 
+  /** The id whose files are swapped in but not yet kept or rolled back: the window the question sits in. */
+  let unsettled: string | null = null;
+
+  async function abandon(): Promise<void> {
+    const id = unsettled;
+    unsettled = null;
+    if (id) await store.settleUpdate(id, "rollback");
+  }
+
   async function install(
     repo: string,
     opts: { version?: string; confirm: (risk: InstallRisk) => Promise<boolean> },
@@ -329,20 +389,32 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
       throw new CliError(5, `"${full}" is blocked by Safelight: ${bannedReasonOf(list, full)}.`, "slu doesn't install blocked extensions.");
     const manifest = await guard(() => store.installPlugin(repo, opts.version));
     if (!isManifest(manifest)) throw new CliError(5, `${full} didn't hold a usable extension.`);
-    const trust = trustOf(list, repoFromManifest(manifest.repository) ?? full, manifest.version);
+    unsettled = manifest.id;
+    if (isBanned(list, repoFromManifest(manifest.repository))) {
+      unsettled = null;
+      await guard(() => store.settleUpdate(manifest.id, "rollback"));
+      throw new CliError(5, `${manifest.name} names a repository Safelight blocks.`, "slu doesn't install blocked extensions.");
+    }
+    const trust = trustOf(list, full, manifest.version);
     if (trust === "unverified") {
       const ok = await opts.confirm({ name: manifest.name, trust, permissions: permissionLines(manifest) });
       if (!ok) {
+        unsettled = null;
         await guard(() => store.settleUpdate(manifest.id, "rollback"));
         throw new CliError(5, `Didn't install ${manifest.name}: it isn't verified, and you didn't confirm.`, "Add --yes to install it anyway.");
       }
     }
+    unsettled = null;
     await guard(() => store.settleUpdate(manifest.id, "keep"));
-    return describe(manifest, list, await disabledIds());
+    const sources = { ...readSluSources(userData), [manifest.id]: canonicalRepo(full).toLowerCase() };
+    await fileWriter.write(path.join(userData, SOURCES_FILE), JSON.stringify(sources));
+    return describe(manifest, list, await disabledList(), sources);
   }
 
   async function uninstall(id: string): Promise<void> {
     await guard(() => store.uninstallPlugin(id));
+    const { [id]: _forgotten, ...sources } = readSluSources(userData);
+    await fileWriter.write(path.join(userData, SOURCES_FILE), JSON.stringify(sources));
     const disabled = await disabledIds();
     if (disabled.includes(id)) await writeDisabled(userData, disabled.filter((d) => d !== id), fileWriter);
   }
@@ -365,19 +437,18 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     return results.filter((r): r is { id: string; from: string; to: string } => !!r && !(r instanceof Error));
   }
 
+  /** Until the app has written its list, slu can't tell which extensions are on: a list written
+   *  now would leave out the ones switched off in the app, and the app would adopt it. */
   async function setEnabled(id: string, enabled: boolean): Promise<void> {
-    const disabled = (await disabledIds()).filter((d) => d !== id);
-    await writeDisabled(userData, enabled ? disabled : [...disabled, id], fileWriter);
+    const disabled = await readDisabled(userData);
+    if (disabled === null) throw new CliError(5, "Open Safelight once so slu can see which extensions are on.");
+    if (disabled.includes(id) !== enabled) return;
+    const others = disabled.filter((d) => d !== id);
+    await writeDisabled(userData, enabled ? others : [...others, id], fileWriter);
   }
 
   async function guiRunning(): Promise<boolean> {
-    try {
-      const doc: unknown = JSON.parse(await fs.readFile(path.join(userData, "shared-settings.json"), "utf8"));
-      const at = (doc as { writtenAt?: unknown }).writtenAt;
-      return typeof at === "number" && Date.now() - at < HEARTBEAT_FRESH_MS;
-    } catch {
-      return false;
-    }
+    return Date.now() - guiHeartbeatAt(userData) < GUI_HEARTBEAT_FRESH_MS;
   }
 
   return {
@@ -385,6 +456,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     search,
     resolve: (name) => guard(() => resolve(name)),
     install,
+    abandon,
     uninstall,
     updatesAvailable,
     setEnabled,

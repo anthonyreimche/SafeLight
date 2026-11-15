@@ -13,7 +13,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { resetAllBindings, setBinding } from "@/state/keybindings-store";
 import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { snapshotCrossfade } from "./canvas-crossfade";
@@ -361,14 +361,12 @@ describe("zoom easing", () => {
   });
 });
 
-// The Presets hover bumps fadeToken; the renderer fades its tiers on the same overlay,
-// which the parent hands in.
+// The develop renderer fades on the overlay the parent hands in.
 describe("crossfade overlay and status", () => {
-  let copies: { into: HTMLCanvasElement; image: unknown }[];
   let canvasContext: PropertyDescriptor | undefined;
   let handed: HTMLCanvasElement | null;
 
-  function FadeHost({ token, status }: { token: number; status?: string | null }) {
+  function FadeHost({ status }: { status?: ReactNode }) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const fadeRef = useRef<HTMLCanvasElement>(null);
     useEffect(() => {
@@ -382,22 +380,17 @@ describe("crossfade overlay and status", () => {
         bufferHeight={1200}
         zoom={null}
         onZoomChange={() => {}}
-        fadeToken={token}
         status={status}
       />
     );
   }
 
   beforeEach(() => {
-    copies = [];
     handed = null;
     canvasContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
       configurable: true,
-      value: function getContext(this: HTMLCanvasElement) {
-        const into = this;
-        return { drawImage: (image: unknown) => copies.push({ into, image }) };
-      },
+      value: () => ({ drawImage: () => {} }),
     });
   });
 
@@ -407,33 +400,82 @@ describe("crossfade overlay and status", () => {
     }
   });
 
-  it("fades the Presets hover on the overlay it is handed, over 220 ms", () => {
-    const view = render(<FadeHost token={0} />);
-    const [canvas, overlay] = view.container.querySelectorAll("canvas");
+  it("lays the overlay it is handed over the canvas, hidden", () => {
+    const view = render(<FadeHost />);
+    const [, overlay] = view.container.querySelectorAll("canvas");
     expect(overlay).toBe(handed);
-
-    view.rerender(<FadeHost token={1} />);
-    advance(2 * FRAME_MS);
-
-    expect(copies).toEqual([{ into: overlay, image: canvas }]);
-    expect(overlay.style.transition).toBe("opacity 220ms ease-out");
     expect(overlay.style.opacity).toBe("0");
   });
 
-  it("cuts the Presets hover under Reduce motion", () => {
-    document.documentElement.classList.add("sl-reduce-motion");
-    const view = render(<FadeHost token={0} />);
-    view.rerender(<FadeHost token={1} />);
-    expect(copies).toEqual([]);
-  });
-
   it("shows the status it is given in the corner, and nothing without one", () => {
-    const view = render(<FadeHost token={0} status="Preview" />);
+    const view = render(<FadeHost status="Preview" />);
     expect(view.getByText("Preview")).toBeTruthy();
 
-    view.rerender(<FadeHost token={0} status={null} />);
+    view.rerender(<FadeHost status={null} />);
     expect(view.queryByText("Preview")).toBeNull();
     expect(view.queryByText("Loading…")).toBeNull();
+  });
+
+  it("fades each new status in", () => {
+    const view = render(<FadeHost status="Preview" />);
+    const first = view.getByText("Preview");
+    expect(first.className).toContain("sl-enter-fade");
+
+    view.rerender(<FadeHost status="Full quality" />);
+    const next = view.getByText("Full quality");
+    expect(next.className).toContain("sl-enter-fade");
+    expect(next).not.toBe(first);
+  });
+
+  // DevelopStage builds the viewport anew for each photo: a tool already holding the
+  // canvas as it opens shows at once, or browsing with crop mode on would replay a
+  // fade per photo.
+  describe("a canvas tool's overlay", () => {
+    function ToolHost({ tool }: { tool: string | null }) {
+      const canvasRef = useRef<HTMLCanvasElement>(null);
+      const fadeRef = useRef<HTMLCanvasElement>(null);
+      return (
+        <ViewportImage
+          canvasRef={canvasRef}
+          fadeCanvasRef={fadeRef}
+          bufferWidth={1600}
+          bufferHeight={1200}
+          zoom={null}
+          onZoomChange={() => {}}
+          overlayKey={tool ?? undefined}
+          overlay={tool ? () => <div data-testid="tool">{tool}</div> : undefined}
+        />
+      );
+    }
+    const layer = (view: ReturnType<typeof render>) => view.getByTestId("tool").parentElement;
+
+    it("shows at once when the tool held it as the viewport came", () => {
+      const view = render(<ToolHost tool="crop" />);
+      expect(layer(view)?.className).not.toContain("sl-enter-fade");
+    });
+
+    it("fades in when a tool takes the canvas, and again when another does", () => {
+      const view = render(<ToolHost tool={null} />);
+      view.rerender(<ToolHost tool="crop" />);
+      expect(layer(view)?.className).toContain("sl-enter-fade");
+
+      const before = layer(view);
+      view.rerender(<ToolHost tool="upright" />);
+      expect(layer(view)?.className).toContain("sl-enter-fade");
+      expect(layer(view)).not.toBe(before);
+    });
+
+    it("fades in when the tool it opened with takes the canvas again", () => {
+      const view = render(<ToolHost tool="crop" />);
+      view.rerender(<ToolHost tool={null} />);
+      view.rerender(<ToolHost tool="crop" />);
+      expect(layer(view)?.className).toContain("sl-enter-fade");
+    });
+  });
+
+  it("shows a status that is more than text", () => {
+    const view = render(<FadeHost status={<span data-testid="dots">Loading</span>} />);
+    expect(view.getByTestId("dots").textContent).toBe("Loading");
   });
 });
 
@@ -512,9 +554,12 @@ describe("placement and the colour-assessment mat", () => {
       configurable: true,
       value: () => ({ drawImage: () => {} }),
     });
+    // The fade's CSS fallback, whose transition says a fade is running.
+    Object.defineProperty(HTMLCanvasElement.prototype, "animate", { configurable: true, value: undefined });
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(HTMLCanvasElement.prototype, "animate");
     if (canvasContext) {
       Object.defineProperty(HTMLCanvasElement.prototype, "getContext", canvasContext);
     }

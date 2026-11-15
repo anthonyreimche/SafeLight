@@ -32,10 +32,12 @@ export function createExtensionStore(deps: {
   lockOwner?: LockOwner;
 }): ExtensionStore;
 
-export function underPluginsLock<T extends Pick<ExtensionStore, "installPlugin" | "settleUpdate" | "uninstallPlugin">>(
-  installer: T,
-  lock: { lockFile: () => string; owner?: LockOwner; waitMs?: number; pollMs?: number },
-): Pick<ExtensionStore, "installPlugin" | "settleUpdate" | "uninstallPlugin">;
+export function pluginsLocker(lock: {
+  lockFile: () => string;
+  owner?: LockOwner;
+  waitMs?: number;
+  pollMs?: number;
+}): <T>(work: () => Promise<T>) => Promise<T>;
 
 export function pluginsLockFile(userDataDir: string): string;
 export const PLUGINS_LOCK: string;

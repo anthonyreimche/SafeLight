@@ -178,24 +178,29 @@ function trustBadge(style: Style) {
   };
 }
 
+const STATE_UNKNOWN_NOTE = "Open Safelight once so slu can see which extensions are on.";
+
+const stateText = (enabled: boolean | null): string => (enabled === null ? "?" : enabled ? "on" : "off");
+
 export function extensionTable(rows: readonly ExtensionRow[], style: Style): string {
   if (rows.length === 0) return "";
   const { palette } = style;
-  const body = rows.map((r) => [r.name, r.id, r.version, r.enabled ? "on" : "off", r.trust, r.update ? `${r.update} available` : ""]);
+  const body = rows.map((r) => [r.name, r.id, r.version, stateText(r.enabled), r.trust, r.update ? `${r.update} available` : ""]);
   const hasUpdate = rows.some((r) => r.update);
   const table = withHeader(["Extension", "Id", "Version", "State", "Trust", "Update"], body, [true, true, true, true, true, hasUpdate]);
-  return alignColumns(
+  const lines = alignColumns(
     table,
     [
-      { style: underHeader(style, (text, row) => (rows[row].enabled ? text : palette.dim(text))), shrink: "end", min: 12 },
+      { style: underHeader(style, (text, row) => (rows[row].enabled === false ? palette.dim(text) : text)), shrink: "end", min: 12 },
       { style: palette.dim, shrink: "end", min: Infinity },
       { style: underHeader(style) },
-      { style: underHeader(style, (text) => (text === "off" ? palette.dim(text) : text)) },
+      { style: underHeader(style, (text) => (text === "off" || text === "?" ? palette.dim(text) : text)) },
       { style: underHeader(style, trustBadge(style)) },
       { style: underHeader(style) },
     ],
     style,
   ).join("\n");
+  return rows.some((r) => r.enabled === null) ? `${lines}\n${palette.dim(STATE_UNKNOWN_NOTE)}` : lines;
 }
 
 export function searchTable(rows: readonly SearchRow[], style: Style): string {

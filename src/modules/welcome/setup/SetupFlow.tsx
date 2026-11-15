@@ -81,7 +81,7 @@ function SetupLayer() {
       aria-labelledby={headingId}
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="fixed inset-0 z-[90] flex flex-col bg-surface-0 text-text-primary outline-none"
+      className="sl-enter-fade fixed inset-0 z-[90] flex flex-col bg-surface-0 text-text-primary outline-none"
     >
       <header
         className="flex h-[38px] shrink-0 items-center justify-between px-8"

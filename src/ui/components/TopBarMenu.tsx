@@ -72,7 +72,7 @@ export function TopBarMenu({
         <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded border border-border bg-surface-2 py-1 shadow-xl">
+        <div className="sl-enter-fade absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded border border-border bg-surface-2 py-1 shadow-xl">
           {children(dismiss)}
         </div>
       )}

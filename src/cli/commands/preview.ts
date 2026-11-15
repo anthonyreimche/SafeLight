@@ -6,7 +6,7 @@
 import { buildSelectRequest, missingError, stdinPathsOf } from "../select";
 import { isGraphicsMode } from "../terminal-image";
 import { CliError, type CommandSpec, type GraphicsMode } from "../types";
-import { PROJECT_OPTION, TRY_OPTION } from "./shared";
+import { PROJECT_OPTION, TRY_OPTION, requireTry } from "./shared";
 
 export const previewCommand: CommandSpec = {
   verb: "preview",
@@ -30,6 +30,7 @@ export const previewCommand: CommandSpec = {
     if (graphics !== undefined && (typeof graphics !== "string" || !isGraphicsMode(graphics))) {
       throw new CliError(1, `--graphics ${String(graphics)} isn't an image mode.`, "Use kitty, iterm, blocks or none.");
     }
+    requireTry(args);
     const width = args.options.width;
     if (width !== undefined && (typeof width !== "number" || !(width >= 1))) throw new CliError(1, "--width takes a number of columns.");
 

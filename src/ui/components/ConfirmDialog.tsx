@@ -109,7 +109,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
     // z above ModalWindow's z-[100] backdrop: confirms may open over the
     // Extensions/Preferences windows.
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
+      className="sl-enter-fade fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
       onClick={(e) => {
         if (e.target === e.currentTarget) settle(request, false);
       }}
@@ -121,7 +121,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={messageId}
-        className="w-[400px] max-w-[90vw] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
+        className="sl-enter-pop w-[400px] max-w-[90vw] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
       >
         <div className="space-y-2 p-3">
           <div

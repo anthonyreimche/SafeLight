@@ -197,8 +197,30 @@ describe("export command", () => {
 
   it("sends --try values as overrides for one photo", async () => {
     const h = harness({ photos: [photo("a", "a.ARW")], events: (req) => [done(req.id)] });
-    await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["a.ARW", "exposure=1", "-o", "/o"]));
+    await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["a.ARW", "exposure=1", "--try", "-o", "/o"]));
     expect(h.requests[0]).toMatchObject({ overrides: { params: { exposure: 0 }, paramBag: {} } });
+  });
+
+  it("refuses key=value values without --try, before rendering anything", async () => {
+    const h = harness({ photos: [photo("a", "a.ARW")], events: (req) => [done(req.id)] });
+    await expect(exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["a.ARW", "exposure=1", "-o", "/o"]))).rejects.toMatchObject({ code: 1 });
+    expect(h.requests).toEqual([]);
+  });
+
+  it("exports the photos it can find, says what it can't, and exits 6", async () => {
+    const h = harness({
+      photos: [photo("a", "a.ARW")],
+      missing: [{ spec: "z.ARW", reason: "not-found" }],
+      json: true,
+      events: (req) => [
+        { id: req.id, type: "exported", photoId: "a", path: "/o/a.jpg", width: 1, height: 1, colourSpace: "srgb", bytes: 1 },
+        done(req.id),
+      ],
+    });
+    const outcome = await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["a.ARW", "z.ARW", "-o", "/o"]));
+    expect(outcome.code).toBe(6);
+    expect(h.errors).toEqual(["z.ARW wasn't found."]);
+    expect(h.json[0]).toMatchObject({ photos: [{ photo: "z.ARW", ok: false }, { photo: "a.ARW", ok: true }] });
   });
 });
 
@@ -223,8 +245,15 @@ describe("preview command", () => {
   it("hands --try values to the context's preview, which renders them unstored", async () => {
     const shown: Array<{ assigns: number }> = [];
     const h = harness({ photos: [photo("a", "a.ARW")], events: () => [], shown });
-    await previewCommand.run(h.ctx, parse(previewCommand, ["a.ARW", "exposure=1", "--graphics", "blocks", "--width", "10"]));
+    await previewCommand.run(h.ctx, parse(previewCommand, ["a.ARW", "exposure=1", "--try", "--graphics", "blocks", "--width", "10"]));
     expect(shown).toEqual([{ assigns: 1 }]);
     expect(h.requests).toEqual([]);
+  });
+
+  it("refuses key=value values without --try", async () => {
+    const shown: Array<{ assigns: number }> = [];
+    const h = harness({ photos: [photo("a", "a.ARW")], events: () => [], shown });
+    await expect(previewCommand.run(h.ctx, parse(previewCommand, ["a.ARW", "exposure=1"]))).rejects.toMatchObject({ code: 1 });
+    expect(shown).toEqual([]);
   });
 });

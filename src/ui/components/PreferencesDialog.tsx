@@ -294,7 +294,11 @@ export function PreferencesDialog() {
                 title="Drag to resize"
                 className="w-1 shrink-0 cursor-col-resize touch-none border-r border-border hover:bg-slider-fill/40"
               />
-              <div className="flex-1 overflow-y-auto p-4">{active?.render(q)}</div>
+              {/* Keyed so each section's content fades in; a section's own state
+                  lives inside its render, and the dialog keeps nothing for it. */}
+              <div key={active?.id} className="sl-enter-fade flex-1 overflow-y-auto p-4">
+                {active?.render(q)}
+              </div>
             </>
           )}
         </div>

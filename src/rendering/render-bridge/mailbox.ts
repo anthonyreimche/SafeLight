@@ -21,6 +21,10 @@ const RENDER_BACKSTOP_MS = 30_000;
 // between, is taken to have hung. A software-rendered frame of a heavy photo takes
 // seconds, so a minute of silence while renders wait is not one being drawn.
 const SILENT_BACKSTOPS = 2;
+// A render asked for that has had no answer in this long shows the view as busy: a
+// program being built, or a slow software frame. A drag that keeps getting frames
+// never waits this long between them.
+const STALL_MS = 500;
 
 /** What a render asks for besides the frame. */
 export interface WaitingRender {
@@ -62,6 +66,9 @@ export class RenderMailbox {
   private silentBackstops = 0;
   private readonly onSilent: () => void;
   private readonly mayBeQuiet: () => boolean;
+  private onStall: ((stalled: boolean) => void) | null = null;
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
+  private stalled = false;
 
   /** `onSilent` is told when the worker has said nothing through SILENT_BACKSTOPS
    *  backstops in a row, none of them while `mayBeQuiet` (a long job it says nothing
@@ -80,6 +87,7 @@ export class RenderMailbox {
     // Without its context the worker has nothing to draw with, nor a source once it is
     // restored: the view renders again when it hands the photo over.
     if (this.link.disposed || this.link.availability === "lost") return;
+    this.watchStall();
     if (this.inFlight === null) {
       this.post({ wantHistogram, wantExtended });
       return;
@@ -124,8 +132,51 @@ export class RenderMailbox {
       };
     }
     this.renderAnswered(seq);
+    this.heard();
     if (!again && this.owed && this.inFlight === null) again = this.owed;
     return again;
+  }
+
+  /** The seq of the last render posted. */
+  get lastSeq(): number {
+    return this.seq;
+  }
+
+  /** See RenderBridge.setOnStall. */
+  setOnStall(cb: ((stalled: boolean) => void) | null) {
+    this.onStall = cb;
+    if (!cb) this.endStall();
+  }
+
+  private watchStall() {
+    if (!this.onStall || this.stallTimer || this.stalled) return;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      this.stalled = true;
+      this.onStall?.(true);
+    }, STALL_MS);
+  }
+
+  // The worker answered. With nothing left to draw the stall ends. A render still to
+  // come is timed afresh from now, unless the stall already shows: a renderer slower
+  // than STALL_MS per frame would otherwise end and start it again on every frame.
+  private heard() {
+    if (this.inFlight === null && !this.waiting) {
+      this.endStall();
+      return;
+    }
+    if (this.stalled) return;
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+    this.watchStall();
+  }
+
+  private endStall() {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+    if (!this.stalled) return;
+    this.stalled = false;
+    this.onStall?.(false);
   }
 
   private owe(wants: WaitingRender) {
@@ -254,6 +305,7 @@ export class RenderMailbox {
   // Seqs keep counting, so an answer to a render from before can't free a later one.
   clear() {
     this.clearSlot();
+    this.endStall();
     this.overdue = null;
     this.owed = null;
     this.silentBackstops = 0;

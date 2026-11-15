@@ -1214,11 +1214,95 @@ describe("rotatePhotos", () => {
     unsubscribe();
 
     expect(h.peakTurning).toBeLessThanOrEqual(4);
-    expect(updates).toBe(1);
+    // The click-time turn marker, then every preview landing at once.
+    expect(updates).toBe(2);
     expect(puts.mock.calls.length + single.mock.calls.length).toBe(1);
     expect(state().photos.slice(0, 500).every((p) => p.rotation === 90)).toBe(true);
     expect(state().photos[500]).toBe(rest[0]);
     expect(turnIds.every((id) => store.rows.get(id)?.rotation === 90)).toBe(true);
+  });
+
+  it("shows the turn at once and drops it when the preview lands", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")], pendingRotation: {} });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    expect(state().pendingRotation).toEqual({ a: 90 });
+    turning.open();
+    await rotation;
+
+    expect(state().pendingRotation).toEqual({});
+  });
+
+  it("keeps the turn shown through a retry, until the round that lands", async () => {
+    useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })], pendingRotation: {} });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    editLands();
+    turning.open();
+    await vi.waitFor(() => expect(state().photos[0].rotation).toBe(90));
+    await rotation;
+
+    expect(state().pendingRotation).toEqual({});
+  });
+
+  it("shows a turn left the short way round", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")], pendingRotation: {} });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], -90);
+    expect(state().pendingRotation).toEqual({ a: -90 });
+    turning.open();
+    await rotation;
+
+    expect(state().pendingRotation).toEqual({});
+    expect(state().photos[0].rotation).toBe(270);
+  });
+
+  it("keeps a second quick turn shown after the first one lands", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")], pendingRotation: {} });
+    const first = gate();
+    h.rotateGate = first.promise;
+    const one = state().rotatePhotos(["a"], 90);
+    const second = gate();
+    h.rotateGate = second.promise;
+    const two = state().rotatePhotos(["a"], 90);
+    expect(state().pendingRotation).toEqual({ a: 180 });
+
+    first.open();
+    await one;
+    expect(state().pendingRotation).toEqual({ a: 90 });
+
+    second.open();
+    await two;
+    expect(state().pendingRotation).toEqual({});
+    expect(state().photos[0].rotation).toBe(180);
+  });
+
+  it("drops the turn when the rotation fails", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")], pendingRotation: {} });
+    vi.spyOn(store.storage, "putPhotos").mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(state().rotatePhotos(["a"], 90)).rejects.toThrow("disk full");
+
+    expect(state().pendingRotation).toEqual({});
+  });
+
+  it("drops the turn of a photo that left the catalogue meanwhile", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")], pendingRotation: {} });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    state().mergeRemoteRecords([], ["a"]);
+    turning.open();
+    await rotation;
+
+    expect(state().pendingRotation).toEqual({});
   });
 
   /** An edit's preview landing on "a", as edited-thumbnail stores it. */

@@ -119,6 +119,14 @@ describe("engine client", () => {
     expect(error).toMatchObject({ code: 3, message: expect.stringContaining("GPU process crashed") });
   });
 
+  it("gives up on an engine that never says ready, with exit 3, and stops it", async () => {
+    const child = new FakeChild();
+    const client = createEngineClient(env({ SLU_ENGINE_TIMEOUT: "0.05" }), output(), () => child);
+    const error = await collect(client.request(preview(1))).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 3, message: expect.stringContaining("didn't start") });
+    expect(child.killed).toBe(true);
+  });
+
   it("refuses an engine that speaks another protocol", async () => {
     const child = new FakeChild();
     const client = createEngineClient(env(), output(), () => child);

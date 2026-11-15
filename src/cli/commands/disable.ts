@@ -21,9 +21,9 @@ export const disableCommand: CommandSpec = {
     const installed = await ctx.extensions.installed();
     const { results, outcome } = await forEachName(ctx, args.positionals, async (name) => {
       const ext = await resolveInstalled(ctx, name, installed);
-      if (!ext.enabled) return `${ext.name} is already off.`;
+      // Asked even when it reads as off: only the service knows whether that is known yet.
       await ctx.extensions.setEnabled(ext.id, false);
-      return `${ext.name} is now off.`;
+      return ext.enabled ? `${ext.name} is now off.` : `${ext.name} is already off.`;
     });
     if (ctx.json) ctx.out.json({ slu: 1, results });
     await noteRestart(ctx, results.some((r) => r.ok));

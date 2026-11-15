@@ -29,6 +29,11 @@ describe("compileGlob", () => {
     expect(compileGlob("a{b.txt", false).test("a{b.txt")).toBe(true);
   });
 
+  it("reads braces as a group only when they hold a comma", () => {
+    expect(compileGlob("{1}.ARW", false).test("{1}.ARW")).toBe(true);
+    expect(compileGlob("{1}.ARW", false).test("1.ARW")).toBe(false);
+  });
+
   it("escapes regex characters", () => {
     expect(compileGlob("a.b(1)*", false).test("a.b(1)x")).toBe(true);
     expect(compileGlob("a.b", false).test("aXb")).toBe(false);
@@ -60,6 +65,8 @@ describe("hasGlob", () => {
     expect(hasGlob("*.ARW")).toBe(true);
     expect(hasGlob("a?.arw")).toBe(true);
     expect(hasGlob("IMG_4021.ARW")).toBe(false);
+    expect(hasGlob("shoot{1}/IMG_4021.ARW")).toBe(false);
+    expect(hasGlob("*.{ARW,RAF}")).toBe(true);
   });
 });
 
@@ -93,6 +100,14 @@ describe("expandGlob", () => {
   it("starts from the static folder and takes absolute patterns", async () => {
     expect(names(await expandGlob("day1/*.ARW", dir, "linux"))).toEqual(["day1/d.ARW"]);
     expect(names(await expandGlob(join(dir, "day1", "**", "*.ARW"), "/elsewhere", process.platform))).toEqual(["day1/d.ARW", "day1/deep/e.ARW"]);
+  });
+
+  it("enters a folder whose name holds braces, and matches composed and decomposed accents alike", async () => {
+    await mkdir(join(dir, "shoot{1}"));
+    await writeFile(join(dir, "shoot{1}", "f.ARW"), "x");
+    await writeFile(join(dir, "éx.ARW"), "x");
+    expect(names(await expandGlob("shoot{1}/*.ARW", dir, "linux"))).toEqual(["shoot{1}/f.ARW"]);
+    expect(names(await expandGlob("é*.ARW", dir, "linux"))).toEqual(["éx.ARW"]);
   });
 
   it("finds nothing in a folder that doesn't exist", async () => {

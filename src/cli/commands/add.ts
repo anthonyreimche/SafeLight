@@ -5,7 +5,8 @@
 
 import { PHOTO_OPTIONS } from "../args";
 import { currentLook } from "@/catalog/edit-steps";
-import { CliError, type CommandSpec } from "../types";
+import type { CatalogPhoto } from "@/catalog/types";
+import { CliError, type CommandSpec, type ProjectRef } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 import { asShotOf, photoName, selectRequest, toolOperand } from "./edit-shared";
 
@@ -28,7 +29,8 @@ export const addCommand: CommandSpec = {
       throw new CliError(1, `${tool.name} doesn't support slu yet. Set it in Safelight.`);
     }
     // A core tool is on whenever one of its values moves: list its keys and write nothing.
-    const selection = await ctx.select.write(await selectRequest(ctx, args, photos), ctx.waitSeconds);
+    const selection = await ctx.select.read(await selectRequest(ctx, args, photos));
+    let shown: { project: ProjectRef; photo: CatalogPhoto } | null = null;
     try {
       const photo = selection.groups[0]?.photos[0];
       const session = selection.groups[0]?.session;
@@ -52,9 +54,11 @@ export const addCommand: CommandSpec = {
         }]));
         ctx.out.print(`${photoName(photo)} was not changed.`);
       }
+      if (args.options.preview === true && !ctx.json) shown = { project: session.project, photo };
     } finally {
       await selection.close();
     }
+    if (shown) await ctx.preview.show(shown.project, shown.photo, {});
     return { code: 0 };
   },
 };

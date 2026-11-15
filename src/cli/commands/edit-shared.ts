@@ -81,6 +81,7 @@ export async function runOnPhotos(
   let done = 0;
   let skipped = 0;
   let last: Previewable | null = null;
+  const pending: { session: WriteSession; edits: EditState[]; photos: CatalogPhoto[] }[] = [];
   try {
     for (const group of selection.groups) {
       const edits: EditState[] = [];
@@ -103,8 +104,10 @@ export async function runOnPhotos(
         if (!ctx.json) ctx.out.print(ctx.out.resultLine(outcome.line));
         last = { project: group.session.project, photo: outcome.photo ?? photo };
       }
-      await write(group.session, edits, photos);
+      pending.push({ session: group.session, edits, photos });
     }
+    // A usage error in any group stops before the first one is written.
+    for (const p of pending) await write(p.session, p.edits, p.photos);
   } finally {
     await selection.close();
   }

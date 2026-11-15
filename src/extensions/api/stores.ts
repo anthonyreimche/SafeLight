@@ -54,6 +54,10 @@ export interface DevelopState {
   paramBag: Record<string, unknown>;
   history: EditSnapshot[];
   historyIndex: number;
+  /** Counts jumps to a known look: an undo, redo or history step, a preset applied,
+   *  a reset, the processing update. Bumped in the same update as that look, so a
+   *  view can ease into it where a live write (a drag, a mask stroke) cuts. */
+  discreteEdits: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
   /** Size of the source the last frame was drawn from, as the renderer holds it
@@ -240,6 +244,8 @@ export interface CatalogState {
   applyColorLabel: (ids: string[], label: ColorLabel) => Promise<void>;
   applyFlag: (ids: string[], flag: FlagStatus) => Promise<void>;
   rotatePhotos: (ids: string[], deg: number) => Promise<void>;
+  /** Degrees each tile is shown turned while its turned preview is still being made. */
+  pendingRotation: Record<string, number>;
 
   addKeyword: (id: string, keyword: string) => Promise<void>;
   removeKeyword: (id: string, keyword: string) => Promise<void>;
@@ -482,6 +488,8 @@ export interface ProjectState {
   name: string;
   tree: FolderNode | null;
   opening: boolean;
+  /** The folder being opened, while `opening`. */
+  openingName: string;
   /** New-file import progress; importTotal is 0 when not importing. */
   importDone: number;
   importTotal: number;

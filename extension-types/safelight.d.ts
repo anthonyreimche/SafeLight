@@ -1509,7 +1509,8 @@ export interface SafelightAPI {
     };
     /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
      *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
-     *  Card, Badge, ProgressBar, Row, Stack — plus `tokens` (canonical CSS-var
+     *  Card, Badge, ProgressBar, LoadingDots, Skeleton, Row, Stack and the
+     *  useDelayedFlag hook — plus `tokens` (canonical CSS-var
      *  strings). Authored in core (where Tailwind is scanned) and rendered inside
      *  the extension's own subtree, so they match the app. Prefer these over
      *  hand-rolled inline-styled controls. `confirmDialog` asks in the app's own
@@ -2536,6 +2537,10 @@ export interface DevelopState {
     paramBag: Record<string, unknown>;
     history: EditSnapshot[];
     historyIndex: number;
+    /** Counts jumps to a known look: an undo, redo or history step, a preset applied,
+     *  a reset, the processing update. Bumped in the same update as that look, so a
+     *  view can ease into it where a live write (a drag, a mask stroke) cuts. */
+    discreteEdits: number;
     histogram: HistogramData | null;
     asShotTemperature: number;
     /** Size of the source the last frame was drawn from, as the renderer holds it
@@ -2706,6 +2711,8 @@ export interface CatalogState {
     applyColorLabel: (ids: string[], label: ColorLabel) => Promise<void>;
     applyFlag: (ids: string[], flag: FlagStatus) => Promise<void>;
     rotatePhotos: (ids: string[], deg: number) => Promise<void>;
+    /** Degrees each tile is shown turned while its turned preview is still being made. */
+    pendingRotation: Record<string, number>;
     addKeyword: (id: string, keyword: string) => Promise<void>;
     removeKeyword: (id: string, keyword: string) => Promise<void>;
     addKeywords: (ids: string[], keywords: string[]) => Promise<void>;
@@ -2915,6 +2922,8 @@ export interface ProjectState {
     name: string;
     tree: FolderNode | null;
     opening: boolean;
+    /** The folder being opened, while `opening`. */
+    openingName: string;
     /** New-file import progress; importTotal is 0 when not importing. */
     importDone: number;
     importTotal: number;
@@ -4412,8 +4421,25 @@ export interface BadgeProps {
 }
 
 export interface ProgressBarProps {
-    /** 0..1. */
-    value: number;
+    /** 0..1. Ignored while `indeterminate`. */
+    value?: number;
+    /** A wait of unknown length: a segment slides along the track instead. */
+    indeterminate?: boolean;
+    /** Stay hidden until the bar has been shown this long, so a quick task never flashes it. */
+    delayMs?: number;
+    /** What is in progress, for screen readers, such as "Exporting". */
+    label?: string;
+}
+
+export interface LoadingDotsProps {
+    /** Text before the dots, such as "Loading". Read out as written; the dots are not. */
+    label?: string;
+}
+
+export interface SkeletonProps {
+    /** Size and shape: the width and height of what will arrive. */
+    style?: CSSProperties;
+    className?: string;
 }
 
 export interface StackProps {
@@ -4470,7 +4496,15 @@ export interface UIKit {
     Section: (props: SectionProps) => JSX.Element;
     Card: (props: CardProps) => JSX.Element;
     Badge: (props: BadgeProps) => JSX.Element;
-    ProgressBar: (props: ProgressBarProps) => JSX.Element;
+    /** Renders nothing until `delayMs` has passed. */
+    ProgressBar: (props: ProgressBarProps) => JSX.Element | null;
+    /** An ellipsis whose dots step in turn, for status text of a wait with no known end. */
+    LoadingDots: (props: LoadingDotsProps) => JSX.Element;
+    /** A breathing block standing in for content still loading, at its expected size. */
+    Skeleton: (props: SkeletonProps) => JSX.Element;
+    /** True once `active` has stayed true for `ms` (default 300), false the moment it
+     *  ends: gate a wait indicator on it so a quick load never flashes one. A hook. */
+    useDelayedFlag: (active: boolean, ms?: number) => boolean;
     Stack: (props: StackProps) => JSX.Element;
     Row: (props: RowProps) => JSX.Element;
     tokens: UITokens;

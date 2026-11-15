@@ -55,7 +55,8 @@ function optionError(verb: string | null, flag: string, problem: string): CliErr
 /** Parses one command line. With `spec` null it only knows the global and
  *  photo options and lets other options pass as switches, so main can find the
  *  verb before it knows the verb's own options. */
-export function parseArgs(argv: string[], spec: CommandSpec | null): ParsedArgs {
+export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs {
+  const argv = [...input];
   const known = [...GLOBAL_OPTIONS, ...(spec ? spec.options : PHOTO_OPTIONS)];
   const byName = new Map<string, OptionSpec>();
   const byAlias = new Map<string, OptionSpec>();
@@ -69,6 +70,12 @@ export function parseArgs(argv: string[], spec: CommandSpec | null): ParsedArgs 
 
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
+
+    if (token !== "--" && /^-[A-Za-z]{2,}$/.test(token) && [...token.slice(1)].every((c) => byAlias.get(c)?.kind === "flag")) {
+      argv.splice(i, 1, ...[...token.slice(1)].map((c) => `-${c}`));
+      i--;
+      continue;
+    }
 
     if (token === "--") {
       out.afterDashDash.push(...argv.slice(i + 1));

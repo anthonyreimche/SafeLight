@@ -71,11 +71,45 @@ describe("mirror files", () => {
     expect(JSON.parse(await readFile(join(userData, "shared-settings.json"), "utf8"))).toEqual(doc);
   });
 
+  it("rewrites shared settings only when they change, and the small heartbeat file every time", async () => {
+    const written: string[] = [];
+    const counting = {
+      async write(file: string, bytes: Uint8Array) {
+        written.push(file);
+        await writer.write(file, bytes);
+      },
+    };
+    const doc = { version: 1, appVersion: "3.3.0", writtenAt: 5, guiPid: null, recentProjects: [], storage: { k: "v" } };
+    const settings = join(userData, "shared-settings.json");
+    const heartbeat = join(userData, "gui-heartbeat.json");
+
+    await writeSharedSettings(userData, doc, counting);
+    await writeSharedSettings(userData, { ...doc, writtenAt: 65 }, counting);
+    expect(written.filter((f) => f === settings)).toHaveLength(1);
+    expect(written.filter((f) => f === heartbeat)).toHaveLength(2);
+    expect(JSON.parse(await readFile(heartbeat, "utf8")).writtenAt).toBeGreaterThan(Date.now() - 10_000);
+
+    await writeSharedSettings(userData, { ...doc, writtenAt: 125, storage: { k: "w" } }, counting);
+    expect(written.filter((f) => f === settings)).toHaveLength(2);
+    expect(JSON.parse(await readFile(settings, "utf8")).storage).toEqual({ k: "w" });
+  });
+
   it("writes descriptors as <id>@<version>.json", async () => {
     const doc = descriptors("safelight.basic", "1.2.3-beta.1");
     await writeDescriptors(userData, doc, writer);
     const file = join(userData, "extension-descriptors", "safelight.basic@1.2.3-beta.1.json");
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(doc);
+  });
+
+  it("deletes the older versions' descriptors of the same id, and nothing else", async () => {
+    const dir = join(userData, "extension-descriptors");
+    await mkdir(dir, { recursive: true });
+    for (const name of ["acme.x@1.0.0.json", "acme.x@1.9.9.json", "acme.x@3.0.0.json", "acme.x@dev.json", "acme.xy@1.0.0.json", "other@1.0.0.json"])
+      await writeFile(join(dir, name), "{}");
+    await writeDescriptors(userData, descriptors("acme.x", "2.0.0"), writer);
+    expect((await readdir(dir)).sort()).toEqual(
+      ["acme.x@2.0.0.json", "acme.x@3.0.0.json", "acme.x@dev.json", "acme.xy@1.0.0.json", "other@1.0.0.json"],
+    );
   });
 
   it.each([
@@ -118,7 +152,7 @@ describe("the IPC channels", () => {
   it("writes the mirror documents", async () => {
     await call("mirror:writeSharedSettings", { version: 1, appVersion: "1", writtenAt: 1, guiPid: null, recentProjects: [], storage: {} });
     await call("mirror:writeDescriptors", descriptors("a.b", "1.0.0"));
-    expect((await readdir(userData)).sort()).toEqual(["extension-descriptors", "shared-settings.json"]);
+    expect((await readdir(userData)).sort()).toEqual(["extension-descriptors", "gui-heartbeat.json", "shared-settings.json"]);
   });
 
   it("refuses a malformed disabled list", async () => {

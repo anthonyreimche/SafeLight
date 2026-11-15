@@ -238,6 +238,12 @@ describe("slu tools", () => {
     });
   });
 
+  it("reads --all as the idle-tools switch, not as every photo", async () => {
+    const r = await run(toolsCommand, ["a.ARW", "--all"], { photos: [photo("a.ARW")] });
+    expect(r.requests[0].all).toBe(false);
+    expect(r.requests[0].specs).toEqual(["a.ARW"]);
+  });
+
   it("refuses several photos", async () => {
     await expect(run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW"), photo("b.ARW")] })).rejects.toMatchObject({ code: 1 });
   });

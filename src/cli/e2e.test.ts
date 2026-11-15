@@ -255,7 +255,7 @@ describe("slu end to end", () => {
       shutdown: async () => {},
     };
     const before = fs.readFileSync(path.join(project, ".safelight", "catalog.json"), "utf8");
-    const r = await slu(["preview", "a.ARW", "exposure=1.5", "--graphics", "blocks", "--width", "4"], project, {
+    const r = await slu(["preview", "a.ARW", "exposure=1.5", "--try", "--graphics", "blocks", "--width", "4"], project, {
       services: { engine: () => engine },
     });
     expect(r.err).toBe("");

@@ -12,6 +12,7 @@ import type { GlslType } from "@/extensions/api/contributions";
 import { registerStageParams } from "@/extensions/param-registry";
 import {
   DESCRIPTORS_DIR,
+  GUI_HEARTBEAT_FILE,
   SHARED_SETTINGS_FILE,
   descriptorFileName,
   type ExtensionDescriptors,
@@ -30,6 +31,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** When the app last said it was open, or 0 when it never has. */
+export function guiHeartbeatAt(userData: string): number {
+  const doc = readJson(path.join(userData, GUI_HEARTBEAT_FILE));
+  return isRecord(doc) && typeof doc.writtenAt === "number" ? doc.writtenAt : 0;
+}
+
 export function readSharedSettings(userData: string): SharedSettings | null {
   const doc = readJson(path.join(userData, SHARED_SETTINGS_FILE));
   if (!isRecord(doc) || doc.version !== 1 || !isRecord(doc.storage)) return null;
@@ -40,7 +47,7 @@ export function readSharedSettings(userData: string): SharedSettings | null {
   return {
     version: 1,
     appVersion: typeof doc.appVersion === "string" ? doc.appVersion : "",
-    writtenAt: typeof doc.writtenAt === "number" ? doc.writtenAt : 0,
+    writtenAt: Math.max(typeof doc.writtenAt === "number" ? doc.writtenAt : 0, guiHeartbeatAt(userData)),
     guiPid: typeof doc.guiPid === "number" ? doc.guiPid : null,
     recentProjects: Array.isArray(doc.recentProjects)
       ? doc.recentProjects.filter((p): p is string => typeof p === "string")

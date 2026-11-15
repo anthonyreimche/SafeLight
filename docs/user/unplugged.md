@@ -27,7 +27,7 @@ Most commands take photos first, then what to do to them.
 | You type | It means |
 |---|---|
 | `IMG_4021.ARW` | That file. |
-| `*.ARW`, `2026-11/**/*.RAF` | A pattern. `slu` expands it itself, so it works the same in cmd, PowerShell and a Unix shell. It ignores case on Windows and macOS. |
+| `*.ARW`, `2026-11/**/*.RAF` | A pattern. `slu` expands it itself, so it works the same in cmd, PowerShell and a Unix shell. It ignores case on Windows and macOS. `*` and `?` stay inside a folder, `**` crosses folders, and `{a,b}` picks one word. `[abc]` is not a pattern: brackets, and braces with no comma, match themselves. |
 | `shoot/` or `.` | Every photo directly in that folder. Add `-r` to go into subfolders. |
 | `--all` | Every photo in the project. |
 | `--project <folder>` | Use that project instead of the one the photos sit in. |
@@ -92,7 +92,7 @@ Extension values are listed with their ranges (when the extension has been run i
 | `slu tools [photo] [--all]` | The tools in pipeline order. With a photo: each value with its range and unit, and a ✱ by values away from their default. |
 | `slu get <photo> [key…]` | The photo's values, all of them or the ones named. `--json` gives the current step as stored. |
 | `slu history <photo>` | The numbered steps with labels and times, the current one marked. |
-| `slu preview <photo> [--width cols] [--try key=value…] [--graphics mode]` | Prints the edited photo in the terminal. `--graphics` is `kitty`, `iterm`, `blocks` or `none`. `--try` renders with those values without storing them. |
+| `slu preview <photo> [--width cols] [--try key=value…] [--graphics mode]` | Prints the edited photo in the terminal. `--graphics` is `kitty`, `iterm`, `blocks` or `none`. `--try` renders with those values without storing them, and is required when you give `key=value`. |
 
 ### Edit
 
@@ -101,7 +101,7 @@ Extension values are listed with their ranges (when the extension has been run i
 | `slu set <photos> key=value…` | Sets values. One history step per photo, labelled with the values' names, as a slider move is. |
 | `slu add <photos> <tool>` | For a core tool, lists its keys; there is nothing to turn on. Extension tools can't be added from `slu` yet. |
 | `slu remove <photos> <tool>` | Puts all the tool's values back to their defaults in one step. Works on extension tools too. |
-| `slu reset <photos> [key…]` | Resets the keys named, or with none the whole edit, in one step. |
+| `slu reset <photos> [key…]` | Resets the keys named, or with none everything `slu` can set, in one step. With no keys it leaves the tone curve, masks, retouch spots, crop and guide lines alone, because `slu` can't show or edit them, and says which of those it kept. |
 | `slu undo <photos> [n]`, `slu redo <photos> [n]` | Moves back or forward `n` steps (default 1), as Undo and Redo do. |
 
 ### Share
@@ -131,7 +131,7 @@ Like in the app, these change the photo's record and add no history step.
 |---|---|
 | `slu export <photos> [-o dir\|file\|-] [options]` | Renders photos. The defaults are Preferences ▸ Export. |
 
-Export options: `--format jpg\|png\|tiff\|webp`, `--quality 1-100` (JPEG and WebP), `--long-edge <px>` or `--size original`, `--colour-space srgb\|display-p3\|adobe-rgb\|prophoto-rgb`, `--bit-depth 8\|16` (PNG and TIFF), `--name <template id>` (a filename template an extension registered), `--existing number\|replace`, and `--try key=value…`. `-o -` writes one image to standard output. Export writes image files, not the catalogue, so it works while Safelight has the project open.
+Export options: `--format jpg\|png\|tiff\|webp`, `--quality 1-100` (JPEG and WebP), `--long-edge <px>` or `--size original`, `--colour-space srgb\|display-p3\|adobe-rgb\|prophoto-rgb`, `--bit-depth 8\|16` (PNG and TIFF), `--name <template id>` (a filename template an extension registered), `--existing number\|replace`, and `--try key=value…` (a `key=value` without `--try` is refused, since export stores nothing). A photo it can't find is reported and the rest are still exported, ending in exit code 6. `-o -` writes one image to standard output. Export writes image files, not the catalogue, so it works while Safelight has the project open.
 
 ### Extensions
 
@@ -140,9 +140,9 @@ Export options: `--format jpg\|png\|tiff\|webp`, `--quality 1-100` (JPEG and Web
 | `slu search <words…>` | Searches the extension registry. |
 | `slu install <name>… [--version X] [--yes]` | Installs from the extension's release. For an extension that isn't verified, `slu` shows what it may reach and asks. When nothing can answer (a script), it refuses unless you add `--yes`. A banned extension is refused. |
 | `slu uninstall <name>…` | Removes it. Photos keep its values. |
-| `slu update [name…]` | Updates the named extensions, or all with a newer release. |
+| `slu update [name…]` | Updates the named extensions, or all with a newer release, from the repository `slu` or Safelight installed each one from. An extension that isn't verified and asks for new permissions is asked about again, and refused when nothing can answer unless you add `--yes`. When `slu` and Safelight installed one id from two different repositories, `slu` can't tell which is current and leaves it alone: update it in Safelight. |
 | `slu extensions` | Installed extensions: name, id, version, on or off, trust, update available. |
-| `slu enable <name>…`, `slu disable <name>…` | The same on/off switch as Safelight's. |
+| `slu enable <name>…`, `slu disable <name>…` | The same on/off switch as Safelight's. Until Safelight has been opened once, `slu` can't see which extensions are on, so these refuse (exit code 5). |
 
 A name can be an id (`local-contrast`, `safelight.basic`), the id without `safelight.`, the repository name, `owner/repo`, or the display name with dashes (`contrast-and-texture`). `slu install essentials` installs a kit. A name that matches several extensions lists them and installs none. Installs, updates and removals take effect the next time Safelight starts.
 
@@ -156,7 +156,7 @@ A name can be an id (`local-contrast`, `safelight.basic`), the id without `safel
 
 ### Options every command takes
 
-`--json`, `-q`, `-v` (`-vv` adds the engine's log), `--yes` (`-y`), `--strict`, `--wait[=seconds]`, `-h`, `--version`.
+`--json`, `-q`, `-v` (`-vv` adds the engine's log; short flags can be joined, as in `-qv`), `--yes` (`-y`), `--strict`, `--wait[=seconds]`, `-h`, `--version`.
 
 ## Pipes and batches
 
@@ -194,7 +194,7 @@ Safelight and `slu` are separate programs, and two programs saving the same cata
 - While `slu` is writing, Safelight opening the same folder waits a moment.
 - Extension commands don't touch projects, so they aren't locked.
 
-A lock that stops being refreshed for three minutes, say after a crash, counts as left over and is taken over.
+A lock left by a program that has closed or crashed on this computer counts as left over and is taken over at once. One held from another computer, for a project on a shared drive, is taken over once it hasn't been refreshed for 15 minutes.
 
 ## Preview limits
 

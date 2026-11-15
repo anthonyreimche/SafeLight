@@ -5,7 +5,7 @@
 
 // Options more than one verb takes, beyond args.ts's global and photo options.
 
-import type { OptionSpec } from "../types";
+import { CliError, type OptionSpec, type ParsedArgs } from "../types";
 
 export const PROJECT_OPTION: OptionSpec = {
   name: "project", kind: "string", summary: "Use this project instead of the one the photo sits in.",
@@ -22,3 +22,10 @@ export const TOOLS_OPTION: OptionSpec = {
 export const TRY_OPTION: OptionSpec = {
   name: "try", kind: "flag", summary: "Render with the key=value values given, without storing them.",
 };
+
+/** key=value on a verb that only renders is a trial: say so rather than apply it unasked. */
+export function requireTry(args: ParsedArgs): void {
+  if (args.assignments.length > 0 && args.options.try !== true) {
+    throw new CliError(1, `${args.assignments[0].raw} would change the render, and ${args.verb ?? "this verb"} stores nothing.`, "Add --try to render with it.");
+  }
+}

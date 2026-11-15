@@ -5,9 +5,10 @@
 
 // The extension store backend as one object: trust lists, registry index, search,
 // thumbnails, releases and install. main.cjs and `slu` each build it with their
-// own network, paths and writer. Installs, updates and uninstalls run under
-// <userData>/plugins.lock, so the app and `slu` never change the plugin folders
-// at once, and the app's startup sweep (main.cjs) waits for it.
+// own network, paths and writer. Changes to the plugin folders (the swap of an
+// install, settling an update, uninstalling) run under <userData>/plugins.lock, so
+// the app and `slu` never change them at once, and the app's startup sweep
+// (main.cjs) waits for it. Downloads stay outside the lock so installs overlap.
 
 const path = require("node:path");
 const { withLock } = require("../file-lock.cjs");
@@ -26,25 +27,17 @@ const INSTALL_WAIT_MS = 30_000;
 const pluginsLockFile = (userDataDir) => path.join(userDataDir, PLUGINS_LOCK);
 
 /**
- * `installer`'s three mutating calls, each run under the plugins lock.
- * @param {{
- *   installPlugin: Function, settleUpdate: Function, uninstallPlugin: Function,
- * }} installer
+ * Runs a piece of work under the plugins lock.
  * @param {{
  *   lockFile: () => string,
  *   owner?: "safelight" | "slu",
  *   waitMs?: number,
  *   pollMs?: number,
  * }} lock
+ * @returns {<T>(work: () => Promise<T>) => Promise<T>}
  */
-function underPluginsLock(installer, { lockFile, owner = "safelight", waitMs = INSTALL_WAIT_MS, pollMs }) {
-  const locked = (fn) => (...args) =>
-    withLock(lockFile(), owner, () => fn(...args), { waitMs, pollMs });
-  return {
-    installPlugin: locked(installer.installPlugin),
-    settleUpdate: locked(installer.settleUpdate),
-    uninstallPlugin: locked(installer.uninstallPlugin),
-  };
+function pluginsLocker({ lockFile, owner = "safelight", waitMs = INSTALL_WAIT_MS, pollMs }) {
+  return (work) => withLock(lockFile(), owner, work, { waitMs, pollMs });
 }
 
 /**
@@ -79,17 +72,15 @@ function createExtensionStore({ net, userData, fileWriter, appVersion, pluginsDi
     net,
     fetchOgImage: thumbnails.fetchOgImage,
   });
-  const { installPlugin, settleUpdate, uninstallPlugin } = underPluginsLock(
-    createInstaller({
-      pluginsDir,
-      pluginWorkDir,
-      appVersion,
-      fetchTrustList: trust.fetchTrustList,
-      registryVersionsFor: registry.registryVersionsFor,
-      releases,
-    }),
-    { lockFile: () => pluginsLockFile(userData()), owner: lockOwner },
-  );
+  const { installPlugin, settleUpdate, uninstallPlugin } = createInstaller({
+    pluginsDir,
+    pluginWorkDir,
+    appVersion,
+    fetchTrustList: trust.fetchTrustList,
+    registryVersionsFor: registry.registryVersionsFor,
+    releases,
+    underLock: pluginsLocker({ lockFile: () => pluginsLockFile(userData()), owner: lockOwner }),
+  });
   return {
     fetchTrustList: trust.fetchTrustList,
     storeVocabulary: registry.storeVocabulary,
@@ -108,4 +99,4 @@ function createExtensionStore({ net, userData, fileWriter, appVersion, pluginsDi
   };
 }
 
-module.exports = { createExtensionStore, underPluginsLock, pluginsLockFile, PLUGINS_LOCK };
+module.exports = { createExtensionStore, pluginsLocker, pluginsLockFile, PLUGINS_LOCK };

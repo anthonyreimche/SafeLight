@@ -59,6 +59,7 @@ describe("initSettingsMirror", () => {
     localStorage.setItem("sl_pipeline", "acme.agx");
     localStorage.setItem("sl_ext_settings_acme.film", '{"grain":1}');
     localStorage.setItem("safelight.inputProfileOwner", "acme.icc");
+    localStorage.setItem("sl_ext_sources", '{"acme.film":"acme/film"}');
     localStorage.setItem("sl_keybindings", "{}");
     await start();
     expect(writeSharedSettings).toHaveBeenCalledOnce();
@@ -70,6 +71,7 @@ describe("initSettingsMirror", () => {
         sl_pipeline: "acme.agx",
         "sl_ext_settings_acme.film": '{"grain":1}',
         "safelight.inputProfileOwner": "acme.icc",
+        sl_ext_sources: '{"acme.film":"acme/film"}',
       },
     });
     expect(lastDoc().storage).not.toHaveProperty("sl_keybindings");

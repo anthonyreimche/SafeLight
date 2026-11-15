@@ -5,11 +5,14 @@
 
 // A crossfade copies what a canvas shows into an overlay laid over it, shows the
 // copy at full opacity, and lets it ease out over whatever is drawn beneath next.
-// The ease starts two animation frames later, once the opaque copy has been
-// painted; animation frames are run by hand here.
+// With Element.animate the ease starts on the next frame. Without it, it falls back
+// to a CSS transition, which starts two animation frames later, once the opaque copy
+// has been painted; animation frames are run by hand here. The DOM test setup gives
+// every element a stand-in animate, so each test says which path it takes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cancelCrossfade, snapshotCrossfade } from "./canvas-crossfade";
+import { cancelCrossfade, crossfading, snapshotCrossfade } from "./canvas-crossfade";
+import { EASE_OUT } from "./motion";
 
 let frameQueue: Map<number, FrameRequestCallback>;
 let copies: { into: HTMLCanvasElement; image: unknown }[];
@@ -30,7 +33,13 @@ function canvas(width: number, height: number): HTMLCanvasElement {
   return c;
 }
 
+/** Takes the CSS fallback: no Element.animate on canvases. */
+function withoutAnimate() {
+  Object.defineProperty(HTMLCanvasElement.prototype, "animate", { configurable: true, value: undefined });
+}
+
 beforeEach(() => {
+  withoutAnimate();
   frameQueue = new Map();
   let nextId = 1;
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
@@ -53,6 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Reflect.deleteProperty(HTMLCanvasElement.prototype, "animate");
   vi.useRealTimers();
   vi.unstubAllGlobals();
   document.documentElement.classList.remove("sl-reduce-motion");
@@ -209,5 +219,94 @@ describe("cancelCrossfade", () => {
     cancelCrossfade(overlay);
     expect(overlay.style.opacity).toBe("0");
     expect(overlay.style.transition).toBe("none");
+  });
+});
+
+// Started from script, the fade needs no painted frame of the opaque copy first: the
+// animation's first frame shows it, so the copy no longer covers the new frame for two
+// frames before it starts to ease.
+describe("with Element.animate", () => {
+  class FakeAnimation {
+    onfinish: (() => void) | null = null;
+    oncancel: (() => void) | null = null;
+    cancelled = false;
+    readonly keyframes: Keyframe[];
+    readonly options: KeyframeAnimationOptions;
+    constructor(keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+      this.keyframes = keyframes;
+      this.options = options;
+    }
+    cancel() {
+      this.cancelled = true;
+    }
+  }
+  let animations: FakeAnimation[];
+
+  beforeEach(() => {
+    animations = [];
+    Object.defineProperty(HTMLCanvasElement.prototype, "animate", {
+      configurable: true,
+      value: (keyframes: Keyframe[], options: KeyframeAnimationOptions) => {
+        const animation = new FakeAnimation(keyframes, options);
+        animations.push(animation);
+        return animation;
+      },
+    });
+  });
+
+  it("eases the copy out from the next frame, over the time asked, waiting on no frame", () => {
+    const overlay = canvas(10, 10);
+    expect(snapshotCrossfade(canvas(600, 400), overlay, 140)).toBe(true);
+
+    expect(animations).toHaveLength(1);
+    expect(animations[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+    expect(animations[0].options).toEqual({ duration: 140, easing: EASE_OUT });
+    expect(frameQueue.size).toBe(0);
+    // Hidden once the animation lets go of it.
+    expect(overlay.style.opacity).toBe("0");
+    expect(overlay.style.transition).toBe("none");
+  });
+
+  it("lets go of the copy when the animation finishes", () => {
+    const overlay = canvas(10, 10);
+    snapshotCrossfade(canvas(600, 400), overlay, 140);
+    expect(overlay.width).toBe(600);
+    expect(crossfading(overlay)).toBe(true);
+
+    animations[0].onfinish?.();
+    expect(overlay.width).toBe(0);
+    expect(crossfading(overlay)).toBe(false);
+  });
+
+  it("stops the animation and lets go of the copy when cancelled", () => {
+    const overlay = canvas(10, 10);
+    snapshotCrossfade(canvas(600, 400), overlay, 140);
+    cancelCrossfade(overlay);
+
+    expect(animations[0].cancelled).toBe(true);
+    expect(overlay.width).toBe(0);
+    expect(overlay.style.opacity).toBe("0");
+    expect(crossfading(overlay)).toBe(false);
+  });
+
+  it("keeps a newer fade's copy when an older animation's events come late", () => {
+    const overlay = canvas(10, 10);
+    snapshotCrossfade(canvas(600, 400), overlay, 140);
+    const older = animations[0];
+    snapshotCrossfade(canvas(300, 200), overlay, 220);
+    expect(older.cancelled).toBe(true);
+
+    older.oncancel?.();
+    older.onfinish?.();
+    expect(overlay.width).toBe(300);
+    expect(crossfading(overlay)).toBe(true);
+  });
+
+  it("animates nothing under Reduce motion", () => {
+    document.documentElement.classList.add("sl-reduce-motion");
+    const overlay = canvas(10, 10);
+    expect(snapshotCrossfade(canvas(600, 400), overlay, 140)).toBe(false);
+    expect(animations).toEqual([]);
+    expect(overlay.width).toBe(0);
   });
 });

@@ -446,6 +446,32 @@ describe("extension tables", () => {
     expect(lines[4]).toBe(`${D}Old Thing${N}               ${D}old-thing${N}               0.1.0    ${D}off${N}    ${RED}banned${FG}`);
   });
 
+  describe("when the app has not said which extensions are on", () => {
+    const UNKNOWN = EXTENSIONS.map((row) => ({ ...row, enabled: null }));
+    const NOTE = "Open Safelight once so slu can see which extensions are on.";
+
+    it("shows ? and one note line", () => {
+      expect(builder({ width: 120 }).extensionTable(UNKNOWN)).toBe([
+        "Extension               Id                      Version  State  Trust       Update",
+        "Local Contrast          local-contrast          1.0.0    ?      verified    1.0.1 available",
+        "Basic                   safelight.basic         3.2.5    ?      official",
+        "Pyramid Local Contrast  pyramid-local-contrast  1.1.0    ?      unverified",
+        "Old Thing               old-thing               0.1.0    ?      banned",
+        NOTE,
+      ].join("\n"));
+    });
+
+    it("dims the ? and the note in colour, and leaves the names alone", () => {
+      const lines = builder({ colour: true }).extensionTable(UNKNOWN).split("\n");
+      expect(lines[1]).toBe(`Local Contrast          ${D}local-contrast${N}          1.0.0    ${D}?${N}      verified    1.0.1 available`);
+      expect(lines[5]).toBe(`${D}${NOTE}${N}`);
+    });
+
+    it("adds no note when every state is known", () => {
+      expect(builder({ width: 120 }).extensionTable(EXTENSIONS)).not.toContain("Open Safelight");
+    });
+  });
+
   it("lists search results as the command reference shows them", () => {
     expect(builder({ width: 120 }).searchTable(FOUND)).toBe([
       "local-contrast          Local Contrast 1.0.0          tone    verified",

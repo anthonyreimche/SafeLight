@@ -268,7 +268,8 @@ export function createValueService(
       case "number": {
         const entered = parseNumber(assign, info);
         const current = Number(readOf(look, info));
-        const wanted = assign.op === "=" ? entered : assign.op === "+=" ? current + entered : current - entered;
+        const typed = assign.op === "=" ? entered : assign.op === "+=" ? current + entered : current - entered;
+        const wanted = info.decimals === 0 ? Math.round(typed) || 0 : typed;
         const low = info.min ?? -Infinity;
         const high = info.max ?? Infinity;
         const limit = Math.min(Math.max(wanted, low), high);
@@ -341,7 +342,7 @@ export function createValueService(
       const found = byKey.get(key) ?? shorthand(key);
       if (found) return found;
       const top = input.trim().split(".")[0];
-      if (top in READ_ONLY_PARAMS) return readOnlyInfo(input.trim());
+      if (Object.hasOwn(READ_ONLY_PARAMS, top)) return readOnlyInfo(input.trim());
       const near = closest(key, [...byKey.keys()]);
       const nearName = near ? byKey.get(near)?.key : undefined;
       throw new CliError(1, `No value called "${input}".`, nearName ? `Did you mean "${nearName}"? slu tools lists them.` : "slu tools lists them.");
@@ -372,7 +373,7 @@ export function createValueService(
 
     resetKeys(look, keys, asShot) {
       if (keys === "all") {
-        const params = ESSENTIAL_ADJUSTMENTS.flatMap((e) => e.params).filter((k) => !(k in READ_ONLY_PARAMS));
+        const params = ESSENTIAL_ADJUSTMENTS.flatMap((e) => e.params).filter((k) => !Object.hasOwn(READ_ONLY_PARAMS, k));
         const reset = resetParamKeys(look.params, params, asShot);
         const extension = tools.filter((t) => t.kind === "extension");
         return {

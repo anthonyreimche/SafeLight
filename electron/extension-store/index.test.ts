@@ -3,14 +3,14 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Installs, updates and uninstalls run under <userData>/plugins.lock.
+// The plugin folder changes (swap, settle, uninstall) run under <userData>/plugins.lock.
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLock, releaseLock } from "../file-lock.cjs";
-import { createExtensionStore, pluginsLockFile, underPluginsLock } from "./index.cjs";
+import { createExtensionStore, pluginsLockFile, pluginsLocker } from "./index.cjs";
 
 let userData: string;
 let lock: string;
@@ -22,49 +22,43 @@ beforeEach(() => {
 
 afterEach(() => fs.rmSync(userData, { recursive: true, force: true }));
 
-function installer() {
-  const seen: boolean[] = [];
-  const held = async () => {
+function work(seen: boolean[]) {
+  return vi.fn(async () => {
     seen.push(fs.existsSync(lock));
-    return null;
-  };
-  return { seen, installPlugin: vi.fn(held), settleUpdate: vi.fn(held), uninstallPlugin: vi.fn(held) };
+    return "done";
+  });
 }
 
-describe("underPluginsLock", () => {
-  it("holds plugins.lock during install, settle and uninstall, and releases it after", async () => {
-    const inner = installer();
-    const locked = underPluginsLock(inner, { lockFile: () => lock, owner: "slu" });
-    await locked.installPlugin("a/b");
-    await locked.settleUpdate("x", "keep");
-    await locked.uninstallPlugin("x");
-    expect(inner.seen).toEqual([true, true, true]);
+describe("pluginsLocker", () => {
+  it("holds plugins.lock while the work runs, and releases it after", async () => {
+    const seen: boolean[] = [];
+    const underLock = pluginsLocker({ lockFile: () => lock, owner: "slu" });
+    const fn = work(seen);
+    await expect(underLock(fn)).resolves.toBe("done");
+    expect(seen).toEqual([true]);
     expect(fs.existsSync(lock)).toBe(false);
-    expect(inner.installPlugin).toHaveBeenCalledWith("a/b");
   });
 
-  it("waits while another process holds the lock, then installs", async () => {
-    const inner = installer();
+  it("waits while another process holds the lock, then runs", async () => {
     const held = await acquireLock(lock, "slu");
     setTimeout(() => void releaseLock(lock, (held as { token: string }).token), 60);
-    const locked = underPluginsLock(inner, { lockFile: () => lock, waitMs: 2000, pollMs: 10 });
-    await locked.installPlugin("a/b");
-    expect(inner.installPlugin).toHaveBeenCalledOnce();
+    const underLock = pluginsLocker({ lockFile: () => lock, waitMs: 2000, pollMs: 10 });
+    const fn = work([]);
+    await underLock(fn);
+    expect(fn).toHaveBeenCalledOnce();
   });
 
-  it("fails without touching the plugins when the lock stays held", async () => {
-    const inner = installer();
+  it("fails without running the work when the lock stays held", async () => {
     await acquireLock(lock, "slu");
-    const locked = underPluginsLock(inner, { lockFile: () => lock, waitMs: 40, pollMs: 10 });
-    await expect(locked.uninstallPlugin("x")).rejects.toMatchObject({ code: "ELOCKED" });
-    expect(inner.uninstallPlugin).not.toHaveBeenCalled();
+    const underLock = pluginsLocker({ lockFile: () => lock, waitMs: 40, pollMs: 10 });
+    const fn = work([]);
+    await expect(underLock(fn)).rejects.toMatchObject({ code: "ELOCKED" });
+    expect(fn).not.toHaveBeenCalled();
   });
 
-  it("releases the lock when the install throws", async () => {
-    const inner = installer();
-    inner.installPlugin.mockRejectedValueOnce(new Error("bad zip"));
-    const locked = underPluginsLock(inner, { lockFile: () => lock });
-    await expect(locked.installPlugin("a/b")).rejects.toThrow("bad zip");
+  it("releases the lock when the work throws", async () => {
+    const underLock = pluginsLocker({ lockFile: () => lock });
+    await expect(underLock(async () => Promise.reject(new Error("bad zip")))).rejects.toThrow("bad zip");
     expect(fs.existsSync(lock)).toBe(false);
   });
 });

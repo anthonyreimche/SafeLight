@@ -106,6 +106,7 @@ function fakeBridge(prepassFrames = 0) {
     wholeHeight: 20,
     crop: null,
     overflowedStages: [],
+    seq: frames.length,
   } as FrameResult);
   const bridge = {
     ready: Promise.resolve(),

@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CliError, type CommandSpec, type InstalledExtension } from "../types";
+import { CliError, type CommandSpec, type InstallRisk, type InstalledExtension } from "../types";
 import { forEachName, noteRestart, resolveInstalled } from "./extension-names";
+import { confirmFor } from "./install";
 
 export const updateCommand: CommandSpec = {
   verb: "update",
@@ -44,7 +45,13 @@ export const updateCommand: CommandSpec = {
       const ext = installed.find((e) => e.id === id);
       const update = byId.get(id);
       if (!ext?.repo || !update) throw new CliError(5, `${id} has no repository to update from.`);
-      const now = await ctx.extensions.install(ext.repo, { confirm: async () => true });
+      const known = new Set(ext.permissions);
+      const askAboutMore = confirmFor(ctx, undefined, true);
+      const confirm = async (risk: InstallRisk): Promise<boolean> => {
+        const added = risk.permissions.filter((p) => !known.has(p));
+        return added.length === 0 || askAboutMore({ ...risk, permissions: added });
+      };
+      const now = await ctx.extensions.install(ext.repo, { confirm });
       return `Updated ${now.name} from ${update.from} to ${now.version}.`;
     });
     if (ctx.json) ctx.out.json({ slu: 1, results });

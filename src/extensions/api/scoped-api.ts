@@ -285,7 +285,8 @@ export interface SafelightAPI {
   };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
-   *  Card, Badge, ProgressBar, Row, Stack — plus `tokens` (canonical CSS-var
+   *  Card, Badge, ProgressBar, LoadingDots, Skeleton, Row, Stack and the
+   *  useDelayedFlag hook — plus `tokens` (canonical CSS-var
    *  strings). Authored in core (where Tailwind is scanned) and rendered inside
    *  the extension's own subtree, so they match the app. Prefer these over
    *  hand-rolled inline-styled controls. `confirmDialog` asks in the app's own

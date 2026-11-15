@@ -96,12 +96,87 @@ html.sl-material {
   color: var(--color-text-primary);
 }
 
+/* Motion. Enter animations play once on mount and change no timing, so whatever
+   mounts is there and usable at once. They animate the individual `scale` and
+   `translate` properties, never `transform`, which an element may already use for
+   its own placement (a moved dialog). Durations match src/ui/motion.ts. */
+@keyframes sl-enter-fade {
+  from { opacity: 0; }
+}
+@keyframes sl-enter-pop {
+  from { opacity: 0; scale: 0.98; }
+}
+@keyframes sl-enter-rise {
+  from { opacity: 0; translate: 0 4px; }
+}
+.sl-enter-fade {
+  animation: sl-enter-fade 150ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sl-enter-pop {
+  animation: sl-enter-pop 150ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sl-enter-rise {
+  animation: sl-enter-rise 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/* A dock panel's body folding open: the wrapper's single row grows 0fr to 1fr while
+   the body is clipped to it. DockHost drops the class when the animation ends, so a
+   settled body can overflow its panel as before. */
+@keyframes sl-enter-expand {
+  from { grid-template-rows: 0fr; opacity: 0; }
+}
+.sl-enter-expand {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  animation: sl-enter-expand 150ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sl-enter-expand > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Waits that last (shown after a delay, see useDelayedFlag): a breathing stand-in
+   where the layout is known, stepping dots in status text, a sliding bar. */
+@keyframes sl-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+.sl-breathe {
+  animation: sl-breathe 1.6s ease-in-out infinite;
+}
+@keyframes sl-dot {
+  0%, 20% { opacity: 0.2; }
+  40%, 100% { opacity: 1; }
+}
+.sl-dots > span {
+  animation: sl-dot 1.2s steps(1, end) infinite;
+}
+.sl-dots > span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.sl-dots > span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes sl-indeterminate {
+  from { translate: -100% 0; }
+  to { translate: 300% 0; }
+}
+.sl-indeterminate {
+  animation: sl-indeterminate 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
 /* Preferences ▸ Interface ▸ Reduce motion */
 .sl-reduce-motion *,
 .sl-reduce-motion *::before,
 .sl-reduce-motion *::after {
   animation: none !important;
   transition: none !important;
+}
+/* Stopped, a skeleton rests between its breaths and the sliding bar sits still at
+   the start of its track. */
+.sl-reduce-motion .sl-breathe {
+  opacity: 0.6;
 }
 
 /* Always-on baseline keyboard focus indicator (WCAG 2.4.7). :focus-visible only

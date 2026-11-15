@@ -14,6 +14,43 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { suspendShortcuts } from "@/state/keybindings-store";
 import { trapTab } from "@/ui/focus-trap";
+import { Skeleton } from "@/ui/components/Skeleton";
+import { EASE_OUT, MOTION_MS } from "@/ui/motion";
+
+/** One thumbnail: a breathing box the size of a typical screenshot until the picture
+ *  loads, then the picture fading in over it. */
+function Thumb({
+  url,
+  index,
+  onOpen,
+  onFail,
+}: {
+  url: string;
+  index: number;
+  onOpen: () => void;
+  onFail: () => void;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <button
+      data-shot={url}
+      onClick={onOpen}
+      aria-label={`Enlarge screenshot ${index + 1}`}
+      className={`relative h-[120px] shrink-0 overflow-hidden rounded bg-surface-2 ${loaded ? "" : "w-[214px]"}`}
+    >
+      {!loaded && <Skeleton className="absolute inset-0 rounded-none" />}
+      <img
+        src={url}
+        alt={`Screenshot ${index + 1}`}
+        referrerPolicy="no-referrer"
+        className="h-full w-auto object-contain"
+        style={{ opacity: loaded ? 1 : 0, transition: `opacity ${MOTION_MS}ms ${EASE_OUT}` }}
+        onLoad={() => setLoaded(true)}
+        onError={onFail}
+      />
+    </button>
+  );
+}
 
 export function Screenshots({ urls }: { urls: string[] }) {
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
@@ -70,21 +107,7 @@ export function Screenshots({ urls }: { urls: string[] }) {
     <div className="border-b border-border-subtle px-3 py-2">
       <div ref={stripRef} className="flex gap-2 overflow-x-auto pb-1">
         {shown.map((u, i) => (
-          <button
-            key={u}
-            data-shot={u}
-            onClick={() => setOpenUrl(u)}
-            aria-label={`Enlarge screenshot ${i + 1}`}
-            className="h-[120px] shrink-0 overflow-hidden rounded bg-surface-2"
-          >
-            <img
-              src={u}
-              alt={`Screenshot ${i + 1}`}
-              referrerPolicy="no-referrer"
-              className="h-full w-auto object-contain"
-              onError={() => fail(u)}
-            />
-          </button>
+          <Thumb key={u} url={u} index={i} onOpen={() => setOpenUrl(u)} onFail={() => fail(u)} />
         ))}
       </div>
       {openShot !== null && (

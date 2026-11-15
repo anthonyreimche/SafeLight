@@ -4,10 +4,12 @@
 // be preserved in derived versions.
 
 import { currentDisplaySpace } from "@/rendering/display-space";
+import { EASE_OUT } from "./motion";
 import { reducedMotion } from "./reduced-motion";
 
-// How to stop each overlay's fade still under way: the animation frame it waits on,
-// then the timer that lets go of its copy.
+// How to stop each overlay's fade still under way: its animation, or, without
+// Element.animate, the animation frame it waits on and then the timer that lets go of
+// its copy.
 const running = new WeakMap<HTMLCanvasElement, () => void>();
 
 /** Fades what `from` shows out over whatever is drawn into it next: copies its
@@ -38,6 +40,10 @@ export function snapshotCrossfade(
     return false; // a tainted canvas can't be copied
   }
   overlay.style.transition = "none";
+  if (typeof overlay.animate === "function") {
+    fadeOut(overlay, ms);
+    return true;
+  }
   overlay.style.opacity = "1";
   let frame = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,6 +64,30 @@ export function snapshotCrossfade(
     clearTimeout(timer);
   });
   return true;
+}
+
+// The animation's first frame shows the copy opaque, so the ease starts on the next
+// frame: the CSS fallback waits two frames, the opaque copy covering the new frame
+// meanwhile. The overlay rests hidden underneath, which is what shows once the
+// animation ends. A late finish or cancel event of an animation replaced since must
+// not let go of the newer one's copy.
+function fadeOut(overlay: HTMLCanvasElement, ms: number) {
+  overlay.style.opacity = "0";
+  const animation = overlay.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: EASE_OUT });
+  const stop = () => animation.cancel();
+  const done = () => {
+    if (running.get(overlay) !== stop) return;
+    running.delete(overlay);
+    letGo(overlay);
+  };
+  animation.onfinish = done;
+  animation.oncancel = done;
+  running.set(overlay, stop);
+}
+
+/** Whether a fade runs on `overlay`, its copy showing. */
+export function crossfading(overlay: HTMLCanvasElement): boolean {
+  return running.has(overlay);
 }
 
 /** Ends `overlay`'s fade at once: hidden, whether or not it had started easing, and

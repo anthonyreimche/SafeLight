@@ -52,6 +52,8 @@ import {
 } from "./actions";
 import { startHeaderDrag, startResize } from "./dnd";
 import { prewarmPanel } from "./prewarm";
+import { EASE_OUT, MOTION_FAST_MS } from "@/ui/motion";
+import { reducedMotion } from "@/ui/reduced-motion";
 
 function PanelErrorBoundary({ id, children }: { id: string; children: ReactNode }) {
   return (
@@ -184,6 +186,52 @@ function PanelHeader({ id }: { id: string }) {
   );
 }
 
+/** True from the moment a panel that was collapsed is expanded until it is
+ *  collapsed again. Sticky so the body's wrapper keeps one shape, and the body
+ *  inside it stays mounted, once the enter has played. A panel that mounts
+ *  expanded never enters. */
+function useExpandedEnter(collapsed: boolean): boolean {
+  const wasCollapsed = useRef(collapsed);
+  const entering = useRef(false);
+  if (collapsed) entering.current = false;
+  else if (wasCollapsed.current) entering.current = true;
+  useLayoutEffect(() => {
+    wasCollapsed.current = collapsed;
+  });
+  return entering.current;
+}
+
+/** Expanding folds the body open (0fr to 1fr rows) instead of popping in. The body is
+ *  clipped only while it folds open: settled, it may overflow its panel as before.
+ *  The wrapper stays once settled, so the body isn't remounted when the class goes. */
+function ExpandEnter({ enter, children }: { enter: boolean; children: ReactNode }) {
+  const [settled, setSettled] = useState(false);
+  if (!enter && settled) setSettled(false);
+  // Under Reduce motion the animation never runs, so it would never end and unclip.
+  const folding = enter && !settled && !reducedMotion();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!folding || !el) return;
+    const onEnd = (e: Event) => {
+      if (e.target === el) setSettled(true);
+    };
+    // Cancelled (the rail hidden mid-fold) counts as done, or the body stays clipped.
+    el.addEventListener("animationend", onEnd);
+    el.addEventListener("animationcancel", onEnd);
+    return () => {
+      el.removeEventListener("animationend", onEnd);
+      el.removeEventListener("animationcancel", onEnd);
+    };
+  }, [folding]);
+  if (!enter) return <>{children}</>;
+  return (
+    <div ref={wrapRef} className={folding ? "sl-enter-expand" : undefined}>
+      {children}
+    </div>
+  );
+}
+
 /** `stretch` panels fill the remaining rail space and let the body scroll
  *  itself (fill panels in side rails; every panel in a bottom rail). */
 const DockedPanel = memo(function DockedPanel({
@@ -194,6 +242,7 @@ const DockedPanel = memo(function DockedPanel({
   stretch?: boolean;
 }) {
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  const enter = useExpandedEnter(collapsed);
   const body = (
     <PanelErrorBoundary id={id}>
       <PanelBody id={id} />
@@ -208,7 +257,15 @@ const DockedPanel = memo(function DockedPanel({
     >
       <PanelHeader id={id} />
       {!collapsed &&
-        (stretch ? <div className="min-h-0 flex-1 overflow-hidden">{body}</div> : body)}
+        (stretch ? (
+          // A stretched body can't fold open (its height is the leftover space),
+          // so it rises in instead.
+          <div className={`min-h-0 flex-1 overflow-hidden ${enter ? "sl-enter-rise" : ""}`}>
+            {body}
+          </div>
+        ) : (
+          <ExpandEnter enter={enter}>{body}</ExpandEnter>
+        ))}
     </div>
   );
 });
@@ -297,6 +354,7 @@ const FloatingPanel = memo(function FloatingPanel({ id }: { id: string }) {
   const pos = useDockStore((s) => s.floating[id]);
   const z = useDockStore((s) => s.zOrder.indexOf(id));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  const enter = useExpandedEnter(collapsed);
   if (!pos) return null;
   // Centred windows track the workspace centre by CSS, so they stay centred
   // whatever the panel's natural height; the height cap keeps a tall panel's
@@ -317,11 +375,13 @@ const FloatingPanel = memo(function FloatingPanel({ id }: { id: string }) {
     >
       <PanelHeader id={id} />
       {!collapsed && (
-        <div className="max-h-[70vh] overflow-y-auto">
-          <PanelErrorBoundary id={id}>
-            <PanelBody id={id} />
-          </PanelErrorBoundary>
-        </div>
+        <ExpandEnter enter={enter}>
+          <div className="max-h-[70vh] overflow-y-auto">
+            <PanelErrorBoundary id={id}>
+              <PanelBody id={id} />
+            </PanelErrorBoundary>
+          </div>
+        </ExpandEnter>
       )}
       <div
         onPointerDown={(e) =>
@@ -383,8 +443,17 @@ export function DockHost({
 
   // A layout effect so the incoming module's rails commit before the browser
   // paints; `ready` keeps the outgoing module's rails off the screen until then.
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const shownModule = useRef(module);
   useLayoutEffect(() => {
     initModule(module);
+    // Fade the same elements in rather than keying them: the canvas measures its
+    // box, and a remount would drop the dock's panels.
+    const el = workspaceRef.current;
+    const switched = shownModule.current !== module;
+    shownModule.current = module;
+    if (!switched || !el || typeof el.animate !== "function" || reducedMotion()) return;
+    el.animate({ opacity: [0, 1] }, { duration: MOTION_FAST_MS, easing: EASE_OUT });
   }, [module]);
 
   const shown = (side: DockSide) => ready && !hidden[side];
@@ -395,7 +464,7 @@ export function DockHost({
   return (
     <ContainerCtx.Provider value={containerRef}>
       <div ref={containerRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div ref={workspaceRef} className="flex min-h-0 flex-1 overflow-hidden">
           {left.map((r) => (
             <Rail key={r.id} rail={r} />
           ))}

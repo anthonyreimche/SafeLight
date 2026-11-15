@@ -69,6 +69,7 @@ import type {
   Mask,
 } from "@/catalog/types";
 import type { CatalogHooksContribution } from "@/extensions/types";
+import { noteDiscreteChange, recentDiscreteChange } from "@/ui/motion";
 
 type EditCommitCtx = Parameters<
   NonNullable<CatalogHooksContribution["onEditCommit"]>
@@ -1531,5 +1532,95 @@ describe("sourceSize", () => {
   it("takes the held size as the decoded size, not native, without the third argument", () => {
     useDevelopStore.getState().setSourceSize(10, 20);
     expect(useDevelopStore.getState().sourceSize).toEqual({ width: 10, height: 20, fullWidth: 10, fullHeight: 20, native: false });
+  });
+});
+
+// A jump to a known end state (undo, redo, a step picked in History, a preset, a
+// reset, the processing update) bumps `discreteEdits` in the same notification as
+// the look it lands on, so the view can tell it from a live write and ease into it.
+describe("discrete edits", () => {
+  beforeEach(async () => {
+    storage = installMemoryStorage(
+      editState(
+        [
+          legacySnapshot("Original", { exposure: 0 }),
+          legacySnapshot("Exposure", { exposure: 1 }),
+          legacySnapshot("Contrast", { exposure: 1, contrast: 20 }),
+        ],
+        2,
+      ),
+    );
+    await s().loadEdit(PHOTO_ID, 5000);
+  });
+
+  /** Each notification that moved the params: whether the counter moved with them. */
+  function watch(): { bumpedWithParams: boolean[]; bumpedAlone: number } {
+    const seen = { bumpedWithParams: [] as boolean[], bumpedAlone: 0 };
+    const stop = useDevelopStore.subscribe((next, prev) => {
+      const bumped = next.discreteEdits !== prev.discreteEdits;
+      const moved = next.params !== prev.params || next.paramBag !== prev.paramBag;
+      if (moved) seen.bumpedWithParams.push(bumped);
+      else if (bumped) seen.bumpedAlone++;
+    });
+    afterEachStops.push(stop);
+    return seen;
+  }
+  const afterEachStops: (() => void)[] = [];
+  afterEach(() => {
+    for (const stop of afterEachStops.splice(0)) stop();
+  });
+
+  it.each<[string, () => unknown]>([
+    ["undo", () => s().undo()],
+    ["redo", () => {
+      s().undo();
+      return s().redo();
+    }],
+    ["goToHistory", () => s().goToHistory(0)],
+    ["applyPreset", () => s().applyPreset(normalizeParams({ exposure: 2 }))],
+    ["resetParams", () => s().resetParams(["exposure"], "Reset Exposure")],
+    ["reset", () => s().reset()],
+  ])("%s bumps the counter with the params, in one notification", async (_name, act) => {
+    const seen = watch();
+    await act();
+    expect(seen.bumpedWithParams.length).toBeGreaterThan(0);
+    expect(seen.bumpedWithParams.every(Boolean)).toBe(true);
+    expect(seen.bumpedAlone).toBe(0);
+  });
+
+  it("updateProcessing bumps the counter with the params, in one notification", async () => {
+    expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+    const seen = watch();
+    await s().updateProcessing();
+    expect(seen.bumpedWithParams).toEqual([true]);
+    expect(seen.bumpedAlone).toBe(0);
+  });
+
+  it.each<[string, () => unknown]>([
+    ["undo", () => s().undo()],
+    ["applyPreset", () => s().applyPreset(normalizeParams({ exposure: 2 }))],
+    ["resetParams", () => s().resetParams(["exposure"], "Reset Exposure")],
+    ["reset", () => s().reset()],
+    ["updateProcessing", () => s().updateProcessing()],
+  ])("%s notes a discrete change for controls that ease to it", async (_name, act) => {
+    noteDiscreteChange(performance.now() - 10_000);
+    expect(recentDiscreteChange()).toBe(false);
+    await act();
+    expect(recentDiscreteChange()).toBe(true);
+  });
+
+  it("leaves the counter for live writes: params, the bag, masks and the hover preview", () => {
+    const before = s().discreteEdits;
+    s().setParam("exposure", 0.5);
+    s().setDynParam("ext.stage.amount", 10);
+    s().setDynParams({ "ext.stage.other": 1 });
+    s().setToneCurve("rgb", [{ x: 0, y: 0 }, { x: 1, y: 1 }]);
+    s().setPreviewParams(normalizeParams({ exposure: 3 }));
+    s().setPreviewParams(null);
+    s().setParam("masks", [brushMask()]);
+    const [mask] = params().masks;
+    s().updateMaskAdj(mask.id, { exposure: 1 });
+    s().updateMaskBag(mask.id, { "ext.stage.amount": 5 });
+    expect(s().discreteEdits).toBe(before);
   });
 });

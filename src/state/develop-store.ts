@@ -37,6 +37,7 @@ import { normalizeParamBag } from "@/extensions/param-registry";
 import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { noteDiscreteChange } from "@/ui/motion";
 
 export interface DevelopState extends ViewSlice, MaskSlice {
   photoId: string | null;
@@ -75,6 +76,11 @@ export interface DevelopState extends ViewSlice, MaskSlice {
    *  nothing is written over an edit that was never seen. Cleared by opening the
    *  photo again, or another one, successfully. */
   editError: string | null;
+  /** Counts jumps to a known end state: undo, redo, a step picked in History, a
+   *  preset applied, a reset, the processing update. Bumped in the same set as the
+   *  look it lands on, so the view eases into that look where a live write (a drag,
+   *  a mask stroke) cuts. Transient: never stored or broadcast. */
+  discreteEdits: number;
 
   // Canvas-view overlays and picker modes live in ViewSlice
   // (develop-slices/view-slice.ts).
@@ -157,7 +163,8 @@ function moveHistory(
   const offset = newIndex - historyIndex;
   if (editError || !Number.isInteger(newIndex) || offset === 0 || newIndex < 0 || newIndex > history.length - 1) return;
   const look = lookOf(history[newIndex], get());
-  set({ historyIndex: newIndex, ...look });
+  noteDiscreteChange();
+  set({ historyIndex: newIndex, ...look, discreteEdits: get().discreteEdits + 1 });
   broadcast({ type: "edit-update", payload: { photoId } });
   if (!photoId) return;
 
@@ -188,7 +195,13 @@ function moveHistory(
       // No step to take in the catalogue's history: show it as it is, rather
       // than the step taken here that was never saved.
       const look = lookOf(base.stack[steppable ? index : base.index], get());
-      set({ history: base.stack, historyIndex: steppable ? index : base.index, ...look });
+      noteDiscreteChange();
+      set({
+        history: base.stack,
+        historyIndex: steppable ? index : base.index,
+        ...look,
+        discreteEdits: get().discreteEdits + 1,
+      });
       broadcast({ type: "edit-update", payload: { photoId } });
     }
     if (steppable) store({ photoId, stack: base.stack, currentIndex: index });
@@ -569,6 +582,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   asShotTemperature: NEUTRAL_TEMPERATURE_K,
   sourceSize: { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false },
   editError: null,
+  discreteEdits: 0,
 
   ...createViewSlice(set, get, store),
 
@@ -726,7 +740,9 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
 
 
   async applyPreset(params, paramBag) {
+    noteDiscreteChange();
     set((s) => ({
+      discreteEdits: s.discreteEdits + 1,
       previewParams: null,
       previewParamBag: null,
       params: normalizeParams({ ...params, processVersion: s.params.processVersion }),
@@ -771,6 +787,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async resetParams(keys, label) {
     const { asShotTemperature } = get();
     if (keys.length === 0) return;
+    noteDiscreteChange();
     set((s) => {
       const next = { ...s.params };
       for (const k of keys) {
@@ -782,14 +799,15 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
           k === "temperature" ? asShotTemperature : structuredClone(DEFAULT_DEVELOP_PARAMS[k]),
         );
       }
-      return { params: next };
+      return { params: next, discreteEdits: s.discreteEdits + 1 };
     });
     await get().commitEdit(label);
   },
 
   async reset() {
     const fresh = freshParams(get().asShotTemperature);
-    set({ params: fresh, paramBag: {} });
+    noteDiscreteChange();
+    set((s) => ({ params: fresh, paramBag: {}, discreteEdits: s.discreteEdits + 1 }));
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
   },
@@ -797,7 +815,11 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async updateProcessing() {
     const { photoId, params } = get();
     if (!photoId || !usesOlderProcessing(params)) return;
-    set({ params: { ...params, processVersion: CURRENT_PROCESS_VERSION } });
+    noteDiscreteChange();
+    set((s) => ({
+      params: { ...params, processVersion: CURRENT_PROCESS_VERSION },
+      discreteEdits: s.discreteEdits + 1,
+    }));
     await get().commitEdit(UPDATE_PROCESSING_LABEL);
   },
 

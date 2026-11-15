@@ -26,8 +26,8 @@ const localContrast: ExtensionDescriptors = {
   hasCatalogHooks: true,
 };
 const installed: InstalledExtension[] = [
-  { id: "local-contrast", name: "Local Contrast", version: "1.0.0", enabled: true, trust: "official", repo: null },
-  { id: "retinex", name: "Retinex", version: "1.2.0", enabled: true, trust: "official", repo: null },
+  { id: "local-contrast", name: "Local Contrast", version: "1.0.0", enabled: true, trust: "official", repo: null, permissions: [] },
+  { id: "retinex", name: "Retinex", version: "1.2.0", enabled: true, trust: "official", repo: null, permissions: [] },
 ];
 
 const service = () => createValueService(new Map([["local-contrast", localContrast]]), installed, []);
@@ -87,6 +87,8 @@ describe("resolveKey", () => {
       expect((e as CliError).hint).toMatch(/Did you mean "exposure"/);
     }
     expect(() => s.resolveKey("zzzzzzzz")).toThrow(/No value called/);
+    expect(() => s.resolveKey("constructor")).toThrow(/No value called/);
+    expect(() => s.resolveKey("toString.x")).toThrow(/No value called/);
   });
 
   it("answers a read-only key with its reason", () => {
@@ -149,6 +151,12 @@ describe("apply", () => {
     expect(apply(look(), ["transform.flipV=0"]).look.params.transform.flipV).toBe(false);
     expect(() => apply(look(), ["transform.flipH=maybe"])).toThrow(/on or off/);
     expect(() => apply(look(), ["uprightMode=guided"])).toThrow(/one of/);
+  });
+
+  it("rounds a whole-number control to a whole number", () => {
+    expect(apply(look(), ["contrast=12.6"]).look.params.contrast).toBe(13);
+    expect(apply(look(), ["contrast=-0.4"]).look.params.contrast).toBe(0);
+    expect(apply(look(), ["exposure=0.123"]).look.params.exposure).toBeCloseTo(0.123, 3);
   });
 
   it("clamps with a note, or refuses under strict", () => {

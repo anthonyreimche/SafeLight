@@ -29,8 +29,10 @@ import { useSettings } from "@/state/settings-store";
 import { useVerificationStatus, useReviewedFor, useBannedReason, useTrust, isVerifiedIn } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { categoriesOf, moreFromAuthor, moreInCategory, typeOf, worksWithOf } from "./store-categories";
-import { SHELF_LIMIT, Shelf, StoreExpanded } from "./StoreCards";
+import { NOTHING_PENDING, SHELF_LIMIT, Shelf, StoreExpanded } from "./StoreCards";
 import { Screenshots } from "./Screenshots";
+import { TextSkeleton } from "./StoreSkeletons";
+import { LoadingDots } from "@/ui/components/LoadingDots";
 import { Markdown } from "./Markdown";
 import { AllowedSockets } from "./AllowedSockets";
 import { openUrl } from "@/update/update-checker";
@@ -72,6 +74,8 @@ export interface RelatedLists {
 interface Props {
   target: DetailTarget;
   busy: string | null;
+  /** The spec whose review check is running before its install. */
+  pending?: ReadonlySet<string>;
   /** Install `spec`: its latest release, or `version` when one was chosen. */
   onInstall: (spec: string, version?: string) => void;
   onUpdate: (id: string, repo: string) => void;
@@ -114,6 +118,7 @@ function LinkBtn({ label, url }: { label: string; url: string }) {
 export function ExtensionDetail({
   target,
   busy,
+  pending = NOTHING_PENDING,
   onInstall,
   onUpdate,
   onUninstall,
@@ -280,6 +285,7 @@ export function ExtensionDetail({
       items={companions}
       thumbs={{}}
       busy={busy}
+      pending={pending}
       onOpen={related.onOpen}
       onInstall={related.onInstall}
       isInstalled={related.isInstalled}
@@ -301,7 +307,7 @@ export function ExtensionDetail({
         Couldn’t load details: {meta.error}
       </div>
     ) : !readme || readme.status === "loading" || meta?.status === "loading" ? (
-      <div className="text-[11px] text-text-muted">Loading…</div>
+      <TextSkeleton lines={8} />
     ) : readme.status === "error" ? (
       <div className="text-[11px] text-text-muted">
         Couldn’t load README: {readme.error}
@@ -321,6 +327,7 @@ export function ExtensionDetail({
           items={fromAuthor}
           thumbs={{}}
           busy={busy}
+          pending={pending}
           onOpen={related.onOpen}
           onInstall={related.onInstall}
         />
@@ -331,6 +338,7 @@ export function ExtensionDetail({
           items={inPrimary}
           thumbs={{}}
           busy={busy}
+          pending={pending}
           onOpen={related.onOpen}
           onInstall={related.onInstall}
         />
@@ -436,7 +444,7 @@ export function ExtensionDetail({
         )}
         {!target.installed && repo && !banned && !chosen && (
           <button
-            disabled={busy !== null}
+            disabled={busy !== null || pending.has(repo)}
             onClick={() => onInstall(repo)}
             title={
               vstatus === "verified"
@@ -447,7 +455,9 @@ export function ExtensionDetail({
             }
             className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
           >
-            {busy === repo
+            {pending.has(repo) ? (
+              <LoadingDots label="Checking" />
+            ) : busy === repo
               ? "Installing…"
               : vstatus === "verified"
                 ? "Install"

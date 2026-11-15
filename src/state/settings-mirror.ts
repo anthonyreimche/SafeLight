@@ -5,10 +5,12 @@
 
 // Keeps <userData>/shared-settings.json in step with the settings `slu` and the
 // engine need from this profile's localStorage, which neither can read. The
-// main window writes it at start, half a second after a mirrored setting
-// changes, and every minute, which `slu` reads as the app being open.
+// main window sends it at start, half a second after a mirrored setting
+// changes, and every minute. The main process rewrites the file only when it
+// changed, and marks each send in a small heartbeat file, which `slu` reads as
+// the app being open (electron/extension-state.cjs).
 
-import { MIRRORED_STORAGE_KEYS } from "./shared-settings";
+import { GUI_HEARTBEAT_MS, MIRRORED_STORAGE_KEYS } from "./shared-settings";
 import { useSettings } from "./settings-store";
 import { usePresetsStore } from "./presets-store";
 import { useExtSettings } from "@/extensions/ext-settings";
@@ -19,7 +21,6 @@ import { windowRole } from "@/diagnostics/environment";
 import { privilegedMirror } from "@/native/privileged";
 
 const DEBOUNCE_MS = 500;
-const HEARTBEAT_MS = 60_000;
 
 function isMirrored(key: string): boolean {
   return MIRRORED_STORAGE_KEYS.some((k) => (k.endsWith("*") ? key.startsWith(k.slice(0, -1)) : key === k));
@@ -96,7 +97,7 @@ export function initSettingsMirror(): () => void {
     onInputProfilesChanged(changed),
   ];
   window.addEventListener("storage", onStorage);
-  const heartbeat = setInterval(() => write(true), HEARTBEAT_MS);
+  const heartbeat = setInterval(() => write(true), GUI_HEARTBEAT_MS);
   write(true);
 
   return () => {

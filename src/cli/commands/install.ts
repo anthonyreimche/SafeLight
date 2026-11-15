@@ -18,17 +18,24 @@ const askOnTerminal: Ask = async (question) => {
   }
 };
 
-/** The unverified-extension question: --yes answers it, a terminal asks it, anything else refuses. */
-export function confirmFor(ctx: CommandContext, ask: Ask = askOnTerminal): (risk: InstallRisk) => Promise<boolean> {
+/** The unverified-extension question: --yes answers it, a terminal asks it, anything else refuses.
+ *  `update` asks the same question for the permissions an update adds. */
+export function confirmFor(
+  ctx: CommandContext,
+  ask: Ask = askOnTerminal,
+  update = false,
+): (risk: InstallRisk) => Promise<boolean> {
   return async (risk) => {
     if (ctx.yes) return true;
     if (!ctx.env.isTTY.stdin) return false;
     const reach = risk.permissions.length > 0
       ? `It asks to ${risk.permissions.join(", ")}.`
       : "It asks for no special permissions.";
-    const answer = await ask(
-      `${risk.name} isn't verified. Extensions run with full access to your photos and files. ${reach}\nInstall it? [y/N] `,
-    );
+    const answer = await ask(update
+      ? `${risk.name} isn't verified, and this update asks for more. ${reach}
+Update it? [y/N] `
+      : `${risk.name} isn't verified. Extensions run with full access to your photos and files. ${reach}
+Install it? [y/N] `);
     return /^y(es)?$/i.test(answer.trim());
   };
 }

@@ -130,7 +130,7 @@ export const toolsCommand: CommandSpec = {
       };
     }
 
-    const one = await selectOnePhoto(ctx, args, spec);
+    const one = await selectOnePhoto(ctx, args, spec, { allMeansEverything: false });
     try {
       const { photo, session } = one;
       const asShot = asShotOf(photo);

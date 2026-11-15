@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import { parseArgs } from "./args";
@@ -30,6 +30,8 @@ function photo(relPath: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto
 
 interface FakeProject { root: string; photos: CatalogPhoto[]; edits?: Record<string, EditState> }
 
+const isOutside = (rel: string): boolean => rel === ".." || rel.startsWith(`..${sep}`);
+
 function fakeProjects(projects: FakeProject[]) {
   const closed: string[] = [];
   const opened: { root: string; mode: "read" | "write" }[] = [];
@@ -46,7 +48,7 @@ function fakeProjects(projects: FakeProject[]) {
   const service: ProjectService = {
     async find(abs) {
       const owner = projects
-        .filter((p) => !relative(p.root, abs).startsWith("..") && relative(p.root, abs) !== abs)
+        .filter((p) => !isOutside(relative(p.root, abs)) && relative(p.root, abs) !== abs)
         .sort((a, b) => b.root.length - a.root.length)[0];
       return owner ? refOf(owner) : null;
     },
@@ -87,6 +89,17 @@ describe("photo selection", () => {
     ...extra,
   });
   const other = (): FakeProject => ({ root: join(dir, "other"), photos: [photo("z.RAF")] });
+
+  it("treats a folder named ..foo inside the project as inside it", async () => {
+    await mkdir(join(dir, "shoot", "..foo"));
+    await writeFile(join(dir, "shoot", "..foo", "d.ARW"), "x");
+    const { service } = fakeProjects([shoot({ photos: [photo("..foo/d.ARW")] })]);
+    for (const spec of ["..foo/d.ARW", "..foo"]) {
+      const sel = await createPhotoSelector(service, env).read(request({ specs: [spec] }));
+      expect(sel.missing).toEqual([]);
+      expect(sel.groups.map(rels)).toEqual([["..foo/d.ARW"]]);
+    }
+  });
 
   it("selects a file", async () => {
     const { service } = fakeProjects([shoot()]);

@@ -16,7 +16,7 @@ import {
 } from "../preview";
 import { buildSelectRequest, missingError, stdinPathsOf } from "../select";
 import { CliError, type CommandSpec, type ParsedArgs } from "../types";
-import { TRY_OPTION } from "./shared";
+import { TRY_OPTION, requireTry } from "./shared";
 
 const FORMATS = ["jpg", "png", "tiff", "webp"] as const;
 const SPACES = ["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"] as const;
@@ -111,14 +111,19 @@ export const exportPhotosCommand: CommandSpec = {
   writes: false,
   async run(ctx, args) {
     const settings = exportSettings(args);
+    requireTry(args);
     const request = buildSelectRequest(args, args.positionals, await stdinPathsOf(ctx, args));
     const selection = await ctx.select.read(request);
     const results: PhotoResult[] = [];
     try {
-      const miss = selection.missing[0];
-      if (miss) throw missingError(miss);
       const total = selection.groups.reduce((n, g) => n + g.photos.length, 0);
+      if (total === 0 && selection.missing[0]) throw missingError(selection.missing[0]);
       if (total === 0) throw new CliError(2, "No photos to export.", "Name photos, or use --all.");
+      for (const m of selection.missing) {
+        const problem = missingError(m);
+        results.push({ photo: m.spec, ok: false, error: problem.message });
+        ctx.out.error({ message: problem.message, hint: problem.hint });
+      }
       const target = exportTarget(args.options.output, ctx.env.cwd, total);
       if (target.kind === "stdout" && (ctx.env.isTTY.stdout || ctx.json)) {
         throw new CliError(1, "Not writing an image to the terminal.", "Redirect it: slu export IMG_4021.ARW -o - > out.jpg");

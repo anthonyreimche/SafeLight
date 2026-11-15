@@ -7,6 +7,7 @@ import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from "react
 import { useRegistry } from "@/extensions/registry";
 import { useSettings } from "@/state/settings-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { DISCRETE_WINDOW_MS, EASE_OUT, MOTION_FAST_MS, recentDiscreteChange } from "@/ui/motion";
 import { parseDecimal } from "@/ui/parse-decimal";
 
 interface SliderProps {
@@ -60,6 +61,8 @@ const VALUE_KEYS = new Set([
   "PageUp",
   "PageDown",
 ]);
+
+const GLIDE = `${MOTION_FAST_MS}ms ${EASE_OUT}`;
 
 // A gesture belongs to the photo open in Develop when it began. Develop commits
 // a photo's uncommitted change as it moves to the next one, so a gesture still
@@ -118,6 +121,11 @@ const SliderView = memo(function SliderView({
   const focusClickRef = useRef(false);
   const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wheelPhotoRef = useRef<string | null>(null);
+  // When this slider last reset or reverted its own value: those writes aren't
+  // noted as discrete changes, but the jump should still glide.
+  const ownJumpAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const shownBeforeRef = useRef(value);
+  const glideUntilRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -178,6 +186,21 @@ const SliderView = memo(function SliderView({
   // A value outside the normal range (only reachable by typing) reads red.
   const outOfRange = shown < min || shown > max;
 
+  // Only a jump to a known end state glides: a drag, keys, typing or a live write
+  // from elsewhere must follow the input exactly. Decided here, in render, so a
+  // glide costs no state or extra render; it holds for its own duration so a
+  // re-render mid-glide doesn't cut it short. The global reduce-motion rule sets
+  // `transition: none !important`, which beats this inline style.
+  if (shown !== shownBeforeRef.current) {
+    const now = performance.now();
+    const jumped = recentDiscreteChange(now) || now - ownJumpAtRef.current <= DISCRETE_WINDOW_MS;
+    glideUntilRef.current = dragValue === null && jumped ? now + MOTION_FAST_MS : 0;
+  }
+  const glide = performance.now() < glideUntilRef.current;
+  useLayoutEffect(() => {
+    shownBeforeRef.current = shown;
+  });
+
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
   const snap = (v: number) => {
     const snapped = Math.round((clamp(v) - min) / step) * step + min;
@@ -212,6 +235,7 @@ const SliderView = memo(function SliderView({
   };
 
   const reset = () => {
+    ownJumpAtRef.current = performance.now();
     onChange(defaultValue);
     onCommit?.();
   };
@@ -330,7 +354,7 @@ const SliderView = memo(function SliderView({
             />
             <div
               className="sl-slider-marker pointer-events-none absolute top-1/2 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow ring-1 ring-black/40"
-              style={{ left: `${pct}%` }}
+              style={{ left: `${pct}%`, transition: glide ? `left ${GLIDE}` : undefined }}
             />
           </>
         ) : (
@@ -338,7 +362,7 @@ const SliderView = memo(function SliderView({
             <div className="sl-slider-track h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
               <div
                 className="sl-slider-fill h-full rounded-full bg-slider-fill"
-                style={{ width: `${pct}%` }}
+                style={{ width: `${pct}%`, transition: glide ? `width ${GLIDE}` : undefined }}
               />
             </div>
             {/* The knob exists only for extension stylesheets to show and shape;
@@ -346,7 +370,7 @@ const SliderView = memo(function SliderView({
             <span
               aria-hidden="true"
               className="sl-slider-thumb pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
-              style={{ left: `${pct}%` }}
+              style={{ left: `${pct}%`, transition: glide ? `left ${GLIDE}` : undefined }}
             />
           </>
         )}
@@ -401,7 +425,10 @@ const SliderView = memo(function SliderView({
               e.stopPropagation();
               const from = typedFromRef.current;
               typedFromRef.current = null;
-              if (from !== null && from !== value) onChange(from);
+              if (from !== null && from !== value) {
+                ownJumpAtRef.current = performance.now();
+                onChange(from);
+              }
               e.currentTarget.blur();
             }
           }}

@@ -119,7 +119,8 @@ export interface ProjectService {
   find(absPath: string): Promise<ProjectRef | null>;
   openRead(project: ProjectRef): Promise<ReadSession>;
   /** Throws CliError(4) when Safelight holds the lock and waitSeconds runs out. */
-  openWrite(project: ProjectRef, waitSeconds: number | null): Promise<WriteSession>;
+  /** `signal` stops the wait for the lock, for Ctrl+C. */
+  openWrite(project: ProjectRef, waitSeconds: number | null, signal?: AbortSignal): Promise<WriteSession>;
 }
 
 // ---- photo selection (P1.4 implements) ------------------------------------
@@ -219,7 +220,14 @@ export interface ValueService {
 export type Trust = "official" | "verified" | "unverified" | "banned";
 
 export interface InstalledExtension {
-  id: string; name: string; version: string; enabled: boolean; trust: Trust; repo: string | null;
+  id: string; name: string; version: string;
+  /** Null until the app has written its list of what is on. */
+  enabled: boolean | null;
+  trust: Trust;
+  /** Where slu or the official list says it came from; null when that isn't known. */
+  repo: string | null;
+  /** What it may reach, as install lists it. */
+  permissions: string[];
 }
 
 export interface SearchHit {
@@ -232,6 +240,8 @@ export interface ExtensionService {
   /** Name → one repo or id (cli-commands §2 rules); CliError(5) lists candidates when ambiguous. */
   resolve(name: string): Promise<{ repo: string; id?: string } | { kit: string; repos: string[] }>;
   install(repo: string, opts: { version?: string; confirm: (risk: InstallRisk) => Promise<boolean> }): Promise<InstalledExtension>;
+  /** Rolls back an install still waiting on its question; for Ctrl+C. */
+  abandon(): Promise<void>;
   uninstall(id: string): Promise<void>;
   updatesAvailable(ids?: string[]): Promise<{ id: string; from: string; to: string }[]>;
   setEnabled(id: string, enabled: boolean): Promise<void>;

@@ -29,7 +29,8 @@ interface SafelightAPI {
 
   components: { Panel; Slider; Histogram; CurveEditor; Rating; Thumbnail; PhotoListRow };
   ui: { Button; Select; TextInput; NumberInput; TextArea; Toggle; SegmentedControl;
-        Field; Section; Card; Badge; ProgressBar; Stack; Row; tokens };
+        Field; Section; Card; Badge; ProgressBar; LoadingDots; Skeleton;
+        useDelayedFlag; Stack; Row; tokens };
   stores: { useDevelopStore; useCatalogStore; useUIStore; useSettings; usePresetsStore;
             useKeybindings; useThemeStore; useLayoutStore; usePipelineStore; create };
 

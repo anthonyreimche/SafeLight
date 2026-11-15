@@ -180,9 +180,10 @@ export function createProjectService(env: CliEnv, bridge: NativeFsBridge): Proje
       return open(project, { recordsOnly: true, readOnly: true });
     },
 
-    async openWrite(project, waitSeconds) {
+    async openWrite(project, waitSeconds, signal) {
       const deadline = Date.now() + (waitSeconds ?? 0) * 1000;
       for (;;) {
+        if (signal?.aborted) throw new CliError(1, "Stopped.");
         try {
           return await open(project, {
             recordsOnly: true,

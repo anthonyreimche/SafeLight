@@ -10,6 +10,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ExtensionSearchResult, ExtensionThumbnail, StoreVocabulary } from "./types";
 import { reducedMotion } from "@/ui/reduced-motion";
+import { LoadingDots } from "@/ui/components/LoadingDots";
 import { useBannedReason, useIsVerified } from "./trust";
 import { FlaggedBadge, VerifiedBadge } from "./TrustBadges";
 import { useExtStoreUI } from "./store-ui";
@@ -24,6 +25,9 @@ export const EXPANDED_GRID = "grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr)
 
 /** How many cards a shelf shows. */
 export const SHELF_LIMIT = 12;
+
+/** No Install button waiting on its review check. */
+export const NOTHING_PENDING: ReadonlySet<string> = new Set();
 
 /** "{first category} · {type}", either part left out when absent. */
 export function cardTag(result: ExtensionSearchResult, vocab: StoreVocabulary): string {
@@ -42,6 +46,7 @@ export function Shelf({
   items,
   thumbs,
   busy,
+  pending = NOTHING_PENDING,
   onOpen,
   onInstall,
   isInstalled,
@@ -50,6 +55,9 @@ export function Shelf({
   items: ExtensionSearchResult[];
   thumbs: Record<string, ExtensionThumbnail>;
   busy: string | null;
+  /** The spec whose review check is running. */
+  /** Specs whose review check is running. */
+  pending?: ReadonlySet<string>;
   onOpen: (repo: string) => void;
   onInstall: (repo: string, r: ExtensionSearchResult) => void;
   /** Cards of installed extensions show "Installed" in place of Install. */
@@ -67,6 +75,7 @@ export function Shelf({
               result={r}
               thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
               installing={busy === r.fullName}
+              checking={pending.has(r.fullName)}
               installed={isInstalled?.(r) ?? false}
               disabled={busy !== null}
               onOpen={() => onOpen(r.fullName)}
@@ -86,6 +95,7 @@ export function ExtensionCard({
   result,
   thumb,
   installing,
+  checking = false,
   installed = false,
   disabled,
   onOpen,
@@ -97,6 +107,8 @@ export function ExtensionCard({
    *  batched resolution lands — we then fall back to the owner avatar. */
   thumb: ExtensionThumbnail | null;
   installing: boolean;
+  /** Its review check is running: the button says so and takes no second click. */
+  checking?: boolean;
   /** Already installed: shows "Installed" in place of the Install button. */
   installed?: boolean;
   disabled: boolean;
@@ -240,7 +252,7 @@ export function ExtensionCard({
             onClick={onInstall}
             className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-on-accent hover:opacity-80 disabled:opacity-40"
           >
-            {installing ? "…" : "Install"}
+            {checking ? <LoadingDots label="Checking" /> : installing ? "…" : "Install"}
           </button>
         )}
       </div>

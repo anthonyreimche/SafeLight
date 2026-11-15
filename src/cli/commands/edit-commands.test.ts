@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { describe, expect, it } from "vitest";
-import { freshParams, type CatalogPhoto, type EditState } from "@/catalog/types";
+import { describe, expect, it, vi } from "vitest";
+import { freshParams, type CatalogPhoto, type DevelopParams, type EditState } from "@/catalog/types";
 import { parseArgs } from "../args";
 import {
   CliError,
@@ -17,6 +17,7 @@ import {
   type ValueInfo,
   type WriteSession,
 } from "../types";
+import { runOnPhotos } from "./edit-shared";
 import { setCommand } from "./set";
 import { addCommand } from "./add";
 import { removeCommand } from "./remove";
@@ -49,7 +50,7 @@ function editWith(photoId: string, labels: string[], currentIndex: number): Edit
 
 function harness(photos: CatalogPhoto[], edits: Record<string, EditState> = {}, over: { missing?: { spec: string; reason: "not-found" | "not-in-catalogue" | "no-match" }[] } = {}) {
   const written = { edits: [] as EditState[], photos: [] as CatalogPhoto[] };
-  const log = { printed: [] as string[], warned: [] as string[], errors: [] as string[], json: [] as unknown[] };
+  const log = { printed: [] as string[], warned: [] as string[], errors: [] as string[], infos: [] as string[], json: [] as unknown[] };
   let closed = 0;
   let requested: unknown = null;
   const session: WriteSession = {
@@ -75,12 +76,16 @@ function harness(photos: CatalogPhoto[], edits: Record<string, EditState> = {}, 
       print: (t: string) => log.printed.push(t),
       warn: (p: { message: string }) => log.warned.push(p.message),
       error: (p: { message: string }) => log.errors.push(p.message),
-      info: () => undefined,
+      info: (t: string) => log.infos.push(t),
       json: (d: unknown) => log.json.push(d),
     },
     readStdin: async () => "",
     preview: { show: async () => undefined },
     select: {
+      read: async (req: unknown) => {
+        requested = req;
+        return { groups: photos.length > 0 ? [{ session, photos }] : [], missing: over.missing ?? [], close: async () => { closed++; } };
+      },
       write: async (req: unknown) => {
         requested = req;
         return { groups: photos.length > 0 ? [{ session, photos }] : [], missing: over.missing ?? [], close: async () => { closed++; } };
@@ -139,6 +144,12 @@ describe("set", () => {
     const h = harness([photo("a")]);
     await run(setCommand, h.ctx, ["a.ARW", "exposure=1", "--rating", "3+", "--flag", "pick", "--unedited", "-r"]);
     expect(h.requested()).toMatchObject({ specs: ["a.ARW"], recursive: true, filters: { rating: { min: 3, max: 5 }, flag: "pick", edited: false } });
+  });
+
+  it("warns once per value for a whole batch", async () => {
+    const h = harness([photo("a"), photo("b"), photo("c")]);
+    await run(setCommand, h.ctx, ["a.ARW", "b.ARW", "c.ARW", "exposure=7"]);
+    expect(h.log.warned).toEqual(["Exposure 7 is past its limit, so it was set to 5."]);
   });
 
   it("warns when a value is clamped and still succeeds", async () => {
@@ -202,6 +213,28 @@ describe("set", () => {
   });
 });
 
+describe("a usage error part-way through a batch", () => {
+  it("writes nothing to any project", async () => {
+    const h = harness([photo("a")]);
+    const putEdits = vi.fn(async () => undefined);
+    const sessionFor = (): WriteSession => ({
+      project: PROJECT, photos: () => [], photoByRelPath: () => undefined, edit: async () => undefined,
+      putEdits, putPhotos: async () => undefined, close: async () => undefined,
+    });
+    h.ctx.select.write = async () => ({
+      groups: [{ session: sessionFor(), photos: [photo("a")] }, { session: sessionFor(), photos: [photo("b")] }],
+      missing: [],
+      close: async () => undefined,
+    });
+    const failure = runOnPhotos(h.ctx, parseArgs(["set", "a.ARW", "b.ARW"], setCommand), ["a.ARW", "b.ARW"], false, ({ photo: p }) => {
+      if (p.id === "b") throw new CliError(1, "Exposure can't be 9.");
+      return { line: { photo: p.id, changes: [] }, json: {}, edit: { photoId: p.id, currentIndex: 0, stack: [] } as EditState, skipped: false };
+    });
+    await expect(failure).rejects.toMatchObject({ code: 1 });
+    expect(putEdits).not.toHaveBeenCalled();
+  });
+});
+
 describe("add", () => {
   it("refuses an extension tool with the plan's text and exit 1", async () => {
     const h = harness([photo("a")]);
@@ -210,6 +243,21 @@ describe("add", () => {
       message: "Local Contrast doesn't support slu yet. Set it in Safelight.",
     });
     expect(h.requested()).toBeNull();
+  });
+
+  it("lists a core tool's keys without taking the write lock", async () => {
+    const h = harness([photo("a")]);
+    h.ctx.select.write = async () => { throw new Error("add only reads"); };
+    h.ctx.select.read = async () => ({ groups: [{ session: { project: PROJECT, photos: () => [], photoByRelPath: () => undefined, edit: async () => undefined, close: async () => undefined }, photos: [photo("a")] }], missing: [], close: async () => undefined });
+    expect((await run(addCommand, h.ctx, ["a.ARW", "basic"])).code).toBe(0);
+  });
+
+  it("shows the photo with --preview", async () => {
+    const h = harness([photo("a")]);
+    const show = vi.fn(async () => undefined);
+    h.ctx.preview.show = show;
+    await run(addCommand, h.ctx, ["a.ARW", "basic", "--preview"]);
+    expect(show).toHaveBeenCalledOnce();
   });
 
   it("lists a core tool's keys and writes nothing", async () => {
@@ -246,6 +294,32 @@ describe("remove and reset", () => {
     const h = harness([photo("a")], edits);
     await run(resetCommand, h.ctx, ["a.ARW"]);
     expect(h.written.edits[0].stack.at(-1)?.label).toBe("Reset");
+  });
+});
+
+describe("reset with no keys", () => {
+  it("names the crop it kept, once for the whole batch", async () => {
+    const kept = (id: string): EditState => {
+      const state = editWith(id, ["Original", "Edit"], 1);
+      state.stack[1].params = {
+        ...state.stack[1].params,
+        exposure: 1,
+        crop: { x: 0.1, y: 0.1, w: 0.5, h: 0.5, angle: 0 } as unknown as DevelopParams["crop"],
+      };
+      return state;
+    };
+    const h = harness([photo("a"), photo("b")], { a: kept("a"), b: kept("b") });
+    await run(resetCommand, h.ctx, ["a.ARW", "b.ARW"]);
+    expect(h.log.infos).toEqual(["Kept what slu can't edit: crop. Edit those in Safelight."]);
+  });
+
+  it("says nothing when there was nothing to keep, or when keys were named", async () => {
+    const plain = editWith("a", ["Original", "Edit"], 1);
+    plain.stack[1].params = { ...plain.stack[1].params, exposure: 1 };
+    const h = harness([photo("a")], { a: plain });
+    await run(resetCommand, h.ctx, ["a.ARW"]);
+    await run(resetCommand, h.ctx, ["a.ARW", "exposure"]);
+    expect(h.log.infos).toEqual([]);
   });
 });
 

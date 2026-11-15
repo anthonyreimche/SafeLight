@@ -6,7 +6,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { backendChoices, backendCacheFiles, parseBackendCache, SOFTWARE_BACKEND } from "../../../electron/gpu-backend.cjs";
-import { readLock } from "../../../electron/file-lock.cjs";
+import { readLock, STALE_MS } from "../../../electron/file-lock.cjs";
 import { readDescriptors, readSharedSettings } from "../mirror";
 import type { DoctorItem } from "../output/types";
 import { detectGraphicsMode } from "../terminal-image";
@@ -74,7 +74,7 @@ async function lockItem(ctx: CommandContext): Promise<DoctorItem> {
   if (!project) return { label: "Project", value: "no catalogue holds this folder", status: "info" };
   const lock = await readLock(path.join(project.workingDir, "writer.lock"));
   if (!lock) return { label: "Project", value: `${project.root}: free to write`, status: "ok" };
-  const fresh = Date.now() - lock.refreshedAt < HEARTBEAT_FRESH_MS;
+  const fresh = Date.now() - lock.refreshedAt < STALE_MS;
   return {
     label: "Project",
     value: `${project.root}: ${fresh ? `held by ${lock.app} (pid ${lock.pid})` : `stale lock from ${lock.app}, slu will take it over`}`,

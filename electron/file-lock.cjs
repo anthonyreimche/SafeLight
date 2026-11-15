@@ -6,16 +6,22 @@
 // Advisory lock files shared by the app and `slu`: <project>/.safelight/writer.lock
 // and <userData>/plugins.lock. A lock is taken by creating the file exclusively and
 // holds JSON naming its holder plus a token only that holder knows. A holder
-// refreshes the file's mtime every REFRESH_MS; one nobody has refreshed for
-// STALE_MS belongs to a process that died, and the next acquirer takes it over.
+// refreshes the file's mtime every REFRESH_MS. The next acquirer takes a lock over
+// once its holder on this machine has exited, or, for a holder elsewhere (a project
+// on a shared drive), once nobody has refreshed it for STALE_MS. The app's writer
+// lock refresh (project-storage.ts LOCK_REFRESH_MS) keeps to REFRESH_MS.
 
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const STALE_MS = 180_000;
-const REFRESH_MS = 60_000;
+const STALE_MS = 15 * 60_000;
+const REFRESH_MS = 5 * 60_000;
+
+// Windows answers EPERM or EACCES, not EEXIST, while a lock file another process
+// deleted is still being let go of.
+const HELD_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
 
 /** @typedef {{ app: "safelight" | "slu", pid: number, host: string, since: number, refreshedAt: number }} LockInfo */
 
@@ -49,6 +55,18 @@ async function load(file) {
   return { doc, mtimeMs: st.mtimeMs };
 }
 
+/** Whether the holder has exited. Only a process on this machine can be asked; a
+ *  pid from another one means nothing here. */
+function holderGone(heldBy) {
+  if (heldBy.host !== os.hostname() || !(heldBy.pid > 0)) return false;
+  try {
+    process.kill(heldBy.pid, 0);
+    return false;
+  } catch (e) {
+    return !!e && e.code === "ESRCH";
+  }
+}
+
 /** Who holds the lock, or null when nobody does. */
 async function readLock(file) {
   const held = await load(file);
@@ -57,7 +75,8 @@ async function readLock(file) {
 
 /**
  * Take the lock. `{ ok: true, token }` on success, with `tookOverStale` when it
- * replaced a lock nobody had refreshed for `staleMs`; `{ ok: false, heldBy }` when
+ * replaced a lock nobody had refreshed for `staleMs`, or whose holder on this machine
+ * had exited; `{ ok: false, heldBy }` when
  * someone else holds it.
  * @param {string} file
  * @param {"safelight" | "slu"} owner
@@ -74,20 +93,31 @@ async function acquireLock(file, owner, { staleMs = STALE_MS, now = Date.now } =
       await fs.promises.writeFile(file, JSON.stringify(body), { flag: "wx" });
       return tookOverStale ? { ok: true, token, tookOverStale } : { ok: true, token };
     } catch (e) {
-      if (!e || e.code !== "EEXIST") throw e;
+      if (!e || !HELD_CODES.has(e.code)) throw e;
     }
     const held = await load(file);
     if (!held) continue;
     const heldBy = infoOf(held.doc, held.mtimeMs);
-    if (now() - held.mtimeMs <= staleMs) return { ok: false, heldBy };
-    // Two acquirers can both find it stale; the exclusive create above settles
-    // which of them wins once the file is gone.
-    await fs.promises.rm(file, { force: true });
-    tookOverStale = heldBy;
+    if (now() - held.mtimeMs <= staleMs && !holderGone(heldBy)) return { ok: false, heldBy };
+    // Two acquirers can both find it stale, and the other may already have put a
+    // fresh lock in its place. The file is moved aside and checked before it is
+    // deleted: a fresh one goes back, and the exclusive create above settles which
+    // acquirer wins once the stale one is gone.
+    const aside = `${file}.stale-${token}`;
+    try {
+      await fs.promises.rename(file, aside);
+    } catch (e) {
+      if (e && e.code === "ENOENT") continue;
+      throw e;
+    }
+    const moved = await load(aside);
+    const sameLock = moved && moved.mtimeMs === held.mtimeMs && (moved.doc && moved.doc.token) === (held.doc && held.doc.token);
+    if (sameLock) tookOverStale = heldBy;
+    else await fs.promises.link(aside, file).catch(() => {});
+    await fs.promises.rm(aside, { force: true });
   }
-  const heldBy = await readLock(file);
-  if (!heldBy) throw new Error(`Could not take the lock ${file}`);
-  return { ok: false, heldBy };
+  // A lock being deleted can't be read either; it counts as held, holder unknown.
+  return { ok: false, heldBy: (await readLock(file)) ?? infoOf(null, now()) };
 }
 
 /** Touch the lock so it isn't taken as stale. False when the token isn't the holder's.

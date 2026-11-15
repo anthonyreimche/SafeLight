@@ -73,7 +73,8 @@ export interface ContextOptions {
 /** A context, plus what main needs to stop it early. */
 export interface CliContext extends CommandContext {
   /** Closes every catalogue still open (each flushes what was stored and gives its
-   *  lock back) and stops the engine if one started. For Ctrl+C. */
+   *  lock back), stops the engine if one started and rolls back an install that was
+   *  waiting on its question. For Ctrl+C. */
   dispose(): Promise<void>;
 }
 
@@ -100,7 +101,7 @@ async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
 }
 
 /** `service` with every session it opens kept in `open` until closed. */
-function tracked(service: ProjectService, open: Set<ReadSession>): ProjectService {
+function tracked(service: ProjectService, open: Set<ReadSession>, signal: AbortSignal): ProjectService {
   const keep = <S extends ReadSession>(session: S): S => {
     open.add(session);
     const close = session.close.bind(session);
@@ -113,14 +114,15 @@ function tracked(service: ProjectService, open: Set<ReadSession>): ProjectServic
   return {
     find: (absPath) => service.find(absPath),
     openRead: async (project) => keep(await service.openRead(project)),
-    openWrite: async (project, waitSeconds) => keep(await service.openWrite(project, waitSeconds)),
+    openWrite: async (project, waitSeconds) => keep(await service.openWrite(project, waitSeconds, signal)),
   };
 }
 
 export function createContext(opts: ContextOptions, factories: ServiceFactories = DEFAULT_FACTORIES): CliContext {
   const { env, out } = opts;
   const sessions = new Set<ReadSession>();
-  const projects = once(() => tracked(factories.projects(env, opts.bridge), sessions));
+  const stopping = new AbortController();
+  const projects = once(() => tracked(factories.projects(env, opts.bridge), sessions, stopping.signal));
   const select = once(() => factories.select(projects.get(), env));
   const values = once(() => factories.values(env));
   const extensions = once(() => factories.extensions(env));
@@ -146,9 +148,11 @@ export function createContext(opts: ContextOptions, factories: ServiceFactories 
     get preview() { return preview.get(); },
     readStdin: stdinText.get,
     async dispose() {
+      stopping.abort();
       await Promise.allSettled([
         ...[...sessions].map((s) => s.close()),
         ...(engine.made() ? [engine.get().shutdown()] : []),
+        ...(extensions.made() ? [extensions.get().abandon()] : []),
       ]);
     },
   };

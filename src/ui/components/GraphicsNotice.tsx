@@ -54,7 +54,7 @@ export function GraphicsNotice() {
     <div
       role="alert"
       aria-live="assertive"
-      className="mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-danger/40 bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
+      className="sl-enter-rise mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-danger/40 bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
     >
       <span className="text-danger" aria-hidden="true">
         ⚠

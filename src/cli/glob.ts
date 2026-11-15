@@ -5,12 +5,13 @@
 
 // A small glob matcher and expander. cmd and PowerShell don't expand globs, so
 // slu does, the same way everywhere: `*` and `?` stay inside a folder, a `**`
-// segment crosses folders, `{a,b}` picks one of its words.
+// segment crosses folders, `{a,b}` picks one of its words. `[abc]` is not a
+// pattern: brackets, and braces without a comma, match themselves.
 
 import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const WILDCARD = /[*?{]/;
+const WILDCARD = /[*?]|\{[^{}]*,[^{}]*\}/;
 
 export function hasGlob(spec: string): boolean {
   return WILDCARD.test(spec);
@@ -32,7 +33,7 @@ function segmentSource(segment: string): string {
     const ch = segment[i];
     if (ch === "*") out += "[^/]*";
     else if (ch === "?") out += "[^/]";
-    else if (ch === "{" && closeAt < 0 && segment.indexOf("}", i) > i) {
+    else if (ch === "{" && closeAt < 0 && /^\{[^{}]*,[^{}]*\}/.test(segment.slice(i))) {
       closeAt = segment.indexOf("}", i);
       out += "(?:";
     } else if (ch === "," && closeAt >= 0) out += "|";
@@ -79,7 +80,7 @@ export async function expandGlob(spec: string, cwd: string, platform: NodeJS.Pla
   const ignoreCase = platform === "win32" || platform === "darwin";
   const { base, rest } = splitGlob(spec, platform);
   const root = resolve(cwd, base);
-  const matcher = compileGlob(rest, ignoreCase);
+  const matcher = compileGlob(rest.normalize("NFC"), ignoreCase);
   const restSegments = rest.split("/");
   const maxDepth = restSegments.includes("**") ? Infinity : restSegments.length;
   const found: string[] = [];

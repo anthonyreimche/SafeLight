@@ -307,9 +307,11 @@ async function existingWorkingDir(root: FileSystemDirectoryHandle): Promise<Work
 }
 
 /** How often a lock someone else holds is tried again while waiting on it, and how
- *  often a lock held is refreshed so it doesn't go stale (file-lock.cjs), in ms. */
+ *  often a lock held is refreshed so it doesn't go stale, in ms. The refresh is
+ *  file-lock.cjs REFRESH_MS, which this bundle can't import; a test holds the two
+ *  together. */
 const LOCK_POLL_MS = 200;
-const LOCK_REFRESH_MS = 60_000;
+const LOCK_REFRESH_MS = 5 * 60_000;
 /** The app's lock when an open names none: `slu` holds it only while a command
  *  writes, so the app waits a few seconds for it, then takes it. */
 const APP_LOCK: Exclude<StorageOpenOptions["lock"], false | undefined> = {
@@ -514,6 +516,9 @@ export class ProjectStorage implements CatalogStorage {
   private lock: HeldLock | null = null;
   private lockRefresh: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<void> = Promise.resolve();
+  /** Gives the writer lock back as the page leaves, once a closing window's flush
+   *  has asked for it (releaseOnPageHide). */
+  private pageHideRelease: (() => void) | null = null;
   /** Resolves `settled`, once this copy is closed, won't write again, and has given
    *  its writer lock back. */
   private letGo: () => void = () => {};
@@ -1757,9 +1762,24 @@ export class ProjectStorage implements CatalogStorage {
   private releaseLock(): Promise<void> {
     if (this.lockRefresh !== null) clearInterval(this.lockRefresh);
     this.lockRefresh = null;
+    if (this.pageHideRelease) window.removeEventListener("pagehide", this.pageHideRelease);
+    this.pageHideRelease = null;
     const lock = this.lock;
     this.lock = null;
     return lock ? this.refreshing.then(() => releaseWriterLock(lock)) : Promise.resolve();
+  }
+
+  /** Give the writer lock back once the page really leaves: another beforeunload
+   *  handler may call the close off, and the window then goes on writing. Without
+   *  a page (`slu`) there is nothing to wait for. */
+  private releaseOnPageHide(): void {
+    if (typeof window === "undefined") {
+      void this.releaseLock();
+      return;
+    }
+    if (this.pageHideRelease || !this.lock) return;
+    this.pageHideRelease = () => void this.releaseLock();
+    window.addEventListener("pagehide", this.pageHideRelease, { once: true });
   }
 
   /** Whether this copy may still write catalog.json: its open is still walking the
@@ -1965,11 +1985,14 @@ export class ProjectStorage implements CatalogStorage {
     // one that finishes last wins, which may be the older.
     this.foldWaiting();
     // What waits on a reply here never runs once the page has gone, so the writer
-    // lock is given back now, beside the last write rather than after it.
-    if (!this.dirty && !this.unsent && !this.writing) return this.releaseLock();
+    // lock is given back as it goes, beside the last write rather than after it.
+    if (!this.dirty && !this.unsent && !this.writing) {
+      this.releaseOnPageHide();
+      return;
+    }
     this.cancelScheduledSave();
     const written = this.writeCatalog();
-    void this.releaseLock();
+    this.releaseOnPageHide();
     await written;
     // A page that stays open after all (its unload was cancelled) is still a copy
     // the window left: once idle it stops following, and answering, the others.

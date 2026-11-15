@@ -22,7 +22,7 @@ export interface Problem { message: string; hint?: string }
 export interface ToolRow { tool: string; state?: "in use" | "idle" | "not installed" | "off"; values: ValueRow[] }
 export interface ValueRow { info: ValueInfo; value: unknown; changed: boolean; note?: string }
 export interface PhotoRow { name: string; rating: number; flag: "pick" | "reject" | "none"; label: string; edited: boolean; size?: string }
-export interface ExtensionRow { name: string; id: string; version: string; enabled: boolean; trust: Trust; update?: string }
+export interface ExtensionRow { name: string; id: string; version: string; enabled: boolean | null; trust: Trust; update?: string }
 export interface SearchRow { installName: string; name: string; version: string; category: string; trust: Trust }
 export interface HistoryRow { index: number; label: string; timestamp: number; current: boolean }
 export interface ResultLine { photo: string; changes: { label: string; value: string }[]; step?: number; note?: string }

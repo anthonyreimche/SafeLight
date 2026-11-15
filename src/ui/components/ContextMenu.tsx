@@ -116,7 +116,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
       <div
         ref={ref}
         role="menu"
-        className="absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
+        className="sl-enter-fade absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
         style={{ left: pos.x, top: pos.y }}
         onKeyDown={onMenuKeyDown}
       >

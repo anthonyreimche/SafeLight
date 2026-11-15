@@ -101,8 +101,14 @@ export interface OnePhoto {
 }
 
 /** Exactly one photo, for the verbs that show a single photo's edit. */
-export async function selectOnePhoto(ctx: CommandContext, args: ParsedArgs, spec: string | undefined): Promise<OnePhoto> {
-  const request = buildSelectRequest(args, spec === undefined ? [] : [spec], await stdinPathsOf(ctx, args));
+export async function selectOnePhoto(
+  ctx: CommandContext,
+  args: ParsedArgs,
+  spec: string | undefined,
+  opts: { allMeansEverything?: boolean } = {},
+): Promise<OnePhoto> {
+  const built = buildSelectRequest(args, spec === undefined ? [] : [spec], await stdinPathsOf(ctx, args));
+  const request = opts.allMeansEverything === false ? { ...built, all: false } : built;
   if (request.specs.length === 0 && request.stdinPaths.length === 0 && !request.all) {
     throw new CliError(1, `Name a photo for ${args.verb ?? "this"}.`, `slu help ${args.verb ?? ""}`.trim() + " shows how.");
   }
@@ -135,7 +141,7 @@ export function createPhotoSelector(projects: ProjectService, env: CliEnv): Phot
   };
   const relPathOf = (ref: ProjectRef, abs: string): string | null => {
     const rel = relative(ref.root, abs);
-    if (rel.startsWith("..") || isAbsolute(rel)) return null;
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
     return rel.split(sep).join("/");
   };
 

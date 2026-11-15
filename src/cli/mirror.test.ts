@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getParamDescriptor, normalizeParamBag, unregisterExtensionParams } from "@/extensions/param-registry";
 import type { ExtensionDescriptors } from "@/state/shared-settings";
-import { readDescriptors, readSharedSettings, seedParamRegistry } from "./mirror";
+import { guiHeartbeatAt, readDescriptors, readSharedSettings, seedParamRegistry } from "./mirror";
 
 let userData: string;
 beforeEach(() => {
@@ -45,6 +45,18 @@ describe("readSharedSettings", () => {
     expect(readSharedSettings(userData)).toEqual({
       version: 1, appVersion: "3.3.0", writtenAt: 5, guiPid: 9, recentProjects: ["D:\a"], storage: { k: "v" },
     });
+  });
+
+  it("dates the settings by the app's heartbeat, which is newer while the settings stay the same", () => {
+    writeFileSync(
+      join(userData, "shared-settings.json"),
+      JSON.stringify({ version: 1, appVersion: "3.3.0", writtenAt: 5, guiPid: null, recentProjects: [], storage: {} }),
+    );
+    writeFileSync(join(userData, "gui-heartbeat.json"), JSON.stringify({ version: 1, writtenAt: 900 }));
+    expect(guiHeartbeatAt(userData)).toBe(900);
+    expect(readSharedSettings(userData)?.writtenAt).toBe(900);
+    writeFileSync(join(userData, "gui-heartbeat.json"), JSON.stringify({ version: 1, writtenAt: 3 }));
+    expect(readSharedSettings(userData)?.writtenAt).toBe(5);
   });
 });
 

@@ -65,7 +65,7 @@ export function SoftwareRenderingNotice() {
     <div
       role="status"
       aria-live="polite"
-      className="mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-border bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
+      className="sl-enter-rise mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-border bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
     >
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <p className="break-words text-text-primary">{text}</p>

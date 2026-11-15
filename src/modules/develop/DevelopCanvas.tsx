@@ -16,6 +16,8 @@ import { leavePicture, releaseHandover, takeHandover } from "@/ui/canvas-handove
 import { Slot } from "@/extensions/Slot";
 import { boundaryKey, guardCallback } from "@/extensions/guard";
 import { ErrorBoundary } from "@/ui/components/ErrorBoundary";
+import { LoadingDots } from "@/ui/components/LoadingDots";
+import { useDelayedFlag } from "@/ui/use-delayed-flag";
 import { useCanvasGesture } from "@/state/canvas-gesture";
 import { DevelopOverlayProvider } from "@/extensions/develop-host";
 import type { OverlayRect } from "@/extensions/develop-host";
@@ -74,13 +76,15 @@ export function DevelopCanvas({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // The crossfade overlay over the canvas: the renderer fades one tier of the photo
-  // into the next on it, and the viewport fades the Presets hover on it.
+  // into the next on it, and a discrete edit or the Presets hover into its look.
   const fadeCanvasRef = useRef<HTMLCanvasElement>(null);
   const {
     supported,
     availability,
     availabilityReason,
     status,
+    fullPending,
+    renderStalled,
     overflowedStages,
     width,
     height,
@@ -96,6 +100,13 @@ export function DevelopCanvas({
   const processingStages = useRegistry((s) => s.processingStages);
   const notice = overflowNotice(overflowedStages, processingStages);
   const stalled = availability !== "starting" && availability !== "ready";
+  // The thin bar along the frame's top: the full image still coming, once that has
+  // lasted, or a render that has had no frame for a while (which has waited already).
+  const loadingBar = useDelayedFlag(fullPending) || renderStalled;
+  const shownStatus = useMemo(
+    () => (status === "Loading…" ? <LoadingDots label="Loading" /> : status),
+    [status],
+  );
   const noWebGL2 = useGraphics((s) => s.webgl2 === "no");
   const graphicsReason = useGraphics((s) => s.reason);
   useEffect(() => {
@@ -145,9 +156,6 @@ export function DevelopCanvas({
     };
   }, [pictureCanvas]);
 
-  // Crossfade the canvas whenever the hover preview turns on, off, or switches
-  // to another preset, so the look eases in/out instead of snapping.
-  const previewParams = useDevelopStore((s) => s.previewParams);
   const openZoom = useSettings((s) => s.developOpenZoom);
   // Dynamic mode measures the zoom in the photo's own pixels (the decoded frame's size
   // over the source's) only where native detail can reach them; elsewhere 100% would
@@ -157,20 +165,12 @@ export function DevelopCanvas({
     dynamicDetail && nativeDetailCapable(photo, s) ? s.fullWidth / s.width : 1,
   );
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
-  const [fadeToken, setFadeToken] = useState(0);
-  const fadeInit = useRef(false);
-  useEffect(() => {
-    if (!fadeInit.current) {
-      fadeInit.current = true;
-      return;
-    }
-    setFadeToken((t) => t + 1);
-  }, [previewParams]);
-
   // An extension's on-image tool holding the canvas (canvas-tool.ts): crop mode,
   // Guided Upright's lines.
   const canvasTool = useCanvasToolStore((s) => s.held?.tool ?? null);
   const canvasToolOwner = useCanvasToolStore((s) => s.held?.owner ?? null);
+  const canvasToolKey =
+    canvasTool && canvasToolOwner ? boundaryKey(canvasToolOwner, canvasTool.overlay) : undefined;
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   // While a pan/zoom gesture key is held, force the extension-overlay slot
   // click-through (global passthrough — see canvas-gesture + ViewportImage).
@@ -289,7 +289,7 @@ export function DevelopCanvas({
         ? (rect: OverlayRect) => (
             <DevelopOverlayProvider value={overlayState}>
               <ErrorBoundary
-                key={boundaryKey(canvasToolOwner, canvasTool.overlay)}
+                key={canvasToolKey}
                 what={`Canvas tool "${canvasToolOwner}"`}
                 className="text-[11px] text-danger"
               >
@@ -298,7 +298,7 @@ export function DevelopCanvas({
             </DevelopOverlayProvider>
           )
         : undefined,
-    [canvasTool, canvasToolOwner, overlayState],
+    [canvasTool, canvasToolOwner, canvasToolKey, overlayState],
   );
 
   if (!supported) {
@@ -348,6 +348,15 @@ export function DevelopCanvas({
         </div>
       </div>
     )}
+    {loadingBar && (
+      <div
+        role="progressbar"
+        aria-label="Loading the full image"
+        className="sl-enter-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden"
+      >
+        <div className="sl-indeterminate absolute inset-y-0 w-1/3 bg-slider-fill" />
+      </div>
+    )}
     {notice && (
       <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
         <p className="rounded bg-surface-2 px-3 py-2 text-xs text-text-muted">{notice}</p>
@@ -368,10 +377,10 @@ export function DevelopCanvas({
       onLayout={handleLayout}
       colorAssessment={colorAssessment}
       assessBorder={assessBorderPct / 100}
-      status={status}
+      status={shownStatus}
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}
-      fadeToken={fadeToken}
+      overlayKey={canvasToolKey}
       overlayZoomable={!!canvasTool?.zoomable}
       onPickDrag={onPickDrag}
       overlay={toolOverlay}

@@ -9,6 +9,7 @@ import type { ClippingMask } from "@/state/develop-slices/view-slice";
 import { channelHex, channelRgba } from "./channel-colors";
 import { useThemeStore } from "@/extensions/themes";
 import { useSettings } from "@/state/settings-store";
+import { MOTION_MS } from "@/ui/motion";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 
@@ -62,6 +63,10 @@ function zoneAt(frac: number) {
 }
 
 const H = 76;
+
+// A gap with no data shorter than this is photo browsing, not a load, so the
+// next data appears at once instead of replaying the fade-in on every arrow key.
+const QUICK_SWITCH_MS = 150;
 
 // Canvas colours a theme can override through custom properties; the values
 // here are what the histogram has always drawn.
@@ -152,6 +157,12 @@ export function Histogram({
   } | null>(null);
   const targetRef = useRef<HistogramData | null>(null);
   const animRef = useRef<number | null>(null);
+  // Since when there has been no data, and when the fade-in of the first data
+  // after a real wait began. The curves ramp their alpha: box opacity would fade
+  // the zone bands too, and seeding the bins from zero does nothing once the
+  // curve is normalised to its own tallest bin.
+  const nullSinceRef = useRef<number | null>(performance.now());
+  const fadeStartRef = useRef<number | null>(null);
   const prevSizeRef = useRef({ w: 0, h: 0, dpr: 0 });
   const dpr = useDevicePixelRatio();
   const themeId = useThemeStore((s) => s.activeId);
@@ -161,6 +172,15 @@ export function Histogram({
   const LERP_RATE = 0.35;
 
   const draw = useCallback(() => {
+    // Before any early return: the tick runs while a ramp is under way, so a draw that
+    // can't paint must still end it on time.
+    let alpha = 1;
+    if (fadeStartRef.current !== null) {
+      alpha = reducedMotion()
+        ? 1
+        : Math.min(1, (performance.now() - fadeStartRef.current) / MOTION_MS);
+      if (alpha >= 1) fadeStartRef.current = null;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     const prev = prevSizeRef.current;
@@ -184,13 +204,18 @@ export function Histogram({
       r: u32From(d.r), g: u32From(d.g), b: u32From(d.b), luma: u32From(d.luma),
     };
     drawHistogram(ctx, width, H, snap, mode, interactive, hoverZone, palette, showClipping,
-      clip?.clipLow, clip?.clipHigh);
+      clip?.clipLow, clip?.clipHigh, alpha);
   }, [width, dpr, mode, interactive, hoverZone, showClipping, palette]);
 
   // When new data arrives, set it as the animation target.
   useEffect(() => {
     targetRef.current = data;
     if (data && !displayRef.current) {
+      const now = performance.now();
+      if (nullSinceRef.current !== null && now - nullSinceRef.current >= QUICK_SWITCH_MS) {
+        fadeStartRef.current = now;
+      }
+      nullSinceRef.current = null;
       displayRef.current = {
         r: Float32Array.from(data.r),
         g: Float32Array.from(data.g),
@@ -199,6 +224,8 @@ export function Histogram({
       };
     } else if (!data) {
       displayRef.current = null;
+      nullSinceRef.current ??= performance.now();
+      fadeStartRef.current = null;
     }
   }, [data]);
 
@@ -220,7 +247,7 @@ export function Histogram({
             lerpBins(d.b, t.b, LERP_RATE) &
             lerpBins(d.luma, t.luma, LERP_RATE);
         draw();
-        if (!settled) {
+        if (!settled || fadeStartRef.current !== null) {
           animRef.current = requestAnimationFrame(tick);
           return;
         }
@@ -441,6 +468,7 @@ function drawHistogram(
   showClipping = 0,
   clipLow?: number,
   clipHigh?: number,
+  curveAlpha = 1,
 ) {
   ctx.clearRect(0, 0, w, h);
 
@@ -458,6 +486,7 @@ function drawHistogram(
   }
 
   if (data) {
+    ctx.globalAlpha = curveAlpha;
     if (mode === "rgb") {
       const max = Math.max(
         robustMax(data.r),
@@ -476,6 +505,7 @@ function drawHistogram(
     } else {
       fillCurve(ctx, w, h, data.b, robustMax(data.b), channelRgba("blue", 0.85), false);
     }
+    ctx.globalAlpha = 1;
   }
 
   // Zone dividers + label for the interactive control.

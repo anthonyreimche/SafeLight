@@ -56,9 +56,14 @@ export function engineEnv(env: CliEnv): Record<string, string> {
   return out;
 }
 
-function timeoutSeconds(env: CliEnv, req: EngineRequest): number {
+function timeoutOverride(env: CliEnv): number | null {
   const override = Number(env.env.SLU_ENGINE_TIMEOUT);
-  if (env.env.SLU_ENGINE_TIMEOUT !== undefined && Number.isFinite(override) && override > 0) return override;
+  return env.env.SLU_ENGINE_TIMEOUT !== undefined && Number.isFinite(override) && override > 0 ? override : null;
+}
+
+function timeoutSeconds(env: CliEnv, req: EngineRequest): number {
+  const override = timeoutOverride(env);
+  if (override !== null) return override;
   const photos = req.type === "export" ? req.photoIds.length : 0;
   return BASE_TIMEOUT_S + PER_PHOTO_TIMEOUT_S * photos;
 }
@@ -147,7 +152,17 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
       }
       process.once("exit", killOnExit);
       let settled = false;
-      const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+      const startSeconds = timeoutOverride(env) ?? BASE_TIMEOUT_S;
+      const startTimer = setTimeout(() => {
+        settle(() => reject(startFailure(`it wasn't ready within ${Math.round(startSeconds)} s.`)));
+        child?.kill();
+      }, startSeconds * 1000);
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(startTimer);
+        fn();
+      };
 
       child.on("error", (error) => {
         exited = true;

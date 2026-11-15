@@ -116,6 +116,14 @@ describe("parseArgs", () => {
     expect(a.options.tools).toEqual(["basic", "detail", "hsl"]);
   });
 
+  it("reads a cluster of short flags like -qv and -ry", () => {
+    const quietVerbose = parseArgs(["photos", "-qv"], null).options;
+    expect(quietVerbose.quiet).toBe(true);
+    expect(quietVerbose.verbose).toBe(1);
+    expect(parseArgs(["photos", "-ry"], null).options).toMatchObject({ recursive: true, yes: true });
+    expect(() => parseArgs(["photos", "-qz"], spec)).toThrow(/-qz/);
+  });
+
   it("reads -q, -v and -vv", () => {
     expect(parseArgs(["photos", "-q"], null).options.quiet).toBe(true);
     expect(parseArgs(["photos", "-v"], null).options.verbose).toBe(1);

@@ -22,10 +22,10 @@ import { uninstallCommand } from "./uninstall";
 import { updateCommand } from "./update";
 
 const basic: InstalledExtension = {
-  id: "safelight.basic", name: "Basic", version: "1.0.0", enabled: true, trust: "official", repo: "anthonyreimche/basic",
+  id: "safelight.basic", name: "Basic", version: "1.0.0", enabled: true, trust: "official", repo: "anthonyreimche/basic", permissions: [],
 };
 const acme: InstalledExtension = {
-  id: "acme.tool", name: "Acme Tool", version: "1.0.0", enabled: false, trust: "unverified", repo: "someone/acme-tool",
+  id: "acme.tool", name: "Acme Tool", version: "1.0.0", enabled: false, trust: "unverified", repo: "someone/acme-tool", permissions: ["reach https://old.test"],
 };
 
 function args(positionals: string[], options: ParsedArgs["options"] = {}): ParsedArgs {
@@ -44,6 +44,7 @@ function fakeService(overrides: Partial<ExtensionService> = {}): ExtensionServic
       throw new CliError(5, `No extension called "${name}".`);
     },
     install: async (repo) => ({ ...acme, id: repo, name: repo, version: "2.0.0", enabled: true }),
+    abandon: async () => undefined,
     uninstall: async () => undefined,
     updatesAvailable: async () => [],
     setEnabled: async () => undefined,
@@ -165,15 +166,24 @@ describe("uninstall, enable and disable", () => {
     expect(r.errors[0]).toMatch(/isn't installed/);
   });
 
-  it("switches the extension and leaves one already in that state alone", async () => {
+  it("switches each named extension, saying which already were that way", async () => {
     const setEnabled = vi.fn(async () => undefined);
     const r = rig(fakeService({ setEnabled }));
     await enableCommand.run(r.ctx, args(["tool", "basic"]));
-    expect(setEnabled).toHaveBeenCalledTimes(1);
-    expect(setEnabled).toHaveBeenCalledWith("acme.tool", true);
+    expect(setEnabled.mock.calls).toEqual([["acme.tool", true], ["safelight.basic", true]]);
+    expect(r.printed).toEqual(["Acme Tool is now on.", "Basic is already on."]);
     await disableCommand.run(r.ctx, args(["basic", "tool"]));
-    expect(setEnabled).toHaveBeenLastCalledWith("safelight.basic", false);
-    expect(setEnabled).toHaveBeenCalledTimes(2);
+    expect(setEnabled).toHaveBeenLastCalledWith("acme.tool", false);
+    expect(r.printed.slice(2)).toEqual(["Basic is now off.", "Acme Tool is already off."]);
+  });
+
+  it("answers exit 5 for every name while slu can't tell which extensions are on", async () => {
+    const unknown = new CliError(5, "Open Safelight once so slu can see which extensions are on.");
+    const r = rig(fakeService({ setEnabled: async () => { throw unknown; } }));
+    expect((await enableCommand.run(r.ctx, args(["basic"]))).code).toBe(5);
+    expect((await disableCommand.run(r.ctx, args(["tool"]))).code).toBe(5);
+    expect(r.errors).toEqual([unknown.message, unknown.message]);
+    expect(r.printed).toEqual([]);
   });
 });
 
@@ -187,6 +197,44 @@ describe("update", () => {
     expect((await updateCommand.run(r.ctx, args([]))).code).toBe(0);
     expect(install).toHaveBeenCalledWith("someone/acme-tool", expect.anything());
     expect(r.printed[0]).toContain("from 1.0.0 to 2.0.0");
+  });
+
+  describe("new permissions", () => {
+    const newcomer = { name: "Acme Tool", trust: "unverified" as const, permissions: ["reach https://old.test", "reach https://new.test"] };
+    const updating = (confirmed: { value: boolean | null }) => fakeService({
+      updatesAvailable: async () => [{ id: "acme.tool", from: "1.0.0", to: "2.0.0" }],
+      install: async (_repo, opts) => {
+        confirmed.value = await opts.confirm(newcomer);
+        if (!confirmed.value) throw new CliError(5, "Didn't install Acme Tool.");
+        return { ...acme, version: "2.0.0" };
+      },
+    });
+
+    it("refuses without a terminal or --yes", async () => {
+      const confirmed = { value: null as boolean | null };
+      const r = rig(updating(confirmed));
+      expect((await updateCommand.run(r.ctx, args([]))).code).toBe(5);
+      expect(confirmed.value).toBe(false);
+    });
+
+    it("goes ahead with --yes", async () => {
+      const confirmed = { value: null as boolean | null };
+      const r = rig(updating(confirmed), { yes: true });
+      expect((await updateCommand.run(r.ctx, args([]))).code).toBe(0);
+      expect(confirmed.value).toBe(true);
+    });
+
+    it("doesn't ask when the permissions are the ones already accepted", async () => {
+      const same = { ...newcomer, permissions: ["reach https://old.test"] };
+      const r = rig(fakeService({
+        updatesAvailable: async () => [{ id: "acme.tool", from: "1.0.0", to: "2.0.0" }],
+        install: async (_repo, opts) => {
+          expect(await opts.confirm(same)).toBe(true);
+          return { ...acme, version: "2.0.0" };
+        },
+      }), { tty: true });
+      expect((await updateCommand.run(r.ctx, args([]))).code).toBe(0);
+    });
   });
 
   it("says when everything is current, and limits itself to the names given", async () => {
@@ -208,6 +256,13 @@ describe("search and extensions", () => {
     expect(r.printed).toEqual(["search:25"]);
     expect(r.warned[0]).toMatch(/first 25/);
     await expect(searchCommand.run(r.ctx, args([]))).rejects.toMatchObject({ code: 1 });
+  });
+
+  it("gives enabled: null in --json while the app hasn't said which extensions are on", async () => {
+    const unknown = { ...basic, enabled: null };
+    const r = rig(fakeService({ installed: async () => [unknown] }), { json: true });
+    await extensionsCommand.run(r.ctx, args([]));
+    expect(r.json).toEqual([{ slu: 1, extensions: [expect.objectContaining({ id: "safelight.basic", enabled: null, update: null })] }]);
   });
 
   it("shows the update beside each installed extension, and carries on when the check fails", async () => {

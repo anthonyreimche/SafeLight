@@ -119,6 +119,23 @@ describe("doctor", () => {
     expect(by("Project")).toMatchObject({ status: "warn", value: expect.stringContaining("held by safelight") });
   });
 
+  it.each([
+    { idle: 10 * 60_000, status: "warn", text: "held by safelight" },
+    { idle: 16 * 60_000, status: "info", text: "stale lock" },
+  ])("calls a project lock idle for $idle ms $text", async ({ idle, status, text }) => {
+    const working = join(userData, "shoot", ".safelight");
+    mkdirSync(working, { recursive: true });
+    const refreshedAt = Date.now() - idle;
+    writeFileSync(
+      join(working, "writer.lock"),
+      JSON.stringify({ app: "safelight", pid: 7, host: "h", since: refreshedAt, refreshedAt, token: "t" }),
+    );
+    const { ctx } = fakeContext();
+    (ctx.projects as { find: unknown }).find = async () => ({ root: join(userData, "shoot"), workingDir: working, location: "in-folder" });
+    const items = await doctorItems(ctx);
+    expect(items.find((i) => i.label === "Project")).toMatchObject({ status, value: expect.stringContaining(text) });
+  });
+
   it("flags extensions without descriptors and ones with catalogue hooks", async () => {
     const dir = join(userData, "extension-descriptors");
     mkdirSync(dir);

@@ -117,7 +117,15 @@ export async function copyFromPhoto(
   spec: string,
   tools: string[] | undefined,
 ): Promise<ClipboardFile> {
-  const selection = await ctx.select.read(await selectRequest(ctx, args, [spec]));
+  const source: SelectRequest = {
+    specs: [spec],
+    recursive: false,
+    all: false,
+    projectOverride: typeof args.options.project === "string" ? args.options.project : null,
+    filters: {},
+    stdinPaths: [],
+  };
+  const selection = await ctx.select.read(source);
   try {
     warnMissing(ctx, selection);
     const photos = selection.groups.flatMap((g) => g.photos.map((photo) => ({ photo, session: g.session })));

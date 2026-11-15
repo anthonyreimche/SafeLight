@@ -121,6 +121,14 @@ describe("copy then paste", () => {
     expect(h.written).toHaveLength(0);
   });
 
+  it("paste --from reads the source by its spec alone, not the batch's --all, filters or stdin", async () => {
+    const h = harness(userData, [photo("a")]);
+    h.edits.set("a", editedState("a", 1.1));
+    const read = vi.spyOn(h.ctx.select, "read");
+    await pasteCommand.run(h.ctx, parse(pasteCommand, ["b.ARW", "--from", "a.ARW", "--all", "--rating", "3+", "--edited", "--recursive"]));
+    expect(read.mock.calls[0][0]).toMatchObject({ specs: ["a.ARW"], all: false, recursive: false, filters: {}, stdinPaths: [] });
+  });
+
   it("paste with nothing copied exits 2", async () => {
     const h = harness(userData, [photo("b")]);
     await expect(pasteCommand.run(h.ctx, parse(pasteCommand, ["b.ARW"]))).rejects.toMatchObject({ code: 2 });
