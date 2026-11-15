@@ -25,8 +25,7 @@ import {
   type InstallRisk,
   type InstalledExtension,
   type SearchHit,
-  type Trust,
-} from "./types";
+  type Trust, COMMAND } from "./types";
 
 /** The most hits `search` returns; the command says when it stopped there. */
 export const SEARCH_LIMIT = 25;
@@ -97,7 +96,7 @@ function sourceRecord(text: string): Record<string, string> {
   }
 }
 
-/** The repository slu downloaded each extension from, by id: slu's own record, which only slu writes. */
+/** The repository safelight downloaded each extension from, by id: safelight's own record, which only safelight writes. */
 function readSluSources(userData: string): Record<string, string> {
   try {
     return sourceRecord(readFileSync(path.join(userData, SOURCES_FILE), "utf8"));
@@ -106,7 +105,7 @@ function readSluSources(userData: string): Record<string, string> {
   }
 }
 
-/** Where each extension was downloaded from, by id: slu's record beside the one the app keeps and
+/** Where each extension was downloaded from, by id: safelight's record beside the one the app keeps and
  *  mirrors (shared-settings). An id the two give different repositories has none, as either may be
  *  the older install. An extension's manifest is never a source. */
 function readSources(userData: string): Record<string, string> {
@@ -234,7 +233,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
   const disabledList = (): Promise<string[] | null> => readDisabled(userData);
   const disabledIds = async (): Promise<string[]> => (await disabledList()) ?? [];
 
-  /** Where an installed extension came from: what slu recorded, or the list's row for an official
+  /** Where an installed extension came from: what safelight recorded, or the list's row for an official
    *  id whose manifest names that row. The manifest alone is not enough for anything else. */
   function sourceOf(m: Manifest, sources: Record<string, string>): string | null {
     const recorded = sources[m.id];
@@ -341,7 +340,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     if (kit) return { kit: kit.id, repos: kit.repos };
     if (!cat) throw new CliError(5, `Couldn't find "${name}" here, and the extension list couldn't be reached.`, PROXY_HINT);
     const near = closest(name, [...fromCatalogue.flatMap((c) => c.names), ...OFFICIAL.map((e) => stripPrefix(e.id))]);
-    throw new CliError(5, `No extension called "${name}".${near ? ` Did you mean ${near}?` : ""}`, `slu search ${name} lists what's available.`);
+    throw new CliError(5, `No extension called "${name}".${near ? ` Did you mean ${near}?` : ""}`, `${COMMAND} search ${name} lists what's available.`);
   }
 
   async function search(words: string[]): Promise<SearchHit[]> {
@@ -386,14 +385,14 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     const full = repo.split("#")[0];
     const list = await guard(trustList);
     if (trustOf(list, full, null) === "banned")
-      throw new CliError(5, `"${full}" is blocked by Safelight: ${bannedReasonOf(list, full)}.`, "slu doesn't install blocked extensions.");
+      throw new CliError(5, `"${full}" is blocked by Safelight: ${bannedReasonOf(list, full)}.`, `${COMMAND} doesn't install blocked extensions.`);
     const manifest = await guard(() => store.installPlugin(repo, opts.version));
     if (!isManifest(manifest)) throw new CliError(5, `${full} didn't hold a usable extension.`);
     unsettled = manifest.id;
     if (isBanned(list, repoFromManifest(manifest.repository))) {
       unsettled = null;
       await guard(() => store.settleUpdate(manifest.id, "rollback"));
-      throw new CliError(5, `${manifest.name} names a repository Safelight blocks.`, "slu doesn't install blocked extensions.");
+      throw new CliError(5, `${manifest.name} names a repository Safelight blocks.`, `${COMMAND} doesn't install blocked extensions.`);
     }
     const trust = trustOf(list, full, manifest.version);
     if (trust === "unverified") {
@@ -437,11 +436,11 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
     return results.filter((r): r is { id: string; from: string; to: string } => !!r && !(r instanceof Error));
   }
 
-  /** Until the app has written its list, slu can't tell which extensions are on: a list written
+  /** Until the app has written its list, safelight can't tell which extensions are on: a list written
    *  now would leave out the ones switched off in the app, and the app would adopt it. */
   async function setEnabled(id: string, enabled: boolean): Promise<void> {
     const disabled = await readDisabled(userData);
-    if (disabled === null) throw new CliError(5, "Open Safelight once so slu can see which extensions are on.");
+    if (disabled === null) throw new CliError(5, `Open Safelight once so ${COMMAND} can see which extensions are on.`);
     if (disabled.includes(id) !== enabled) return;
     const others = disabled.filter((d) => d !== id);
     await writeDisabled(userData, enabled ? others : [...others, id], fileWriter);

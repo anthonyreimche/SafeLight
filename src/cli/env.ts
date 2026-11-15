@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Where `slu` finds the app: its userData folder and its code.
+// Where `safelight` finds the app: its userData folder and its code.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CliError, type CommandSpec, type InstallRisk, type InstalledExtension } from "../types";
+import { CliError, type CommandSpec, type InstallRisk, type InstalledExtension, COMMAND } from "../types";
 import { forEachName, noteRestart, resolveInstalled } from "./extension-names";
 import { confirmFor } from "./install";
 
@@ -13,8 +13,8 @@ export const updateCommand: CommandSpec = {
   summary: "Updates the named extensions, or all with a newer release.",
   usage: "update [name…]",
   examples: [
-    "slu update",
-    "slu update local-contrast",
+    `${COMMAND} update`,
+    `${COMMAND} update local-contrast`,
   ],
   options: [],
   writes: false,

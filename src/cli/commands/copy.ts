@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 import { PROJECT_OPTION, TOOLS_OPTION } from "./shared";
 import { copyFromPhoto, toolsOf, writeClipboard } from "./share-support";
 
@@ -13,8 +13,8 @@ export const copyCommand: CommandSpec = {
   summary: "Remembers a photo's settings for paste, leaving out the per-photo tools Paste Settings leaves out.",
   usage: "copy <photo> [--tools a,b]",
   examples: [
-    "slu copy IMG_4021.ARW",
-    "slu copy IMG_4021.ARW --tools basic,white-balance",
+    `${COMMAND} copy IMG_4021.ARW`,
+    `${COMMAND} copy IMG_4021.ARW --tools basic,white-balance`,
   ],
   options: [
     PROJECT_OPTION,
@@ -23,7 +23,7 @@ export const copyCommand: CommandSpec = {
   writes: false,
   async run(ctx, args) {
     const specs = [...args.positionals, ...args.afterDashDash];
-    if (specs.length !== 1) throw new CliError(1, "copy takes one photo.", "slu help copy shows how.");
+    if (specs.length !== 1) throw new CliError(1, "copy takes one photo.", `${COMMAND} help copy shows how.`);
     const tools = toolsOf(args.options.tools);
     const clip = await copyFromPhoto(ctx, args, specs[0], tools);
     await writeClipboard(ctx.env.userData, clip);

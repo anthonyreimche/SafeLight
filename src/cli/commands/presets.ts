@@ -5,6 +5,7 @@
 
 import type { CommandSpec } from "../types";
 import { loadPresets } from "./share-support";
+import { COMMAND } from "../types";
 
 export const presetsCommand: CommandSpec = {
   verb: "presets",
@@ -12,7 +13,7 @@ export const presetsCommand: CommandSpec = {
   summary: "Lists the presets Safelight has saved, by group.",
   usage: "presets",
   examples: [
-    "slu presets",
+    `${COMMAND} presets`,
   ],
   options: [],
   writes: false,

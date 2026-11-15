@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Every `slu` verb, in help-screen order.
+// Every `safelight` verb, in help-screen order.
 
 import type { CommandSpec } from "../types";
 import { photosCommand } from "./photos";

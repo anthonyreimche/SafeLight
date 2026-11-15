@@ -7,6 +7,7 @@ import { historyRows } from "@/catalog/edit-steps";
 import { selectOnePhoto } from "../select";
 import type { CommandSpec } from "../types";
 import { PROJECT_OPTION } from "./shared";
+import { COMMAND } from "../types";
 
 export const historyCommand: CommandSpec = {
   verb: "history",
@@ -14,7 +15,7 @@ export const historyCommand: CommandSpec = {
   summary: "Lists a photo's history steps with labels and times; the current one is marked.",
   usage: "history <photo>",
   examples: [
-    "slu history IMG_4021.ARW",
+    `${COMMAND} history IMG_4021.ARW`,
   ],
   options: [
     PROJECT_OPTION,

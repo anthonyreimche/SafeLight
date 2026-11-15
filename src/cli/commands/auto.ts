@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import { PHOTO_OPTIONS } from "../args";
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 
 export const autoCommand: CommandSpec = {
@@ -13,8 +13,8 @@ export const autoCommand: CommandSpec = {
   summary: "Runs Basic's Auto Tone and White Balance's Auto, one step each.",
   usage: "auto <photos> [tone|wb]",
   examples: [
-    "slu auto IMG_4021.ARW",
-    "slu auto . wb",
+    `${COMMAND} auto IMG_4021.ARW`,
+    `${COMMAND} auto . wb`,
   ],
   options: [
     ...PHOTO_OPTIONS,

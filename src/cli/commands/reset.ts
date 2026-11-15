@@ -9,7 +9,7 @@ import { PHOTO_OPTIONS } from "../args";
 import { hasGlob } from "../glob";
 import { currentLook } from "@/catalog/edit-steps";
 import { freshParams, type DevelopParams } from "@/catalog/types";
-import { CliError, type CommandContext, type CommandSpec, type ValueInfo } from "../types";
+import { CliError, type CommandContext, type CommandSpec, type ValueInfo, COMMAND } from "../types";
 import { runOnPhotos, stepOutcome } from "./edit-shared";
 
 /** Positionals that name a value are keys; the rest are photos. A word that is no
@@ -30,7 +30,7 @@ function splitKeys(ctx: CommandContext, positionals: string[]): { keys: ValueInf
   return { keys, photos };
 }
 
-/** What a reset with no keys leaves alone: slu can't show or edit these, so wiping them would be blind. */
+/** What a reset with no keys leaves alone: safelight can't show or edit these, so wiping them would be blind. */
 const KEPT_BY_RESET: readonly (readonly [keyof DevelopParams, string])[] = [
   ["toneCurve", "tone curve"], ["masks", "masks"], ["retouch", "retouch spots"], ["crop", "crop"], ["guidedLines", "guide lines"],
 ];
@@ -38,11 +38,11 @@ const KEPT_BY_RESET: readonly (readonly [keyof DevelopParams, string])[] = [
 export const resetCommand: CommandSpec = {
   verb: "reset",
   group: "Edit",
-  summary: "Resets the values named, or with no keys everything slu can set, in one step.",
+  summary: `Resets the values named, or with no keys everything ${COMMAND} can set, in one step.`,
   usage: "reset <photos> [key…]",
   examples: [
-    "slu reset IMG_4021.ARW exposure contrast",
-    "slu reset IMG_4021.ARW",
+    `${COMMAND} reset IMG_4021.ARW exposure contrast`,
+    `${COMMAND} reset IMG_4021.ARW`,
   ],
   options: [
     ...PHOTO_OPTIONS,
@@ -63,7 +63,7 @@ export const resetCommand: CommandSpec = {
       }
       return stepOutcome(ctx, photo, state, asShot, look, label, []);
     });
-    if (kept.size > 0 && !ctx.json) ctx.out.info(`Kept what slu can't edit: ${[...kept].join(", ")}. Edit those in Safelight.`);
+    if (kept.size > 0 && !ctx.json) ctx.out.info(`Kept what ${COMMAND} can't edit: ${[...kept].join(", ")}. Edit those in Safelight.`);
     return outcome;
   },
 };

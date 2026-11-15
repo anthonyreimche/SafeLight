@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import { PHOTO_OPTIONS } from "../args";
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 import { loadPresets, writeLooks, type SavedPreset } from "./share-support";
 
@@ -17,7 +17,7 @@ function findPreset(presets: readonly SavedPreset[], input: string): SavedPreset
     const names = found.map((p) => (p.group ? `${p.group} / ${p.name}` : p.name)).join(", ");
     throw new CliError(1, `"${input}" names more than one preset: ${names}.`, "Use the preset's id to pick one.");
   }
-  throw new CliError(1, `"${input}" isn't one of the saved presets.`, "slu presets lists them.");
+  throw new CliError(1, `"${input}" isn't one of the saved presets.`, `${COMMAND} presets lists them.`);
 }
 
 export const applyCommand: CommandSpec = {
@@ -26,7 +26,7 @@ export const applyCommand: CommandSpec = {
   summary: "Applies a preset over the current values, one step per photo.",
   usage: "apply <preset> <photos>",
   examples: [
-    "slu apply \"Warm film\" *.ARW",
+    `${COMMAND} apply "Warm film" *.ARW`,
   ],
   options: [
     ...PHOTO_OPTIONS,
@@ -35,7 +35,7 @@ export const applyCommand: CommandSpec = {
   writes: true,
   async run(ctx, args) {
     const [name, ...rest] = args.positionals;
-    if (name === undefined) throw new CliError(1, "apply needs a preset name.", "slu presets lists them.");
+    if (name === undefined) throw new CliError(1, "apply needs a preset name.", `${COMMAND} presets lists them.`);
     const preset = findPreset(loadPresets(ctx.env.userData), name);
     return writeLooks(ctx, args, [...rest, ...args.afterDashDash], "Preset", {
       params: preset.params,

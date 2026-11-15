@@ -3,9 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The `slu <verb> [photos…] [key=value…] [--options]` grammar (cli-commands §1).
+// The `safelight <verb> [photos…] [key=value…] [--options]` grammar (cli-commands §1).
 
-import { CliError, type Assignment, type CommandSpec, type OptionSpec, type ParsedArgs } from "./types";
+import { CliError, type Assignment, type CommandSpec, type OptionSpec, type ParsedArgs, COMMAND } from "./types";
 
 /** The verb a word names, by verb or alias; null when none. */
 export function findCommand(commands: readonly CommandSpec[], word: string): CommandSpec | null {
@@ -16,7 +16,7 @@ export function findCommand(commands: readonly CommandSpec[], word: string): Com
 export const GLOBAL_OPTIONS: readonly OptionSpec[] = [
   { name: "json", kind: "flag", summary: "Print one JSON document for scripts." },
   { name: "quiet", alias: "q", kind: "flag", summary: "Print errors only." },
-  { name: "verbose", alias: "v", kind: "flag", summary: "Say what slu did; -vv adds the engine's log." },
+  { name: "verbose", alias: "v", kind: "flag", summary: `Say what ${COMMAND} did; -vv adds the engine's log.` },
   { name: "help", alias: "h", kind: "flag", summary: "Show this verb's usage." },
   { name: "version", kind: "flag", summary: "Print the version." },
   { name: "yes", alias: "y", kind: "flag", summary: "Answer yes to the install question." },
@@ -49,7 +49,7 @@ function parseAssignment(token: string): Assignment | null {
 }
 
 function optionError(verb: string | null, flag: string, problem: string): CliError {
-  return new CliError(1, `${flag} ${problem}`, verb ? `slu help ${verb} lists its options.` : "slu help lists the options.");
+  return new CliError(1, `${flag} ${problem}`, verb ? `${COMMAND} help ${verb} lists its options.` : `${COMMAND} help lists the options.`);
 }
 
 /** Parses one command line. With `spec` null it only knows the global and
@@ -99,7 +99,7 @@ export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs
       const option = long ? byName.get(name) : byAlias.get(name);
 
       if (!option) {
-        if (spec) throw optionError(verbName(), flagText, `isn't an option of slu ${spec.verb}.`);
+        if (spec) throw optionError(verbName(), flagText, `isn't an option of ${COMMAND} ${spec.verb}.`);
         if (name) out.options[name] = inline ?? true;
         continue;
       }

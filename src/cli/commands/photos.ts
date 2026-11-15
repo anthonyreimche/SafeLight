@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PHOTO_OPTIONS } from "../args";
 import type { PhotoRow } from "../output/types";
 import { buildSelectRequest, isEdited, missingError, stdinPathsOf } from "../select";
-import { type CommandSpec } from "../types";
+import { type CommandSpec, COMMAND } from "../types";
 
 function sizeText(bytes: number): string | undefined {
   if (!(bytes > 0)) return undefined;
@@ -21,8 +21,8 @@ export const photosCommand: CommandSpec = {
   summary: "Lists photos: name, rating, flag, label, edited or not, size.",
   usage: "photos [photos…] [filters]",
   examples: [
-    "slu photos --flag pick",
-    "slu photos . --rating 4+ --json",
+    `${COMMAND} photos --flag pick`,
+    `${COMMAND} photos . --rating 4+ --json`,
   ],
   options: [
     ...PHOTO_OPTIONS,

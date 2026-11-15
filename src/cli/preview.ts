@@ -26,8 +26,7 @@ import {
   type PreviewService,
   type ProjectRef,
   type ProjectService,
-  type ValueService,
-} from "./types";
+  type ValueService, COMMAND } from "./types";
 
 const MAX_COLUMNS = 120;
 
@@ -101,7 +100,7 @@ export function createPreviewService(
       if (mode === "none") {
         out.warn({
           message: `Not showing the image: ${detected.reason}.`,
-          hint: "slu export writes the photo to a file; --graphics blocks forces coloured blocks.",
+          hint: `${COMMAND} export writes the photo to a file; --graphics blocks forces coloured blocks.`,
         });
         return;
       }

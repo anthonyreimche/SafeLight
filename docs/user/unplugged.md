@@ -10,7 +10,7 @@ There is no terminal screen to learn and no question it asks, except one: whethe
 
 For now `slu` runs from a copy of the Safelight repository. Packaged launchers come later.
 
-1. Build the app and the command line once: `npm run build:app`, then `npm run build:cli`.
+1. Build the app and the command line once: `npm run build:app`, then `npm run build:cli`. On Windows, `build-scripts\build-safelight-unplugged.bat` does both and checks the result.
 2. Run the launcher: `scripts\slu.cmd` on Windows, `scripts/slu.sh` on macOS and Linux.
 
 ```

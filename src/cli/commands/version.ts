@@ -5,6 +5,7 @@
 
 import { CURRENT_PROCESS_VERSION } from "@/catalog/process-version";
 import type { CommandSpec } from "../types";
+import { COMMAND } from "../types";
 
 export const versionCommand: CommandSpec = {
   verb: "version",
@@ -12,7 +13,7 @@ export const versionCommand: CommandSpec = {
   summary: "Prints the version. Same as --version.",
   usage: "version",
   examples: [
-    "slu version",
+    `${COMMAND} version`,
   ],
   options: [],
   writes: false,

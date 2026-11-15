@@ -5,7 +5,7 @@
 
 import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
-import { CliError } from "../types";
+import { CliError, COMMAND } from "../types";
 import type { ColorLabel } from "@/catalog/types";
 import { LABELS } from "../select";
 import { setRecordField } from "./edit-shared";
@@ -16,7 +16,7 @@ export const labelCommand: CommandSpec = {
   summary: "Sets the colour label.",
   usage: "label <photos> red|yellow|green|blue|purple|none",
   examples: [
-    "slu label IMG_4021.ARW red",
+    `${COMMAND} label IMG_4021.ARW red`,
   ],
   options: [
     ...PHOTO_OPTIONS,

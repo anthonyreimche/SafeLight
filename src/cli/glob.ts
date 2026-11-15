@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // A small glob matcher and expander. cmd and PowerShell don't expand globs, so
-// slu does, the same way everywhere: `*` and `?` stay inside a folder, a `**`
+// safelight does, the same way everywhere: `*` and `?` stay inside a folder, a `**`
 // segment crosses folders, `{a,b}` picks one of its words. `[abc]` is not a
 // pattern: brackets, and braces without a comma, match themselves.
 

@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import { createInterface } from "node:readline/promises";
-import { CliError, type CommandContext, type CommandSpec, type InstallRisk } from "../types";
+import { CliError, type CommandContext, type CommandSpec, type InstallRisk, COMMAND } from "../types";
 import { forEachName, needNames, noteRestart } from "./extension-names";
 
 export type Ask = (question: string) => Promise<string>;
@@ -46,9 +46,9 @@ export const installCommand: CommandSpec = {
   summary: "Installs extensions from their GitHub releases. Safelight picks them up on its next start.",
   usage: "install <name>… [--version X] [--yes]",
   examples: [
-    "slu install local-contrast",
-    "slu install essentials",
-    "slu install owner/repo --version 1.2.0 --yes",
+    `${COMMAND} install local-contrast`,
+    `${COMMAND} install essentials`,
+    `${COMMAND} install owner/repo --version 1.2.0 --yes`,
   ],
   options: [
     { name: "version", kind: "string", summary: "Install this release instead of the newest." },
@@ -76,7 +76,7 @@ export const installCommand: CommandSpec = {
         for (const repo of missing) lines.push(await installRepo(repo));
         return lines.join("\n");
       }
-      if (!version && have(hit.repo)) return `${name} is already installed. slu update brings it up to date.`;
+      if (!version && have(hit.repo)) return `${name} is already installed. ${COMMAND} update brings it up to date.`;
       return installRepo(hit.repo);
     });
     if (ctx.json) ctx.out.json({ slu: 1, results });

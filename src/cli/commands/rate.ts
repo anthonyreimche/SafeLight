@@ -5,7 +5,7 @@
 
 import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
-import { CliError } from "../types";
+import { CliError, COMMAND } from "../types";
 import { setRecordField } from "./edit-shared";
 
 export const rateCommand: CommandSpec = {
@@ -14,7 +14,7 @@ export const rateCommand: CommandSpec = {
   summary: "Sets the star rating, 0 to 5.",
   usage: "rate <photos> <0-5>",
   examples: [
-    "slu rate IMG_4021.ARW 4",
+    `${COMMAND} rate IMG_4021.ARW 4`,
   ],
   options: [
     ...PHOTO_OPTIONS,

@@ -5,7 +5,7 @@
 
 import { buildSelectRequest, missingError, stdinPathsOf } from "../select";
 import { isGraphicsMode } from "../terminal-image";
-import { CliError, type CommandSpec, type GraphicsMode } from "../types";
+import { CliError, type CommandSpec, type GraphicsMode, COMMAND } from "../types";
 import { PROJECT_OPTION, TRY_OPTION, requireTry } from "./shared";
 
 export const previewCommand: CommandSpec = {
@@ -14,8 +14,8 @@ export const previewCommand: CommandSpec = {
   summary: "Prints the edited photo in the terminal, then exits.",
   usage: "preview <photo> [--width cols] [--try key=value…]",
   examples: [
-    "slu preview IMG_4021.ARW",
-    "slu preview IMG_4021.ARW --try exposure=+0.5 --width 100",
+    `${COMMAND} preview IMG_4021.ARW`,
+    `${COMMAND} preview IMG_4021.ARW --try exposure=+0.5 --width 100`,
   ],
   options: [
     PROJECT_OPTION,
@@ -25,7 +25,7 @@ export const previewCommand: CommandSpec = {
   ],
   writes: false,
   async run(ctx, args) {
-    if (ctx.json) throw new CliError(1, "preview prints an image, so --json has nothing to add.", "slu export writes the image to a file.");
+    if (ctx.json) throw new CliError(1, "preview prints an image, so --json has nothing to add.", `${COMMAND} export writes the image to a file.`);
     const graphics = args.options.graphics;
     if (graphics !== undefined && (typeof graphics !== "string" || !isGraphicsMode(graphics))) {
       throw new CliError(1, `--graphics ${String(graphics)} isn't an image mode.`, "Use kitty, iterm, blocks or none.");
@@ -40,7 +40,7 @@ export const previewCommand: CommandSpec = {
       const miss = selection.missing[0];
       if (miss) throw missingError(miss);
       const photos = selection.groups.flatMap((g) => g.photos.map((photo) => ({ photo, project: g.session.project })));
-      if (photos.length === 0) throw new CliError(2, "No photo to preview.", "slu preview takes one photo.");
+      if (photos.length === 0) throw new CliError(2, "No photo to preview.", `${COMMAND} preview takes one photo.`);
       if (photos.length > 1) throw new CliError(1, "preview shows one photo at a time.", "Name the one you want.");
       const [{ photo, project }] = photos;
       await ctx.preview.show(project, photo, {

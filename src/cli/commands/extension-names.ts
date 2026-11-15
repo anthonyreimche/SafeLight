@@ -7,7 +7,7 @@
 // extensions, running a list of names without stopping at the first failure,
 // and the note that the app picks changes up when it next starts.
 
-import { CliError, type CommandContext, type CommandOutcome, type InstalledExtension } from "../types";
+import { CliError, type CommandContext, type CommandOutcome, type InstalledExtension, COMMAND } from "../types";
 
 export const RESTART_NOTE = "Takes effect when Safelight next starts.";
 
@@ -21,7 +21,7 @@ export async function resolveInstalled(
   if ("kit" in hit) throw new CliError(5, `"${name}" is a kit, not one extension.`, "Name the extensions in it instead.");
   const found = installed.find((e) =>
     (hit.id !== undefined && e.id === hit.id) || (hit.repo !== "" && e.repo?.toLowerCase() === hit.repo.toLowerCase()));
-  if (!found) throw new CliError(5, `${name} isn't installed.`, "slu extensions lists what is.");
+  if (!found) throw new CliError(5, `${name} isn't installed.`, `${COMMAND} extensions lists what is.`);
   return found;
 }
 
@@ -53,5 +53,5 @@ export async function noteRestart(ctx: CommandContext, changed: boolean): Promis
 }
 
 export function needNames(names: readonly string[], usage: string): void {
-  if (names.length === 0) throw new CliError(1, "Name at least one extension.", `Usage: slu ${usage}`);
+  if (names.length === 0) throw new CliError(1, "Name at least one extension.", `Usage: ${COMMAND} ${usage}`);
 }

@@ -21,7 +21,7 @@ function fakeContext(json = false): { ctx: CommandContext; seen: Recorded } {
   const seen: Recorded = { printed: [] };
   const ctx = {
     env: {
-      cwd: userData, userData, appRoot: "D:\app", appVersion: "3.3.0", platform: "win32",
+      cwd: userData, userData, appRoot: "D:\app", appVersion: "3.3.0", platform: process.platform,
       isTTY: { stdin: false, stdout: false, stderr: false }, env: {},
     },
     json,

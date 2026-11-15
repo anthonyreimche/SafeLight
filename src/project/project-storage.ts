@@ -1771,15 +1771,14 @@ export class ProjectStorage implements CatalogStorage {
 
   /** Give the writer lock back once the page really leaves: another beforeunload
    *  handler may call the close off, and the window then goes on writing. Without
-   *  a page (`slu`) there is nothing to wait for. */
-  private releaseOnPageHide(): void {
-    if (typeof window === "undefined") {
-      void this.releaseLock();
-      return;
-    }
-    if (this.pageHideRelease || !this.lock) return;
+   *  a page (`slu`) there is nothing to wait for: it is given back now, and the
+   *  promise resolves once it is. */
+  private releaseOnPageHide(): Promise<void> {
+    if (typeof window === "undefined") return this.releaseLock();
+    if (this.pageHideRelease || !this.lock) return Promise.resolve();
     this.pageHideRelease = () => void this.releaseLock();
     window.addEventListener("pagehide", this.pageHideRelease, { once: true });
+    return Promise.resolve();
   }
 
   /** Whether this copy may still write catalog.json: its open is still walking the
@@ -1986,14 +1985,12 @@ export class ProjectStorage implements CatalogStorage {
     this.foldWaiting();
     // What waits on a reply here never runs once the page has gone, so the writer
     // lock is given back as it goes, beside the last write rather than after it.
-    if (!this.dirty && !this.unsent && !this.writing) {
-      this.releaseOnPageHide();
-      return;
-    }
+    if (!this.dirty && !this.unsent && !this.writing) return this.releaseOnPageHide();
     this.cancelScheduledSave();
     const written = this.writeCatalog();
-    this.releaseOnPageHide();
+    const released = this.releaseOnPageHide();
     await written;
+    await released;
     // A page that stays open after all (its unload was cancelled) is still a copy
     // the window left: once idle it stops following, and answering, the others.
     this.letGoIfIdle();

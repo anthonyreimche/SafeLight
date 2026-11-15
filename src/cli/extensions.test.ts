@@ -297,14 +297,14 @@ describe("sources the app recorded", () => {
     expect(await service().updatesAvailable()).toEqual([{ id: "acme.tool", from: "1.0.0", to: "1.2.0" }]);
   });
 
-  it("knows no source for an id the app's record and slu's name differently", async () => {
+  it("knows no source for an id the app's record and safelight's name differently", async () => {
     installedByApp("acme.tool");
     appSources({ "acme.tool": "other/fork" });
     fs.writeFileSync(path.join(userData, "slu-sources.json"), JSON.stringify({ "acme.tool": "someone/acme-tool" }));
     expect((await service().installed())[0].repo).toBeNull();
   });
 
-  it("keeps the app's record out of slu's own file", async () => {
+  it("keeps the app's record out of safelight's own file", async () => {
     appSources({ "other.ext": "someone/other" });
     await service().install("someone/acme-tool", { confirm: allow });
     expect(JSON.parse(fs.readFileSync(path.join(userData, "slu-sources.json"), "utf8"))).toEqual({ "acme.tool": "someone/acme-tool" });
@@ -326,7 +326,7 @@ describe("installed, switches and removal", () => {
     const failure = await svc.setEnabled("acme.tool", false).catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(CliError);
     expect((failure as CliError).code).toBe(5);
-    expect((failure as CliError).message).toBe("Open Safelight once so slu can see which extensions are on.");
+    expect((failure as CliError).message).toBe("Open Safelight once so safelight can see which extensions are on.");
     expect(fs.existsSync(stateFile())).toBe(false);
   });
 

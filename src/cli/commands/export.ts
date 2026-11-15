@@ -15,7 +15,7 @@ import {
   tryOverrides,
 } from "../preview";
 import { buildSelectRequest, missingError, stdinPathsOf } from "../select";
-import { CliError, type CommandSpec, type ParsedArgs } from "../types";
+import { CliError, type CommandSpec, type ParsedArgs, COMMAND } from "../types";
 import { TRY_OPTION, requireTry } from "./shared";
 
 const FORMATS = ["jpg", "png", "tiff", "webp"] as const;
@@ -92,8 +92,8 @@ export const exportPhotosCommand: CommandSpec = {
   summary: "Renders through Safelight's export, with Preferences ▸ Export as the defaults.",
   usage: "export <photos> [-o dir|file|-] [options]",
   examples: [
-    "slu export IMG_4021.ARW -o ~/out --format jpg --quality 90 --long-edge 3000",
-    "slu export . --flag pick -o ../web --long-edge 2048",
+    `${COMMAND} export IMG_4021.ARW -o ~/out --format jpg --quality 90 --long-edge 3000`,
+    `${COMMAND} export . --flag pick -o ../web --long-edge 2048`,
   ],
   options: [
     ...PHOTO_OPTIONS,
@@ -126,7 +126,7 @@ export const exportPhotosCommand: CommandSpec = {
       }
       const target = exportTarget(args.options.output, ctx.env.cwd, total);
       if (target.kind === "stdout" && (ctx.env.isTTY.stdout || ctx.json)) {
-        throw new CliError(1, "Not writing an image to the terminal.", "Redirect it: slu export IMG_4021.ARW -o - > out.jpg");
+        throw new CliError(1, "Not writing an image to the terminal.", `Redirect it: ${COMMAND} export IMG_4021.ARW -o - > out.jpg`);
       }
       let done = 0;
 

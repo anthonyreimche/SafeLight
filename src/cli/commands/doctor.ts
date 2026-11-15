@@ -11,6 +11,7 @@ import { readDescriptors, readSharedSettings } from "../mirror";
 import type { DoctorItem } from "../output/types";
 import { detectGraphicsMode } from "../terminal-image";
 import type { CommandContext, CommandSpec, InstalledExtension } from "../types";
+import { COMMAND } from "../types";
 
 // A GUI is taken to be running while its mirror's heartbeat is this fresh (it
 // rewrites the file every 60 s).
@@ -62,7 +63,7 @@ async function extensionItems(ctx: CommandContext): Promise<DoctorItem[]> {
   if (hooks.length > 0) {
     items.push({
       label: "Catalogue hooks",
-      value: `${hooks.map((e) => e.name).join(", ")} run when Safelight saves an edit, not for slu`,
+      value: `${hooks.map((e) => e.name).join(", ")} run when Safelight saves an edit, not for ${COMMAND}`,
       status: "warn",
     });
   }
@@ -77,7 +78,7 @@ async function lockItem(ctx: CommandContext): Promise<DoctorItem> {
   const fresh = Date.now() - lock.refreshedAt < STALE_MS;
   return {
     label: "Project",
-    value: `${project.root}: ${fresh ? `held by ${lock.app} (pid ${lock.pid})` : `stale lock from ${lock.app}, slu will take it over`}`,
+    value: `${project.root}: ${fresh ? `held by ${lock.app} (pid ${lock.pid})` : `stale lock from ${lock.app}, ${COMMAND} will take it over`}`,
     status: fresh ? "warn" : "info",
   };
 }
@@ -87,7 +88,7 @@ function networkItem(ctx: CommandContext): DoctorItem {
   const proxy = env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy;
   const certs = env.NODE_EXTRA_CA_CERTS;
   const parts = [
-    proxy ? `proxy ${proxy}` : "no proxy set (slu ignores the system proxy; set HTTPS_PROXY if you need one)",
+    proxy ? `proxy ${proxy}` : `no proxy set (${COMMAND} ignores the system proxy; set HTTPS_PROXY if you need one)`,
     certs ? `extra certificates ${certs}` : "system certificates only if NODE_USE_SYSTEM_CA=1",
   ];
   return { label: "Network", value: parts.join("; "), status: "info" };
@@ -126,10 +127,10 @@ export async function doctorItems(ctx: CommandContext): Promise<DoctorItem[]> {
 export const doctorCommand: CommandSpec = {
   verb: "doctor",
   group: "More",
-  summary: "Checks the version, the app slu runs with, the GPU backend, terminal images, the project lock and extensions.",
+  summary: `Checks the version, the app ${COMMAND} runs with, the GPU backend, terminal images, the project lock and extensions.`,
   usage: "doctor",
   examples: [
-    "slu doctor",
+    `${COMMAND} doctor`,
   ],
   options: [],
   writes: false,

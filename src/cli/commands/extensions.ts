@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 
 export const extensionsCommand: CommandSpec = {
   verb: "extensions",
@@ -11,7 +11,7 @@ export const extensionsCommand: CommandSpec = {
   summary: "Lists installed extensions: name, id, version, on or off, trust, update available.",
   usage: "extensions",
   examples: [
-    "slu extensions",
+    `${COMMAND} extensions`,
   ],
   options: [],
   writes: false,

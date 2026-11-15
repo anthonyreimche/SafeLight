@@ -94,7 +94,7 @@ describe("resolveKey", () => {
   it("answers a read-only key with its reason", () => {
     const info = service().resolveKey("toneCurve");
     expect(info.settable).toBe(false);
-    expect(info.notSettableReason).toBe("Edit Tone Curve's points in Safelight; slu can't set them yet.");
+    expect(info.notSettableReason).toBe("Edit Tone Curve's points in Safelight; safelight can't set them yet.");
     expect(service().resolveKey("crop.x").settable).toBe(false);
   });
 
@@ -175,8 +175,8 @@ describe("apply", () => {
   });
 
   it("refuses an extension value with the tool's reason, and a read-only core value", () => {
-    expect(() => apply(look(), ["local-contrast.detail=1.2"])).toThrow("Local Contrast doesn't support slu yet. Set it in Safelight.");
-    expect(() => apply(look(), ["toneCurve=1"])).toThrow("Edit Tone Curve's points in Safelight; slu can't set them yet.");
+    expect(() => apply(look(), ["local-contrast.detail=1.2"])).toThrow("Local Contrast doesn't support safelight yet. Set it in Safelight.");
+    expect(() => apply(look(), ["toneCurve=1"])).toThrow("Edit Tone Curve's points in Safelight; safelight can't set them yet.");
   });
 });
 
@@ -227,7 +227,7 @@ describe("resets", () => {
     expect(() => s.resetKeys(l, ["toneCurve"], 5500)).toThrow(/Tone Curve/);
   });
 
-  it("resets everything slu can set and keeps what it can't", () => {
+  it("resets everything safelight can set and keeps what it can't", () => {
     const s = service();
     const base = apply(look(), ["exposure=1", "hsl.hue.red=10", "displayTransform=agx"]).look;
     const l: Look = {

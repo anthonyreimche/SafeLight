@@ -6,6 +6,7 @@
 import { SEARCH_LIMIT } from "../extensions";
 import type { CommandSpec } from "../types";
 import { needNames } from "./extension-names";
+import { COMMAND } from "../types";
 
 export const searchCommand: CommandSpec = {
   verb: "search",
@@ -13,7 +14,7 @@ export const searchCommand: CommandSpec = {
   summary: "Searches the extension registry by name, keywords and category.",
   usage: "search <words…>",
   examples: [
-    "slu search local contrast",
+    `${COMMAND} search local contrast`,
   ],
   options: [],
   writes: false,

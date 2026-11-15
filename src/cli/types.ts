@@ -3,15 +3,18 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The shapes every `slu` command and service is built against.
+// The shapes every `safelight` command and service is built against.
 
 import type { CatalogPhoto, EditState, DevelopParams } from "@/catalog/types";
 import type { Output } from "./output/types";
 import type { EngineClient } from "./engine-client";
 
-export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 130;
+/** The shell command, as users type it. The one place a rename touches. */
+export const COMMAND = "safelight";
 
-/** Every expected failure. `hint` is the second line ("slu tools X lists them."). */
+export type ExitCode =0 | 1 | 2 | 3 | 4 | 5 | 6 | 130;
+
+/** Every expected failure. `hint` is the second line ("safelight tools X lists them."). */
 export class CliError extends Error {
   readonly code: ExitCode;
   readonly hint: string | undefined;
@@ -168,7 +171,7 @@ export interface ToolRef {
   kind: "core" | "extension";
   installed: boolean;
   enabled: boolean;
-  /** Can slu set its values this round. */
+  /** Can safelight set its values this round. */
   settable: boolean;
   /** Pipeline position for listing. */
   order: number;
@@ -188,7 +191,7 @@ export interface ValueInfo {
   decimals?: number;
   choices?: readonly { value: string; label: string }[];
   settable: boolean;
-  /** Why not, in user words ("Edit Tone Curve's points in Safelight; slu can't set them yet."). */
+  /** Why not, in user words ("Edit Tone Curve's points in Safelight; safelight can't set them yet."). */
   notSettableReason?: string;
   /** Ranges unknown: extension installed but no descriptor file. */
   rangeUnknown?: boolean;
@@ -224,7 +227,7 @@ export interface InstalledExtension {
   /** Null until the app has written its list of what is on. */
   enabled: boolean | null;
   trust: Trust;
-  /** Where slu or the official list says it came from; null when that isn't known. */
+  /** Where safelight or the official list says it came from; null when that isn't known. */
   repo: string | null;
   /** What it may reach, as install lists it. */
   permissions: string[];

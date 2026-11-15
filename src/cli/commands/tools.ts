@@ -11,6 +11,7 @@ import { isEdited, selectOnePhoto } from "../select";
 import type { CommandContext, CommandSpec, ToolRef, ValueInfo } from "../types";
 import { asShotOf, photoName } from "./edit-shared";
 import { PROJECT_OPTION } from "./shared";
+import { COMMAND } from "../types";
 
 export function photoHeaderOf(photo: CatalogPhoto, look: StoredLook, edited: boolean): PhotoHeader {
   const { cameraMake, cameraModel } = photo.exif;
@@ -101,8 +102,8 @@ export const toolsCommand: CommandSpec = {
   summary: "Lists the tools in pipeline order. With a photo: each value with its range and unit, and a ✱ by values away from their default.",
   usage: "tools [photo] [--all]",
   examples: [
-    "slu tools IMG_4021.ARW",
-    "slu tools IMG_4021.ARW --all",
+    `${COMMAND} tools IMG_4021.ARW`,
+    `${COMMAND} tools IMG_4021.ARW --all`,
   ],
   options: [
     PROJECT_OPTION,
@@ -141,7 +142,7 @@ export const toolsCommand: CommandSpec = {
       if (!ctx.json) {
         ctx.out.print(ctx.out.photoHeader(header));
         ctx.out.print(ctx.out.toolTable(rows));
-        if (args.options.all !== true) ctx.out.info("slu tools --all lists idle tools too.");
+        if (args.options.all !== true) ctx.out.info(`${COMMAND} tools --all lists idle tools too.`);
       }
       return {
         code: 0,

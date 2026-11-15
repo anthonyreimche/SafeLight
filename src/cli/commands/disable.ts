@@ -5,6 +5,7 @@
 
 import type { CommandSpec } from "../types";
 import { forEachName, needNames, noteRestart, resolveInstalled } from "./extension-names";
+import { COMMAND } from "../types";
 
 export const disableCommand: CommandSpec = {
   verb: "disable",
@@ -12,7 +13,7 @@ export const disableCommand: CommandSpec = {
   summary: "Switches extensions off without uninstalling them.",
   usage: "disable <name>…",
   examples: [
-    "slu disable contrast-equalizer",
+    `${COMMAND} disable contrast-equalizer`,
   ],
   options: [],
   writes: false,

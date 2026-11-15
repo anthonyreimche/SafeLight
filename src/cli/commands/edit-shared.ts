@@ -21,8 +21,7 @@ import {
   type SelectRequest,
   type ToolRef,
   type ValueChange,
-  type WriteSession,
-} from "../types";
+  type WriteSession, COMMAND } from "../types";
 
 export const asShotOf = (photo: CatalogPhoto): number => photo.exif.colorTemperature ?? NEUTRAL_TEMPERATURE_K;
 
@@ -32,7 +31,7 @@ export const photoName = (photo: CatalogPhoto): string => photo.relPath.split(/[
 export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs: string[]): Promise<SelectRequest> {
   const request = buildSelectRequest(args, specs, await stdinPathsOf(ctx, args));
   if (request.specs.length === 0 && request.stdinPaths.length === 0 && !request.all) {
-    throw new CliError(1, `Say which photos ${args.verb ?? "this"} should change.`, `slu help ${args.verb ?? ""}`.trim() + " shows how.");
+    throw new CliError(1, `Say which photos ${args.verb ?? "this"} should change.`, `${COMMAND} help ${args.verb ?? ""}`.trim() + " shows how.");
   }
   return request;
 }
@@ -40,7 +39,7 @@ export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs
 const MISSING_TEXT = {
   "not-found": (spec: string) => new CliError(2, `${spec} wasn't found.`),
   "not-in-catalogue": (spec: string) =>
-    new CliError(2, `${spec} isn't in a Safelight catalogue, so slu won't change it.`, "Open its folder in Safelight first."),
+    new CliError(2, `${spec} isn't in a Safelight catalogue, so ${COMMAND} won't change it.`, "Open its folder in Safelight first."),
   "no-match": (spec: string) => new CliError(2, `Nothing matches ${spec}.`),
 } as const;
 
@@ -166,7 +165,7 @@ export function stepOutcome(
 /** `<photos> <tool>`: the last positional names the tool. */
 export function toolOperand(ctx: CommandContext, args: ParsedArgs): { tool: ToolRef; photos: string[] } {
   const name = args.positionals[args.positionals.length - 1];
-  if (name === undefined) throw new CliError(1, "Name a tool.", "slu tools lists them.");
+  if (name === undefined) throw new CliError(1, "Name a tool.", `${COMMAND} tools lists them.`);
   return { tool: ctx.values.tool(name), photos: args.positionals.slice(0, -1) };
 }
 

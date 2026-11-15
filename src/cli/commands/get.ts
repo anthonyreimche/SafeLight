@@ -9,6 +9,7 @@ import type { CommandSpec } from "../types";
 import { asShotOf } from "./edit-shared";
 import { PROJECT_OPTION } from "./shared";
 import { namedRows, toolRows } from "./tools";
+import { COMMAND } from "../types";
 
 export const getCommand: CommandSpec = {
   verb: "get",
@@ -16,8 +17,8 @@ export const getCommand: CommandSpec = {
   summary: "Prints a photo's values, all of them or the ones named.",
   usage: "get <photo> [key…]",
   examples: [
-    "slu get IMG_4021.ARW exposure temperature",
-    "slu get IMG_4021.ARW --json",
+    `${COMMAND} get IMG_4021.ARW exposure temperature`,
+    `${COMMAND} get IMG_4021.ARW --json`,
   ],
   options: [
     PROJECT_OPTION,

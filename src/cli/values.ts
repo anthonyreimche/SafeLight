@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The values `slu` can list, read and set: core controls plus extension
+// The values `safelight` can list, read and set: core controls plus extension
 // uniforms from the descriptor mirror.
 
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/defaults";
@@ -29,8 +29,7 @@ import {
   type ToolRef,
   type ValueChange,
   type ValueInfo,
-  type ValueService,
-} from "./types";
+  type ValueService, COMMAND } from "./types";
 
 const CORE_ID = "core";
 const CORE_PREFIX = "safelight.";
@@ -148,7 +147,7 @@ export function createValueService(
   const extensionValues = new Map<string, ExtensionValue>();
   for (const e of extensionTools) {
     const tool = toolOf(e.id);
-    const reason = `${tool.name} doesn't support slu yet. Set it in Safelight.`;
+    const reason = `${tool.name} doesn't support ${COMMAND} yet. Set it in Safelight.`;
     for (const u of e.descriptor?.uniforms ?? []) {
       if (u.glslType !== "float" && u.glslType !== "int" && u.glslType !== "bool") continue;
       const stage = e.descriptor?.stages.find((s) => u.key.startsWith(`${s.id}.`));
@@ -280,7 +279,7 @@ export function createValueService(
         return { value: limit, clamped: { requested: tidy(wanted), limit } };
       }
     }
-    throw new CliError(1, `${info.label} can't be set by slu yet.`);
+    throw new CliError(1, `${info.label} can't be set by ${COMMAND} yet.`);
   }
 
   function apply(look: Look, assigns: Assignment[], opts: { asShot: number; strict: boolean }): ApplyResult {
@@ -289,7 +288,7 @@ export function createValueService(
     for (const assign of assigns) {
       const info = service.resolveKey(assign.key);
       if (!info.settable) {
-        throw new CliError(1, info.notSettableReason ?? `${info.label} can't be set by slu yet.`);
+        throw new CliError(1, info.notSettableReason ?? `${info.label} can't be set by ${COMMAND} yet.`);
       }
       const { value, clamped } = nextValue({ params, paramBag: look.paramBag }, assign, info, opts);
       const control = controlOf.get(info) as DevelopControl;
@@ -332,7 +331,7 @@ export function createValueService(
       const found = tools.find((t) => toolNames(t).some((n) => n === norm(name) || n.replace(/[^a-z0-9.]+/g, "-") === wanted));
       if (found) return found;
       const near = closest(wanted, tools.flatMap((t) => toolNames(t).map((n) => n.replace(/[^a-z0-9.]+/g, "-"))));
-      throw new CliError(1, `No tool called "${name}".`, near ? `Did you mean "${near}"? slu tools lists them.` : "slu tools lists them.");
+      throw new CliError(1, `No tool called "${name}".`, near ? `Did you mean "${near}"? ${COMMAND} tools lists them.` : `${COMMAND} tools lists them.`);
     },
 
     values: (toolId) => infos.filter((i) => toolId === undefined || i.tool.id === toolId),
@@ -345,7 +344,7 @@ export function createValueService(
       if (Object.hasOwn(READ_ONLY_PARAMS, top)) return readOnlyInfo(input.trim());
       const near = closest(key, [...byKey.keys()]);
       const nearName = near ? byKey.get(near)?.key : undefined;
-      throw new CliError(1, `No value called "${input}".`, nearName ? `Did you mean "${nearName}"? slu tools lists them.` : "slu tools lists them.");
+      throw new CliError(1, `No value called "${input}".`, nearName ? `Did you mean "${nearName}"? ${COMMAND} tools lists them.` : `${COMMAND} tools lists them.`);
     },
 
     read: readOf,
@@ -387,7 +386,7 @@ export function createValueService(
         const control = controlOf.get(info);
         if (control) params = writeControl(params, control, controlDefault(control, asShot));
         else if (extensionValues.has(info.key)) paramBag = withoutBagKeys(paramBag, (k) => k === info.key);
-        else throw new CliError(1, info.notSettableReason ?? `${info.label} can't be reset by slu yet.`);
+        else throw new CliError(1, info.notSettableReason ?? `${info.label} can't be reset by ${COMMAND} yet.`);
       }
       return { params, paramBag };
     },

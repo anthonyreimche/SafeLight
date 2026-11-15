@@ -6,7 +6,7 @@
 import { PHOTO_OPTIONS } from "../args";
 import { currentLook } from "@/catalog/edit-steps";
 import type { CatalogPhoto } from "@/catalog/types";
-import { CliError, type CommandSpec, type ProjectRef } from "../types";
+import { CliError, type CommandSpec, type ProjectRef, COMMAND } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 import { asShotOf, photoName, selectRequest, toolOperand } from "./edit-shared";
 
@@ -16,7 +16,7 @@ export const addCommand: CommandSpec = {
   summary: "Turns a tool on: writes its \"on\" values, if it has any.",
   usage: "add <photos> <tool>",
   examples: [
-    "slu add IMG_4021.ARW local-contrast",
+    `${COMMAND} add IMG_4021.ARW local-contrast`,
   ],
   options: [
     ...PHOTO_OPTIONS,
@@ -26,7 +26,7 @@ export const addCommand: CommandSpec = {
   async run(ctx, args) {
     const { tool, photos } = toolOperand(ctx, args);
     if (tool.kind === "extension") {
-      throw new CliError(1, `${tool.name} doesn't support slu yet. Set it in Safelight.`);
+      throw new CliError(1, `${tool.name} doesn't support ${COMMAND} yet. Set it in Safelight.`);
     }
     // A core tool is on whenever one of its values moves: list its keys and write nothing.
     const selection = await ctx.select.read(await selectRequest(ctx, args, photos));
@@ -35,7 +35,7 @@ export const addCommand: CommandSpec = {
       const photo = selection.groups[0]?.photos[0];
       const session = selection.groups[0]?.session;
       if (!photo || !session) {
-        throw new CliError(2, "None of those photos could be found.", "slu photos lists the ones in a project.");
+        throw new CliError(2, "None of those photos could be found.", `${COMMAND} photos lists the ones in a project.`);
       }
       const look = currentLook(await session.edit(photo.id), asShotOf(photo));
       const asShot = asShotOf(photo);

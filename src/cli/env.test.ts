@@ -53,7 +53,7 @@ describe("appRoot", () => {
   });
 
   it("is the repo in a development run", () => {
-    expect(appRoot(join(REPO, "dist-cli", "slu.mjs"))).toBe(REPO);
+    expect(appRoot(join(REPO, "dist-cli", "safelight.mjs"))).toBe(REPO);
     expect(appRoot(join(HERE, "env.ts"))).toBe(REPO);
   });
 
@@ -61,14 +61,14 @@ describe("appRoot", () => {
     temp = await mkdtemp(join(tmpdir(), "slu-root-"));
     const resources = join(temp, "resources");
     await mkdir(join(resources, "cli"), { recursive: true });
-    expect(appRoot(join(resources, "cli", "slu.mjs"))).toBe(join(resources, "app.asar"));
+    expect(appRoot(join(resources, "cli", "safelight.mjs"))).toBe(join(resources, "app.asar"));
   });
 
   it("skips a package.json that isn't Safelight's", async () => {
     temp = await mkdtemp(join(tmpdir(), "slu-root-"));
     await writeFile(join(temp, "package.json"), JSON.stringify({ name: "other" }));
     await mkdir(join(temp, "resources", "cli"), { recursive: true });
-    expect(appRoot(join(temp, "resources", "cli", "slu.mjs"))).toBe(join(temp, "resources", "app.asar"));
+    expect(appRoot(join(temp, "resources", "cli", "safelight.mjs"))).toBe(join(temp, "resources", "app.asar"));
   });
 });
 

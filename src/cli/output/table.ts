@@ -10,6 +10,7 @@ import type { Trust } from "../types";
 import { formatRange, formatTimestamp, truncateEnd, truncateStart, valueParts } from "./format";
 import type { Style } from "./palette";
 import type { DoctorItem, ExtensionRow, HistoryRow, PhotoRow, SearchRow, ToolRow } from "./types";
+import { COMMAND } from "../types";
 
 export interface Column {
   align?: "left" | "right";
@@ -178,7 +179,7 @@ function trustBadge(style: Style) {
   };
 }
 
-const STATE_UNKNOWN_NOTE = "Open Safelight once so slu can see which extensions are on.";
+const STATE_UNKNOWN_NOTE = `Open Safelight once so ${COMMAND} can see which extensions are on.`;
 
 const stateText = (enabled: boolean | null): string => (enabled === null ? "?" : enabled ? "on" : "off");
 

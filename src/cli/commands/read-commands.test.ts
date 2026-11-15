@@ -147,7 +147,7 @@ const run = (spec: CommandSpec, argv: string[], setup: Setup) => {
 const edited = (id: string): EditState =>
   appendStep(undefined, { photoId: id, asShot: 5150 }, "Exposure", { params: { ...freshParams(5150), exposure: 0.7 }, paramBag: {} }, 1000);
 
-describe("slu photos", () => {
+describe("safelight photos", () => {
   it("lists a row per photo and a summary, and JSON is a bare array of paths", async () => {
     const photos = [photo("a.ARW", { rating: 3, flag: "pick", colorLabel: "red" }), photo("b.ARW")];
     const r = await run(photosCommand, ["--flag", "pick"], { photos, edits: { "a.ARW": edited("a.ARW") } });
@@ -189,7 +189,7 @@ describe("slu photos", () => {
   });
 });
 
-describe("slu tools", () => {
+describe("safelight tools", () => {
   it("lists tools without values when no photo is named", async () => {
     const r = await run(toolsCommand, [], {});
     expect(r.rec.tables.tools[0]).toEqual([
@@ -253,7 +253,7 @@ describe("slu tools", () => {
   });
 });
 
-describe("slu get", () => {
+describe("safelight get", () => {
   it("prints the named values, grouped by tool", async () => {
     const r = await run(getCommand, ["a.ARW", "exposure", "temperature"], { photos: [photo("a.ARW")] });
     expect(r.rec.tables.tools[0].map((t) => [t.tool, t.values.map((v) => v.info.key)])).toEqual([
@@ -285,7 +285,7 @@ describe("slu get", () => {
   });
 });
 
-describe("slu history", () => {
+describe("safelight history", () => {
   it("lists the steps with the current one marked", async () => {
     const state = edited("a.ARW");
     const r = await run(historyCommand, ["a.ARW"], { photos: [photo("a.ARW")], edits: { "a.ARW": state } });

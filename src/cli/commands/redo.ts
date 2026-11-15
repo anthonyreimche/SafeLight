@@ -6,6 +6,7 @@
 import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
 import { moveHistory } from "./edit-shared";
+import { COMMAND } from "../types";
 
 export const redoCommand: CommandSpec = {
   verb: "redo",
@@ -13,7 +14,7 @@ export const redoCommand: CommandSpec = {
   summary: "Moves forward n steps (default 1), as Redo does in Safelight.",
   usage: "redo <photos> [n]",
   examples: [
-    "slu redo IMG_4021.ARW",
+    `${COMMAND} redo IMG_4021.ARW`,
   ],
   options: [
     ...PHOTO_OPTIONS,

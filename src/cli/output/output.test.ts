@@ -211,7 +211,7 @@ describe("help", () => {
     expect(builder({ width: 120 }).help({ version: "3.3.0", verbs: VERBS })).toBe([
       "Safelight Unplugged 3.3.0: edit photos with commands and values.",
       "",
-      "  slu <verb> [photos…] [key=value…] [options]",
+      "  safelight <verb> [photos…] [key=value…] [options]",
       "",
       "Photos: files, globs (*.ARW), folders (-r for subfolders), --all, - (paths on stdin)",
       "        filters: --rating 3+  --flag pick  --label red  --edited",
@@ -235,7 +235,7 @@ describe("help", () => {
       "Safelight Unplugged 3.3.0: edit photos with commands and",
       "values.",
       "",
-      "  slu <verb> [photos…] [key=value…] [options]",
+      "  safelight <verb> [photos…] [key=value…] [options]",
       "",
       "Photos: files, globs (*.ARW), folders (-r for subfolders),",
       "        --all, - (paths on stdin)",
@@ -269,12 +269,12 @@ describe("help for one verb", () => {
       { flag: "--strict", summary: "Stops when a value is past its limit, instead of setting the limit and warning." },
       { flag: "--preview", summary: "Shows the result in the terminal." },
     ],
-    examples: ["slu set IMG_4021.ARW exposure=+0.7 highlights=-40", "slu set . --flag pick temperature=5400K"],
+    examples: ["safelight set IMG_4021.ARW exposure=+0.7 highlights=-40", "safelight set . --flag pick temperature=5400K"],
   };
 
   it("wraps the summary and each option under itself at 60 columns", () => {
     expect(builder({ width: 60 }).verbHelp(SET)).toBe([
-      "slu set <photos…> key=value… [options]",
+      "safelight set <photos…> key=value… [options]",
       "",
       "Sets values on one photo or many. Each photo gets one",
       "history step, however many values change.",
@@ -285,24 +285,24 @@ describe("help for one verb", () => {
       "  --preview  Shows the result in the terminal.",
       "",
       "Examples:",
-      "  slu set IMG_4021.ARW exposure=+0.7 highlights=-40",
-      "  slu set . --flag pick temperature=5400K",
+      "  safelight set IMG_4021.ARW exposure=+0.7 highlights=-40",
+      "  safelight set . --flag pick temperature=5400K",
     ].join("\n"));
   });
 
   it("sets the verb in bold and the section names faint", () => {
     const lines = builder({ colour: true }).verbHelp(SET).split("\n");
-    expect(lines[0]).toBe(`${B}slu set${N} <photos…> key=value… [options]`);
+    expect(lines[0]).toBe(`${B}safelight set${N} <photos…> key=value… [options]`);
     expect(lines[4]).toBe(`${D}Options:${N}`);
   });
 
   it("leaves out the sections a verb doesn't have", () => {
     expect(builder().verbHelp({ verb: "version", usage: "version", summary: "Shows the version.", options: [], examples: [] }))
-      .toBe("slu version\n\nShows the version.");
+      .toBe("safelight version\n\nShows the version.");
   });
 
   it("writes the usage in ASCII where it must", () => {
-    expect(builder({ unicode: false }).verbHelp(SET).split("\n")[0]).toBe("slu set <photos...> key=value... [options]");
+    expect(builder({ unicode: false }).verbHelp(SET).split("\n")[0]).toBe("safelight set <photos...> key=value... [options]");
   });
 });
 
@@ -448,7 +448,7 @@ describe("extension tables", () => {
 
   describe("when the app has not said which extensions are on", () => {
     const UNKNOWN = EXTENSIONS.map((row) => ({ ...row, enabled: null }));
-    const NOTE = "Open Safelight once so slu can see which extensions are on.";
+    const NOTE = "Open Safelight once so safelight can see which extensions are on.";
 
     it("shows ? and one note line", () => {
       expect(builder({ width: 120 }).extensionTable(UNKNOWN)).toBe([
@@ -602,42 +602,42 @@ describe("preview caption", () => {
 });
 
 describe("errors and warnings", () => {
-  const TYPO = { message: "\"expsure\" isn't one of this photo's values. Did you mean exposure?", hint: "slu tools IMG_4021.ARW lists them." };
-  const MISSING = { message: "IMG_4021.ARW renders without Retinex, which isn't installed. Its values are kept.", hint: "slu install retinex" };
+  const TYPO = { message: "\"expsure\" isn't one of this photo's values. Did you mean exposure?", hint: "safelight tools IMG_4021.ARW lists them." };
+  const MISSING = { message: "IMG_4021.ARW renders without Retinex, which isn't installed. Its values are kept.", hint: "safelight install retinex" };
 
   it("says what happened, then what to do", () => {
     expect(builder({ width: 120 }).problem("error", TYPO)).toBe([
-      "slu: \"expsure\" isn't one of this photo's values. Did you mean exposure?",
-      "     slu tools IMG_4021.ARW lists them.",
+      "safelight: \"expsure\" isn't one of this photo's values. Did you mean exposure?",
+      "           safelight tools IMG_4021.ARW lists them.",
     ].join("\n"));
     expect(builder().problem("warning", { message: "exposure 7 is past its limit, so it was set to 5 EV." }))
-      .toBe("slu: exposure 7 is past its limit, so it was set to 5 EV.");
+      .toBe("safelight: exposure 7 is past its limit, so it was set to 5 EV.");
   });
 
   it("wraps under the message at 60 columns", () => {
     expect(builder({ width: 60 }).problem("warning", MISSING)).toBe([
-      "slu: IMG_4021.ARW renders without Retinex, which isn't",
-      "     installed. Its values are kept.",
-      "     slu install retinex",
+      "safelight: IMG_4021.ARW renders without Retinex, which isn't",
+      "           installed. Its values are kept.",
+      "           safelight install retinex",
     ].join("\n"));
   });
 
   it("is red for an error and amber for a warning, with the hint faint", () => {
     expect(builder({ colour: true }).problem("error", TYPO)).toBe([
-      `${RED}slu:${FG} "expsure" isn't one of this photo's values. Did you mean exposure?`,
-      `     ${D}slu tools IMG_4021.ARW lists them.${N}`,
+      `${RED}safelight:${FG} "expsure" isn't one of this photo's values. Did you mean exposure?`,
+      `           ${D}safelight tools IMG_4021.ARW lists them.${N}`,
     ].join("\n"));
     expect(builder({ colour: true, width: 60 }).problem("warning", MISSING)).toBe([
-      `${AMBER}slu:${FG} IMG_4021.ARW renders without Retinex, which isn't`,
-      "     installed. Its values are kept.",
-      `     ${D}slu install retinex${N}`,
+      `${AMBER}safelight:${FG} IMG_4021.ARW renders without Retinex, which isn't`,
+      "           installed. Its values are kept.",
+      `           ${D}safelight install retinex${N}`,
     ].join("\n"));
   });
 
   it("keeps a path whole and writes ASCII where it must", () => {
     const long = "D:\\Photos\\2026-11-wedding\\ceremony\\after-the-rain\\IMG_4021.ARW";
-    expect(builder({ width: 40 }).problem("error", { message: `${long} isn't a photo.` }).split("\n")[0]).toBe(`slu: ${long}`);
-    expect(builder({ unicode: false }).problem("error", { message: "exposure is limited to −5…5." })).toBe("slu: exposure is limited to -5...5.");
+    expect(builder({ width: 40 }).problem("error", { message: `${long} isn't a photo.` }).split("\n")[0]).toBe(`safelight: ${long}`);
+    expect(builder({ unicode: false }).problem("error", { message: "exposure is limited to −5…5." })).toBe("safelight: exposure is limited to -5...5.");
   });
 });
 
@@ -690,7 +690,7 @@ describe("writers", () => {
     o.out.warn({ message: "one warning" });
     o.out.error({ message: "one error", hint: "do this" });
     expect(o.stdout()).toBe("78 photos\n");
-    expect(o.stderr()).toBe("slu: one warning\nslu: one error\n     do this\n");
+    expect(o.stderr()).toBe("safelight: one warning\nsafelight: one error\n     do this\n");
   });
 
   it("keeps quiet except for errors", () => {
@@ -700,10 +700,10 @@ describe("writers", () => {
     o.out.info("Opened project");
     o.out.error({ message: "one error" });
     expect(o.stdout()).toBe("");
-    expect(o.stderr()).toBe("slu: one error\n");
+    expect(o.stderr()).toBe("safelight: one error\n");
   });
 
-  it("adds what slu did only when verbose", () => {
+  it("adds what safelight did only when verbose", () => {
     const normal = output();
     normal.out.info("Opened project D:\\Photos");
     expect(normal.stderr()).toBe("");
@@ -733,7 +733,7 @@ describe("colour", () => {
       out.resultLine({ photo: "IMG_4021.ARW", changes: [{ label: "Exposure", value: "+0.70 EV" }, { label: "Shadows", value: "+25" }], step: 2, note: "clamped" }),
       out.summary({ photos: 78, stepEach: true, failed: 2, skipped: 1 }),
       out.previewCaption({ mode: "blocks", trueColour: false, width: 160, height: 100, ms: 412 }),
-      out.problem("error", { message: "\"expsure\" isn't one of this photo's values. Did you mean exposure?", hint: "slu tools IMG_4021.ARW lists them." }),
+      out.problem("error", { message: "\"expsure\" isn't one of this photo's values. Did you mean exposure?", hint: "safelight tools IMG_4021.ARW lists them." }),
       out.progressText({ label: "Exporting", done: 12, total: 78 }),
     ];
     for (const width of [60, 120]) {

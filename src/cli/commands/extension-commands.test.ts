@@ -177,8 +177,8 @@ describe("uninstall, enable and disable", () => {
     expect(r.printed.slice(2)).toEqual(["Basic is now off.", "Acme Tool is already off."]);
   });
 
-  it("answers exit 5 for every name while slu can't tell which extensions are on", async () => {
-    const unknown = new CliError(5, "Open Safelight once so slu can see which extensions are on.");
+  it("answers exit 5 for every name while safelight can't tell which extensions are on", async () => {
+    const unknown = new CliError(5, "Open Safelight once so safelight can see which extensions are on.");
     const r = rig(fakeService({ setEnabled: async () => { throw unknown; } }));
     expect((await enableCommand.run(r.ctx, args(["basic"]))).code).toBe(5);
     expect((await disableCommand.run(r.ctx, args(["tool"]))).code).toBe(5);

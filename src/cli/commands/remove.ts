@@ -8,6 +8,7 @@ import { currentLook } from "@/catalog/edit-steps";
 import type { CommandSpec } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 import { runOnPhotos, stepOutcome, toolOperand } from "./edit-shared";
+import { COMMAND } from "../types";
 
 export const removeCommand: CommandSpec = {
   verb: "remove",
@@ -15,7 +16,7 @@ export const removeCommand: CommandSpec = {
   summary: "Puts all of a tool's values back to their defaults in one step, so it no longer runs.",
   usage: "remove <photos> <tool>",
   examples: [
-    "slu remove IMG_4021.ARW local-contrast",
+    `${COMMAND} remove IMG_4021.ARW local-contrast`,
   ],
   options: [
     ...PHOTO_OPTIONS,

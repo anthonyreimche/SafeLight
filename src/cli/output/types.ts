@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Everything `slu` shows goes through Output: pure builders that return text,
+// Everything `safelight` shows goes through Output: pure builders that return text,
 // plus thin writers. Commands never format text themselves. index.ts holds
 // resolveOutputOptions and createOutput.
 
@@ -54,7 +54,7 @@ export interface Output {
   verbHelp(v: VerbHelp): string;
   doctor(items: DoctorItem[]): string;
   previewCaption(c: PreviewCaption): string;
-  problem(kind: "error" | "warning", p: Problem): string;        // "slu: …\n     hint"
+  problem(kind: "error" | "warning", p: Problem): string;        // `${COMMAND}: …\n     hint`
   progressText(p: ProgressState): string;
   // writers
   print(text: string): void;                                     // stdout, adds "\n"; silent when quiet

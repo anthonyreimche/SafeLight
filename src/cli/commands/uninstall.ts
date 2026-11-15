@@ -5,6 +5,7 @@
 
 import type { CommandSpec } from "../types";
 import { forEachName, needNames, noteRestart, resolveInstalled } from "./extension-names";
+import { COMMAND } from "../types";
 
 export const uninstallCommand: CommandSpec = {
   verb: "uninstall",
@@ -12,7 +13,7 @@ export const uninstallCommand: CommandSpec = {
   summary: "Removes extensions. Photos keep their values.",
   usage: "uninstall <name>…",
   examples: [
-    "slu uninstall retinex",
+    `${COMMAND} uninstall retinex`,
   ],
   options: [],
   writes: false,

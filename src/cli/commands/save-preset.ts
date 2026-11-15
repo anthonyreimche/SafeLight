@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 import { PROJECT_OPTION, TOOLS_OPTION } from "./shared";
 
 export const savePresetCommand: CommandSpec = {
@@ -12,7 +12,7 @@ export const savePresetCommand: CommandSpec = {
   summary: "Saves a preset from a photo.",
   usage: "save-preset <name> <photo> [--tools a,b] [--group G]",
   examples: [
-    "slu save-preset \"Warm film\" IMG_4021.ARW --group Film",
+    `${COMMAND} save-preset "Warm film" IMG_4021.ARW --group Film`,
   ],
   options: [
     PROJECT_OPTION,

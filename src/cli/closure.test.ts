@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// `slu` runs in plain Node, so what main.ts reaches at run time may not pull in
+// `safelight` runs in plain Node, so what main.ts reaches at run time may not pull in
 // React, the stores, rendering or the DOM. ProjectStorage's own closure is the
 // one exception (it reaches the settings store), so the walk stops there.
 
@@ -65,7 +65,7 @@ function closure(entry: string, exempt: ReadonlySet<string> = new Set()): { file
   return { files, packages };
 }
 
-describe("the slu import closure", () => {
+describe("the safelight import closure", () => {
   it("reads type-only imports as no import", () => {
     expect(runtimeSpecifiers('import type { A } from "./a";\nimport { type B } from "./b";\nimport { c, type D } from "./c";\nexport type { E } from "./e";')).toEqual(["./c"]);
     expect(runtimeSpecifiers('const x = await import("./x");\nconst y = require("../y.cjs");\nimport "./side";')).toEqual(["./side", "./x", "../y.cjs"]);

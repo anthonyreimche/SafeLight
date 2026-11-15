@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// `slu` end to end: main() with the real services, ProjectStorage and the Node
+// `safelight` end to end: main() with the real services, ProjectStorage and the Node
 // shims, on a temp project and a temp userData.
 
 import fs from "node:fs";
@@ -84,7 +84,7 @@ async function slu(argv: string[], cwd = project, extra: Partial<MainIO> = {}): 
     cwd,
     platform: process.platform,
     home: temp,
-    moduleFile: path.join(temp, "slu.mjs"),
+    moduleFile: path.join(temp, "safelight.mjs"),
     onInterrupt: () => () => {},
     ...extra,
   };
@@ -113,7 +113,7 @@ afterEach(() => {
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-describe("slu end to end", () => {
+describe("safelight end to end", () => {
   it("lists the core tools without a photo", async () => {
     const r = await slu(["tools", "--json"]);
     expect(r.code).toBe(0);
@@ -185,7 +185,7 @@ describe("slu end to end", () => {
     expect(fs.existsSync(path.join(project, "day1", ".safelight"))).toBe(false);
   });
 
-  it("lists photos as {slu, photos} under --json", async () => {
+  it("lists photos as {safelight, photos} under --json", async () => {
     const r = await slu(["photos", "--recursive", "--json"]);
     expect(r.code).toBe(0);
     const doc = JSON.parse(r.out) as { slu: number; photos: { relPath: string; path: string }[] };

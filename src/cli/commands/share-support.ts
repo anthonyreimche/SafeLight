@@ -20,8 +20,7 @@ import {
   type ParsedArgs,
   type ReadSession,
   type SelectRequest,
-  type Selection,
-} from "../types";
+  type Selection, COMMAND } from "../types";
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -35,8 +34,8 @@ export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs
 }
 
 const MISSING_TEXT = {
-  "not-found": "isn't a photo or folder slu can find.",
-  "not-in-catalogue": "isn't in a Safelight catalogue, so slu won't edit it.",
+  "not-found": `isn't a photo or folder ${COMMAND} can find.`,
+  "not-in-catalogue": `isn't in a Safelight catalogue, so ${COMMAND} won't edit it.`,
   "no-match": "matched no photos.",
 } as const;
 
@@ -70,7 +69,7 @@ export async function writeClipboard(userData: string, clip: ClipboardFile): Pro
 }
 
 export async function readClipboard(userData: string): Promise<ClipboardFile> {
-  const empty = new CliError(2, "Nothing is copied yet.", "slu copy <photo> remembers a photo's settings, or give paste --from <photo>.");
+  const empty = new CliError(2, "Nothing is copied yet.", `${COMMAND} copy <photo> remembers a photo's settings, or give paste --from <photo>.`);
   let raw: string;
   try {
     raw = await readFile(clipboardPath(userData), "utf8");
@@ -224,7 +223,7 @@ export async function writeLooks(
 
   const failed = selection.missing.length;
   const photos = results.length - failed;
-  if (photos + failed === 0) throw new CliError(2, "No photos matched.", "slu help lists the ways to name photos.");
+  if (photos + failed === 0) throw new CliError(2, "No photos matched.", `${COMMAND} help lists the ways to name photos.`);
   if (photos > 1 && !ctx.json) {
     ctx.out.print(ctx.out.summary({ photos, stepEach: true, failed, skipped: results.filter((r) => r.unchanged).length }));
   }

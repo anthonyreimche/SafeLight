@@ -306,7 +306,7 @@ function fakeProcess(env: Record<string, string | undefined>) {
   return {
     proc: {
       env,
-      platform: "win32" as NodeJS.Platform,
+      platform: process.platform,
       execPath: "safelight.exe",
       stdin,
       stdout: sink.stream,
@@ -322,6 +322,11 @@ function fakeProcess(env: Record<string, string | undefined>) {
 
 const fakeConsole = () => ({ log: vi.fn(), info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() });
 
+/** A backend Preferences offers on this platform that isn't Automatic's first
+ *  rung, so starting on it shows the app's cache was read. The fake process runs
+ *  on the real platform: its cache path is built for it. */
+const CHOSEN = ({ win32: "d3d11on12", darwin: "gl" } as Partial<Record<NodeJS.Platform, string>>)[process.platform] ?? "gles";
+
 describe("run", () => {
   let root: string;
   let appUserData: string;
@@ -336,7 +341,7 @@ describe("run", () => {
     mkdirSync(appUserData);
     mkdirSync(dist);
     writeFileSync(join(dist, "engine.html"), "<!doctype html>");
-    writeFileSync(backendFile(), "d3d11on12\nchosen\n");
+    writeFileSync(backendFile(), `${CHOSEN}\nchosen\n`);
     writeFileSync(join(appUserData, SHARED_SETTINGS_FILE), JSON.stringify(mirror));
   });
   afterEach(() => {
@@ -362,7 +367,7 @@ describe("run", () => {
     expect(fx.app.getPath).toHaveBeenCalledWith("userData");
     expect(fx.app.setPath).toHaveBeenCalledWith("userData", join(appUserData, "engine"));
     expect(fx.app.setPath).toHaveBeenCalledWith("sessionData", join(appUserData, "engine"));
-    expect(fx.switches).toEqual(chromiumSwitches("d3d11on12", "win32"));
+    expect(fx.switches).toEqual(chromiumSwitches(CHOSEN, process.platform));
     expect(fx.app.requestSingleInstanceLock).not.toHaveBeenCalled();
     expect(fx.app.dock.hide).toHaveBeenCalled();
     expect(fx.windows).toEqual([]);
@@ -438,7 +443,7 @@ describe("run", () => {
     const fromEngine = { senderFrame: { url: ENGINE_PAGE, parent: null }, sender: win.webContents };
     const call = (channel: string, ...args: unknown[]) => fx.handlers.get(channel)!(fromEngine, ...args);
 
-    expect(await call("gpu:backend")).toMatchObject({ backend: "d3d11on12", software: false });
+    expect(await call("gpu:backend")).toMatchObject({ backend: CHOSEN, software: false });
     await call("gpu:setSoftware", true);
     await call("gpu:setBackend", "gl");
     await call("gpu:rendererFailed", "stock program failed to link");
@@ -514,7 +519,7 @@ describe("run", () => {
     await waitFor(() => fx.exits.length > 0);
     expect(fx.exits).toEqual([3]);
     expect(fx.app.relaunch).not.toHaveBeenCalled();
-    expect(readFileSync(backendFile(), "utf8")).toBe("d3d11on12\nchosen\n");
+    expect(readFileSync(backendFile(), "utf8")).toBe(`${CHOSEN}\nchosen\n`);
   });
 
   it("keeps the window on its page: no navigation, no window.open", async () => {

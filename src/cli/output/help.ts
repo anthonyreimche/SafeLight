@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// `slu help` and `slu help <verb>`. The help screen fits one screen and keeps
+// `safelight help` and `safelight help <verb>`. The help screen fits one screen and keeps
 // its shape at any width: a row that runs out of room continues under its own
 // first word.
 
@@ -11,6 +11,7 @@ import type { HelpGroup } from "../types";
 import { flowChunks, wrapText } from "./format";
 import type { Style } from "./palette";
 import type { HelpScreen, VerbHelp } from "./types";
+import { COMMAND } from "../types";
 
 const HELP_GROUPS: readonly HelpGroup[] = ["Look", "Edit", "Share", "Organize", "Output", "Extensions", "More"];
 const GROUP_COLUMN = Math.max(...HELP_GROUPS.map((group) => group.length)) + 3;
@@ -38,7 +39,7 @@ export function help(screen: HelpScreen, style: Style): string {
     ...wrapText(`${TITLE} ${screen.version}: edit photos with commands and values.`, width)
       .map((line) => line.replace(TITLE, palette.heading(TITLE))),
     "",
-    `  slu <verb> [photos${glyphs.ellipsis}] [key=value${glyphs.ellipsis}] [options]`,
+    `  ${COMMAND} <verb> [photos${glyphs.ellipsis}] [key=value${glyphs.ellipsis}] [options]`,
     "",
     ...row("Photos: ", ["files,", "globs (*.ARW),", "folders (-r for subfolders),", "--all,", "- (paths on stdin)"], " "),
     ...row("        ", ["filters: --rating 3+", "--flag pick", "--label red", "--edited"], "  "),
@@ -56,7 +57,7 @@ export function verbHelp(v: VerbHelp, style: Style): string {
   const usage = glyphs.fold(v.usage);
   const named = usage === v.verb || usage.startsWith(`${v.verb} `);
   const lines = [
-    named ? `${palette.heading(`slu ${v.verb}`)}${usage.slice(v.verb.length)}` : `${palette.heading("slu")} ${usage}`,
+    named ? `${palette.heading(`${COMMAND} ${v.verb}`)}${usage.slice(v.verb.length)}` : `${palette.heading(COMMAND)} ${usage}`,
     "",
     ...wrapText(glyphs.fold(v.summary), width),
   ];

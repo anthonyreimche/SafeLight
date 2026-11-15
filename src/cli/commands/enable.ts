@@ -5,6 +5,7 @@
 
 import type { CommandSpec } from "../types";
 import { forEachName, needNames, noteRestart, resolveInstalled } from "./extension-names";
+import { COMMAND } from "../types";
 
 export const enableCommand: CommandSpec = {
   verb: "enable",
@@ -12,7 +13,7 @@ export const enableCommand: CommandSpec = {
   summary: "Switches extensions on, the same switch as Safelight's.",
   usage: "enable <name>…",
   examples: [
-    "slu enable contrast-equalizer",
+    `${COMMAND} enable contrast-equalizer`,
   ],
   options: [],
   writes: false,

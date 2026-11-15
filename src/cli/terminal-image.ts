@@ -7,6 +7,7 @@
 
 import { deflateSync } from "node:zlib";
 import type { CliEnv, GraphicsMode } from "./types";
+import { COMMAND } from "./types";
 
 export interface TerminalImage { width: number; height: number; encoding: "png" | "rgba"; bytes: Uint8Array }
 
@@ -94,7 +95,7 @@ export async function detectGraphicsMode(
     if (reply) {
       const { kitty, cell } = parseProbeReply(reply);
       if (kitty) return { mode: "kitty", reason: "the terminal answered the kitty query", cell };
-      return { mode: "blocks", reason: "the terminal has no image protocol slu knows", cell };
+      return { mode: "blocks", reason: `the terminal has no image protocol ${COMMAND} knows`, cell };
     }
   }
   return { mode: "blocks", reason: "no image protocol detected" };

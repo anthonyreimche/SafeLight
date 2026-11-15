@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// `slu`: Safelight Unplugged. Finds the verb, applies the global options, runs
+// `safelight`: Safelight Unplugged. Finds the verb, applies the global options, runs
 // the verb and turns what it throws into a message and an exit code.
 
 import { homedir } from "node:os";
@@ -17,7 +17,7 @@ import { createNodeFsBridge } from "./node-fs";
 import { createOutput, resolveOutputOptions } from "./output";
 import type { Output } from "./output/types";
 import { closest } from "./suggest";
-import { CliError, type CommandSpec, type ExitCode, type ParsedArgs, type Verbosity } from "./types";
+import { CliError, type CommandSpec, type ExitCode, type ParsedArgs, type Verbosity, COMMAND } from "./types";
 
 export interface MainIO {
   stdout: NodeJS.WriteStream;
@@ -57,8 +57,8 @@ function waitSecondsOf(options: ParsedArgs["options"]): number | null {
 function unknownVerb(word: string, commands: readonly CommandSpec[]): CliError {
   const names = commands.flatMap((c) => [c.verb, ...(c.aliases ?? [])]);
   const guess = closest(word, names);
-  const message = guess ? `"${word}" isn't a slu verb. Did you mean ${guess}?` : `"${word}" isn't a slu verb.`;
-  return new CliError(1, message, "slu help lists them.");
+  const message = guess ? `"${word}" isn't a ${COMMAND} verb. Did you mean ${guess}?` : `"${word}" isn't a ${COMMAND} verb.`;
+  return new CliError(1, message, `${COMMAND} help lists them.`);
 }
 
 function report(error: unknown, out: Output, json: boolean): ExitCode {

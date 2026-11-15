@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// `slu set` and `slu undo` write the catalogue the app writes for the same
+// `safelight set` and `safelight undo` write the catalogue the app writes for the same
 // steps: one project changed through main(), its twin through the app's own
 // store path (appendStoredSnapshots, then Develop's undo), both on the real
 // ProjectStorage under the Node shims.
@@ -86,7 +86,7 @@ async function slu(argv: string[], cwd: string): Promise<number> {
     cwd,
     platform: process.platform,
     home: temp,
-    moduleFile: path.join(temp, "slu.mjs"),
+    moduleFile: path.join(temp, "safelight.mjs"),
     onInterrupt: () => () => {},
   };
   return main(argv, io);
@@ -131,7 +131,7 @@ afterEach(() => {
   fs.rmSync(temp, { recursive: true, force: true });
 });
 
-describe("slu and the app write the same catalogue", () => {
+describe("safelight and the app write the same catalogue", () => {
   it("for set, then undo", async () => {
     const viaSlu = path.join(temp, "slu");
     const viaApp = path.join(temp, "app");

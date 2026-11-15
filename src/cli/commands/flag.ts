@@ -5,7 +5,7 @@
 
 import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
-import { CliError } from "../types";
+import { CliError, COMMAND } from "../types";
 import type { FlagStatus } from "@/catalog/types";
 import { setRecordField } from "./edit-shared";
 
@@ -15,7 +15,7 @@ export const flagCommand: CommandSpec = {
   summary: "Sets the flag: pick, reject or none.",
   usage: "flag <photos> pick|reject|none",
   examples: [
-    "slu flag DSC_0412.NEF reject",
+    `${COMMAND} flag DSC_0412.NEF reject`,
   ],
   options: [
     ...PHOTO_OPTIONS,

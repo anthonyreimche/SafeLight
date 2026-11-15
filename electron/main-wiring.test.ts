@@ -19,7 +19,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ipcChannels, registerIpc } from "./ipc/index.cjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(join(HERE, file), "utf8");
+// Git checks sources out with CRLF on Windows runners.
+const read = (file: string) => readFileSync(join(HERE, file), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("main.cjs");
 const PRELOAD = read("preload.cjs");
 const SWITCHES = read("chromium-switches.cjs");

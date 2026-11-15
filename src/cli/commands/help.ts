@@ -5,7 +5,7 @@
 
 import type { VerbHelp } from "../output/types";
 import { closest } from "../suggest";
-import { CliError, type CommandSpec, type OptionSpec } from "../types";
+import { CliError, type CommandSpec, type OptionSpec, COMMAND } from "../types";
 
 function flagOf(option: OptionSpec): string {
   const long = `--${option.name}`;
@@ -29,8 +29,8 @@ export const helpCommand: CommandSpec = {
   summary: "Shows the help screen, or one verb's usage with examples.",
   usage: "help [verb]",
   examples: [
-    "slu help",
-    "slu help set",
+    `${COMMAND} help`,
+    `${COMMAND} help set`,
   ],
   options: [],
   writes: false,
@@ -49,8 +49,8 @@ export const helpCommand: CommandSpec = {
       const guess = closest(word, COMMANDS.flatMap((c) => [c.verb, ...(c.aliases ?? [])]));
       throw new CliError(
         1,
-        guess ? `"${word}" isn't a slu verb. Did you mean ${guess}?` : `"${word}" isn't a slu verb.`,
-        "slu help lists them.",
+        guess ? `"${word}" isn't a ${COMMAND} verb. Did you mean ${guess}?` : `"${word}" isn't a ${COMMAND} verb.`,
+        `${COMMAND} help lists them.`,
       );
     }
     const help = verbHelpOf(spec);

@@ -84,3 +84,6 @@ src/lens-profiles/vendor/
 build-scripts/camera-profiles/out/
 build-scripts/camera-profiles/baselines.local.json
 public/camera-profiles/
+
+# Local scripts folder
+/scripts

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The whole look of `slu` in four roles. Bold and faint follow the terminal's
+// The whole look of `safelight` in four roles. Bold and faint follow the terminal's
 // own foreground, so they read on dark and light backgrounds alike; the amber
 // and the red are the only two hues.
 

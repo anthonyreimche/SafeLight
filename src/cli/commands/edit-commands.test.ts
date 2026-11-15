@@ -106,7 +106,7 @@ function harness(photos: CatalogPhoto[], edits: Record<string, EditState> = {}, 
       isDefault: () => true,
       apply(look: Look, assigns: { key: string; value: string }[]): ApplyResult {
         const a = assigns[0];
-        if (a.key === "local-contrast.detail") throw new CliError(1, "Local Contrast doesn't support slu yet. Set it in Safelight.");
+        if (a.key === "local-contrast.detail") throw new CliError(1, "Local Contrast doesn't support safelight yet. Set it in Safelight.");
         const before = value(look, "exposure");
         const after = Math.min(5, Number(a.value));
         return {
@@ -161,7 +161,7 @@ describe("set", () => {
 
   it("writes nothing when the value service refuses, and still closes", async () => {
     const h = harness([photo("a")]);
-    await expect(run(setCommand, h.ctx, ["a.ARW", "local-contrast.detail=1"])).rejects.toThrow("Local Contrast doesn't support slu yet. Set it in Safelight.");
+    await expect(run(setCommand, h.ctx, ["a.ARW", "local-contrast.detail=1"])).rejects.toThrow("Local Contrast doesn't support safelight yet. Set it in Safelight.");
     expect(h.written.edits).toHaveLength(0);
     expect(h.closed()).toBe(1);
   });
@@ -240,7 +240,7 @@ describe("add", () => {
     const h = harness([photo("a")]);
     await expect(run(addCommand, h.ctx, ["a.ARW", "local-contrast"])).rejects.toMatchObject({
       code: 1,
-      message: "Local Contrast doesn't support slu yet. Set it in Safelight.",
+      message: "Local Contrast doesn't support safelight yet. Set it in Safelight.",
     });
     expect(h.requested()).toBeNull();
   });
@@ -310,7 +310,7 @@ describe("reset with no keys", () => {
     };
     const h = harness([photo("a"), photo("b")], { a: kept("a"), b: kept("b") });
     await run(resetCommand, h.ctx, ["a.ARW", "b.ARW"]);
-    expect(h.log.infos).toEqual(["Kept what slu can't edit: crop. Edit those in Safelight."]);
+    expect(h.log.infos).toEqual(["Kept what safelight can't edit: crop. Edit those in Safelight."]);
   });
 
   it("says nothing when there was nothing to keep, or when keys were named", async () => {

@@ -66,14 +66,14 @@ describe("main", () => {
   it("answers an unknown verb with exit 1 and a suggestion", async () => {
     const h = harness();
     expect(await main(["sett", "a.ARW"], h.io)).toBe(1);
-    expect(h.err()).toBe(`slu: "sett" isn't a slu verb. Did you mean set?\n     slu help lists them.\n`);
+    expect(h.err()).toBe(`safelight: "sett" isn't a safelight verb. Did you mean set?\n     safelight help lists them.\n`);
     expect(h.out()).toBe("");
   });
 
   it("answers a verb nothing is close to without a suggestion", async () => {
     const h = harness();
     expect(await main(["frobnicate"], h.io)).toBe(1);
-    expect(h.err()).toBe(`slu: "frobnicate" isn't a slu verb.\n     slu help lists them.\n`);
+    expect(h.err()).toBe(`safelight: "frobnicate" isn't a safelight verb.\n     safelight help lists them.\n`);
   });
 
   it("registers one command per verb, each with its usage", () => {
@@ -90,7 +90,7 @@ describe("main", () => {
   it("maps a verb's refusal to its code, and keeps verbs not in this release off help", async () => {
     const h = harness();
     expect(await main(["auto", "a.ARW"], h.io)).toBe(1);
-    expect(h.err()).toBe("slu: auto isn't in this release yet. Use Auto in Safelight.\n");
+    expect(h.err()).toBe("safelight: auto isn't in this release yet. Use Auto in Safelight.\n");
     const help = harness();
     expect(await main(["help", "--json"], help.io)).toBe(0);
     const verbs = (JSON.parse(help.out()) as { verbs: { verb: string }[] }).verbs.map((v) => v.verb);
@@ -105,13 +105,13 @@ describe("main", () => {
     });
     const h = harness({ commands: [busy] });
     expect(await main(["set", "a.ARW"], h.io)).toBe(4);
-    expect(h.err()).toBe("slu: Safelight has D:\\Photos open. Close the folder there, or add --wait.\n");
+    expect(h.err()).toBe("safelight: Safelight has D:\\Photos open. Close the folder there, or add --wait.\n");
   });
 
   it("refuses an option the verb doesn't have", async () => {
     const h = harness();
     expect(await main(["photos", "--colour"], h.io)).toBe(1);
-    expect(h.err()).toContain("--colour isn't an option of slu photos.");
+    expect(h.err()).toContain("--colour isn't an option of safelight photos.");
   });
 
   it("prints one JSON document for an error under --json", async () => {
@@ -179,10 +179,10 @@ describe("main", () => {
     expect(await code).toBe(130);
   });
 
-  it("reports an unexpected failure as slu: and exit 1", async () => {
+  it("reports an unexpected failure as safelight: and exit 1", async () => {
     const h = harness({ commands: [fake("get", async () => { throw new Error("disk on fire"); })] });
     expect(await main(["get", "a.ARW"], h.io)).toBe(1);
-    expect(h.err()).toBe("slu: disk on fire\n");
+    expect(h.err()).toBe("safelight: disk on fire\n");
   });
 
   it("makes no service until a command asks for one", async () => {

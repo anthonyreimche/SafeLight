@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// What `slu` looks like. The look is the darkroom's: quiet text, faint for
+// What `safelight` looks like. The look is the darkroom's: quiet text, faint for
 // what's secondary, one amber for what changed or needs a glance, red for
 // errors only. Builders are pure; the writers at the bottom are the only
 // code that touches a stream.
@@ -27,13 +27,14 @@ import type {
   ProgressState,
   ResultLine,
 } from "./types";
+import { COMMAND } from "../types";
 
 export type * from "./types";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
 const MIN_WIDTH = 40;
-const PREFIX = "slu: ";
+const PREFIX = `${COMMAND}: `;
 
 function streamColour(stream: NodeJS.WriteStream, env: Env): boolean {
   const force = env.FORCE_COLOR;
@@ -86,7 +87,7 @@ export function createOutput(streams: OutputStreams, options: OutputOptions): Ou
     const tone = kind === "error" ? onStderr.palette.error : onStderr.palette.accent;
     const indent = " ".repeat(PREFIX.length);
     const room = width - PREFIX.length;
-    const message = wrapText(glyphs.fold(p.message), room).map((line, i) => (i === 0 ? `${tone("slu:")} ${line}` : indent + line));
+    const message = wrapText(glyphs.fold(p.message), room).map((line, i) => (i === 0 ? `${tone(`${COMMAND}:`)} ${line}` : indent + line));
     const hint = p.hint ? wrapText(glyphs.fold(p.hint), room).map((line) => indent + onStderr.palette.dim(line)) : [];
     return [...message, ...hint].join("\n");
   };

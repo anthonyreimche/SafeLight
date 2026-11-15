@@ -6,6 +6,7 @@
 import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
 import { moveHistory } from "./edit-shared";
+import { COMMAND } from "../types";
 
 export const undoCommand: CommandSpec = {
   verb: "undo",
@@ -13,8 +14,8 @@ export const undoCommand: CommandSpec = {
   summary: "Moves back n steps (default 1), as Undo does in Safelight.",
   usage: "undo <photos> [n]",
   examples: [
-    "slu undo IMG_4021.ARW",
-    "slu undo IMG_4021.ARW 3",
+    `${COMMAND} undo IMG_4021.ARW`,
+    `${COMMAND} undo IMG_4021.ARW 3`,
   ],
   options: [
     ...PHOTO_OPTIONS,

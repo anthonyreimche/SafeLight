@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import { PHOTO_OPTIONS } from "../args";
-import { CliError, type CommandSpec } from "../types";
+import { CliError, type CommandSpec, COMMAND } from "../types";
 import { PREVIEW_OPTION } from "./shared";
 import { currentLook } from "@/catalog/edit-steps";
 import { runOnPhotos, stepOutcome } from "./edit-shared";
@@ -15,8 +15,8 @@ export const setCommand: CommandSpec = {
   summary: "Sets values on each photo, one history step per photo.",
   usage: "set <photos> key=value…",
   examples: [
-    "slu set IMG_4021.ARW exposure=+0.7 highlights=-40 temperature=5600K",
-    "slu set . --flag pick exposure+=0.3 vibrance=15",
+    `${COMMAND} set IMG_4021.ARW exposure=+0.7 highlights=-40 temperature=5600K`,
+    `${COMMAND} set . --flag pick exposure+=0.3 vibrance=15`,
   ],
   options: [
     ...PHOTO_OPTIONS,
@@ -25,7 +25,7 @@ export const setCommand: CommandSpec = {
   writes: true,
   async run(ctx, args) {
     if (args.assignments.length === 0) {
-      throw new CliError(1, "Give at least one value to set, like exposure=0.5.", "slu help set shows how.");
+      throw new CliError(1, "Give at least one value to set, like exposure=0.5.", `${COMMAND} help set shows how.`);
     }
     const warned = new Set<string>();
     return runOnPhotos(ctx, args, args.positionals, false, ({ photo, state, asShot }) => {

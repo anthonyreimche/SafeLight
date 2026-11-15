@@ -185,7 +185,7 @@ describe("export command", () => {
     expect((await exportPhotosCommand.run(all.ctx, parse(exportPhotosCommand, ["x", "-o", "/o"]))).code).toBe(2);
   });
 
-  it("exits 2 for a photo slu can't find and 3 for an engine failure", async () => {
+  it("exits 2 for a photo safelight can't find and 3 for an engine failure", async () => {
     const missing = harness({ photos: [], missing: [{ spec: "z.ARW", reason: "not-found" }], events: () => [] });
     await expect(exportPhotosCommand.run(missing.ctx, parse(exportPhotosCommand, ["z.ARW"]))).rejects.toMatchObject({ code: 2 });
     const broken = harness({

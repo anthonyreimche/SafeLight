@@ -23,8 +23,7 @@ import {
   type SelectRequest,
   type Selection,
   type SelectedGroup,
-  type WriteSession,
-} from "./types";
+  type WriteSession, COMMAND } from "./types";
 
 const FLAGS = ["pick", "reject", "none"] as const;
 export const LABELS = ["red", "yellow", "green", "blue", "purple", "none"] as const;
@@ -110,7 +109,7 @@ export async function selectOnePhoto(
   const built = buildSelectRequest(args, spec === undefined ? [] : [spec], await stdinPathsOf(ctx, args));
   const request = opts.allMeansEverything === false ? { ...built, all: false } : built;
   if (request.specs.length === 0 && request.stdinPaths.length === 0 && !request.all) {
-    throw new CliError(1, `Name a photo for ${args.verb ?? "this"}.`, `slu help ${args.verb ?? ""}`.trim() + " shows how.");
+    throw new CliError(1, `Name a photo for ${args.verb ?? "this"}.`, `${COMMAND} help ${args.verb ?? ""}`.trim() + " shows how.");
   }
   const selection = await ctx.select.read(request);
   const photos = selection.groups.flatMap((g) => g.photos);

@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { ENGINE_PROTOCOL, WIRE_FRAME, WIRE_JSON, WireDecoder, type EngineEvent, type EngineRequest } from "@/engine/protocol";
 import type { Output } from "./output/types";
-import { CliError, type CliEnv } from "./types";
+import { CliError, type CliEnv, COMMAND } from "./types";
 
 /** An image frame the engine sent after its "frame" event. */
 export interface EngineFrame { frame: number; bytes: Uint8Array }
@@ -47,7 +47,7 @@ export function engineArgs(env: CliEnv): string[] {
   return [env.appRoot, "--engine", `--slu-protocol=${ENGINE_PROTOCOL}`];
 }
 
-/** The engine runs as Electron proper: ELECTRON_RUN_AS_NODE is what made slu itself a plain Node. */
+/** The engine runs as Electron proper: ELECTRON_RUN_AS_NODE is what made safelight itself a plain Node. */
 export function engineEnv(env: CliEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env.env)) {
@@ -142,7 +142,7 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
       const startFailure = (why: string) => new CliError(
         3,
         `The engine didn't start: ${why}`,
-        "slu doctor shows what slu found; -vv prints the engine's own log.",
+        `${COMMAND} doctor shows what ${COMMAND} found; -vv prints the engine's own log.`,
       );
       try {
         child = spawnFn(process.execPath, engineArgs(env), engineEnv(env));
@@ -176,7 +176,7 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
         const failure = new CliError(
           3,
           `The engine stopped${code === null ? "" : ` (exit ${code})`}${detail ? `: ${detail}` : "."}`,
-          "slu doctor shows what slu found; -vv prints the engine's own log.",
+          `${COMMAND} doctor shows what ${COMMAND} found; -vv prints the engine's own log.`,
         );
         settle(() => reject(failure));
         failAll(failure);
@@ -192,7 +192,7 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
           for (const message of decoder.push(bytes)) {
             dispatch(message.kind, message.payload, (event) => {
               if (event.protocol !== ENGINE_PROTOCOL) {
-                settle(() => reject(startFailure(`it speaks protocol ${event.protocol}, slu speaks ${ENGINE_PROTOCOL}.`)));
+                settle(() => reject(startFailure(`it speaks protocol ${event.protocol}, ${COMMAND} speaks ${ENGINE_PROTOCOL}.`)));
                 return;
               }
               out.info(`engine ready (${event.backend}${event.software ? ", software rendering" : ""})`);
@@ -200,7 +200,7 @@ export function createEngineClient(env: CliEnv, out: Output, spawnFn: EngineSpaw
             });
           }
         } catch (error) {
-          const failure = new CliError(3, `The engine sent something slu can't read: ${error instanceof Error ? error.message : String(error)}`);
+          const failure = new CliError(3, `The engine sent something ${COMMAND} can't read: ${error instanceof Error ? error.message : String(error)}`);
           settle(() => reject(failure));
           failAll(failure);
         }

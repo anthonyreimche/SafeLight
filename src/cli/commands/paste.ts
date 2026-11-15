@@ -7,6 +7,7 @@ import { PHOTO_OPTIONS } from "../args";
 import type { CommandSpec } from "../types";
 import { PREVIEW_OPTION, TOOLS_OPTION } from "./shared";
 import { copyFromPhoto, readClipboard, restrictToTools, toolsOf, writeLooks } from "./share-support";
+import { COMMAND } from "../types";
 
 export const pasteCommand: CommandSpec = {
   verb: "paste",
@@ -14,8 +15,8 @@ export const pasteCommand: CommandSpec = {
   summary: "Applies the copied settings, one step per photo.",
   usage: "paste <photos> [--tools a,b] [--from <photo>]",
   examples: [
-    "slu paste *.ARW",
-    "slu paste . --from IMG_4021.ARW --tools basic",
+    `${COMMAND} paste *.ARW`,
+    `${COMMAND} paste . --from IMG_4021.ARW --tools basic`,
   ],
   options: [
     ...PHOTO_OPTIONS,
