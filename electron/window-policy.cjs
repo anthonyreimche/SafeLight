@@ -30,6 +30,18 @@ function isAppIndexUrl(url) {
   );
 }
 
+/** The `slu` engine's hidden page (engine-mode.cjs). In the app it is just
+ *  another app:// file: no window may keep it and it gets no privileged access. */
+function isEngineUrl(url) {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return false;
+  }
+  return u.protocol === "app:" && u.host === "bundle" && u.pathname === "/engine.html";
+}
+
 function navigationAllowed(url) {
   return isAppIndexUrl(url);
 }
@@ -48,8 +60,10 @@ function windowOpenAction(url) {
   return protocol === "http:" || protocol === "https:" ? "external" : "deny";
 }
 
-function privilegedSenderAllowed({ url, isTopFrame }) {
-  return isTopFrame === true && isAppIndexUrl(url);
+/** In engine mode the engine page is the only document there is, so it alone
+ *  passes. */
+function privilegedSenderAllowed({ url, isTopFrame }, { engine = false } = {}) {
+  return isTopFrame === true && (engine ? isEngineUrl(url) : isAppIndexUrl(url));
 }
 
 /** Where to send a window whose committed document is an app:// page other
@@ -80,14 +94,14 @@ function indexRedirectFor(url) {
 function guardPrivileged(
   channel,
   handler,
-  { committedUrls = new WeakMap(), warn = console.warn } = {},
+  { committedUrls = new WeakMap(), warn = console.warn, engine = false } = {},
 ) {
   return async (e, ...args) => {
     const frame = e.senderFrame;
     const url =
       committedUrls.get(e.sender) ?? (frame ? frame.url : e.sender.getURL());
     const isTopFrame = frame ? frame.parent === null : true;
-    if (!privilegedSenderAllowed({ url, isTopFrame })) {
+    if (!privilegedSenderAllowed({ url, isTopFrame }, { engine })) {
       warn(`[safelight] ${channel} refused for ${url}`);
       throw new Error("Not allowed");
     }
@@ -106,6 +120,7 @@ function validRepo(repo) {
 
 module.exports = {
   isAppIndexUrl,
+  isEngineUrl,
   navigationAllowed,
   windowOpenAction,
   privilegedSenderAllowed,

@@ -382,6 +382,8 @@ interface ProjectState {
   name: string;
   tree: FolderNode | null;
   opening: boolean;
+  /** The folder being opened, for the veil shown until its catalogue is read. */
+  openingName: string;
   /** New-file import progress for the loading bar. total=0 when not importing. */
   importDone: number;
   importTotal: number;
@@ -440,6 +442,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   name: "",
   tree: null,
   opening: false,
+  openingName: "",
   importDone: 0,
   importTotal: 0,
   openError: null,
@@ -499,6 +502,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // the root, which the new project takes once its catalogue is read.
     set({
       opening: true,
+      openingName: handle.name,
       importDone: 0,
       importTotal: 0,
       openError: null,
@@ -509,17 +513,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       tree: null,
     });
     folderUnavailable = false;
-    // Clear the old catalogue immediately so the grid shows photos as they arrive
-    // rather than showing the previous folder until the new one is fully loaded.
-    useCatalogStore.getState().replaceCatalog([]);
-    // Restore the folder this project was last viewing (or null = All Photos for
-    // a first/different project). Seed lastPersistedFolder first so the change
-    // subscription below doesn't redundantly re-write what we just restored.
-    const source = sourceRefOf(handle);
-    activeProjectKey = key;
-    const restoredFolder = restoreActiveFolder(activeProjectKey);
-    lastPersistedFolder = restoredFolder;
-    useUIStore.getState().setActiveFolder(restoredFolder);
+    let source: ReturnType<typeof sourceRefOf>;
+    try {
+      // Clear the old catalogue immediately so the grid shows photos as they arrive
+      // rather than showing the previous folder until the new one is fully loaded.
+      useCatalogStore.getState().replaceCatalog([]);
+      // Restore the folder this project was last viewing (or null = All Photos for
+      // a first/different project). Seed lastPersistedFolder first so the change
+      // subscription below doesn't redundantly re-write what we just restored.
+      source = sourceRefOf(handle);
+      activeProjectKey = key;
+      const restoredFolder = restoreActiveFolder(activeProjectKey);
+      lastPersistedFolder = restoredFolder;
+      useUIStore.getState().setActiveFolder(restoredFolder);
+    } catch (err) {
+      // The open ends here, so the veil shown while opening must go with it.
+      if (gen === openGen) set({ opening: false });
+      throw err;
+    }
     // Started when this project's storage is installed, once its catalogue is read
     // (onSkeletons).
     let decoderWarm: Promise<void> | null = null;

@@ -4,11 +4,13 @@
 // be preserved in derived versions.
 
 // catalog.json's text is built from the text each record had when it was last
-// written: it must be the text JSON.stringify writes for the same catalogue.
+// written: it must be the text JSON.stringify writes for the same catalogue, with
+// each edit history packed.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { storedPhoto, type CatalogPhoto, type EditState, type StoredPhoto } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
+import { packStack } from "@/catalog/history-pack";
 import { catalogText, type CatalogData } from "./catalog-json";
 
 const stored = (id: string): StoredPhoto => storedPhoto(photo(id));
@@ -26,7 +28,7 @@ const edit = (photoId: string, labels: string[]): EditState => ({
 /** A catalogue with something of every kind a catalogue file holds. */
 function fixture(): CatalogData {
   return {
-    version: 1,
+    version: 2,
     id: "cat-1",
     photos: [stored("a"), stored("b")],
     edits: [edit("a", ["Original", "Exposure"])],
@@ -38,6 +40,14 @@ function fixture(): CatalogData {
   };
 }
 
+/** JSON.stringify's text for `data`, each edit's history packed as packStack packs it. */
+function packedJson(data: unknown): string {
+  return JSON.stringify(data, function (this: unknown, key: string, value: unknown) {
+    const holder = this as { photoId?: unknown };
+    return key === "stack" && Array.isArray(value) && typeof holder.photoId === "string" ? packStack(value) : value;
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -45,12 +55,12 @@ afterEach(() => {
 describe("catalogText", () => {
   it("writes what JSON.stringify writes for a catalogue", () => {
     const data = fixture();
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("writes an empty catalogue", () => {
-    const data: CatalogData = { version: 1, id: "", photos: [], edits: [], removed: [] };
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    const data: CatalogData = { version: 2, id: "", photos: [], edits: [], removed: [] };
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("keeps keys it doesn't know where they stand, and leaves out what JSON leaves out", () => {
@@ -62,7 +72,7 @@ describe("catalogText", () => {
       at: new Date(Date.UTC(2026, 10, 12)),
       later: [undefined, null, -0, "naïve ✓   😀"],
     } as unknown as CatalogData;
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("writes every field of a record the way JSON.stringify does", () => {
@@ -83,7 +93,7 @@ describe("catalogText", () => {
       photos: [odd],
       edits: [{ photoId: "odd", stack: [snap], currentIndex: 0, extra: undefined } as EditState],
     };
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("writes array holes in the photos and edits as JSON does", () => {
@@ -92,7 +102,7 @@ describe("catalogText", () => {
       photos: [stored("a"), undefined, null],
       edits: [undefined, { ...edit("a", ["One"]), stack: [undefined, edit("a", ["Two"]).stack[0]] }],
     } as unknown as CatalogData;
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("orders stamp keys that look like array indices as JSON does", () => {
@@ -100,7 +110,7 @@ describe("catalogText", () => {
       ...fixture(),
       changed: { photos: { b: { rating: [1, "w"] }, "10": { rating: [2, "w"] }, "2": {} }, edits: {} },
     };
-    expect(catalogText(data)).toBe(JSON.stringify(data));
+    expect(catalogText(data)).toBe(packedJson(data));
   });
 
   it("leaves a held record's handles and preview out of its text", () => {
@@ -111,7 +121,7 @@ describe("catalogText", () => {
     };
     const data: CatalogData = { ...fixture(), photos: [held, stored("kept")] };
     expect(catalogText(data)).toBe(
-      JSON.stringify({ ...data, photos: [storedPhoto(held), stored("kept")] }),
+      packedJson({ ...data, photos: [storedPhoto(held), stored("kept")] }),
     );
   });
 
@@ -123,7 +133,7 @@ describe("catalogText", () => {
     };
     const text = catalogText(data);
     expect(keys).toEqual(["0"]);
-    expect(text).toBe(JSON.stringify(data));
+    expect(text).toBe(packedJson(data));
   });
 });
 
@@ -139,7 +149,7 @@ describe("catalogText on a second save", () => {
     expect(written).not.toContainEqual(expect.objectContaining({ relPath: expect.any(String) }));
     expect(written).not.toContainEqual(expect.objectContaining({ label: expect.any(String) }));
     stringify.mockRestore();
-    expect(again).toBe(JSON.stringify(data));
+    expect(again).toBe(packedJson(data));
   });
 
   it("writes a replaced record anew", () => {
@@ -149,7 +159,7 @@ describe("catalogText on a second save", () => {
 
     const text = catalogText({ ...data, photos: [rated, data.photos[1]] });
 
-    expect(text).toBe(JSON.stringify({ ...data, photos: [rated, data.photos[1]] }));
+    expect(text).toBe(packedJson({ ...data, photos: [rated, data.photos[1]] }));
     expect(text).toContain('"rating":5');
   });
 
@@ -165,6 +175,22 @@ describe("catalogText on a second save", () => {
     const steps = stringify.mock.calls.filter(([value]) => typeof value === "object" && value !== null && "label" in value);
     expect(steps.map(([value]) => (value as { label: string }).label)).toEqual(["Contrast"]);
     stringify.mockRestore();
-    expect(text).toBe(JSON.stringify({ ...data, edits: [added] }));
+    expect(text).toBe(packedJson({ ...data, edits: [added] }));
+  });
+
+  it("writes a step's changes again when the step before it is replaced", () => {
+    const history = edit("a", ["Original", "Exposure", "Contrast"]);
+    const data = { ...fixture(), edits: [history] };
+    catalogText(data);
+    const redone = { ...history.stack[1], label: "Brighter", params: { ...history.stack[1].params, exposure: 2 } };
+    const replaced = { ...history, stack: [history.stack[0], redone, history.stack[2]] };
+    const stringify = vi.spyOn(JSON, "stringify");
+
+    const text = catalogText({ ...data, edits: [replaced] });
+
+    const steps = stringify.mock.calls.filter(([value]) => typeof value === "object" && value !== null && "label" in value);
+    expect(steps.map(([value]) => (value as { label: string }).label)).toEqual(["Brighter", "Contrast"]);
+    stringify.mockRestore();
+    expect(text).toBe(packedJson({ ...data, edits: [replaced] }));
   });
 });

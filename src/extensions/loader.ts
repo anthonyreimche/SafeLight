@@ -100,11 +100,90 @@ export const useInstalledPlugins = create<{ ids: string[] | null }>(() => ({
 export const isExtensionDisabled = (id: string): boolean =>
   useDisabledExtensions.getState().ids.includes(id);
 
-function persistDisabled(ids: string[]): void {
+// The list also lives in a file the main process keeps (extension-state.json),
+// which `slu` reads and writes. localStorage stays the copy boot reads at once;
+// the file wins when they differ, read before the installed extensions start.
+// Changes go to the file as changes, not as the whole list, so one `slu` made
+// while the app runs is kept for the next launch rather than overwritten.
+
+interface DisabledFile {
+  read(): Promise<string[] | null>;
+  write(ids: string[]): Promise<void>;
+}
+
+let disabledFileQueue: Promise<unknown> = Promise.resolve();
+
+/** Run `op` on the file after the ones asked for before it; undefined without
+ *  the bridge (the browser build, an older Electron build). */
+function withDisabledFile<T>(op: (file: DisabledFile) => Promise<T>): Promise<T | undefined> {
+  const plugins = privilegedPlugins();
+  const read = plugins?.readDisabled;
+  const write = plugins?.writeDisabled;
+  if (!read || !write) return Promise.resolve(undefined);
+  const run = disabledFileQueue.then(() => op({ read, write }));
+  disabledFileQueue = run.catch(() => {});
+  return run;
+}
+
+const sameIds = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((id) => b.includes(id));
+
+function writeDisabledChange(prev: readonly string[], next: readonly string[]): void {
+  const added = next.filter((id) => !prev.includes(id));
+  const removed = prev.filter((id) => !next.includes(id));
+  if (added.length === 0 && removed.length === 0) return;
+  withDisabledFile(async (file) => {
+    const current = await file.read();
+    const base = current ?? prev;
+    const ids = [...base.filter((id) => !removed.includes(id)), ...added.filter((id) => !base.includes(id))];
+    if (!current || !sameIds(current, ids)) await file.write(ids);
+  }).catch((e: unknown) => console.warn("[extensions] could not save the turned-off extensions:", e));
+}
+
+/** The file's list once the changes queued before have reached it, or null
+ *  when there is none to follow: no bridge, an unreadable file, or no file yet,
+ *  which this window's list then starts. */
+async function readDisabledFile(): Promise<string[] | null> {
+  try {
+    const ids = await withDisabledFile(async (file) => {
+      const listed = await file.read();
+      if (listed === null) await file.write(useDisabledExtensions.getState().ids);
+      return listed;
+    });
+    return ids ?? null;
+  } catch (e) {
+    console.warn("[extensions] could not read the turned-off extensions; using this window's list:", e);
+    return null;
+  }
+}
+
+/** Make the file's list this window's, stopping what it turns off and starting
+ *  the built-ins it turns on. Installed extensions it turns on start in the
+ *  launch pass that follows. */
+async function adoptDisabled(ids: string[]): Promise<void> {
+  const prev = useDisabledExtensions.getState().ids;
+  if (sameIds(prev, ids)) return;
   useDisabledExtensions.setState({ ids });
   try {
     localStorage.setItem(DISABLED_KEY, JSON.stringify(ids));
   } catch {}
+  for (const id of ids.filter((x) => !prev.includes(x)))
+    if (!builtinExtension(id)?.locked) await applyEnablement(id, false);
+  for (const id of prev.filter((x) => !ids.includes(x))) {
+    const builtin = builtinExtension(id);
+    if (builtin && !builtin.locked) await applyEnablement(id, true);
+  }
+}
+
+/** Record `ids` as the extensions turned off: in this window, in localStorage
+ *  for the other windows and the next launch, and in the file `slu` shares. */
+export function persistDisabled(ids: string[]): void {
+  const prev = useDisabledExtensions.getState().ids;
+  useDisabledExtensions.setState({ ids });
+  try {
+    localStorage.setItem(DISABLED_KEY, JSON.stringify(ids));
+  } catch {}
+  writeDisabledChange(prev, ids);
 }
 
 /** A manifest the trust list bans is flagged, logged as `verdict` and refused;
@@ -385,6 +464,7 @@ async function loadPlugin(manifest: ExtensionManifest, ahead?: BundleAhead): Pro
     id,
     source: "installed",
     name: manifest.name,
+    version: manifest.version,
     bundle: url,
     read: async () => ({ load: ahead?.load ?? (() => importPluginModule(url)) }),
     // The user may turn the extension off while its bundle is still on the way.
@@ -539,12 +619,20 @@ export async function loadExternalPlugins(): Promise<void> {
 async function loadExternalPluginsOnce(): Promise<void> {
   const native = window.safelightNative;
   if (!native) return; // plain-browser dev build
-  let list: ExtensionManifest[] = [];
+  const fileIds = readDisabledFile();
+  let list: ExtensionManifest[] | null = null;
   try {
     list = await native.plugins.list();
-  } catch {
-    return;
+  } catch {}
+  const disabled = await fileIds;
+  if (disabled) {
+    try {
+      await adoptDisabled(disabled);
+    } catch (e) {
+      console.error("[extensions] could not apply the turned-off extensions:", e);
+    }
   }
+  if (!list) return;
   useInstalledPlugins.setState({ ids: list.map((m) => m.id) });
   const starting = modulesFirst(list);
   // Bundles import side by side; the extensions still activate one at a time, the

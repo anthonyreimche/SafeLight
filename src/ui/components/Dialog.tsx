@@ -53,7 +53,7 @@ export function Dialog({ labelledBy, onClose, className, children }: DialogProps
 
   return (
     <div
-      className="fixed inset-0 z-[160] flex items-center justify-center bg-black/50"
+      className="sl-enter-fade fixed inset-0 z-[160] flex items-center justify-center bg-black/50"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -65,7 +65,7 @@ export function Dialog({ labelledBy, onClose, className, children }: DialogProps
         aria-labelledby={labelledBy}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className={`${className} outline-none`}
+        className={`sl-enter-pop ${className} outline-none`}
       >
         {children}
       </div>

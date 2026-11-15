@@ -8,6 +8,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
 import { detachedModule, reattachSelf } from "@/state/detach";
 import { moduleLabel } from "@/extensions/registry";
+import { LoadingDots } from "./LoadingDots";
 import { ModuleTabs } from "./ModuleTabs";
 import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
@@ -140,7 +141,7 @@ export function TopBar() {
         {reconnecting && (
           <span className="h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />
         )}
-        {reconnecting ? "Reconnecting…" : "Reconnect originals"}
+        {reconnecting ? <LoadingDots label="Reconnecting" /> : "Reconnect originals"}
       </button>
     ) : null;
 

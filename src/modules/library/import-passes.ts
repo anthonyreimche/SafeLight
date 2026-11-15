@@ -236,6 +236,7 @@ async function readMetadataOf(
       if (meta?.colorTemperature && !exif.colorTemperature) {
         exif.colorTemperature = meta.colorTemperature;
       }
+      if (meta?.asShotMultipliers && !exif.asShotMultipliers) exif.asShotMultipliers = meta.asShotMultipliers;
       if (meta?.rawExposureBias !== undefined) exif.rawExposureBias = meta.rawExposureBias;
       const manual = manualRotation(current.rotation, current.exif.orientation);
       const { width, height } = meta?.frame ? turned(meta.frame, manual) : current;
@@ -441,6 +442,7 @@ export async function reimportPhotos(
       if (rawMeta?.colorTemperature && !exif.colorTemperature) {
         exif.colorTemperature = rawMeta.colorTemperature;
       }
+      if (rawMeta?.asShotMultipliers && !exif.asShotMultipliers) exif.asShotMultipliers = rawMeta.asShotMultipliers;
       if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
       const meta = {
@@ -482,10 +484,11 @@ export async function reimportPhotos(
         continue;
       }
 
-      const { bitmap, oriented, colorTemperature } = decoded;
+      const { bitmap, oriented, colorTemperature, asShotMultipliers } = decoded;
       if (colorTemperature && !exif.colorTemperature) {
         exif.colorTemperature = colorTemperature;
       }
+      if (asShotMultipliers && !exif.asShotMultipliers) exif.asShotMultipliers = asShotMultipliers;
       // Recompute the canonical rotation (EXIF + manual) against the FRESHLY
       // parsed EXIF — the orientation tag may have changed on disk since import
       // (the reason to re-import). Peel the manual turns off the OLD EXIF, then

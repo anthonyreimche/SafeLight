@@ -6,33 +6,25 @@
 import { useEffect, useState } from "react";
 import { privilegedGpu } from "@/native/privileged";
 import type { NativeGpuBackendState } from "@/extensions/types";
-import { chooseGraphicsBackend, readGraphicsBackend } from "@/state/graphics-store";
+import {
+  AUTOMATIC,
+  GRAPHICS_CHANGE_FAILED,
+  RESTART_FAILED,
+  SOFTWARE_REASON,
+  backendLabel,
+  chooseGraphicsBackend,
+  readGraphicsBackend,
+  restartSafelight,
+  revertSentence,
+} from "@/state/graphics-store";
 import { Select } from "@/ui/components/Select";
-import { Field } from "@/ui/preferences/fields";
+import { btnCls, Field } from "@/ui/preferences/fields";
 
 // The Rendering section lists it for search when the module loads.
 export const GRAPHICS_BACKEND = "Graphics backend";
 
-const AUTOMATIC = "auto";
-
-const BACKEND_LABEL: Record<string, string> = {
-  gl: "OpenGL",
-  gles: "OpenGL ES",
-  vulkan: "Vulkan",
-  d3d11: "Direct3D 11",
-  metal: "Metal",
-  swiftshader: "Software (processor)",
-};
-
-const backendLabel = (backend: string): string => BACKEND_LABEL[backend] ?? backend;
-
-const SOFTWARE_REASON: Record<Exclude<NativeGpuBackendState["reason"], "chosen" | null>, string> = {
-  "webgl2-unavailable": "Safelight switched to software because the graphics card couldn't run WebGL2.",
-  "gpu-crashes": "Safelight switched to software because the graphics driver kept crashing.",
-  "renderer-failed": "Safelight switched to software because the graphics driver couldn't run its photo renderer.",
-};
-
-const noteCls = "mt-1 text-[10px] leading-relaxed text-text-secondary";
+const noteTextCls = "text-[10px] leading-relaxed text-text-secondary";
+const noteCls = `mt-1 ${noteTextCls}`;
 
 // The graphics backend is picked before the window exists, from a probe
 // Safelight keeps in its config folder; the field shows once the bridge
@@ -50,7 +42,9 @@ export function graphicsBackendListed(): boolean {
 // Automatic tries this platform's backends in order and moves to software by
 // itself when the graphics card can't run WebGL2 or its driver keeps crashing,
 // which a virtual machine often does. Any other entry pins that backend, for a
-// driver that runs better on one than on the one Automatic settles on.
+// driver that runs better on one than on the one Automatic settles on. A change
+// is on trial until it is kept from the bar in the first window it draws: one
+// that fails or isn't kept in time goes back to the selection that last worked.
 export function GraphicsBackendField() {
   const supported = graphicsBackendSupported();
   const [state, setState] = useState<NativeGpuBackendState | null>(null);
@@ -77,7 +71,7 @@ export function GraphicsBackendField() {
   if (!supported || (!state && !problem)) return null;
 
   const hint =
-    "Automatic picks the first one that works on this graphics card, and switches to software when it fails. Pick another to try it if photos draw slowly or wrongly. Software works everywhere but is much slower.";
+    "Automatic picks the first one that works on this graphics card, and switches to software when it fails. Pick another to try it if photos draw slowly or wrongly. The processor ones work everywhere but are much slower.";
 
   if (!state) {
     return (
@@ -98,8 +92,15 @@ export function GraphicsBackendField() {
       })
       .catch((err: unknown) => {
         console.warn("[safelight] couldn't change the graphics backend setting", err);
-        setProblem("Couldn't change the graphics setting.");
+        setProblem(GRAPHICS_CHANGE_FAILED);
       });
+  };
+  const restartNow = () => {
+    setProblem(null);
+    restartSafelight().catch((err: unknown) => {
+      console.warn("[safelight] couldn't restart", err);
+      setProblem(RESTART_FAILED);
+    });
   };
   const why = state.reason === null || state.reason === "chosen" ? null : SOFTWARE_REASON[state.reason];
   // The next start differs because of a change made here, or because Safelight
@@ -122,7 +123,20 @@ export function GraphicsBackendField() {
       {problem && <p className={noteCls}>{problem}</p>}
       {why && <p className={noteCls}>{why}</p>}
       {why && <p className={noteCls}>Pick Automatic again to try the graphics card at the next start.</p>}
-      {restart && <p className={noteCls}>Takes effect when you restart Safelight.</p>}
+      {restart && (
+        <div className="mt-1 flex items-center gap-2">
+          <p className={`flex-1 ${noteTextCls}`}>Takes effect when you restart Safelight.</p>
+          <button onClick={restartNow} className={btnCls}>
+            Restart Safelight
+          </button>
+        </div>
+      )}
+      {state.revertTo && (
+        <p className={noteCls}>If it doesn't work or isn't kept, Safelight goes back to {backendLabel(state.revertTo)}.</p>
+      )}
+      {state.reverted && (
+        <p className={noteCls}>{revertSentence(state.reverted.from, state.choice ?? AUTOMATIC, state.reverted.because)}</p>
+      )}
     </Field>
   );
 }

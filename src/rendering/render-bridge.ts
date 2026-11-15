@@ -69,6 +69,9 @@ export {
 } from "./render-bridge/stage-texture-providers";
 
 export interface FrameResult {
+  /** The seq of the render it answers (RenderBridge.lastRenderSeq): a frame of a seq
+   *  above one read when the worker was handed a state draws that state. */
+  seq: number;
   bitmap: ImageBitmap;
   width: number;
   height: number;
@@ -139,6 +142,7 @@ export class RenderBridge {
   private onHistogram: HistogramCallback | null = null;
   private onHistogramError: HistogramErrorCallback | null = null;
   private onError: ErrorCallback | null = null;
+  private onRenderError: (() => void) | null = null;
   private onSourceError: SourceErrorCallback | null = null;
   private onSourcePixels: SourcePixelsCallback | null = null;
   private onDetailWant: ((want: DetailWant) => void) | null = null;
@@ -214,6 +218,7 @@ export class RenderBridge {
         // Drawn even when the mailbox no longer waits for it (given up on, or from
         // before a re-init): it is still newer than what the view shows.
         this.onFrame({
+          seq: msg.seq,
           bitmap: msg.bitmap,
           width: msg.width,
           height: msg.height,
@@ -243,6 +248,7 @@ export class RenderBridge {
         break;
       case "renderError":
         this.mailbox.answered(msg.seq);
+        this.onRenderError?.();
         this.onError?.(`render failed: ${msg.message}`);
         break;
       case "sourceError":
@@ -350,6 +356,8 @@ export class RenderBridge {
    *  view can ask for one at its next frame. */
   setOnHistogramError(cb: HistogramErrorCallback | null) { this.onHistogramError = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
+  /** Told when the worker answers a render with an error instead of a frame. */
+  setOnRenderError(cb: (() => void) | null) { this.onRenderError = cb; }
   setOnSourceError(cb: SourceErrorCallback | null) { this.onSourceError = cb; }
   setOnSourcePixels(cb: SourcePixelsCallback | null) { this.onSourcePixels = cb; }
   /** Reports the current availability at once, then every change. */
@@ -718,6 +726,19 @@ export class RenderBridge {
   render(wantHistogram = false, wantExtended = false) {
     flushStageSync();
     this.mailbox.render(wantHistogram, wantExtended);
+  }
+
+  /** The seq of the last render posted to the worker. The worker handles messages in
+   *  order, so every frame of a higher seq draws the state set before it was read. */
+  get lastRenderSeq(): number {
+    return this.mailbox.lastSeq;
+  }
+
+  /** Told true when a render asked for has had no frame for a while (a program
+   *  being built, a slow software frame), and false when the worker answers. Only
+   *  timed while someone listens. */
+  setOnStall(cb: ((stalled: boolean) => void) | null) {
+    this.mailbox.setOnStall(cb);
   }
 
   /** Resolves once no render has been requested for `ms`: work that would land on

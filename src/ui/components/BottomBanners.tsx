@@ -10,7 +10,10 @@
 
 import { ExtensionSecurityBanner } from "@/extensions/ExtensionSecurityBanner";
 import { UpdateBanner } from "@/update/UpdateBanner";
+import { GraphicsKeepNotice } from "./GraphicsKeepNotice";
 import { GraphicsNotice } from "./GraphicsNotice";
+import { GraphicsRevertNotice } from "./GraphicsRevertNotice";
+import { SoftwareRenderingNotice } from "./SoftwareRenderingNotice";
 import { StorageBanner } from "./StorageBanner";
 
 export function BottomBanners() {
@@ -20,6 +23,9 @@ export function BottomBanners() {
       className="pointer-events-none fixed inset-x-0 bottom-0 z-[150] flex flex-col [&>*]:pointer-events-auto"
     >
       <GraphicsNotice />
+      <GraphicsKeepNotice />
+      <SoftwareRenderingNotice />
+      <GraphicsRevertNotice />
       <ExtensionSecurityBanner />
       <StorageBanner />
       <UpdateBanner />

@@ -79,11 +79,13 @@ import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import {
   EXPANDED_GRID,
   ExtensionCard,
+  NOTHING_PENDING,
   SectionLabel,
   SHELF_LIMIT,
   Shelf,
   StoreExpanded,
 } from "./StoreCards";
+import { ShelfSkeleton } from "./StoreSkeletons";
 import { loadStoreKits, shelfKits } from "./store-kits";
 import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
@@ -185,6 +187,10 @@ export function ExtensionManagerPanel() {
   const [spec, setSpec] = useState("");
   const [installedQuery, setInstalledQuery] = useState("");
   const [localBusy, setBusy] = useState<string | null>(null);
+  // The spec whose review check is running. Apart from busy, which locks every control:
+  // the check can wait on the network, and only its own Install button should say so.
+  const [pendingSpecs, setPendingSpecs] = useState<ReadonlySet<string>>(NOTHING_PENDING);
+  const pendingRef = useRef(new Set<string>());
   // A kit's Install all outlives the window, so a reopened store stays busy
   // until that run ends.
   const kitRunning = useExtStoreUI((s) => s.kitRunning);
@@ -378,14 +384,21 @@ export function ExtensionManagerPanel() {
       setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`, true);
       return;
     }
+    // A second click on the same card while it checks would run the gate twice.
+    if (pendingRef.current.has(installSpec)) return;
+    pendingRef.current.add(installSpec);
+    setPendingSpecs(new Set(pendingRef.current));
     // A pinned "verified" entry only covers the version that was reviewed. If the
     // repo has since moved to a newer version, the code we'd install is past the
     // review point — drop the green-light and treat it as an unverified install.
-    const {
-      verified,
-      reviewedVersion,
-      stale: reviewedStale,
-    } = await checkReview(repo, version);
+    let review: Awaited<ReturnType<typeof checkReview>>;
+    try {
+      review = await checkReview(repo, version);
+    } finally {
+      pendingRef.current.delete(installSpec);
+      setPendingSpecs(new Set(pendingRef.current));
+    }
+    const { verified, reviewedVersion, stale: reviewedStale } = review;
     const trusted = verified && !reviewedStale;
     // Strict mode: only reviewed extensions may be installed.
     if (onlyVerified && !trusted) {
@@ -694,6 +707,7 @@ export function ExtensionManagerPanel() {
           key={selected}
           target={target}
           busy={busy}
+          pending={pendingSpecs}
           onInstall={(s, version) => void install(s, target.search, version)}
           onUpdate={(id, repo) => void update(id, repo)}
           onUninstall={(id) => void remove(id)}
@@ -877,7 +891,7 @@ export function ExtensionManagerPanel() {
                 {/* Result cards: ranked shelves for the unfiltered browse, a flat
                     sorted grid once a search query or category narrows it. */}
                 {searching && browsable === null ? (
-                  <div className="text-text-muted">Searching…</div>
+                  <ShelfSkeleton expanded={expanded} />
                 ) : browsable && browsable.length === 0 ? (
                   <div className="text-text-muted">
                     {searched || !openInfo
@@ -906,6 +920,7 @@ export function ExtensionManagerPanel() {
                           items={sh.items}
                           thumbs={thumbs}
                           busy={busy}
+                          pending={pendingSpecs}
                           onOpen={openDetail}
                           onInstall={install}
                         />
@@ -921,6 +936,7 @@ export function ExtensionManagerPanel() {
                         result={r}
                         thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
                         installing={busy === r.fullName}
+                        checking={pendingSpecs.has(r.fullName)}
                         installed={isInstalled(r)}
                         disabled={busy !== null}
                         onOpen={() => openDetail(r.fullName)}

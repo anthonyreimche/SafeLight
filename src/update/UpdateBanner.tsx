@@ -108,7 +108,7 @@ function BannerInstall({
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
+      className="sl-enter-rise flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
     >
       <span className="text-text-primary font-medium">
         Safelight v{update.version} is available.

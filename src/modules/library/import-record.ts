@@ -323,6 +323,7 @@ export async function buildPhoto(
   if (rawMeta?.colorTemperature && !exif.colorTemperature) {
     exif.colorTemperature = rawMeta.colorTemperature;
   }
+  if (rawMeta?.asShotMultipliers && !exif.asShotMultipliers) exif.asShotMultipliers = rawMeta.asShotMultipliers;
   if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
   const base = newRecord(file, file.size, tags, directoryHandle, fileHandle);
@@ -368,10 +369,11 @@ export async function buildPhoto(
     };
   }
 
-  const { bitmap, oriented, colorTemperature } = decoded;
+  const { bitmap, oriented, colorTemperature, asShotMultipliers } = decoded;
   if (colorTemperature && !exif.colorTemperature) {
     exif.colorTemperature = colorTemperature;
   }
+  if (asShotMultipliers && !exif.asShotMultipliers) exif.asShotMultipliers = asShotMultipliers;
   // Rotation needed to bake THIS decode upright for the stored thumbnail: 0 when
   // the decoder already oriented the pixels (libraw), else the EXIF orientation.
   const bake = oriented ? 0 : orientationToRotation(exif.orientation);

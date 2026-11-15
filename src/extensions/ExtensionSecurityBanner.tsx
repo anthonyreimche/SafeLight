@@ -22,7 +22,7 @@ export function ExtensionSecurityBanner() {
   return (
     <div
       data-extension-security
-      className="flex items-start justify-center gap-3 border-t border-danger/40 px-4 py-2 text-[11px] shadow-lg"
+      className="sl-enter-rise flex items-start justify-center gap-3 border-t border-danger/40 px-4 py-2 text-[11px] shadow-lg"
       style={{ background: "color-mix(in srgb, var(--color-danger) 12%, var(--color-surface-2))" }}
     >
       <span className="font-medium text-danger">⚠ Extension blocked</span>

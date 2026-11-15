@@ -107,7 +107,7 @@ describe("isMainFrameLoadFailure", () => {
 // Once reloading stops helping, the window would otherwise sit black or blank
 // with nothing to say why and no way out but the task manager.
 describe("restartPrompt", () => {
-  it.each(["renderer", "gpu", "load"] as const)("offers Restart or Quit for %s", (kind) => {
+  it.each(["renderer", "gpu", "load", "revert"] as const)("offers Restart or Quit for %s", (kind) => {
     const prompt = restartPrompt(kind);
     expect(prompt.buttons).toEqual(["Restart", "Quit"]);
     expect(prompt.buttons[RESTART]).toBe("Restart");
@@ -128,6 +128,15 @@ describe("restartPrompt", () => {
     expect(restartPrompt("renderer").message).toMatch(/keeps crashing/);
     expect(restartPrompt("gpu").message).toMatch(/graphics/i);
     expect(restartPrompt("load").message).toMatch(/load/);
+  });
+
+  // A graphics backend changed in Preferences failed before it was kept.
+  it("says a changed graphics setting goes back to the one that worked", () => {
+    expect(restartPrompt("revert")).toMatchObject({
+      message: "The graphics setting you changed didn't work.",
+      detail: "After a restart Safelight goes back to the setting that last worked.",
+    });
+    expect(restartPrompt("revert", true).detail).not.toMatch(/software/);
   });
 });
 

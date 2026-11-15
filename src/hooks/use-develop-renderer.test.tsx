@@ -2052,8 +2052,8 @@ describe("useDevelopRenderer during an edit", () => {
       expect(lastIndexOf(worker, "computeHistogram")).toBeGreaterThan(lastIndexOf(worker, "render"));
     });
 
-    // Auto Tone and Auto WB wait 450 ms for each step's histogram (use-auto-adjust.ts)
-    // before measuring again; a slow render must not push it past that.
+    // Auto Tone and Auto WB wait for each step's histogram (use-auto-adjust.ts) before
+    // measuring again; a slow render must not add the whole debounce to each step.
     it("with live histogram off, settles counted from the edit, not from a slow frame", async () => {
       useSettings.setState({ liveHistogram: false });
       const worker = await opened();
@@ -2691,9 +2691,13 @@ describe("useDevelopRenderer easing between what it shows of a photo", () => {
     clock = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     FakeWorker.residentSize = SOURCE_SIZE;
+    // The fade's CSS fallback, whose overlay styles say when a fade starts and stops.
+    // The Element.animate path is canvas-crossfade's own to test.
+    Object.defineProperty(HTMLCanvasElement.prototype, "animate", { configurable: true, value: undefined });
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(HTMLCanvasElement.prototype, "animate");
     vi.mocked(performance.now).mockRestore();
     status = null;
   });
@@ -2924,6 +2928,154 @@ describe("useDevelopRenderer easing between what it shows of a photo", () => {
     } finally {
       document.documentElement.classList.remove("sl-reduce-motion");
     }
+  });
+
+  // Undo, redo, a History step, a preset, a reset: the look jumps to a known end, which
+  // eases in. Drags and strokes follow the hand, and so cut.
+  describe("into a discrete edit", () => {
+    /** Lands a discrete edit, as undo does: the look and the count in one set. */
+    const discrete = (exposure: number) =>
+      act(async () => {
+        useDevelopStore.setState((s) => ({ params: edit(exposure), discreteEdits: s.discreteEdits + 1 }));
+      });
+
+    it("eases in the first frame drawn after the edit, not the one already in flight", async () => {
+      const view = await settledOnA();
+      const before = copies().length;
+      act(() => getRenderBridge().render(false));
+      const old = view.worker.inFlight();
+      if (!old) throw new Error("no render in flight");
+
+      clock += 1000;
+      await discrete(1);
+      await act(async () => view.worker.reply(frameFor(old, FRAME)));
+      expect(copies()).toHaveLength(before);
+
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before + 1);
+      await frames(2);
+      expect(fadeCanvas()?.style.transition).toBe("opacity 140ms ease-out");
+    });
+
+    it("cuts to a live write, and stops a fade still running", async () => {
+      const view = await settledOnA();
+      clock += 1000;
+      await discrete(1);
+      await answerRenders(view.worker, FRAME);
+      const before = copies().length;
+      expect(fadeCanvas()?.style.opacity).toBe("1");
+
+      await act(async () => useDevelopStore.getState().setParam("exposure", 1.2));
+      expect(fadeCanvas()?.style.opacity).toBe("0");
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before);
+    });
+
+    it("cuts steps taken in quick succession, as a held Ctrl+Z takes them", async () => {
+      const view = await settledOnA();
+      clock += 1000;
+      await discrete(1);
+      await answerRenders(view.worker, FRAME);
+      const before = copies().length;
+
+      clock += 100;
+      await discrete(2);
+      expect(fadeCanvas()?.style.opacity).toBe("0");
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before);
+    });
+
+    // Undoing a crop-only step while crop mode holds the canvas draws nothing new (crop
+    // mode draws the whole image): no render goes, and a fade left armed would ease the
+    // next unrelated frame (the clipping toggle, say).
+    it("leaves nothing armed for an edit that draws nothing new", async () => {
+      const view = await settledOnA();
+      act(() => setCanvasTool("acme.crop", { overlay: () => null, viewParams: (p) => ({ ...p, crop: { x: 0, y: 0, width: 1, height: 1 } }) }));
+      await answerRenders(view.worker, FRAME);
+      await frames(2);
+      await answerRenders(view.worker, FRAME);
+      const before = copies().length;
+      const renders = () => view.worker.posted.filter((m) => m.cmd === "render").length;
+      const rendersBefore = renders();
+      try {
+        clock += 1000;
+        await act(async () => {
+          useDevelopStore.setState((s) => ({
+            params: { ...s.params, crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 } },
+            discreteEdits: s.discreteEdits + 1,
+          }));
+        });
+        expect(renders()).toBe(rendersBefore);
+
+        act(() => getRenderBridge().render(false));
+        await answerRenders(view.worker, FRAME);
+        expect(copies()).toHaveLength(before);
+      } finally {
+        act(() => setCanvasTool("acme.crop", null));
+      }
+    });
+
+    it("eases in a preset applied other than the one hovered", async () => {
+      const view = await settledOnA();
+      await act(async () => useDevelopStore.getState().setPreviewParams(edit(2)));
+      await answerRenders(view.worker, FRAME);
+      await frames(2);
+      const before = copies().length;
+
+      clock += 1000;
+      await act(async () => {
+        useDevelopStore.setState((s) => ({
+          params: edit(3),
+          previewParams: null,
+          previewParamBag: null,
+          discreteEdits: s.discreteEdits + 1,
+        }));
+      });
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before + 1);
+    });
+
+    // The arrow key while a preset is hovered: loading the next photo's edit clears the
+    // hover, which is no hover ending on this photo.
+    it("doesn't take loading another photo's edit for the hover ending", async () => {
+      const view = await settledOnA();
+      await act(async () => useDevelopStore.getState().setPreviewParams(edit(2)));
+      await answerRenders(view.worker, FRAME);
+      await frames(2);
+      const before = copies().length;
+
+      act(() => getRenderBridge().render(false));
+      await act(async () => {
+        useDevelopStore.setState({ ...loaded("b", edit(1)), previewParams: null, previewParamBag: null });
+      });
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before);
+    });
+
+    it("eases the Presets hover in on the frame of its look, and the apply after it once", async () => {
+      const view = await settledOnA();
+      const before = copies().length;
+      await act(async () => useDevelopStore.getState().setPreviewParams(edit(2)));
+      expect(copies()).toHaveLength(before);
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before + 1);
+      await frames(2);
+      expect(fadeCanvas()?.style.transition).toBe("opacity 220ms ease-out");
+
+      // applyPreset's set: the hovered look becomes the edit.
+      clock += 1000;
+      await act(async () => {
+        useDevelopStore.setState((s) => ({
+          params: s.previewParams ?? s.params,
+          paramBag: s.previewParamBag ?? s.paramBag,
+          previewParams: null,
+          previewParamBag: null,
+          discreteEdits: s.discreteEdits + 1,
+        }));
+      });
+      await answerRenders(view.worker, FRAME);
+      expect(copies()).toHaveLength(before + 1);
+    });
   });
 });
 
@@ -3502,6 +3654,95 @@ describe("useDevelopRenderer labelling what it shows", () => {
   });
 });
 
+// Develop's loading bar waits on the photo's full image: past the end of the load,
+// which hands the image over before its first frame is drawn, and no longer once the
+// load ends with nothing more to come.
+describe("useDevelopRenderer waiting for the full image", () => {
+  afterEach(() => {
+    status = null;
+  });
+
+  it("waits from the open until the first frame of the decoded source", async () => {
+    let release = () => {};
+    holdSource = new Promise<void>((r) => (release = r));
+    const { worker, progress } = await open(photo());
+    expect(status?.tier).toBe("stored");
+    expect(status?.fullPending).toBe(true);
+
+    await act(async () => release());
+    await progress();
+    expect(status?.fullPending).toBe(true);
+
+    await answerRenders(worker);
+    expect(status?.tier).toBe("final");
+    expect(status?.fullPending).toBe(false);
+  });
+
+  it("waits for the first frame of a source still on the GPU", async () => {
+    const { worker } = await open(photo(), true);
+    expect(status?.fullPending).toBe(true);
+    await answerRenders(worker);
+    expect(status?.fullPending).toBe(false);
+  });
+
+  it("ends when the load settles on a preview", async () => {
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => ({
+      kind: "float",
+      data: new Float32Array(24),
+      width: 3,
+      height: 2,
+      isFallbackPreview: true,
+    }));
+    const { worker } = await open(photo({ id: "next", filename: "next.nef", relPath: "next.nef" }));
+    expect(status?.fullPending).toBe(false);
+    await answerRenders(worker);
+    expect(status?.tier).toBe("preview");
+    expect(status?.fullPending).toBe(false);
+  });
+
+  it("ends when the photo can't be shown", async () => {
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => null);
+    await open(photo({ previewEdit: undefined, thumbnailBlob: undefined }));
+    expect(status?.status).toBe("Can't read this file.");
+    expect(status?.fullPending).toBe(false);
+  });
+
+  // An extension stage throwing in the worker answers every render with renderError:
+  // no frame of the full image ever comes.
+  it("ends when the worker answers the source's render with an error", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { worker } = await open(photo(), true);
+    expect(status?.fullPending).toBe(true);
+    const request = worker.inFlight();
+    if (!request) throw new Error("no render in flight");
+    await act(async () => worker.reply({ type: "renderError", seq: request.seq, message: "stage threw" }));
+    expect(status?.fullPending).toBe(false);
+    error.mockRestore();
+  });
+
+  it("doesn't wait while the graphics context is lost", async () => {
+    const { worker } = await open(photo(), true);
+    expect(status?.fullPending).toBe(true);
+    await act(async () => {
+      worker.reply({ type: "contextLost" });
+      await settle();
+    });
+    expect(status?.availability).toBe("lost");
+    expect(status?.fullPending).toBe(false);
+  });
+
+  it("ends when the load fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => {
+      throw new Error("read failed");
+    });
+    await open(photo({ previewEdit: undefined, thumbnailBlob: undefined }));
+    expect(status?.status).toBe("Can't show this photo.");
+    expect(status?.fullPending).toBe(false);
+    error.mockRestore();
+  });
+});
+
 // The corner of the canvas says how good what it shows is, once a photo takes long
 // enough to open for it to matter.
 describe("useTierLabel", () => {
@@ -3809,6 +4050,14 @@ describe("DevelopCanvas eyedroppers", () => {
       await act(async () => {
         fireEvent.pointerDown(frame(), at(0.25, 0.75));
         fireEvent.pointerUp(frame(), at(0.25, 0.75));
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      // The worker draws the step, then measures it: the run probes again only then.
+      expect(probes(worker)).toHaveLength(1);
+      await answerRenders(worker, LANDSCAPE);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        worker.reply({ type: "histogram", histogram: histogram() });
         await vi.advanceTimersByTimeAsync(1000);
       });
 

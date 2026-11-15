@@ -107,6 +107,9 @@ function shownOf(p: Shown): Shown {
 export interface Picture extends Shown {
   bitmap: ImageBitmap;
   tier: DevelopTier;
+  /** How long it eases in over the picture before, besides any fade between tiers:
+   *  set on the frame a discrete edit armed (edit-fade.ts). */
+  fade?: number;
 }
 
 /** A picture of the whole image at its own size: the stored preview. */
@@ -172,9 +175,10 @@ export function useDevelopPicture(
   }, []);
 
   // Draws `next` now. What the canvas held eases into it when that was a lower tier of
-  // the same photo, of the same shape and place. A picture of another shape or place
-  // ends any fade: the overlay takes the canvas's new box and placement, and would show
-  // the old picture stretched in it or where the new window's pixels belong.
+  // the same photo, or when `next` carries a fade of its own, and it is of the same
+  // shape and place. One fade runs, the longer of the two. A picture of another shape
+  // or place ends any fade: the overlay takes the canvas's new box and placement, and
+  // would show the old picture stretched in it or where the new window's pixels belong.
   const paint = useCallback(
     (next: Picture) => {
       const cv = canvasRef.current;
@@ -184,12 +188,14 @@ export function useDevelopPicture(
         return;
       }
       const from = shownRef.current;
-      const ms = from === null ? null : fadeMs(from, next.tier);
+      const tierMs = from === null || !fadesRef.current ? null : fadeMs(from, next.tier);
+      const editMs = from === null ? null : (next.fade ?? null);
+      const ms = tierMs === null ? editMs : Math.max(tierMs, editMs ?? 0);
       const overlay = fadeCanvasRef?.current;
       const sameShape =
         sameAspect(cv.width, cv.height, next.width, next.height) &&
         samePlace(paintedRef.current, next);
-      if (overlay && ms !== null && fadesRef.current && sameShape) {
+      if (overlay && ms !== null && sameShape) {
         snapshotCrossfade(cv, overlay, ms);
       } else if (overlay && !sameShape) {
         cancelCrossfade(overlay);

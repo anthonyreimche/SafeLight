@@ -9,7 +9,7 @@
 // need their preview ask the loader to read it ahead of the idle prefill.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
 import type { CatalogPhoto } from "@/catalog/types";
 
@@ -20,6 +20,7 @@ const loader = vi.hoisted(() => ({
 
 vi.mock("@/state/thumbnail-loader", () => loader);
 
+import { useCatalogStore } from "@/state/catalog-store";
 import { revokePreviewUrl } from "@/state/preview-urls";
 import { Thumbnail } from "./Thumbnail";
 
@@ -72,7 +73,9 @@ describe("Thumbnail fade-in", () => {
 
   it("eases the fade out, not in", () => {
     const { container } = render(cell(photo({ thumbnailUrl: "blob:fade-ease" })));
-    expect(imgOf(container).style.transition).toBe("opacity 150ms ease-out");
+    expect(imgOf(container).style.transition).toBe(
+      "opacity 150ms ease-out, filter 150ms ease-out",
+    );
   });
 
   it("shows a preview that already loaded at full opacity after a remount", () => {
@@ -104,13 +107,104 @@ describe("Thumbnail fade-in", () => {
     expect(imgOf(second.container).style.opacity).toBe("0");
   });
 
-  it("fades the new image in when a mounted cell's preview is replaced", () => {
+  it("keeps a loaded cell shown when its own preview is replaced", () => {
     const { container, rerender } = render(cell(photo({ thumbnailUrl: "blob:fade-a" })));
     fireEvent.load(imgOf(container));
     rerender(cell(photo({ thumbnailUrl: "blob:fade-b" })));
+    expect(imgOf(container).style.opacity).toBe("1");
+    fireEvent.load(imgOf(container));
+    expect(imgOf(container).style.opacity).toBe("1");
+  });
+
+  it("starts a different photo's preview hidden and fades it in", () => {
+    const { container, rerender } = render(
+      cell(photo({ id: "p1", thumbnailUrl: "blob:fade-same-a" })),
+    );
+    fireEvent.load(imgOf(container));
+    rerender(cell(photo({ id: "p2", thumbnailUrl: "blob:fade-same-b" })));
     expect(imgOf(container).style.opacity).toBe("0");
     fireEvent.load(imgOf(container));
     expect(imgOf(container).style.opacity).toBe("1");
+  });
+
+  it("turns a tile at once while its preview is baked, and eases the turn", () => {
+    useCatalogStore.setState({ pendingRotation: { p1: 90 } });
+    const { container } = render(cell(photo({ thumbnailUrl: "blob:fade-turn" })));
+    expect(imgOf(container).style.rotate).toBe("90deg");
+    expect(imgOf(container).style.transition).toContain("rotate 150ms ease-out");
+    act(() => useCatalogStore.setState({ pendingRotation: {} }));
+    expect(imgOf(container).style.rotate).toBe("");
+    expect(imgOf(container).style.transition).not.toContain("rotate");
+  });
+
+  describe("a turned preview landing", () => {
+    let decoded: () => void = () => {};
+    beforeEach(() => {
+      Object.defineProperty(HTMLImageElement.prototype, "decode", {
+        configurable: true,
+        value: () =>
+          new Promise<void>((resolve) => {
+            decoded = resolve;
+          }),
+      });
+    });
+    afterEach(() => {
+      delete (HTMLImageElement.prototype as Partial<HTMLImageElement>).decode;
+    });
+
+    it("keeps the old picture and its turn until the new one has decoded, then swaps both at once", async () => {
+      useCatalogStore.setState({ pendingRotation: {} });
+      const { container, rerender } = render(cell(photo({ thumbnailUrl: "blob:turn-old" })));
+      fireEvent.load(imgOf(container));
+      act(() => useCatalogStore.setState({ pendingRotation: { p1: 90 } }));
+
+      // The store clears the turn in the same update that lands the turned preview.
+      act(() => {
+        useCatalogStore.setState({ pendingRotation: {} });
+        rerender(cell(photo({ thumbnailUrl: "blob:turn-new", rotation: 90 })));
+      });
+      expect(imgOf(container).getAttribute("src")).toBe("blob:turn-old");
+      expect(imgOf(container).style.rotate).toBe("90deg");
+      expect(imgOf(container).style.opacity).toBe("1");
+
+      await act(async () => decoded());
+      expect(imgOf(container).getAttribute("src")).toBe("blob:turn-new");
+      expect(imgOf(container).style.rotate).toBe("");
+      expect(imgOf(container).style.transition).not.toContain("rotate");
+    });
+
+    it("keeps a second turn still being made when the first lands, without spinning back", async () => {
+      useCatalogStore.setState({ pendingRotation: {} });
+      const { container, rerender } = render(cell(photo({ thumbnailUrl: "blob:twice-old" })));
+      fireEvent.load(imgOf(container));
+      act(() => useCatalogStore.setState({ pendingRotation: { p1: 180 } }));
+      expect(imgOf(container).style.rotate).toBe("180deg");
+
+      act(() => {
+        useCatalogStore.setState({ pendingRotation: { p1: 90 } });
+        rerender(cell(photo({ thumbnailUrl: "blob:twice-once", rotation: 90 })));
+      });
+      expect(imgOf(container).getAttribute("src")).toBe("blob:twice-old");
+      expect(imgOf(container).style.rotate).toBe("180deg");
+
+      await act(async () => decoded());
+      expect(imgOf(container).getAttribute("src")).toBe("blob:twice-once");
+      expect(imgOf(container).style.rotate).toBe("90deg");
+      expect(imgOf(container).style.transition).not.toContain("rotate");
+    });
+
+    it("keeps the picture it has when the new preview can't be decoded", async () => {
+      Object.defineProperty(HTMLImageElement.prototype, "decode", {
+        configurable: true,
+        value: () => Promise.reject(new Error("EncodingError")),
+      });
+      const { container, rerender } = render(cell(photo({ thumbnailUrl: "blob:bad-old" })));
+      fireEvent.load(imgOf(container));
+      rerender(cell(photo({ thumbnailUrl: "blob:bad-new" })));
+      await act(async () => {});
+      expect(imgOf(container).getAttribute("src")).toBe("blob:bad-old");
+      expect(imgOf(container).style.opacity).toBe("1");
+    });
   });
 
   it("fades a preview in again once its URL was revoked, as a new one may reuse nothing", () => {

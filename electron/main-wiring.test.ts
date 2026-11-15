@@ -19,9 +19,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ipcChannels, registerIpc } from "./ipc/index.cjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const read = (file: string) => readFileSync(join(HERE, file), "utf8");
+// Git checks sources out with CRLF on Windows runners.
+const read = (file: string) => readFileSync(join(HERE, file), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("main.cjs");
 const PRELOAD = read("preload.cjs");
+const SWITCHES = read("chromium-switches.cjs");
 const STORE = readdirSync(join(HERE, "extension-store"))
   .filter((file) => file.endsWith(".cjs"))
   .map((file) => read(`extension-store/${file}`))
@@ -36,7 +38,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update))$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|secrets:.+|sockets:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update|readDisabled|writeDisabled)|mirror:.+)$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -124,7 +126,15 @@ describe("privileged channel wiring in main.cjs", () => {
     expect(handedOut).toContain("gpu:setSoftware");
     expect(handedOut).toContain("gpu:setBackend");
     expect(handedOut).toContain("os-open:take");
-    for (const channel of ["plugins:install", "plugins:uninstall", "plugins:settle-update"]) {
+    for (const channel of [
+      "plugins:install",
+      "plugins:uninstall",
+      "plugins:settle-update",
+      "plugins:readDisabled",
+      "plugins:writeDisabled",
+      "mirror:writeSharedSettings",
+      "mirror:writeDescriptors",
+    ]) {
       expect(handedOut).toContain(channel);
       expect(guarded).toContain(channel);
     }
@@ -232,19 +242,44 @@ describe("Report an issue channels", () => {
 describe("GPU backend fallback", () => {
   it("takes its backends and switches from gpu-backend.cjs", () => {
     expect(MAIN).toMatch(/const ANGLE_BACKENDS = gpuLadder\(process\.platform, isWayland\);/);
-    expect(MAIN).toMatch(/for \(const \[name, value\] of angleSwitches\(backend\)\)/);
+    expect(SWITCHES).toMatch(/\.\.\.angleSwitches\(backend\),/);
+  });
+
+  // The slu engine starts Chromium with the same switches (engine-mode.cjs).
+  it("appends every Chromium switch through chromium-switches.cjs", () => {
+    expect(MAIN).toMatch(/appendSwitches\(app\.commandLine, chromiumSwitches\(backend, process\.platform\)\);/);
+    expect(MAIN).not.toMatch(/appendSwitch\(/);
+  });
+
+  // Preferences offers backends Automatic never tries: the cache, the launch and
+  // a pick all go through the wider list, and the rung index is -1 for such a pick.
+  it("reads, starts on and accepts picks from the wider list", () => {
+    expect(MAIN).toMatch(/const BACKEND_CHOICES = backendChoices\(process\.platform, isWayland\);/);
+    expect(MAIN).toMatch(/parseBackendCache\(fs\.readFileSync\(file, "utf8"\), BACKEND_CHOICES\)/);
+    expect(MAIN).toMatch(/const backend = launchBackend\(ANGLE_BACKENDS, BACKEND_CHOICES, startCache, relaunchIdx, startedAt, app\.getVersion\(\)\);/);
+    expect(MAIN).toMatch(/const angleIdx = ANGLE_BACKENDS\.indexOf\(backend\);/);
+    expect(MAIN).toMatch(/if \(choice !== null && !BACKEND_CHOICES\.includes\(choice\)\) return gpuBackendState\(\);/);
+    expect(MAIN).toMatch(/backendState\(\s*backend,\s*readCache\(\),\s*ANGLE_BACKENDS,\s*Date\.now\(\),\s*app\.getVersion\(\),\s*BACKEND_CHOICES,/);
   });
 
   // Windows and macOS VMs lose WebGL too; the ladder was Linux-only.
   it("runs the ladder on every platform", () => {
-    expect(MAIN).not.toMatch(/let fallBackToSoftware = /);
-    expect(MAIN).toMatch(/const fallBackToSoftware = \(reason, why\) => \{/);
+    expect(MAIN).not.toMatch(/let fallBack = /);
+    expect(MAIN).toMatch(/const fallBack = \(reason, why\) => \{/);
     expect(MAIN).not.toMatch(/appendSwitch\("use-angle", "d3d11"\)/);
   });
 
   // A blocklisted driver stays out of a launch the cache sends to software.
   it("ignores the GPU blocklist only through the ladder's switches", () => {
-    expect(MAIN).not.toMatch(/appendSwitch\("ignore-gpu-blocklist"\)/);
+    for (const source of [MAIN, SWITCHES]) expect(source).not.toMatch(/ignore-gpu-blocklist/);
+  });
+
+  // Forced on in software, GPU rasterization drew the page through SwiftShader too.
+  it("asks for the graphics card's speed-ups only through the ladder's switches", () => {
+    expect(SWITCHES).toMatch(/\.\.\.graphicsCardSwitches\(backend\)\.map\(\(\[name\]\) => \[name\]\),/);
+    for (const name of ["force_high_performance_gpu", "enable-gpu-rasterization", "enable-zero-copy"]) {
+      for (const source of [MAIN, SWITCHES]) expect(source).not.toContain(name);
+    }
   });
 
   it("keeps the cache under userData, never a relative path", () => {
@@ -258,7 +293,7 @@ describe("GPU backend fallback", () => {
 
   it("moves the next launch to software once WebGL2 is lost", () => {
     expect(MAIN).toMatch(
-      /app\.on\("gpu-info-update", \(\) => \{\s*if \(!webgl2Lost\(app\.getGPUFeatureStatus\(\)\)\) return;\s*if \(!fallBackToSoftware\("webgl2-unavailable", /,
+      /app\.on\("gpu-info-update", \(\) => \{\s*if \(!webgl2Lost\(app\.getGPUFeatureStatus\(\)\)\) return;\s*if \(!fallBack\("webgl2-unavailable", /,
     );
   });
 
@@ -267,9 +302,84 @@ describe("GPU backend fallback", () => {
   // blank for the whole session.
   it("acts on lost WebGL2 now: relaunches in software before a window, else offers a restart", () => {
     expect(MAIN).toMatch(
-      /fallBackToSoftware\("webgl2-unavailable", [^)]*\)\) return;\s*if \(windowOpened\) offerRestart\("gpu"\);\s*else relaunchOn\(ANGLE_BACKENDS\.length - 1\);/,
+      /fallBack\("webgl2-unavailable", [^)]*\)\) return;\s*if \(windowOpened\) offerRestart\("gpu"\);\s*else relaunchOn\(reverted \? undefined : ANGLE_BACKENDS\.length - 1\);/,
     );
     expect(MAIN).toMatch(/clearCache\(\);\s*relaunchOn\(angleIdx \+ 1\);/);
+  });
+
+  // A backend changed in Preferences is on trial until the user keeps it;
+  // failing first, the next launch goes back to the selection that worked.
+  it("sends a change that fails before it is kept back to the selection that worked", () => {
+    const revert = /const revertTrial = \(why, because\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
+    expect(revert).toMatch(/if \(fellBack \|\| kept \|\| startCache\.elsewhere\) return false;/);
+    expect(revert).toMatch(/const back = revertCache\(startCache, Date\.now\(\), app\.getVersion\(\), because\);/);
+    expect(revert).toMatch(/clearTimeout\(keepTimer\);\s*keepBy = null;/);
+    expect(revert).toMatch(/fellBack = true;\s*reverted = true;\s*writeCache\(back\);/);
+    expect(MAIN).toMatch(/const fallBack = \(reason, why\) => \{\s*if \(revertTrial\(why, "failed"\)\) return true;/);
+    // Before a window opens, the graphics process dying relaunches on the
+    // selection that worked, which the cache now names, rather than the next rung.
+    expect(MAIN).toMatch(
+      /if \(revertTrial\("[^"]+", "failed"\)\) relaunchOn\(\);\s*else if \(angleIdx \+ 1 < ANGLE_BACKENDS\.length\) \{\s*clearCache\(\);\s*relaunchOn\(angleIdx \+ 1\);/,
+    );
+  });
+
+  // A window that opens but draws nothing reports no error, and nobody can see
+  // its Keep to press it: the change goes back once the time is up, through a
+  // normal quit so pending writes finish.
+  it("goes back from a change nobody keeps in time, restarting cleanly", () => {
+    const wait = /const awaitKeep = \(\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
+    expect(wait).toMatch(
+      /if \(startCache\.revertTo === undefined \|\| startCache\.elsewhere \|\| kept \|\| fellBack \|\| keepBy !== null\) return;/,
+    );
+    expect(wait).toMatch(/keepBy = Date\.now\(\) \+ CONFIRM_WITHIN_MS;/);
+    expect(wait).toMatch(/if \(revertTrial\([^;]*, "unkept"\)\) restartNow\(\);/);
+    expect(MAIN).toMatch(/const restartNow = \(\) => \{\s*app\.relaunch\(relaunchWith\(\)\);\s*app\.quit\(\);\s*\};/);
+    // The time starts when the main window opens, not at launch, and before its
+    // page loads, so the page reads the deadline the bar counts down to.
+    const create = functionSource("createWindow");
+    expect(create).toMatch(/appWindows\.setMain\(win\);\s*(?:\/\/[^\n]*\n\s*)*awaitKeep\(\);/);
+    expect(create.indexOf("awaitKeep();")).toBeLessThan(create.indexOf('win.loadURL("app://bundle/index.html")'));
+  });
+
+  it("keeps a change, or goes back at once, through guarded channels", () => {
+    const keepChange = vi.fn(() => ({ keepBy: null }));
+    const revertChange = vi.fn(() => ({ keepBy: null }));
+    for (const [channel, fn] of [
+      ["gpu:keepChange", keepChange],
+      ["gpu:revertChange", revertChange],
+    ] as const) {
+      const { privileged, handler } = entry(channel, { keepChange, revertChange });
+      expect(privileged).toBe(true);
+      expect(handler(NO_EVENT, "anything")).toEqual({ keepBy: null });
+      expect(fn.mock.calls).toEqual([[]]);
+      expect(registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toContain(channel);
+    }
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\bkeepChange,\s*revertChange,/);
+    const keep = /const keepChange = \(\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
+    expect(keep).toMatch(/clearTimeout\(keepTimer\);\s*keepBy = null;/);
+    expect(keep).toMatch(
+      /if \(!kept && startCache\.revertTo !== undefined && !fellBack && !userChose && !startCache\.elsewhere\) writeCache\(provenCache\(readCache\(\)\)\);/,
+    );
+    expect(keep).toMatch(/kept = true;/);
+    expect(MAIN).toMatch(/const revertChange = \(\) => \{\s*if \(revertTrial\("[^"]+", null\)\) restartNow\(\);/);
+  });
+
+  // A change in Preferences or a notice takes effect at the next start: the
+  // user can restart from there, through a normal quit so pending writes finish.
+  it("restarts Safelight through a guarded channel", () => {
+    const restartApp = vi.fn();
+    const { privileged, handler } = entry("gpu:restart", { restartApp });
+    expect(privileged).toBe(true);
+    handler(NO_EVENT, "anything");
+    expect(restartApp.mock.calls).toEqual([[]]);
+    expect(registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toContain("gpu:restart");
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\brestartApp: restartNow,/);
+  });
+
+  // Preferences names the change this launch went back from until the user
+  // changes the setting again, and says when a change on trial must be kept by.
+  it("names what this launch went back from until the setting changes", () => {
+    expect(MAIN).toMatch(/BACKEND_CHOICES,\s*\{\s*reverted: userChose \? null : startCache\.reverted \?\? null,\s*keepBy,?\s*\},?\s*\)/);
   });
 
   // WebGL2 starts, but Safelight's own shader can't be built on it: no GPU
@@ -304,32 +414,38 @@ describe("GPU backend fallback", () => {
     // GPU fails later.
     const setter = /const setGraphicsBackend = \(choice\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
     expect(setter).toMatch(/userChose = true;/);
-    expect(setter).not.toMatch(/fellBack/);
+    expect(setter).not.toMatch(/fellBack\s*=/);
     const software = /const setSoftwareRendering = \(on\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
     expect(software).not.toMatch(/fellBack/);
-    // Main writes only a backend this launch's ladder has.
-    expect(MAIN).toMatch(/const setGraphicsBackend = \(choice\) => \{\s*if \(choice === null\) clearCache\(\);\s*else if \(ANGLE_BACKENDS\.includes\(choice\)\) writeCache\(chosenCache\(/);
+    // Main writes only a backend this platform offers, on trial back to the
+    // selection that last worked.
+    expect(setter).toMatch(/^const setGraphicsBackend = \(choice\) => \{\s*if \(choice !== null && !BACKEND_CHOICES\.includes\(choice\)\) return gpuBackendState\(\);/);
+    // Changing the setting shows this launch's window draws: it stops waiting.
+    expect(setter).toMatch(/clearTimeout\(keepTimer\);\s*keepBy = null;\s*kept = true;\s*const target = revertTargetFor\(startCache, kept, fellBack\);/);
+    expect(setter).toMatch(/writeCache\(pickCache\(choice \?\? AUTOMATIC, target, Date\.now\(\), app\.getVersion\(\)\)\);/);
   });
 
   // The renderer failing steps down the ladder and keeps the app version beside a
   // software fallback, so the launch-count retry can't walk back into the failure.
   it("steps a renderer failure down the ladder and starts with the app version", () => {
     expect(MAIN).toMatch(/reason === "renderer-failed" \? rendererFallbackFor\(ANGLE_BACKENDS, backend\)/);
+    // A rung Safelight stepped to itself isn't a change on trial.
+    expect(MAIN).toMatch(/readyCache\(next, provenCache\(startCache\), Date\.now\(\)\)/);
     expect(MAIN).toMatch(/fallbackCache\(reason, Date\.now\(\), app\.getVersion\(\)\)/);
-    expect(MAIN).toMatch(/startRung\(ANGLE_BACKENDS, startCache, relaunchIdx, startedAt, app\.getVersion\(\)\)/);
+    expect(MAIN).toMatch(/launchBackend\(ANGLE_BACKENDS, BACKEND_CHOICES, startCache, relaunchIdx, startedAt, app\.getVersion\(\)\)/);
     expect(MAIN).toMatch(/retriesHardware\(startCache, startedAt, app\.getVersion\(\)\)/);
   });
 
-  // Already in software, fallBackToSoftware changes nothing and no restart is offered.
+  // Already in software, fallBack changes nothing and no restart is offered.
   it("falls back and offers a restart only when that changes where the next launch goes", () => {
     expect(MAIN).toMatch(
-      /const rendererFailed = \(detail\) => \{\s*if \(fallBackToSoftware\("renderer-failed", [^;]*\)\) offerRestart\("gpu"\);\s*return gpuBackendState\(\);\s*\};/,
+      /const rendererFailed = \(detail\) => \{\s*if \(fallBack\("renderer-failed", [^;]*\)\) offerRestart\("gpu"\);\s*return gpuBackendState\(\);\s*\};/,
     );
   });
 
   it("moves the next launch to software once GPU crash recovery gives up", () => {
     expect(MAIN).toMatch(
-      /if \(recover === "ok"\) for \(const win of windows\) win\.webContents\.reload\(\);\s*else if \(recover === "spent"\) \{\s*fallBackToSoftware\(/,
+      /if \(recover === "ok"\) for \(const win of windows\) win\.webContents\.reload\(\);\s*else if \(recover === "spent"\) \{\s*fallBack\(/,
     );
   });
 
@@ -349,7 +465,7 @@ describe("GPU backend fallback", () => {
 // window and a line in a console they can't see.
 describe("unrecoverable windows", () => {
   it("offers a restart once a recovery budget is spent", () => {
-    expect(MAIN).toMatch(/else if \(recover === "spent"\) \{\s*fallBackToSoftware\("gpu-crashes", [^)]*\);\s*offerRestart\("gpu"\);/);
+    expect(MAIN).toMatch(/else if \(recover === "spent"\) \{\s*fallBack\("gpu-crashes", [^)]*\);\s*offerRestart\("gpu"\);/);
     expect(MAIN).toMatch(/if \(recover === "ok"\) contents\.reload\(\);\s*else if \(recover === "spent"\) offerRestart\("renderer"\);/);
   });
 
@@ -364,7 +480,8 @@ describe("unrecoverable windows", () => {
   it("asks through a native dialogue and relaunches without a probe rung", () => {
     const source = functionSource("offerRestart");
     expect(source).toMatch(/const gpu = gpuBackendState\(\);\s*const softwareNext = gpu\.nextSoftware && !gpu\.software;/);
-    expect(source).toMatch(/dialog\s*\.showMessageBox\(restartPrompt\(kind, softwareNext\)\)/);
+    // A change on trial that failed goes back, which the dialogue says instead.
+    expect(source).toMatch(/dialog\s*\.showMessageBox\(restartPrompt\(kind === "gpu" && reverted \? "revert" : kind, softwareNext\)\)/);
     expect(source).toMatch(/if \(response === RESTART\) app\.relaunch\(relaunchWith\(\)\);/);
     expect(source).toMatch(/app\.quit\(\);/);
   });
@@ -399,6 +516,25 @@ describe("packaged electron files", () => {
     expect(required).toContain("electron/extension-store/install.cjs");
     expect(required).toContain("electron/official-extensions.json");
     expect(required.filter((file) => !pkg.build.files.includes(file))).toEqual([]);
+  });
+});
+
+describe("plugins lock wiring", () => {
+  it("builds the extension store through the shared factory", () => {
+    expect(MAIN).toMatch(/const extensionStore = createExtensionStore\(\{[^}]*\bpluginsDir,\s*pluginWorkDir,/);
+    expect(MAIN).not.toMatch(/createInstaller\(/);
+  });
+
+  it("sweeps the plugin work area under the plugins lock, waiting at most 3 s", () => {
+    expect(MAIN).toMatch(
+      /await withLock\(\s*pluginsLockFile\(userData\(\)\),\s*"safelight",\s*async \(\) => sweepPluginWork\(\{ pluginsDir: pluginsDir\(\), workDir: pluginWorkDir\(\) \}\),\s*\{ waitMs: 3000 \},?\s*\)/,
+    );
+    expect(MAIN).toMatch(/await registerIpcChannels\(\);\s*createWindow\(\);/);
+  });
+
+  it("registers the three project lock channels as privileged", () => {
+    for (const channel of ["fs:lockProject", "fs:refreshProjectLock", "fs:releaseProjectLock"])
+      expect(privilegedChannels()).toContain(channel);
   });
 });
 
@@ -455,7 +591,13 @@ describe("extension release channels", () => {
         }),
       };
       const declares = { permissions: { userOrigins: true } };
+      const safeStorage = {
+        isEncryptionAvailable: () => true,
+        encryptString: (text: string) => Buffer.from(text, "utf8"),
+        decryptString: (bytes: Buffer) => bytes.toString("utf8"),
+      } as Partial<Deps["safeStorage"]> as Deps["safeStorage"];
       const channels = table({
+        safeStorage,
         store: store as Partial<Deps["store"]> as Deps["store"],
         userData: () => userData,
         fileWriter: {
@@ -489,6 +631,8 @@ describe("extension release channels", () => {
       const b = (await call("fs:pickKeptFolder", "ext.b", null)) as { token: string };
       await call("net:requestOrigin", "ext.a", "http://nas:2283");
       await call("net:requestOrigin", "ext.b", "http://nas:2283");
+      await call("secrets:set", "ext.a", "token", "secret-a");
+      await call("secrets:set", "ext.b", "token", "secret-b");
       return { a: a.token, b: b.token };
     }
 
@@ -499,8 +643,10 @@ describe("extension release channels", () => {
         await call("plugins:uninstall", "ext.a");
         await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ error: "unknown" });
         await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(false);
+        await expect(call("secrets:get", "ext.a", "token")).resolves.toBeNull();
         await expect(call("fs:keptFolder", "ext.b", tokens.b)).resolves.toEqual({ path: out });
         await expect(call("net:hasOrigin", "ext.b", "http://nas:2283")).resolves.toBe(true);
+        await expect(call("secrets:get", "ext.b", "token")).resolves.toBe("secret-b");
       } finally {
         cleanup();
       }
@@ -515,6 +661,7 @@ describe("extension release channels", () => {
         await expect(call("plugins:uninstall", "bad id")).rejects.toThrow("Bad extension id");
         await expect(call("fs:keptFolder", "ext.a", tokens.a)).resolves.toEqual({ path: out });
         await expect(call("net:hasOrigin", "ext.a", "http://nas:2283")).resolves.toBe(true);
+        await expect(call("secrets:get", "ext.a", "token")).resolves.toBe("secret-a");
       } finally {
         cleanup();
       }
@@ -778,6 +925,29 @@ describe("app pop-out windows", () => {
 
   it("ties the pop-outs to the main window", () => {
     expect(functionSource("createWindow")).toMatch(/appWindows\.setMain\(win\);/);
+  });
+});
+
+// `slu` starts the app with --engine for export and preview (engine-mode.cjs).
+// Nothing of the app's own start may run first: it reads and writes the app's
+// userData (the backend cache among it) and takes the single-instance lock.
+describe("engine mode branch", () => {
+  const BRANCH = 'if (process.argv.includes("--engine")) {\n  require("./engine-mode.cjs").run();\n  return;\n}';
+
+  it("hands over to engine-mode.cjs before anything else runs", () => {
+    const at = MAIN.indexOf(BRANCH);
+    expect(at).toBeGreaterThan(0);
+    expect(MAIN.slice(0, at).replace(/^\/\/.*$/gm, "").trim()).toBe("");
+    for (const later of ['require("electron")', "getPath(", "installMainErrorHandlers(", "requestSingleInstanceLock(", "readCache()"]) {
+      expect(MAIN.indexOf(later)).toBeGreaterThan(at);
+    }
+  });
+
+  it("ships engine mode and everything it requires", () => {
+    const pkg = JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8")) as { build: { files: string[] } };
+    const engine = [...localRequires("engine-mode.cjs")].map((file) => `electron/${file}`);
+    expect(engine).toContain("electron/chromium-switches.cjs");
+    expect(engine.filter((file) => !pkg.build.files.includes(file))).toEqual([]);
   });
 });
 

@@ -74,6 +74,9 @@ class FixedWidthObserver implements ResizeObserver {
 // Every filled curve, as the list of [x, y] points it was built from.
 let curves: Array<Array<[number, number]>> = [];
 let path: Array<[number, number]> = [];
+// The globalAlpha each curve was filled with.
+let alphas: number[] = [];
+let alpha = 1;
 const recorder = new Proxy(
   {},
   {
@@ -81,11 +84,18 @@ const recorder = new Proxy(
       if (name === "beginPath") return () => (path = []);
       if (name === "lineTo")
         return (x: number, y: number) => void path.push([x, y]);
-      if (name === "fill") return () => void curves.push(path);
+      if (name === "fill")
+        return () => {
+          curves.push(path);
+          alphas.push(alpha);
+        };
       if (name === "measureText") return () => ({ width: 0 });
       return () => {};
     },
-    set: () => true,
+    set: (_, name, value) => {
+      if (name === "globalAlpha") alpha = value;
+      return true;
+    },
   },
 );
 
@@ -134,11 +144,14 @@ afterAll(() => {
 beforeEach(() => {
   curves = [];
   path = [];
+  alphas = [];
+  alpha = 1;
   frames = new Map();
   localStorage.clear();
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   document.documentElement.classList.remove("sl-reduce-motion");
 });
 
@@ -180,5 +193,85 @@ describe("Histogram motion", () => {
     flushFrame();
     expect(peakBin()).toBe(100);
     expect(frames.size).toBe(0);
+  });
+});
+
+describe("Histogram fade-in", () => {
+  let clock = 1000;
+  beforeEach(() => {
+    clock = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+  });
+
+  const lastAlpha = () => alphas[alphas.length - 1];
+
+  it("ramps the curve in from transparent after a real wait for data", () => {
+    const view = render(<Histogram data={null} />);
+    clock += 300;
+    view.rerender(<Histogram data={data(50)} />);
+    flushFrame();
+    expect(lastAlpha()).toBeLessThan(1);
+    expect(frames.size).toBe(1);
+    clock += 75;
+    flushFrame();
+    expect(lastAlpha()).toBeGreaterThan(0);
+    expect(lastAlpha()).toBeLessThan(1);
+    clock += 100;
+    flushFrame();
+    expect(lastAlpha()).toBe(1);
+    expect(frames.size).toBe(0);
+  });
+
+  it("draws at full alpha at once with Reduce motion on", () => {
+    document.documentElement.classList.add("sl-reduce-motion");
+    const view = render(<Histogram data={null} />);
+    clock += 300;
+    view.rerender(<Histogram data={data(50)} />);
+    flushFrame();
+    expect(lastAlpha()).toBe(1);
+    expect(frames.size).toBe(0);
+  });
+
+  it("skips the ramp when the data was missing only briefly", () => {
+    const view = mountWithA();
+    view.rerender(<Histogram data={null} />);
+    clock += 50;
+    view.rerender(<Histogram data={data(80)} />);
+    flushFrame();
+    expect(lastAlpha()).toBe(1);
+    expect(frames.size).toBe(0);
+  });
+
+  // A canvas with no 2D context draws nothing, but the ramp still ends on time: left
+  // running, the tick asked for a frame on every frame for good.
+  it("ends the ramp on time on a canvas with no 2D context", () => {
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => null,
+    });
+    try {
+      const view = render(<Histogram data={null} />);
+      clock += 300;
+      view.rerender(<Histogram data={data(50)} />);
+      flushFrame();
+      clock += 200;
+      flushFrame();
+      flushFrame();
+      expect(frames.size).toBe(0);
+    } finally {
+      Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+        configurable: true,
+        value: () => recorder,
+      });
+    }
+  });
+
+  it("ramps again after a long gap between photos", () => {
+    const view = mountWithA();
+    view.rerender(<Histogram data={null} />);
+    clock += 400;
+    view.rerender(<Histogram data={data(80)} />);
+    flushFrame();
+    expect(lastAlpha()).toBeLessThan(1);
   });
 });

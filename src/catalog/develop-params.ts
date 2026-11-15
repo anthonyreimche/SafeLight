@@ -146,8 +146,9 @@ export interface BrushDab {
   // carry no marker and bake as one stroke.
   strokeStart?: boolean;
   // Brush tip (api.develop.registerBrushTip) the stroke stamps instead of the
-  // feathered disc, and the angle in radians it is turned by. Both are read
-  // from the strokeStart dab, and the stroke's other dabs inherit them. A tip
+  // feathered disc, and the angle in radians it is turned by. The tip is read
+  // from the strokeStart dab and the stroke's other dabs inherit it. A dab's
+  // own angle turns it, and a dab without one takes its stroke's. A tip
   // nothing has registered bakes as the disc.
   tip?: string;
   angle?: number;

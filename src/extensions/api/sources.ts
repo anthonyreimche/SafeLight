@@ -37,7 +37,8 @@ export interface LibrarySourceItem {
    *  `orientation` (the EXIF tag, 1 to 8) when the original carries one: the
    *  photo is turned upright by it. Fields of another type than ExifData's are
    *  left out, and so are the ones the RAW decode learns (colorTemperature,
-   *  rawExposureBias, baselineExposure, baselineShadows, cameraMatchVersion). */
+   *  asShotMultipliers, rawExposureBias, baselineExposure, baselineShadows,
+   *  cameraMatchVersion). */
   exif?: ExifData;
   /** 0 to 5 stars, as the photo arrives in the catalogue. */
   rating?: number;

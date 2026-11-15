@@ -8,7 +8,12 @@
 // which export and the window's own renderers read, and the render worker is posted
 // it whole whenever it changes and once more when a bridge is wired.
 
-import { MAX_BRUSH_TIP_EDGE, type BrushTipContribution } from "@/extensions/api/contributions";
+import { useSyncExternalStore } from "react";
+import {
+  MAX_BRUSH_TIP_EDGE,
+  type BrushTipContribution,
+  type BrushTipSettings,
+} from "@/extensions/api/contributions";
 import { setActiveBrushTips } from "./webgl/brush-tips";
 
 /** What the registry tells the shared render bridge. */
@@ -20,6 +25,8 @@ interface TipSink {
 const tips = new Map<string, { owner: string; tip: BrushTipContribution }>();
 let sink: TipSink | null = null;
 let posting = false;
+let listed: readonly BrushTipContribution[] = [];
+const readers = new Set<() => void>();
 
 /** Why `tip` can't be stamped, or null. A shape of the wrong size reads out of
  *  bounds in the bake. */
@@ -37,6 +44,41 @@ function problem(tip: BrushTipContribution | null): string | null {
   return null;
 }
 
+const MAX_GROUP_LENGTH = 64;
+
+function clampTo(value: unknown, lo: number, hi: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(hi, Math.max(lo, value)) : undefined;
+}
+
+/** The settings of `brush` that are numbers (or the flag a boolean), each
+ *  clamped into its range; the rest left out. */
+function brushSettings(brush: BrushTipSettings): BrushTipSettings {
+  const count = clampTo(brush.count, 1, 16);
+  const angle = typeof brush.angle === "number" && Number.isFinite(brush.angle) ? brush.angle % (2 * Math.PI) : undefined;
+  const kept: BrushTipSettings = {
+    spacing: clampTo(brush.spacing, 0.01, 10),
+    scatter: clampTo(brush.scatter, 0, 10),
+    count: count === undefined ? undefined : Math.round(count),
+    sizeJitter: clampTo(brush.sizeJitter, 0, 1),
+    angleJitter: clampTo(brush.angleJitter, 0, 1),
+    flowJitter: clampTo(brush.flowJitter, 0, 1),
+    angle,
+    followStroke: typeof brush.followStroke === "boolean" ? brush.followStroke : undefined,
+  };
+  return Object.fromEntries(Object.entries(kept).filter(([, v]) => v !== undefined));
+}
+
+/** `tip` with only the group and brush settings a picker can use. */
+function tidied(tip: BrushTipContribution): BrushTipContribution {
+  const { group, brush, ...shape } = tip;
+  const named = typeof group === "string" && group.length > 0 ? group.slice(0, MAX_GROUP_LENGTH) : undefined;
+  return {
+    ...shape,
+    ...(named ? { group: named } : {}),
+    ...(typeof brush === "object" && brush !== null ? { brush: brushSettings(brush) } : {}),
+  };
+}
+
 function snapshot(): Record<string, BrushTipContribution> {
   return Object.fromEntries([...tips].map(([id, held]) => [id, held.tip]));
 }
@@ -45,6 +87,8 @@ function snapshot(): Record<string, BrushTipContribution> {
 // posted once for the run, ahead of the redraw that shows them.
 function changed(): void {
   setActiveBrushTips(snapshot());
+  listed = [...tips.values()].map((entry) => entry.tip);
+  for (const read of readers) read();
   if (!sink || posting) return;
   posting = true;
   queueMicrotask(() => {
@@ -69,8 +113,39 @@ export function registerBrushTip(extensionId: string, tip: BrushTipContribution)
     );
     return;
   }
-  tips.set(tip.id, { owner: extensionId, tip });
+  tips.set(tip.id, { owner: extensionId, tip: tidied(tip) });
   changed();
+}
+
+/** Drop tip `id`, which `extensionId` registered; another extension's is kept,
+ *  with a warning. Strokes that name it stamp the disc from then on. */
+export function unregisterBrushTip(extensionId: string, id: string): void {
+  const entry = tips.get(id);
+  if (!entry) return;
+  if (entry.owner !== extensionId) {
+    console.warn(
+      `[extensions] ${extensionId}: brush tip "${id}" is registered by ${entry.owner}; unregisterBrushTip ignored`,
+    );
+    return;
+  }
+  tips.delete(id);
+  changed();
+}
+
+/** Every registered tip, whoever registered it, in the order they came. The
+ *  same array until the set changes. */
+export function brushTips(): readonly BrushTipContribution[] {
+  return listed;
+}
+
+function readTips(read: () => void): () => void {
+  readers.add(read);
+  return () => readers.delete(read);
+}
+
+/** React hook: brushTips(), re-rendering when the set changes. */
+export function useBrushTips(): readonly BrushTipContribution[] {
+  return useSyncExternalStore(readTips, brushTips);
 }
 
 /** Drop every tip `extensionId` registered, as when it stops. */

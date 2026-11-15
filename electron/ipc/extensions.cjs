@@ -8,6 +8,7 @@
 // extension, and installing a Safelight release, are privileged.
 
 const { selfInstallMethod, updateSupport } = require("../self-update.cjs");
+const state = require("../extension-state.cjs");
 
 /**
  * @param {{
@@ -31,9 +32,11 @@ const { selfInstallMethod, updateSupport } = require("../self-update.cjs");
  *   installReleaseOnce: (repo: string, tag: string) => Promise<void>,
  *   updateHost: () => Parameters<typeof selfInstallMethod>[0],
  *   forgetUninstalled?: (id: string) => Promise<void>,
+ *   userData: () => string,
+ *   fileWriter: { write(file: string, bytes: Uint8Array): Promise<void> },
  * }} deps
  */
-function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost, forgetUninstalled }) {
+function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost, forgetUninstalled, userData, fileWriter }) {
   return [
     {
       channel: "releases:fetch",
@@ -136,6 +139,26 @@ function extensionChannels({ store, listPlugins, installReleaseOnce, updateHost,
         await store.uninstallPlugin(id);
         if (forgetUninstalled) await forgetUninstalled(String(id));
       },
+    },
+    {
+      channel: "plugins:readDisabled",
+      privileged: true,
+      handler: () => state.readDisabled(userData()),
+    },
+    {
+      channel: "plugins:writeDisabled",
+      privileged: true,
+      handler: (_e, ids) => state.writeDisabled(userData(), ids, fileWriter),
+    },
+    {
+      channel: "mirror:writeSharedSettings",
+      privileged: true,
+      handler: (_e, doc) => state.writeSharedSettings(userData(), doc, fileWriter),
+    },
+    {
+      channel: "mirror:writeDescriptors",
+      privileged: true,
+      handler: (_e, doc) => state.writeDescriptors(userData(), doc, fileWriter),
     },
   ];
 }

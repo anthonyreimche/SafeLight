@@ -518,6 +518,20 @@ describe("brush tips", () => {
     expect(coverageAt(quarter, 0.5, 0.6)).toBeLessThan(15);
   });
 
+  it("turns each dab by its own angle, and a dab without one by its stroke's", () => {
+    const baked = bake([
+      tipped({ x: 0.25, radius: 0.1 }),
+      dab({ x: 0.5, radius: 0.1, angle: Math.PI }),
+      dab({ x: 0.75, radius: 0.1 }),
+    ]);
+    expect(coverageAt(baked, 0.22, 0.5)).toBeGreaterThan(240);
+    expect(coverageAt(baked, 0.28, 0.5)).toBeLessThan(15);
+    expect(coverageAt(baked, 0.47, 0.5)).toBeLessThan(15);
+    expect(coverageAt(baked, 0.53, 0.5)).toBeGreaterThan(240);
+    expect(coverageAt(baked, 0.72, 0.5)).toBeGreaterThan(240);
+    expect(coverageAt(baked, 0.78, 0.5)).toBeLessThan(15);
+  });
+
   it("leaves feather out of a tip, and keeps flow, and the stroke's other dabs take the tip", () => {
     expect(differingBytes(bake([tipped({ feather: 1 })]).data, bake([tipped({ feather: 0 })]).data)).toBe(0);
     const half = coverageAt(bake([tipped({ flow: 0.5 })]), 0.4, 0.5);

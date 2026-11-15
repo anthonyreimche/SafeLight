@@ -23,7 +23,6 @@ import {
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
 import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
-import { snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { frameLocalPoint } from "@/ui/frame-point";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
@@ -63,7 +62,8 @@ interface ViewportImageProps {
   // is measured in them. Not positive or not finite counts as 1.
   logicalScale?: number;
   // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
-  status?: string | null;
+  // Each new one fades in.
+  status?: ReactNode;
   resetKey?: string; // changing this snaps back to the initial zoom (e.g. a new photo)
   // Zoom a fresh photo (resetKey change) opens at. null = fit (default); a number
   // = that scale (1 = 100%). Lets the Develop loupe honour the user's preference.
@@ -72,6 +72,10 @@ interface ViewportImageProps {
   // image rect in frame coordinates. By default an overlay forces a static fit
   // (crop), but see overlayZoomable.
   overlay?: (rect: { x: number; y: number; w: number; h: number }) => ReactNode;
+  // Names what `overlay` shows (the canvas tool holding it). Once it has changed
+  // while the viewport is up, each overlay that comes fades in; the one the viewport
+  // came with shows at once, since a viewport is built per photo.
+  overlayKey?: string;
   // When true (mask/heal overlays), zoom/pan stay active beneath the overlay:
   // Ctrl/⌘+click toggles 100%↔fit at the cursor, Ctrl/⌘ or Space + drag pans,
   // and the overlay turns click-through while the gesture key is held so the
@@ -97,10 +101,6 @@ interface ViewportImageProps {
     outW: number,
     outH: number,
   ) => void;
-  // Bump this number to crossfade the displayed frame: the current canvas pixels
-  // are snapshotted and faded out over the freshly-rendered frame beneath. Used
-  // for the Presets hover preview so the look eases in/out instead of snapping.
-  fadeToken?: number;
   // Reports where the image pixels are actually shown on screen, in frame-local
   // coords, whenever the fit/zoom/pan layout changes. Lets a sibling overlay
   // (e.g. a before/after split) align to the displayed image. `visible` is where
@@ -167,11 +167,11 @@ function ViewportImageView({
   resetKey,
   initialZoom = null,
   overlay,
+  overlayKey,
   overlayZoomable,
   onPick,
   onPickDrag,
   onViewport,
-  fadeToken,
   onLayout,
   colorAssessment,
   assessBorder = 0.045,
@@ -179,6 +179,10 @@ function ViewportImageView({
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
   const staticFit = !!overlay && !overlayZoomable;
+  // Whether the overlay's key has moved since the viewport came (overlayKey).
+  const [overlaySeen, setOverlaySeen] = useState({ key: overlayKey, moved: false });
+  if (overlaySeen.key !== overlayKey) setOverlaySeen({ key: overlayKey, moved: true });
+  const fadeOverlay = overlaySeen.moved || overlaySeen.key !== overlayKey;
   const frameRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState({ w: 0, h: 0 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -661,17 +665,6 @@ function ViewportImageView({
     if (panRaf.current != null) cancelAnimationFrame(panRaf.current);
   }, []);
 
-  // Crossfade: when fadeToken changes, fade the current frame out over the new
-  // frame the renderer draws underneath.
-  const seenFadeToken = useRef(fadeToken);
-  useLayoutEffect(() => {
-    if (fadeToken == null || fadeToken === seenFadeToken.current) return;
-    seenFadeToken.current = fadeToken;
-    const src = canvasRef.current;
-    const dst = fadeCanvasRef.current;
-    if (src && dst) snapshotCrossfade(src, dst, 220);
-  }, [fadeToken, canvasRef, fadeCanvasRef]);
-
   // Track drag picking state
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
@@ -863,8 +856,8 @@ function ViewportImageView({
 
       {/* Crossfade overlay: holds the previous frame and fades to reveal the new
           one. Same transform as the canvas so it stays aligned; click-through.
-          Resting opacity 0. The fadeToken effect above drives a fade on it, and so
-          does the develop renderer's paint, between tiers of the open photo. */}
+          Resting opacity 0. The develop renderer's paint drives a fade on it, between
+          tiers of the open photo and into a discrete edit or the Presets hover. */}
       <canvas
         ref={fadeCanvasRef}
         aria-hidden
@@ -877,7 +870,8 @@ function ViewportImageView({
           them covers the tool or takes its pointer. */}
       {overlay && (
         <div
-          className="absolute inset-0"
+          key={fadeOverlay ? overlayKey : undefined}
+          className={fadeOverlay ? "sl-enter-fade absolute inset-0" : "absolute inset-0"}
           style={{
             zIndex: TOOL_OVERLAY_LEVEL,
             pointerEvents: overlayZoomable && zoomGesture ? "none" : undefined,
@@ -896,11 +890,14 @@ function ViewportImageView({
         </div>
       )}
 
-      {status && (
-        <div className="absolute bottom-2 left-2 text-[10px] text-text-muted">
+      {status ? (
+        <div
+          key={typeof status === "string" ? status : undefined}
+          className="sl-enter-fade absolute bottom-2 left-2 text-[10px] text-text-muted"
+        >
           {status}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

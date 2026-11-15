@@ -117,3 +117,63 @@ describe("a commit on a stored stack", () => {
     expect(storage.singles).toHaveLength(0);
   });
 });
+
+// A History panel jumps straight to any step: one look change, one broadcast and
+// one stored cursor, never a run of single steps whose writes could land out of order.
+describe("going to a step", () => {
+  beforeEach(async () => {
+    await s().loadEdit(PHOTO_ID, 5000);
+    for (const contrast of [10, 20, 30]) {
+      s().setParam("contrast", contrast);
+      await s().commitEdit("Contrast");
+    }
+    vi.mocked(broadcast).mockClear();
+  });
+
+  it("shows an earlier step and stores its cursor in one write", () => {
+    const singles = storage.singles.length;
+    s().goToHistory(1);
+
+    expect(s().historyIndex).toBe(1);
+    expect(s().params.contrast).toBe(10);
+    expect(labels()).toEqual(["Original", "Contrast", "Contrast", "Contrast"]);
+    expect(storage.singles).toHaveLength(singles + 1);
+    expect(storage.singles.at(-1)?.currentIndex).toBe(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("goes forward over several redo steps", () => {
+    s().goToHistory(0);
+    s().goToHistory(3);
+
+    expect(s().historyIndex).toBe(3);
+    expect(s().params.contrast).toBe(30);
+    expect(storage.singles.at(-1)?.currentIndex).toBe(3);
+  });
+
+  it("does nothing for the step shown, a step outside the history or a fraction", () => {
+    const singles = storage.singles.length;
+    for (const index of [3, -1, 4, 1.5, NaN]) s().goToHistory(index);
+
+    expect(s().historyIndex).toBe(3);
+    expect(storage.singles).toHaveLength(singles);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while the photo's stored edit couldn't be read", () => {
+    useDevelopStore.setState({ editError: "Couldn't read the file." });
+    s().goToHistory(0);
+
+    expect(s().historyIndex).toBe(3);
+  });
+
+  it("leaves undo and redo stepping one at a time", () => {
+    s().goToHistory(1);
+    s().redo();
+    expect(s().params.contrast).toBe(20);
+    s().undo();
+    s().undo();
+    expect(s().historyIndex).toBe(0);
+    expect(s().canUndo()).toBe(false);
+  });
+});

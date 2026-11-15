@@ -13,23 +13,18 @@
 // decode pass we removed (see feedback-plain-grid-thumbnails); the new look
 // surfaces in Develop, and the broadcast refreshes the histogram.
 
-import type { DevelopParams, EditSnapshot, EditState } from "./types";
-import { NEUTRAL_TEMPERATURE_K, freshParams, normalizeParams } from "./types";
+import type { EditState } from "./types";
+import { NEUTRAL_TEMPERATURE_K } from "./types";
 import { catalogStorage, type CatalogStorage } from "./storage";
-import { historyCursor } from "./history-cursor";
+import { appendStep, currentLook } from "./edit-steps";
 import { writeInTurn } from "./edit-writes";
-import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { broadcast } from "@/state/broadcast";
 import { emitEditCommit } from "@/extensions/registry";
+import type { StoredLook } from "./stored-edit-look";
 
-/** The look one snapshot holds. `paramBag` is the extension param bag, keyed by
- *  qualified key like `EditSnapshot.paramBag`. */
-export interface StoredLook {
-  params: DevelopParams;
-  paramBag: Record<string, unknown>;
-}
+export type { StoredLook } from "./stored-edit-look";
 
 /** Turns a photo's current look into the look to append, or null to change nothing. */
 type NextLook = (base: StoredLook) => StoredLook | null;
@@ -66,43 +61,10 @@ async function appendedEdit(
   label: string,
   next: NextLook,
 ): Promise<AppendedEdit | null> {
-  const { photoId, asShot } = target;
-  const existing = await storage.getEditState(photoId);
-
-  // Baseline = the photo's current committed look (honouring a prior undo), or its
-  // as-shot defaults if it was never edited. A never-edited photo gets a seeded
-  // "Original" snapshot so the new step stays undoable back to the untouched state.
-  let stack: EditSnapshot[];
-  let base: StoredLook;
-  if (existing && existing.stack.length > 0) {
-    // The stored cursor may be unusable; work from the snapshot Develop opens on.
-    const cursor = historyCursor(existing.currentIndex, existing.stack.length);
-    stack = existing.stack.slice(0, cursor + 1);
-    const top = stack[stack.length - 1];
-    base = { params: normalizeParams(top.params), paramBag: normalizeParamBag(top.paramBag) };
-  } else {
-    base = { params: freshParams(asShot), paramBag: {} };
-    stack = [
-      { timestamp: Date.now(), label: "Original", params: freshParams(asShot), paramBag: {} },
-    ];
-  }
-
-  const look = next(base);
+  const existing = await storage.getEditState(target.photoId);
+  const look = next(currentLook(existing, target.asShot));
   if (!look) return null;
-
-  const snapshot: EditSnapshot = {
-    timestamp: Date.now(),
-    label,
-    params: look.params,
-    paramBag: look.paramBag,
-  };
-  const newStack = [...stack, snapshot];
-  const editState: EditState = {
-    photoId,
-    stack: newStack,
-    currentIndex: newStack.length - 1,
-  };
-  return { target, editState };
+  return { target, editState: appendStep(existing, target, label, look, Date.now()) };
 }
 
 /** Append a snapshot labelled `label` to the photo's stored edit, and make it the

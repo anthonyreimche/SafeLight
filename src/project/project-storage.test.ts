@@ -91,6 +91,7 @@ import { setCatalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { photo as photoRecord } from "@/catalog/stored-edit.fixtures";
 import { onBroadcast, type CatalogRecords } from "@/state/broadcast";
 import {
+  CATALOG_VERSION,
   CatalogDamagedError,
   CatalogTooNewError,
   CatalogUnreadableError,
@@ -379,7 +380,7 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
     await opened.storage.flush();
 
     const saved = catalog(p)!;
-    expect(saved.version).toBe(1);
+    expect(saved.version).toBe(CATALOG_VERSION);
     expect(rels(saved.photos)).toEqual(["a.jpg", "trip/b.NEF", "trip/day2/c.png"]);
     for (const rec of saved.photos)
       for (const dropped of [
@@ -843,6 +844,57 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
     expect(catalog(p)!.edits).toEqual([edit(opened.photos[0].id, "Contrast")]);
   });
 
+  it("stores each history step after the first as its changes, and opens the history whole", async () => {
+    const p = mount(cfg, THREE);
+    const first = await open(p);
+    const photoId = first.photos[0].id;
+    const at = (timestamp: number, label: string, exposure: number) => ({
+      timestamp,
+      label,
+      params: { exposure, contrast: 10 } as EditState["stack"][0]["params"],
+      paramBag: {},
+    });
+    const history: EditState = {
+      photoId,
+      stack: [at(1, "Original", 0), at(2, "Exposure", 1), at(3, "Exposure", 1.5)],
+      currentIndex: 1,
+    };
+
+    await first.storage.putEditState(history);
+
+    const saved = catalog(p)!;
+    expect(saved.version).toBe(2);
+    expect(saved.edits[0].stack).toEqual([
+      history.stack[0],
+      { timestamp: 2, label: "Exposure", delta: [[["params", "exposure"], 1]] },
+      { timestamp: 3, label: "Exposure", delta: [[["params", "exposure"], 1.5]] },
+    ]);
+    first.storage.close?.();
+    const second = await open(p);
+    await expect(second.storage.getEditState(photoId)).resolves.toEqual(history);
+  });
+
+  it("opens the whole histories of a catalogue saved before histories were packed", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const first = await open(p);
+    const photoId = first.photos[0].id;
+    await first.storage.flush();
+    first.storage.close?.();
+    const history = {
+      photoId,
+      stack: [
+        { timestamp: 1, label: "Original", params: { exposure: 0 } },
+        { timestamp: 2, label: "Exposure", params: { exposure: 1 } },
+      ],
+      currentIndex: 1,
+    };
+    p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify({ ...catalog(p), version: 1, edits: [history] }));
+
+    const second = await open(p);
+
+    await expect(second.storage.getEditState(photoId)).resolves.toEqual(history);
+  });
+
   it("saves a batch of edit states as one catalogue write, without the debounce", async () => {
     // A bulk Library action stores one history per photo. A write each would
     // re-serialize the whole catalogue once per photo.
@@ -1235,6 +1287,32 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
     expect(labelsOnDisk(p)).toEqual({ [photos[0].id]: "Two" });
   });
 
+  it("has written the backup before it says it is released", async () => {
+    // A process that exits once released (`slu`) would otherwise cut the
+    // backups short as they move down.
+    const { p, before, storage, photos } = await reopened();
+    let landBackup = () => {};
+    const backupMayLand = new Promise<void>((land) => (landBackup = land));
+    const write = p.fs.write.bind(p.fs);
+    vi.spyOn(p.fs, "write").mockImplementation(async (path, data) => {
+      if (/[\\/]catalog\.bak\.json$/.test(path)) await backupMayLand;
+      return write(path, data);
+    });
+    await storage.putPhoto({ ...photos[0], rating: 4 });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await storage.flush();
+    storage.close();
+    let released = false;
+    void storage.released().then(() => (released = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(released).toBe(false);
+
+    landBackup();
+    await storage.released();
+    expect(backupText(p)).toBe(before);
+  });
+
   it("keeps the catalogues of the last three sessions, the newest as catalog.bak.json", async () => {
     const p = mount(cfg, FILES);
     const first = await open(p);
@@ -1566,13 +1644,14 @@ describe("a catalogue this version can't wholly read", () => {
 
   it("refuses a catalogue saved by a newer version, and writes nothing", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
-    const text = JSON.stringify({ version: 2, photos: [at("x", "a.jpg")], edits: [] });
+    const newer = CATALOG_VERSION + 1;
+    const text = JSON.stringify({ version: newer, photos: [at("x", "a.jpg")], edits: [] });
     p.fs.put(`${p.slPath}/catalog.json`, text);
 
     const opening = open(p);
 
     await expect(opening).rejects.toThrow(CatalogTooNewError);
-    await expect(opening).rejects.toMatchObject({ version: 2 });
+    await expect(opening).rejects.toMatchObject({ version: newer });
     expect(catalogText(p)).toBe(text);
     expect(catalogWrites(p)).toBe(0);
     expect(keptCopies(p)).toEqual([]);
@@ -1599,7 +1678,7 @@ describe("a catalogue this version can't wholly read", () => {
     await opened.storage.putPhoto({ ...opened.photos[0], rating: 5 });
     await opened.storage.flush();
 
-    expect(catalog(p)).toMatchObject({ version: 1, future: { keep: true } });
+    expect(catalog(p)).toMatchObject({ version: CATALOG_VERSION, future: { keep: true } });
     expect(catalog(p)?.photos[0].rating).toBe(5);
     expect(keptCopies(p)).toEqual([]);
   });

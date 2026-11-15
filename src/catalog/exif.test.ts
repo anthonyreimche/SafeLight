@@ -298,12 +298,18 @@ describe.each([
     expect(await kelvin(5000, 5500, 6200)).toBeGreaterThan(7000);
   });
 
+  it("keeps the multipliers a DNG's AsShotNeutral balances with, green at 1", async () => {
+    const exif = await fromTiff({ le, ifd0: [[T.AsShotNeutral, rational([5, 10], [1, 1], [8, 10])]] });
+    expect(exif.asShotMultipliers).toEqual([2, 1, 1.25]);
+  });
+
   it("ignores AsShotNeutral with a zero channel or fewer than three values", async () => {
     const zeroed = await fromTiff({
       le,
       ifd0: [[T.AsShotNeutral, rational([1, 1], [0, 1], [1, 1])]],
     });
     expect(zeroed.colorTemperature).toBeUndefined();
+    expect(zeroed.asShotMultipliers).toBeUndefined();
 
     const short2 = await fromTiff({ le, ifd0: [[T.AsShotNeutral, rational([1, 1], [1, 1])]] });
     expect(short2.colorTemperature).toBeUndefined();

@@ -29,7 +29,8 @@ interface SafelightAPI {
 
   components: { Panel; Slider; Histogram; CurveEditor; Rating; Thumbnail; PhotoListRow };
   ui: { Button; Select; TextInput; NumberInput; TextArea; Toggle; SegmentedControl;
-        Field; Section; Card; Badge; ProgressBar; Stack; Row; tokens };
+        Field; Section; Card; Badge; ProgressBar; LoadingDots; Skeleton;
+        useDelayedFlag; Stack; Row; tokens };
   stores: { useDevelopStore; useCatalogStore; useUIStore; useSettings; usePresetsStore;
             useKeybindings; useThemeStore; useLayoutStore; usePipelineStore; create };
 
@@ -57,7 +58,7 @@ Notes:
 |---|---|
 | `settings` | `get(key, fallback)`, `set(key, value)`, `onChange(cb)`. Per extension, any window. Kept on disable, deleted on uninstall. |
 | `params` | `list()`, `get(qualifiedKey)`. Read-only metadata for every stage uniform. See [`api.params`](stores.md#apiparams). |
-| `dock` | `togglePanel(id)`, `usePanelPlacement()`. See [Panels](ui-shell.md#panels-registerpanel). |
+| `dock` | `togglePanel(id, placement?)`, `usePanelPlacement()`, `isPanelOpen(id)`. See [Panels](ui-shell.md#panels-registerpanel). |
 | `themes`, `layouts` | `apply(id)` |
 | `pipelines` | `apply(id)` sets the Preferences default. `effectiveId(displayTransform)` is the transform a photo renders with. `paramKeys(id)` lists a transform's bag keys. |
 | `preferences` | `open(sectionId?)`, `close()`, `toggle()`. `sectionId` is a core section or an extension id. |

@@ -37,6 +37,7 @@ import { normalizeParamBag } from "@/extensions/param-registry";
 import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { noteDiscreteChange } from "@/ui/motion";
 
 export interface DevelopState extends ViewSlice, MaskSlice {
   photoId: string | null;
@@ -75,6 +76,11 @@ export interface DevelopState extends ViewSlice, MaskSlice {
    *  nothing is written over an edit that was never seen. Cleared by opening the
    *  photo again, or another one, successfully. */
   editError: string | null;
+  /** Counts jumps to a known end state: undo, redo, a step picked in History, a
+   *  preset applied, a reset, the processing update. Bumped in the same set as the
+   *  look it lands on, so the view eases into that look where a live write (a drag,
+   *  a mask stroke) cuts. Transient: never stored or broadcast. */
+  discreteEdits: number;
 
   // Canvas-view overlays and picker modes live in ViewSlice
   // (develop-slices/view-slice.ts).
@@ -126,6 +132,10 @@ export interface DevelopState extends ViewSlice, MaskSlice {
   resetParams: (keys: (keyof DevelopParams)[], label: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
+  /** Show the open photo's history at step `index` as one move, the way undo
+   *  and redo show the step before or after. Does nothing for the step shown, an
+   *  index outside the history or not a whole number, or while `editError` is set. */
+  goToHistory: (index: number) => void;
   reset: () => Promise<void>;
   /** Move the open photo from the older processing to the current one, as one
    *  undoable step that keeps every other setting. Does nothing with no photo
@@ -137,8 +147,8 @@ export interface DevelopState extends ViewSlice, MaskSlice {
   canRedo: () => boolean;
 }
 
-// Step the history cursor (undo = -1, redo = +1), broadcast the restored
-// params, and persist the new cursor — without persisting, switching photos
+// Move the history cursor to `newIndex` (undo and redo move it by one),
+// broadcast the restored params, and persist the new cursor — without persisting, switching photos
 // (or another window) snapped the stack back to the last commit, which made
 // redo/undo positions silently vanish. Restoring a snapshot is a look change
 // like a commit, so it also refreshes the grid thumbnail and re-emits the
@@ -147,13 +157,14 @@ export interface DevelopState extends ViewSlice, MaskSlice {
 function moveHistory(
   get: () => DevelopState,
   set: (p: Partial<DevelopState>) => void,
-  dir: -1 | 1,
+  newIndex: number,
 ): void {
   const { photoId, history, historyIndex, asShotTemperature, editError } = get();
-  const newIndex = historyIndex + dir;
-  if (editError || newIndex < 0 || newIndex > history.length - 1) return;
+  const offset = newIndex - historyIndex;
+  if (editError || !Number.isInteger(newIndex) || offset === 0 || newIndex < 0 || newIndex > history.length - 1) return;
   const look = lookOf(history[newIndex], get());
-  set({ historyIndex: newIndex, ...look });
+  noteDiscreteChange();
+  set({ historyIndex: newIndex, ...look, discreteEdits: get().discreteEdits + 1 });
   broadcast({ type: "edit-update", payload: { photoId } });
   if (!photoId) return;
 
@@ -177,14 +188,20 @@ function moveHistory(
     const base = (await storedHistory(photoId, asShotTemperature, storage)) ?? { stack: history, index: historyIndex };
     if (catalogStorage() !== storage) return;
     const held = base.stack === history && base.index === historyIndex;
-    // The catalogue holds steps this history hasn't seen: step its cursor instead.
-    const index = held ? newIndex : base.index + dir;
+    // The catalogue holds steps this history hasn't seen: move its cursor as far instead.
+    const index = held ? newIndex : base.index + offset;
     const steppable = index >= 0 && index <= base.stack.length - 1;
     if (!held && latest() && get().photoId === photoId) {
       // No step to take in the catalogue's history: show it as it is, rather
       // than the step taken here that was never saved.
       const look = lookOf(base.stack[steppable ? index : base.index], get());
-      set({ history: base.stack, historyIndex: steppable ? index : base.index, ...look });
+      noteDiscreteChange();
+      set({
+        history: base.stack,
+        historyIndex: steppable ? index : base.index,
+        ...look,
+        discreteEdits: get().discreteEdits + 1,
+      });
       broadcast({ type: "edit-update", payload: { photoId } });
     }
     if (steppable) store({ photoId, stack: base.stack, currentIndex: index });
@@ -565,6 +582,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   asShotTemperature: NEUTRAL_TEMPERATURE_K,
   sourceSize: { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false },
   editError: null,
+  discreteEdits: 0,
 
   ...createViewSlice(set, get, store),
 
@@ -722,7 +740,9 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
 
 
   async applyPreset(params, paramBag) {
+    noteDiscreteChange();
     set((s) => ({
+      discreteEdits: s.discreteEdits + 1,
       previewParams: null,
       previewParamBag: null,
       params: normalizeParams({ ...params, processVersion: s.params.processVersion }),
@@ -753,16 +773,21 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   commitEdit: (label) => commitStoredEdit(get, set, label),
 
   undo() {
-    moveHistory(get, set, -1);
+    moveHistory(get, set, get().historyIndex - 1);
   },
 
   redo() {
-    moveHistory(get, set, +1);
+    moveHistory(get, set, get().historyIndex + 1);
+  },
+
+  goToHistory(index) {
+    moveHistory(get, set, index);
   },
 
   async resetParams(keys, label) {
     const { asShotTemperature } = get();
     if (keys.length === 0) return;
+    noteDiscreteChange();
     set((s) => {
       const next = { ...s.params };
       for (const k of keys) {
@@ -774,14 +799,15 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
           k === "temperature" ? asShotTemperature : structuredClone(DEFAULT_DEVELOP_PARAMS[k]),
         );
       }
-      return { params: next };
+      return { params: next, discreteEdits: s.discreteEdits + 1 };
     });
     await get().commitEdit(label);
   },
 
   async reset() {
     const fresh = freshParams(get().asShotTemperature);
-    set({ params: fresh, paramBag: {} });
+    noteDiscreteChange();
+    set((s) => ({ params: fresh, paramBag: {}, discreteEdits: s.discreteEdits + 1 }));
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
   },
@@ -789,7 +815,11 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async updateProcessing() {
     const { photoId, params } = get();
     if (!photoId || !usesOlderProcessing(params)) return;
-    set({ params: { ...params, processVersion: CURRENT_PROCESS_VERSION } });
+    noteDiscreteChange();
+    set((s) => ({
+      params: { ...params, processVersion: CURRENT_PROCESS_VERSION },
+      discreteEdits: s.discreteEdits + 1,
+    }));
     await get().commitEdit(UPDATE_PROCESSING_LABEL);
   },
 

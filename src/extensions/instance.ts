@@ -18,6 +18,7 @@ import { noteExtensionRunning } from "./extension-kinds";
 import { activateFenced, createLoadTracker } from "./guard";
 import { useRunningPlugins } from "./running-plugins";
 import { forgetStartFailure, recordStartFailure } from "./start-failures";
+import { mirrorExtensionDescriptors } from "./descriptor-mirror";
 
 let scopedAPI: ((id: string) => SafelightAPI) | null = null;
 
@@ -108,6 +109,9 @@ export interface InstanceStart {
   source: InstanceSource;
   /** Shown as the extension's name wherever its contributions are listed. */
   name?: string;
+  /** The manifest version of an installed extension, which names the file its
+   *  registrations are recorded in for `slu` once it has started. */
+  version?: string;
   /** Names the bundle, so a start of the same bundle joins the one under way and
    *  one of another takes the id over (see createLoadTracker). */
   bundle: string;
@@ -198,6 +202,7 @@ export async function startInstance(start: InstanceStart): Promise<void> {
   forgetStartFailure(id);
   live.set(id, { ...started, source });
   publishRunning();
+  if (source === "installed" && start.version) mirrorExtensionDescriptors(id, start.version, start.name ?? id);
 }
 
 function unsubscribeGuarded(unsubscribe: () => void): void {

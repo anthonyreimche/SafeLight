@@ -23,7 +23,7 @@ export function Rating({ value, onChange, size = "sm" }: RatingProps) {
           }}
           aria-label={`${star} star${star === 1 ? "" : "s"}`}
           aria-pressed={star <= value}
-          className={`flex h-5 w-5 items-center justify-center ${starSize} ${
+          className={`flex h-5 w-5 items-center justify-center transition-colors ${starSize} ${
             star <= value ? "text-rating" : "text-text-muted"
           } ${onChange ? "cursor-pointer hover:text-rating" : "cursor-default"}`}
           disabled={!onChange}

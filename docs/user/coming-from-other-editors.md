@@ -19,7 +19,7 @@ If you know Lightroom Classic, Capture One, DxO PhotoLab or darktable, most of S
 | Keywords | Keywords panel. Keyword trees, synonyms and Lightroom keyword-list import come with **Hierarchical Keywording**. | Library, store |
 | Collections, smart collections | **Collections** extension | Store |
 | Virtual copy | **Virtual Copies** extension: right-click a photo | Store |
-| History | Undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z**) and reset all edits, also as buttons in the Edit History panel. Every edit is kept with the photo, so undo works after you reopen it. | Develop |
+| History | Undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z**) and reset all edits, also as buttons in the Edit History panel. Every edit is kept with the photo, so undo works after you reopen it. The **History** extension lists every step to click back to, with what each changed. | Develop, store |
 | Snapshots | Not yet. Save a preset, or use a virtual copy, to keep an alternative. | |
 | Presets, styles | Presets panel. Lightroom `.xmp` presets import with **XMP Tools** or **3rd-Party Preset Tools** (which also reads `.lrtemplate`). Capture One styles don't import. | Develop, store |
 | Copy / paste settings, sync | Right-click in Library: **Copy settings…** picks what to copy, **Paste settings** applies it to the selection. **Batch Tools** adds selective sync and batch Auto. | Library, store |

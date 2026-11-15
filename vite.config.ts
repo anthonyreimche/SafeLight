@@ -93,6 +93,13 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      // engine.html is the hidden page `slu` renders through (src/engine). A
+      // second entry of the same build, so it shares the app's chunks, render
+      // worker and wasm.
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        engine: path.resolve(__dirname, "engine.html"),
+      },
       output: {
         // Split heavy vendors into long-lived, separately-cached chunks so the
         // entry bundle stays under Vite's 500 kB warning threshold. libraw-wasm

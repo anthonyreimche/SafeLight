@@ -18,6 +18,8 @@ import type { FolderNode } from "./folder-node";
 
 const h = vi.hoisted(() => ({
   open: vi.fn(),
+  /** Thrown by the next replaceCatalog, once. */
+  replaceError: null as Error | null,
   finalizeCatalog: vi.fn(),
   reconcileCatalog: vi.fn(),
   /** The window's beforeunload listeners. */
@@ -110,7 +112,12 @@ vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 vi.mock("@/state/catalog-store", () => ({
   useCatalogStore: {
     getState: () => ({
-      replaceCatalog: (photos: CatalogPhoto[]) => void (h.photos = photos),
+      replaceCatalog: (photos: CatalogPhoto[]) => {
+        const err = h.replaceError;
+        h.replaceError = null;
+        if (err) throw err;
+        h.photos = photos;
+      },
       finalizeCatalog: h.finalizeCatalog,
       reconcileCatalog: h.reconcileCatalog,
       appendPhotos: (photos: CatalogPhoto[]) => void h.appended.push(...photos),
@@ -425,6 +432,14 @@ describe("a recent project whose drive is gone", () => {
     expect(h.removeRecent).toHaveBeenCalledWith("/gone/shoot");
     expect(useProjectStore.getState()).toMatchObject({ openError: null, openErrorRecentId: null });
     expect(useProjectStore.getState().recentsRevision).toBe(revision + 1);
+  });
+});
+
+describe("an open that fails before its catalogue is read", () => {
+  it("ends opening, so the opening veil goes", async () => {
+    h.replaceError = new Error("store gone");
+    await expect(openProject("A")).rejects.toThrow("store gone");
+    expect(useProjectStore.getState().opening).toBe(false);
   });
 });
 

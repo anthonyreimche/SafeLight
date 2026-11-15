@@ -13,6 +13,7 @@ export interface RawFloatImage {
   suspicious?: boolean; // true when the decode passed sanity checks but was marginal
                         // — do not write to cache, let the next open re-decode
   colorTemperature?: number; // as-shot WB in Kelvin, derived from camera multipliers
+  asShotMultipliers?: [number, number, number]; // those multipliers, green at 1
   rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes), compensated in `data`
   halfSize?: boolean;        // decoded at half the frame's width and height: the caller's target
                              // edge didn't need more, or at full size it needs more memory

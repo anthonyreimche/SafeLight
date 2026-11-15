@@ -11,6 +11,7 @@ import type { ExtensionRelease } from "./types";
 import { Markdown } from "./Markdown";
 import { loadReleases, useExtStoreUI } from "./store-ui";
 import { sameVersion } from "./release-picks";
+import { TextSkeleton } from "./StoreSkeletons";
 
 const dateOf = (iso: string): string => {
   const t = Date.parse(iso);
@@ -64,7 +65,9 @@ export function UpdateNotes({ repo, version }: { repo: string; version: string }
             Couldn't load release notes: {releases.error}
           </div>
         ) : releases?.status !== "ready" ? (
-          <div className="text-[10px] text-text-muted">Loading…</div>
+          <div className="mt-1">
+            <TextSkeleton lines={3} />
+          </div>
         ) : target.some((r) => r.notes.trim()) ? (
           <div className="mt-1 rounded bg-surface-1 p-2">
             <ReleaseNotes releases={target} repo={repo} />

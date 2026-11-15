@@ -39,12 +39,14 @@ interface SliderProps {
   compact?: boolean;       // narrow label and value columns
   trackBackground?: string; // CSS gradient track, with a marker
   onModifierPreview?: (active: boolean) => void; // Alt/Ctrl mid-drag
+  onAuto?: () => void;     // 3.2.5: Shift+double-click sets this value automatically
 }
 ```
 
 Notes:
 
 - Update live state in `onChange` (cheap enough to bind straight to a store setter). Snapshot undo history in `onCommit`.
+- With `onAuto`, Shift+double-click on the track calls it instead of resetting, and the track's tooltip names the gesture. A plain double-click still resets. Set the value and make the undo step yourself; the slider commits nothing for it. Older builds reset on any double-click.
 - A typed value may pass `min`/`max` (the field turns red). Dragging and arrow keys clamp.
 
 ## `Histogram`
@@ -171,7 +173,10 @@ Themed controls that match Preferences. Controlled inputs take `value` and an `o
 | `Section` | `title`, `right?`, `children` | Uppercase header over its children. |
 | `Card` | `children`, `className?` | Bordered, raised container. |
 | `Badge` | `children`, `color?` | Small pill; `color` sets its background. |
-| `ProgressBar` | `value` (0..1) | Thin accent bar. |
+| `ProgressBar` | `value?` (0..1), `indeterminate?`, `delayMs?`, `label?` | Thin accent bar. `indeterminate` slides a segment along it for a wait of unknown length. `delayMs` keeps it hidden until that long has passed. |
+| `LoadingDots` | `label?` | Status text with an ellipsis whose dots step in turn, such as `Loading...`. The dots are hidden from screen readers. Under Reduce motion it shows a still `…`. |
+| `Skeleton` | `style?`, `className?` | A breathing block standing in for content still loading. Give it the size of what will arrive, so nothing jumps when it does. |
+| `useDelayedFlag(active, ms = 300)` | — | A hook: true once `active` has stayed true for `ms`, and false the moment it ends. Gate a wait indicator on it, so a quick load never flashes one. |
 | `Stack` / `Row` | `gap?` (px, default 8), `style?`; `Row`: `align?`, `justify?`, `wrap?` | Vertical / horizontal flex. |
 
 ```js

@@ -100,6 +100,7 @@ export interface DecodedImport {
    *  passed over (see decode.ts): fine to show, not worth storing. */
   passedOver?: boolean;
   colorTemperature?: number;
+  asShotMultipliers?: [number, number, number];
   /** True pixel size the bitmap stands for, in the bitmap's orientation — set
    *  when the embedded preview was decoded downscaled to thumbnail size. */
   sourceWidth?: number;
@@ -287,6 +288,7 @@ export async function decodeImportBitmap(
         bitmap: bm,
         oriented: f.oriented ?? false,
         colorTemperature: f.colorTemperature,
+        asShotMultipliers: f.asShotMultipliers,
         // The catalogue records the frame the bitmap stands for, not its half.
         ...(f.halfSize && f.sourceWidth && f.sourceHeight
           ? { sourceWidth: f.sourceWidth, sourceHeight: f.sourceHeight }

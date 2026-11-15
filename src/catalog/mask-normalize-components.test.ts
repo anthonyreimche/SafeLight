@@ -294,7 +294,7 @@ describe("brush dabs", () => {
     expect(m.components[0].brush?.dabs.map((d) => d.strokeStart)).toEqual([true, undefined, undefined]);
   });
 
-  it("keeps a brush tip and angle on a stroke-start dab only", () => {
+  it("keeps a brush tip on a stroke-start dab only, and a finite angle on any dab", () => {
     const [m] = masksOf([
       {
         id: "b",
@@ -311,7 +311,7 @@ describe("brush dabs", () => {
     ]);
     const dabs = m.components[0].brush?.dabs ?? [];
     expect(dabs.map((d) => d.tip)).toEqual(["chalk", undefined, undefined, undefined]);
-    expect(dabs.map((d) => d.angle)).toEqual([0.5, undefined, undefined, undefined]);
+    expect(dabs.map((d) => d.angle)).toEqual([0.5, 0.5, undefined, undefined]);
     expect(Object.keys(dabs[3])).not.toContain("tip");
   });
 });

@@ -6,8 +6,10 @@
 import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { Skeleton } from "@/ui/components/Skeleton";
 import { StackBadge } from "@/ui/components/StackBadge";
 import { usePhotoOption } from "@/ui/components/use-photo-option";
+import { usePreviewFade } from "@/ui/components/use-preview-fade";
 import { usePreviewRequest } from "@/ui/components/use-preview-request";
 
 const colorDot: Record<string, string> = {
@@ -57,6 +59,7 @@ function LibraryListRowImpl({
     return () => URL.revokeObjectURL(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
+  const { src, loaded, onLoad } = usePreviewFade(thumbUrl, photo.id);
   const rowRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
   const optionProps = usePhotoOption(rowRef, photo.id, selected, active, onDoubleClick);
 
@@ -86,20 +89,26 @@ function LibraryListRowImpl({
         />
       )}
 
-      {thumbUrl ? (
+      {src ? (
         <img
-          src={thumbUrl}
+          src={src}
           alt={photoDisplayName(photo)}
           className="h-10 w-14 shrink-0 rounded object-contain"
+          style={{ opacity: loaded ? 1 : 0, transition: "opacity 150ms ease-out" }}
           loading="lazy"
+          onLoad={onLoad}
         />
-      ) : (
-        <div
-          aria-hidden="true"
-          className="flex h-10 w-14 shrink-0 items-center justify-center rounded bg-surface-2 text-text-muted"
+      ) : photo.decodeError ? (
+        // A failed decode never brings a preview: a still mark, not a skeleton that
+        // reads as loading.
+        <span
+          className="flex h-10 w-14 shrink-0 items-center justify-center rounded bg-surface-2 text-text-secondary"
+          title={`${photo.filename}: ${photo.decodeError}`}
         >
-          {"🖼"}
-        </div>
+          <span aria-hidden="true">{"⚠"}</span>
+        </span>
+      ) : (
+        <Skeleton className="h-10 w-14 shrink-0" />
       )}
 
       <span className="flex-1 truncate text-xs">{photoDisplayName(photo)}</span>

@@ -3,13 +3,15 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
-import { hasPreviewLoaded, markPreviewLoaded, revokePreviewUrl } from "@/state/preview-urls";
+import { useCatalogStore } from "@/state/catalog-store";
+import { revokePreviewUrl } from "@/state/preview-urls";
 import { Rating } from "./Rating";
 import { StackBadge } from "./StackBadge";
 import { usePhotoOption } from "./use-photo-option";
+import { usePreviewFade } from "./use-preview-fade";
 import { usePreviewRequest } from "./use-preview-request";
 
 // Callbacks take the photo id so the parent can pass ONE stable function to every
@@ -87,16 +89,21 @@ function ThumbnailImpl({
     return () => revokePreviewUrl(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
-  const [loaded, setLoaded] = useState(() => hasPreviewLoaded(thumbUrl));
-  const prevUrl = useRef(thumbUrl);
-  if (prevUrl.current !== thumbUrl) {
-    prevUrl.current = thumbUrl;
-    setLoaded(hasPreviewLoaded(thumbUrl));
-  }
-  const onLoad = useCallback(() => {
-    if (thumbUrl) markPreviewLoaded(thumbUrl);
-    setLoaded(true);
-  }, [thumbUrl]);
+  const { src, loaded, onLoad } = usePreviewFade(thumbUrl, photo.id);
+  // A turn is shown, eased, the moment it is asked for. The turned preview lands later
+  // and is decoded before it is shown; until then the picture on screen keeps the turn
+  // it had, and the swap takes the new picture and its turn in one frame without
+  // easing, so the picture neither unturns nor spins back on the way.
+  const turning = useCatalogStore((s) => s.pendingRotation[photo.id]);
+  const swapping = src !== thumbUrl;
+  const [heldTurn, setHeldTurn] = useState(turning);
+  if (!swapping && heldTurn !== turning) setHeldTurn(turning);
+  const shownTurn = swapping ? heldTurn : turning;
+  const paintedSrc = useRef(src);
+  useLayoutEffect(() => {
+    paintedSrc.current = src;
+  });
+  const easeTurn = shownTurn !== undefined && paintedSrc.current === src;
 
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
@@ -116,12 +123,18 @@ function ThumbnailImpl({
       onDoubleClick={onDoubleClick ? () => onDoubleClick(photo.id) : undefined}
       onContextMenu={onContextMenu ? (e) => onContextMenu(photo.id, e) : undefined}
     >
-      {thumbUrl ? (
+      {src ? (
         <img
-          src={thumbUrl}
+          src={src}
           alt={displayName}
-          className="h-full w-full object-contain transition group-hover:brightness-50"
-          style={{ opacity: loaded ? (isReject ? 0.4 : 1) : 0, transition: "opacity 150ms ease-out" }}
+          className="h-full w-full object-contain group-hover:brightness-50"
+          style={{
+            opacity: loaded ? (isReject ? 0.4 : 1) : 0,
+            rotate: shownTurn === undefined ? undefined : `${shownTurn}deg`,
+            transition: easeTurn
+              ? "opacity 150ms ease-out, filter 150ms ease-out, rotate 150ms ease-out"
+              : "opacity 150ms ease-out, filter 150ms ease-out",
+          }}
           loading="lazy"
           onLoad={onLoad}
         />
@@ -137,7 +150,7 @@ function ThumbnailImpl({
         </div>
       ) : (
         // Skeleton while the cached preview is still loading.
-        <div className="h-full w-full animate-pulse bg-surface-2" />
+        <div className="sl-breathe h-full w-full bg-surface-2" />
       )}
 
       {(photo.flag === "pick" || photo.flag === "reject") && (

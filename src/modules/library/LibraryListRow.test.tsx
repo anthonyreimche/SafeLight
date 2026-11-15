@@ -8,7 +8,7 @@
 // otherwise stay blank.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import type { CatalogPhoto } from "@/catalog/types";
 
 const loader = vi.hoisted(() => ({
@@ -85,5 +85,66 @@ describe("LibraryListRow preview request", () => {
   it("watches nothing when the row already has its preview", () => {
     render(row(photo({ thumbnailUrl: "blob:row-has" })));
     expect(intersect).toBeNull();
+  });
+});
+
+describe("LibraryListRow preview fade", () => {
+  beforeEach(() =>
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe(): void {}
+        disconnect(): void {}
+      },
+    ),
+  );
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  const imgOf = (container: HTMLElement): HTMLImageElement => {
+    const img = container.querySelector("img");
+    if (!img) throw new Error("the row shows no preview");
+    return img;
+  };
+
+  it("breathes a skeleton, not an emoji, while there is no preview", () => {
+    const { container } = render(row(photo()));
+    expect(container.querySelector(".sl-breathe")).toBeTruthy();
+    expect(container.textContent).not.toContain("🖼");
+  });
+
+  it("shows a still mark with the reason, not a skeleton, when the decode failed", () => {
+    const { container } = render(row(photo({ decodeError: "Unsupported camera" })));
+    expect(container.querySelector(".sl-breathe")).toBeNull();
+    expect(container.querySelector('[title*="Unsupported camera"]')).toBeTruthy();
+  });
+
+  it("fades a new preview in once it has loaded", () => {
+    const { container } = render(row(photo({ thumbnailUrl: "blob:row-new" })));
+    expect(imgOf(container).style.opacity).toBe("0");
+    fireEvent.load(imgOf(container));
+    expect(imgOf(container).style.opacity).toBe("1");
+  });
+
+  it("shows a preview that already loaded at full opacity after a remount", () => {
+    const first = render(row(photo({ thumbnailUrl: "blob:row-seen" })));
+    fireEvent.load(imgOf(first.container));
+    first.unmount();
+    const second = render(row(photo({ thumbnailUrl: "blob:row-seen" })));
+    expect(imgOf(second.container).style.opacity).toBe("1");
+  });
+
+  it("keeps a loaded row shown when its own preview is replaced", () => {
+    const { container, rerender } = render(row(photo({ thumbnailUrl: "blob:row-a" })));
+    fireEvent.load(imgOf(container));
+    rerender(row(photo({ thumbnailUrl: "blob:row-b" })));
+    expect(imgOf(container).style.opacity).toBe("1");
+  });
+
+  it("starts a different photo's preview hidden", () => {
+    const { container, rerender } = render(row(photo({ id: "p1", thumbnailUrl: "blob:row-c" })));
+    fireEvent.load(imgOf(container));
+    rerender(row(photo({ id: "p2", thumbnailUrl: "blob:row-d" })));
+    expect(imgOf(container).style.opacity).toBe("0");
   });
 });

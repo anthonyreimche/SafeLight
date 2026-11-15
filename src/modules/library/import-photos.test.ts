@@ -37,6 +37,7 @@ const h = vi.hoisted(() => ({
     height: number;
     oriented?: boolean;
     colorTemperature?: number;
+    asShotMultipliers?: [number, number, number];
     suspicious?: boolean;
   } | null,
   /** What the shared accept/reject check rules on a full decode. */
@@ -145,6 +146,7 @@ vi.mock("@/raw/decode", () => ({
           height: h.rawFloat.height,
           oriented: h.rawFloat.oriented ?? false,
           colorTemperature: h.rawFloat.colorTemperature,
+          asShotMultipliers: h.rawFloat.asShotMultipliers,
           suspicious: h.rawFloat.suspicious,
         }
       : { failure: h.floatFailure, reason: "unsupported model" };
@@ -504,12 +506,13 @@ describe("buildPhoto", () => {
 
   it("falls back to the float decode when the bitmap decoder can't handle the RAW", async () => {
     h.rawBitmap = null;
-    h.rawFloat = { width: 2000, height: 1000, colorTemperature: 5200 };
+    h.rawFloat = { width: 2000, height: 1000, colorTemperature: 5200, asShotMultipliers: [2.1, 1, 1.6] };
 
     const photo = (await buildPhoto(file("a.rw2"), null, null))!;
 
     expect(photo).toMatchObject({ width: 2000, height: 1000 });
     expect(photo.exif.colorTemperature).toBe(5200);
+    expect(photo.exif.asShotMultipliers).toEqual([2.1, 1, 1.6]);
     expect(photo.decodeError).toBeUndefined();
   });
 
@@ -573,12 +576,13 @@ describe("buildPhoto", () => {
   });
 
   it("pulls the as-shot white balance from libraw for RAW files that lack it", async () => {
-    h.rawMeta = { colorTemperature: 4800 };
+    h.rawMeta = { colorTemperature: 4800, asShotMultipliers: [2.1, 1, 1.6] };
     h.rawBitmap = { width: 100, height: 100, oriented: false };
 
     const photo = (await buildPhoto(file("a.NEF"), null, null))!;
 
     expect(photo.exif.colorTemperature).toBe(4800);
+    expect(photo.exif.asShotMultipliers).toEqual([2.1, 1, 1.6]);
   });
 
   it("records the exposure bias libraw reports for a Fujifilm DR-mode raw", async () => {
@@ -964,7 +968,12 @@ describe("readPendingMetadata", () => {
   }
 
   it("stores libraw's frame, as-shot white balance and exposure bias, and clears the mark", async () => {
-    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 4800, rawExposureBias: -1 };
+    h.rawMeta = {
+      frame: { width: 6240, height: 4160 },
+      colorTemperature: 4800,
+      asShotMultipliers: [2.1, 1, 1.6],
+      rawExposureBias: -1,
+    };
     const photo = pending("a.RAF");
     const read: CatalogPhoto[] = [];
 
@@ -974,7 +983,7 @@ describe("readPendingMetadata", () => {
     expect(h.saved[0]).toMatchObject({
       width: 6240,
       height: 4160,
-      exif: { colorTemperature: 4800, rawExposureBias: -1 },
+      exif: { colorTemperature: 4800, asShotMultipliers: [2.1, 1, 1.6], rawExposureBias: -1 },
     });
     expect(h.saved[0].metadataPending).toBeUndefined();
     expect(read.map((p) => p.id)).toEqual(["id:a.RAF"]);
@@ -991,12 +1000,12 @@ describe("readPendingMetadata", () => {
   });
 
   it("keeps a white balance the file's EXIF declared", async () => {
-    h.rawMeta = { colorTemperature: 4800 };
-    const photo = pending("a.dng", { exif: { colorTemperature: 6100 } });
+    h.rawMeta = { colorTemperature: 4800, asShotMultipliers: [2.1, 1, 1.6] };
+    const photo = pending("a.dng", { exif: { colorTemperature: 6100, asShotMultipliers: [1.9, 1, 1.4] } });
 
     await readPendingMetadata([photo]);
 
-    expect(h.saved[0].exif.colorTemperature).toBe(6100);
+    expect(h.saved[0].exif).toMatchObject({ colorTemperature: 6100, asShotMultipliers: [1.9, 1, 1.4] });
   });
 
   it("turns the upright frame by the photo's manual rotation", async () => {

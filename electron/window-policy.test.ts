@@ -14,6 +14,7 @@ import {
   guardPrivileged,
   indexRedirectFor,
   isAppIndexUrl,
+  isEngineUrl,
   navigationAllowed,
   privilegedSenderAllowed,
   validRepo,
@@ -208,6 +209,42 @@ describe("guardPrivileged", () => {
     expect(reads).toBe(1);
     expect(handler).toHaveBeenCalledTimes(1);
     return pending;
+  });
+});
+
+// The `slu` engine's hidden page needs the privileged bridge for the fs bridge,
+// but only in a process started with --engine; in the app it is just another
+// app:// file.
+describe("the engine page", () => {
+  const ENGINE = "app://bundle/engine.html";
+
+  it("is known by its path alone", () => {
+    expect(isEngineUrl(ENGINE)).toBe(true);
+    expect(isEngineUrl(`${ENGINE}?x=1`)).toBe(true);
+    expect(isEngineUrl("app://bundle/index.html")).toBe(false);
+    expect(isEngineUrl("app://bundle/__plugins__/x/engine.html")).toBe(false);
+    expect(isEngineUrl("https://bundle/engine.html")).toBe(false);
+  });
+
+  it("is refused privileged access, navigation and a place in a window by the app", () => {
+    expect(privilegedSenderAllowed({ url: ENGINE, isTopFrame: true })).toBe(false);
+    expect(navigationAllowed(ENGINE)).toBe(false);
+    expect(indexRedirectFor(ENGINE)).toBe("app://bundle/index.html");
+  });
+
+  it("is the only document allowed privileged access in engine mode, as a top frame", () => {
+    expect(privilegedSenderAllowed({ url: ENGINE, isTopFrame: true }, { engine: true })).toBe(true);
+    expect(privilegedSenderAllowed({ url: ENGINE, isTopFrame: false }, { engine: true })).toBe(false);
+    expect(privilegedSenderAllowed({ url: "app://bundle/index.html", isTopFrame: true }, { engine: true })).toBe(false);
+    expect(privilegedSenderAllowed({ url: PLUGIN_FILE, isTopFrame: true }, { engine: true })).toBe(false);
+  });
+
+  it("passes the guard only when the guard is built for engine mode", async () => {
+    const handler = vi.fn(async () => "read");
+    const e = { senderFrame: { url: ENGINE, parent: null }, sender: { getURL: () => ENGINE } };
+    await expect(guardPrivileged("fs:read", handler, { warn: vi.fn() })(e)).rejects.toThrow("Not allowed");
+    await expect(guardPrivileged("fs:read", handler, { engine: true })(e)).resolves.toBe("read");
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });
 

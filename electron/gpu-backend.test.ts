@@ -17,6 +17,16 @@ import {
   angleBackends,
   gpuLadder,
   angleSwitches,
+  graphicsCardSwitches,
+  backendChoices,
+  launchBackend,
+  AUTOMATIC,
+  selectionOf,
+  pickCache,
+  revertTargetFor,
+  revertCache,
+  provenCache,
+  CONFIRM_WITHIN_MS,
   webgl2Lost,
   softwareFallbackFor,
   rendererFallbackFor,
@@ -67,12 +77,34 @@ describe("angleSwitches", () => {
   // The pair Chromium needs since it stopped falling back to SwiftShader for
   // WebGL by itself; the SwiftShader WebGL test run uses the same switches.
   // A software launch doesn't force a blocklisted driver back into play.
-  it("opts in to SwiftShader WebGL on the software rung", () => {
+  // Compositing the window through SwiftShader too left it empty on Windows:
+  // nothing it drew reached the screen. The window composites on the processor,
+  // as in Chromium's own software mode, and WebGL is read back into it.
+  it("opts in to SwiftShader WebGL on the software rung, composited on the processor", () => {
     expect(angleSwitches(SOFTWARE_BACKEND)).toEqual([
       ["use-gl", "angle"],
       ["use-angle", "swiftshader"],
       ["enable-unsafe-swiftshader"],
+      ["disable-gpu-compositing"],
     ]);
+  });
+});
+
+// Speed-ups for a graphics card. In software they only send the page's drawing
+// through SwiftShader as well, and there is no card to pick.
+describe("graphicsCardSwitches", () => {
+  it("picks the faster card and draws the page on it on every hardware rung", () => {
+    for (const backend of ["gl", "gles", "vulkan", "d3d11", "metal"]) {
+      expect(graphicsCardSwitches(backend)).toEqual([
+        ["force_high_performance_gpu"],
+        ["enable-gpu-rasterization"],
+        ["enable-zero-copy"],
+      ]);
+    }
+  });
+
+  it("adds nothing in software", () => {
+    expect(graphicsCardSwitches(SOFTWARE_BACKEND)).toEqual([]);
   });
 });
 
@@ -364,6 +396,9 @@ describe("backendState", () => {
       next: SOFTWARE_BACKEND,
       choice: null,
       backends: ladder,
+      revertTo: null,
+      reverted: null,
+      keepBy: null,
     });
     expect(backendState(SOFTWARE_BACKEND, none, ladder, 0)).toMatchObject({
       software: true,
@@ -443,5 +478,240 @@ describe("a backend the user picked", () => {
 
   it("is dropped when the launch ended up on another backend", () => {
     expect(readyCache("gl", chosenCache("vulkan", 0), 9)).toEqual({ backend: "gl", reason: null, since: null, launches: 0 });
+  });
+});
+
+// Preferences offers more than Automatic tries. On Windows each was checked in
+// Safelight on an RTX 4070 Ti: Direct3D 11 on 12, OpenGL and WARP draw; Vulkan
+// and Direct3D 9 give no WebGL2. Automatic keeps its own short ladder, so a
+// machine that fails isn't walked through backends nobody asked for.
+describe("backends the user can pick beyond Automatic's", () => {
+  const ladder = gpuLadder("win32", false);
+  const choices = backendChoices("win32", false);
+
+  it("lists every backend that runs Safelight on Windows, software last", () => {
+    expect(choices).toEqual(["d3d11", "d3d11on12", "gl", "d3d11-warp", SOFTWARE_BACKEND]);
+    expect(ladder).toEqual(["d3d11", SOFTWARE_BACKEND]);
+  });
+
+  // Chromium's own backend menu on macOS offers OpenGL beside Metal. Linux's
+  // ladder already holds every backend Chromium has there.
+  it("offers OpenGL beside Metal on macOS, and Linux what Automatic tries", () => {
+    expect(backendChoices("darwin", false)).toEqual(["metal", "gl", SOFTWARE_BACKEND]);
+    expect(gpuLadder("darwin", false)).toEqual(["metal", SOFTWARE_BACKEND]);
+    expect(angleSwitches("gl")).toEqual([["use-angle", "gl"], ["ignore-gpu-blocklist"]]);
+    expect(backendChoices("linux", false)).toEqual(gpuLadder("linux", false));
+    expect(backendChoices("linux", true)).toEqual(gpuLadder("linux", true));
+  });
+
+  it("selects each Windows pick with its own ANGLE backend", () => {
+    expect(angleSwitches("d3d11on12")).toEqual([["use-angle", "d3d11on12"], ["ignore-gpu-blocklist"]]);
+    expect(angleSwitches("d3d11-warp")).toEqual([["use-angle", "d3d11-warp"], ["ignore-gpu-blocklist"]]);
+    expect(angleSwitches("gl")).toEqual([["use-angle", "gl"], ["ignore-gpu-blocklist"]]);
+  });
+
+  // WARP is Direct3D drawn on the processor: there is no card to pick or draw the page on.
+  it("asks for no graphics-card speed-ups on WARP", () => {
+    expect(graphicsCardSwitches("d3d11-warp")).toEqual([]);
+    expect(graphicsCardSwitches("d3d11on12")).toHaveLength(3);
+  });
+
+  it("starts on a pick Automatic doesn't try, and remembers it", () => {
+    const picked = parseBackendCache(formatBackendCache(chosenCache("d3d11-warp", 0)), choices);
+    expect(picked).toMatchObject({ backend: "d3d11-warp", reason: "chosen" });
+    expect(launchBackend(ladder, choices, picked, null, 0)).toBe("d3d11-warp");
+    expect(readyCache("d3d11-warp", picked, 9)).toEqual(chosenCache("d3d11-warp", 9));
+  });
+
+  // A pick whose GPU process dies before a window opens is cleared, and the probe
+  // relaunches on Automatic's first rung.
+  it("lets a probe relaunch take the launch back to Automatic's ladder", () => {
+    const picked = parseBackendCache(formatBackendCache(chosenCache("gl", 0)), choices);
+    const failedRung = ladder.indexOf(launchBackend(ladder, choices, picked, null, 0));
+    expect(failedRung).toBe(-1);
+    expect(launchBackend(ladder, choices, picked, failedRung + 1, 0)).toBe("d3d11");
+  });
+
+  it("starts where Automatic would without a pick, or with one this platform doesn't offer", () => {
+    const none = parseBackendCache("", choices);
+    expect(launchBackend(ladder, choices, none, null, 0)).toBe("d3d11");
+    const vulkan = parseBackendCache(formatBackendCache(chosenCache("vulkan", 0)), choices);
+    expect(vulkan).toMatchObject({ backend: null, elsewhere: "vulkan" });
+    expect(launchBackend(ladder, choices, vulkan, null, 0)).toBe("d3d11");
+  });
+
+  it("sends a pick whose renderer can't start back to Automatic's first rung", () => {
+    expect(rendererFallbackFor(ladder, "gl")).toBe("d3d11");
+    expect(rendererFallbackFor(ladder, "d3d11on12")).toBe("d3d11");
+  });
+
+  it("shows Preferences every pick and where the next launch starts", () => {
+    const picked = chosenCache("d3d11on12", 0);
+    expect(backendState("d3d11", picked, ladder, 0, undefined, choices)).toMatchObject({
+      backend: "d3d11",
+      next: "d3d11on12",
+      choice: "d3d11on12",
+      nextSoftware: false,
+      backends: choices,
+    });
+  });
+});
+
+// A backend changed in Preferences is on trial until the user keeps it, from a
+// bar in the window it draws. Failing before then (the graphics process dies at
+// start, WebGL2 is lost, the renderer can't be built, crash recovery gives up),
+// or not kept in time (a window that draws nothing reports no error), the next
+// launch goes back to the selection that last worked, and says why.
+describe("a change that doesn't work goes back to the last selection that did", () => {
+  const ladder = gpuLadder("linux", false);
+  const choices = backendChoices("linux", false);
+  const automatic = parseBackendCache("", choices);
+  const roundTrip = (cache: ReturnType<typeof pickCache>) => parseBackendCache(formatBackendCache(cache), choices);
+
+  it("names a launch's selection: the pick, or Automatic", () => {
+    expect(selectionOf(chosenCache("vulkan", 0))).toBe("vulkan");
+    expect(selectionOf(fallbackCache("chosen", 0))).toBe(SOFTWARE_BACKEND);
+    expect(selectionOf(automatic)).toBe(AUTOMATIC);
+    expect(selectionOf({ ...automatic, backend: "gl" })).toBe(AUTOMATIC);
+    expect(selectionOf(fallbackCache("gpu-crashes", 0))).toBe(AUTOMATIC);
+  });
+
+  it("keeps where a pick goes back to through the cache file", () => {
+    const pick = pickCache("vulkan", AUTOMATIC, 0);
+    expect(pick).toEqual({ ...chosenCache("vulkan", 0), revertTo: AUTOMATIC });
+    expect(roundTrip(pick)).toEqual(pick);
+    expect(launchBackend(ladder, choices, roundTrip(pick), null, 0)).toBe("vulkan");
+    const software = pickCache(SOFTWARE_BACKEND, "gl", 5, "3.2.5");
+    expect(roundTrip(software)).toEqual({ ...fallbackCache("chosen", 5, "3.2.5"), revertTo: "gl" });
+  });
+
+  it("puts Automatic on trial too, starting it on the ladder", () => {
+    const auto = pickCache(AUTOMATIC, "gles", 0);
+    expect(auto).toEqual({ backend: null, reason: null, since: null, launches: 0, revertTo: "gles" });
+    expect(roundTrip(auto)).toEqual(auto);
+    expect(launchBackend(ladder, choices, roundTrip(auto), null, 0)).toBe("gl");
+  });
+
+  it("writes Automatic with nothing to go back to as an empty cache", () => {
+    expect(pickCache(AUTOMATIC, AUTOMATIC, 0)).toEqual(automatic);
+    expect(parseBackendCache(formatBackendCache(pickCache(AUTOMATIC, undefined, 0)), choices)).toEqual(automatic);
+  });
+
+  it("isn't on trial when the pick is the selection it would go back to", () => {
+    expect(pickCache("gl", "gl", 0)).toEqual(chosenCache("gl", 0));
+  });
+
+  // Earlier versions read the first lines only, so the trial adds lines after them.
+  it("leaves the lines earlier versions read as they were", () => {
+    const [first, second] = formatBackendCache(pickCache("gles", AUTOMATIC, 0)).split("\n");
+    expect([first, second]).toEqual(["gles", "chosen"]);
+    const software = formatBackendCache(pickCache(SOFTWARE_BACKEND, AUTOMATIC, 5, "3.2.5")).split("\n");
+    expect(software.slice(0, 4)).toEqual([SOFTWARE_BACKEND, "chosen", "5 0", "3.2.5"]);
+  });
+
+  it("reads a selection to go back to that this session doesn't offer as Automatic", () => {
+    const pick = parseBackendCache(formatBackendCache(pickCache("gl", "vulkan", 0)), gpuLadder("linux", true));
+    expect(pick.revertTo).toBe(AUTOMATIC);
+  });
+
+  describe("what a change goes back to", () => {
+    const proven = chosenCache("gl", 0);
+    const trial = pickCache("vulkan", "gles", 0);
+
+    it("is this launch's selection once it was kept, or when it was never on trial", () => {
+      expect(revertTargetFor(proven, false, false)).toBe("gl");
+      expect(revertTargetFor(automatic, false, false)).toBe(AUTOMATIC);
+      expect(revertTargetFor(trial, true, false)).toBe("vulkan");
+    });
+
+    // Changing twice before a restart keeps the first selection that worked.
+    it("is what this launch would go back to while it is still on trial", () => {
+      expect(revertTargetFor(trial, false, false)).toBe("gles");
+    });
+
+    it("is never a selection that failed this session", () => {
+      expect(revertTargetFor(trial, false, true)).toBe("gles");
+      expect(revertTargetFor(proven, false, true)).toBe(AUTOMATIC);
+    });
+  });
+
+  it("stays on trial when the launch reaches ready, which isn't drawing yet", () => {
+    const pick = pickCache("vulkan", AUTOMATIC, 0);
+    expect(readyCache("vulkan", pick, 9)).toEqual(pick);
+    const auto = pickCache(AUTOMATIC, "gles", 0);
+    expect(readyCache("gl", auto, 9)).toEqual({ backend: "gl", reason: null, since: null, launches: 0, revertTo: "gles" });
+  });
+
+  it("keeps the pick once the user keeps it", () => {
+    expect(provenCache(pickCache("vulkan", AUTOMATIC, 0))).toEqual(chosenCache("vulkan", 0));
+    expect(provenCache(chosenCache("gl", 0))).toEqual(chosenCache("gl", 0));
+  });
+
+  it("goes back to the selection that worked, naming the one that didn't", () => {
+    const back = revertCache(pickCache("vulkan", "gl", 0), 7, "3.2.5");
+    expect(back).toEqual({ ...chosenCache("gl", 7), reverted: { from: "vulkan", because: "failed" } });
+    expect(roundTrip(back!)).toEqual(back);
+    expect(launchBackend(ladder, choices, roundTrip(back!), null, 0)).toBe("gl");
+    expect(revertCache(pickCache("gles", AUTOMATIC, 0), 7)).toEqual({
+      ...automatic,
+      reverted: { from: "gles", because: "failed" },
+    });
+    expect(revertCache(pickCache(AUTOMATIC, SOFTWARE_BACKEND, 0), 7, "3.2.5")).toEqual({
+      ...fallbackCache("chosen", 7, "3.2.5"),
+      reverted: { from: AUTOMATIC, because: "failed" },
+    });
+  });
+
+  // No error comes from a window that opens but draws nothing; nobody can see
+  // its Keep to press it, so the change goes back once the time is up.
+  it("goes back from a change nobody kept, and says so", () => {
+    expect(CONFIRM_WITHIN_MS).toBe(20_000);
+    const back = revertCache(pickCache("vulkan", "gl", 0), 7, "3.2.5", "unkept");
+    expect(back).toEqual({ ...chosenCache("gl", 7), reverted: { from: "vulkan", because: "unkept" } });
+    expect(roundTrip(back!)).toEqual(back);
+  });
+
+  // The user pressed Go back: they know why, so nothing is named.
+  it("goes back without a word when the user asks to", () => {
+    expect(revertCache(pickCache("vulkan", "gl", 0), 7, "3.2.5", null)).toEqual(chosenCache("gl", 7));
+  });
+
+  it("has nothing to go back to off trial", () => {
+    expect(revertCache(chosenCache("vulkan", 0), 7)).toBeNull();
+    expect(revertCache(automatic, 7)).toBeNull();
+  });
+
+  // The launch after going back says why once; its ready cache drops the note.
+  it("names the failed selection for one launch", () => {
+    const back = revertCache(pickCache("vulkan", "gl", 0), 7)!;
+    expect(readyCache("gl", back, 9)).toEqual(chosenCache("gl", 0));
+  });
+
+  it("ignores a reason it doesn't know, and a selection that isn't one", () => {
+    expect(parseBackendCache("gl\nchosen\n\n\nreverted-from vulkan sideways\n", choices).reverted).toEqual({
+      from: "vulkan",
+      because: "failed",
+    });
+    expect(parseBackendCache("gl\nchosen\n\n\nreverted-from nonsense\n", choices).reverted).toBeUndefined();
+  });
+
+  it("tells Preferences what a pick goes back to, what this launch went back from, and when to keep it by", () => {
+    expect(backendState("gl", pickCache("vulkan", AUTOMATIC, 0), ladder, 0, undefined, choices)).toMatchObject({
+      choice: "vulkan",
+      revertTo: AUTOMATIC,
+      reverted: null,
+      keepBy: null,
+    });
+    const reverted = { from: "vulkan", because: "unkept" };
+    expect(backendState("gl", chosenCache("gl", 0), ladder, 0, undefined, choices, { reverted })).toMatchObject({
+      choice: "gl",
+      revertTo: null,
+      reverted,
+      keepBy: null,
+    });
+    expect(backendState("vulkan", pickCache("vulkan", "gl", 0), ladder, 0, undefined, choices, { keepBy: 25_000 })).toMatchObject({
+      revertTo: "gl",
+      keepBy: 25_000,
+    });
   });
 });

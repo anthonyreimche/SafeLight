@@ -277,6 +277,23 @@ interface InterStageVariable {
 - A consumer ordered before its producer reads 0. A consumer whose producer is missing is left out of the program, with a warning.
 - Passes can't use them. Needs Safelight 3.0.1.
 
+### Ahead of the tone mapping: `anchor: "tone"`
+
+Every stage in `scene-linear` runs after the tone block: Basic's Exposure, Highlights and Shadows and the default highlight shoulder have already acted. A stage that works on exposure itself can run ahead of all that by naming the tone anchor:
+
+```typescript
+api.registerProcessingStage({
+  id: "acme.exposure", name: "Exposure", phase: "scene-linear", priority: 10, anchor: "tone",
+  uniforms: [{ key: "stops", glslType: "float", default: 0 }],
+  glsl: "if (stops != 0.0) lin *= exp2(stops);",
+});
+```
+
+- It runs on `lin`, linear Rec.709 with White Balance applied, with Safelight's own stages at the anchor (Basic's tone block) by priority: lower first, Basic's at the default 100.
+- It is written as your own namespaced block, like any stage. It can't declare `passes`, `space`, `mask`, `reads` or `produces`, and its phase must be `scene-linear`; registration refuses it otherwise. The other anchors stay Safelight's own.
+- As everywhere, it must change nothing at its defaults. `dormantWhen` keeps it out of the live view while it does nothing.
+- Needs Safelight 3.2.5. Older builds ignore the anchor (with a warning) and run the stage in `scene-linear`.
+
 ### Dormant stages: `dormantWhen`
 
 A stage that declares `dormantWhen` is left out of the live view's develop program while it has nothing to do, so an installed but untouched tool costs no shader time. The rule maps uniform keys to values: the stage is dormant while every listed uniform's value (the photo's, or its `default`) equals the given one. List the switches that make the stage an exact no-op, for example `{ amount: 0 }`.
@@ -284,6 +301,7 @@ A stage that declares `dormantWhen` is left out of the live view's develop progr
 - Once a stage is needed, it stays in the program for the rest of the session, so moving between photos doesn't rebuild it again and again.
 - Opening or hovering your panel starts building the program with your stages in it, in the background, so the first slider move rarely waits for a compile.
 - It applies to the live view on version 2 photos. Thumbnails, exports and version 1 photos run every stage, as before.
+- Each distinct set of stages is a program of its own, built the first time it is needed. Chromium keeps every program it builds, so a set seen before builds in milliseconds, in any window and after a restart. A few seconds after the stages change and Develop goes quiet, Safelight builds the program with every stage in, in the background, for exports and thumbnails.
 - Prepasses follow the same rule.
 - Declare it only where the stage is an exact no-op. Leaving a dormant stage out may differ from running it by float rounding, and nothing more.
 - The rule is ignored, with a warning, on `geometry` and `noise-reduction` stages, stages that `produces` values, and patch stages. It is also ignored on display stages without a `space`, whose input is clipped on version 2 photos, unless they are official Safelight extensions' stages, which never are. A malformed rule refuses the stage.

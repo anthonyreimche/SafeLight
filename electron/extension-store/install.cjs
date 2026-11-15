@@ -52,7 +52,11 @@ function parseRepoSpec(spec) {
  *     fetchBuffer(url: string): Promise<Buffer>,
  *     releaseLists: { get(repo: string, opts?: object): Promise<object[]> },
  *   },
+ *   underLock?: <T>(work: () => Promise<T>) => Promise<T>,
  * }} deps
+ *
+ * `underLock` runs the work that changes plugins/ and plugins-update/ exclusively;
+ * downloads and the trust/registry fetches stay outside it so installs overlap.
  */
 function createInstaller({
   pluginsDir,
@@ -61,6 +65,7 @@ function createInstaller({
   fetchTrustList,
   registryVersionsFor,
   releases,
+  underLock = (work) => work(),
 }) {
   const { fetchTarballFiles, fetchBuffer, releaseLists } = releases;
 
@@ -135,22 +140,24 @@ function createInstaller({
     });
     if (!contains(pluginsDir(), path.join(pluginsDir(), manifest.id)))
       throw new Error("Bad extension id");
-    // Windows and macOS folder names fold case, so this id would land on top of
-    // the installed one that only differs in case.
-    const lookalike = installedFolders().find(
-      (name) => name !== manifest.id && name.toLowerCase() === manifest.id.toLowerCase()
-    );
-    if (lookalike)
-      throw new Error(
-        `"${manifest.id}" can't be installed next to "${lookalike}": the two ids differ only in letter case. Uninstall "${lookalike}" first.`
+    await underLock(async () => {
+      // Windows and macOS folder names fold case, so this id would land on top of
+      // the installed one that only differs in case.
+      const lookalike = installedFolders().find(
+        (name) => name !== manifest.id && name.toLowerCase() === manifest.id.toLowerCase()
       );
-    // Atomic: the files land in a work folder first, and the current install is
-    // kept aside as prev until the renderer settles the update (plugin-files.cjs).
-    await replacePlugin({
-      pluginsDir: pluginsDir(),
-      workDir: pluginWorkDir(),
-      id: manifest.id,
-      files,
+      if (lookalike)
+        throw new Error(
+          `"${manifest.id}" can't be installed next to "${lookalike}": the two ids differ only in letter case. Uninstall "${lookalike}" first.`
+        );
+      // Atomic: the files land in a work folder first, and the current install is
+      // kept aside as prev until the renderer settles the update (plugin-files.cjs).
+      await replacePlugin({
+        pluginsDir: pluginsDir(),
+        workDir: pluginWorkDir(),
+        id: manifest.id,
+        files,
+      });
     });
     return manifest;
   }
@@ -160,12 +167,14 @@ function createInstaller({
       throw new Error("Bad extension id");
     if (outcome !== "keep" && outcome !== "rollback")
       throw new Error("Bad update outcome");
-    const restored = await settlePlugin({
-      pluginsDir: pluginsDir(),
-      workDir: pluginWorkDir(),
-      id: String(id),
-      outcome,
-    });
+    const restored = await underLock(() =>
+      settlePlugin({
+        pluginsDir: pluginsDir(),
+        workDir: pluginWorkDir(),
+        id: String(id),
+        outcome,
+      })
+    );
     // A restored copy that no longer parses is one listPlugins would skip too.
     return restored && validManifest(restored) ? restored : null;
   }
@@ -173,7 +182,9 @@ function createInstaller({
   async function uninstallPlugin(id) {
     if (!EXTENSION_ID.test(String(id)))
       throw new Error("Bad extension id");
-    return removePlugin({ pluginsDir: pluginsDir(), workDir: pluginWorkDir(), id: String(id) });
+    return underLock(() =>
+      removePlugin({ pluginsDir: pluginsDir(), workDir: pluginWorkDir(), id: String(id) })
+    );
   }
 
   return { installPlugin, settleUpdate, uninstallPlugin };

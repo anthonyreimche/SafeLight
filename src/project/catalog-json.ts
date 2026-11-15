@@ -3,16 +3,19 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// catalog.json's text, written the way JSON.stringify writes the catalogue, from
-// the text each photo record, history step and change stamp had when it was last
-// written. A save after one edit writes the one record or step that changed
-// instead of the whole catalogue.
+// catalog.json's text, written the way JSON.stringify writes the catalogue with
+// each edit history packed (catalog/history-pack.ts), from the text each photo
+// record, history step and change stamp had when it was last written. A save after
+// one edit writes the one record or step that changed instead of the whole
+// catalogue.
 //
 // The text is kept per object, so it relies on what the storage holds being
 // replaced on a change, never changed in place: records, history steps and
-// stamps all are.
+// stamps all are. A step stored as its changes is written again when the step
+// before it is another object.
 
 import { storedPhoto, type CatalogPhoto, type StoredPhoto } from "@/catalog/types";
+import { deltaStep, isBaseIndex } from "@/catalog/history-pack";
 import type { CatalogFile } from "./catalog-file";
 
 /** A catalogue to write: its photos as the storage holds them, whose handles and
@@ -25,6 +28,7 @@ type Fields = Record<string, unknown>;
 
 const photoTexts = new WeakMap<object, string>();
 const stepTexts = new WeakMap<object, string>();
+const deltaTexts = new WeakMap<object, { prev: object; text: string }>();
 const stampTexts = new WeakMap<object, string>();
 
 /** JSON.stringify, which writes nothing (undefined) for a value JSON leaves out. */
@@ -78,12 +82,31 @@ function photoText(record: Fields): string {
   return remembered(photoTexts, record, () => JSON.stringify(storedPhoto(record as unknown as CatalogPhoto)));
 }
 
+/** A history's text, packed as history-pack's packStep packs it: each step whole
+ *  or as its changes from the one before, each written once for as long as it and that step stay. */
+function stackText(stack: readonly unknown[]): string {
+  const parts: string[] = [];
+  let prev: unknown = undefined;
+  for (let i = 0; i < stack.length; i++) {
+    const step = serialized(String(i), stack[i]);
+    if (!isFields(step)) parts.push(json(step) ?? "null");
+    else if (isBaseIndex(i) || !isFields(prev)) parts.push(remembered(stepTexts, step, () => JSON.stringify(step)));
+    else parts.push(deltaText(prev, step));
+    prev = step;
+  }
+  return `[${parts.join(",")}]`;
+}
+
+function deltaText(prev: Fields, step: Fields): string {
+  const held = deltaTexts.get(step);
+  if (held?.prev === prev) return held.text;
+  const text = JSON.stringify(deltaStep(prev, step));
+  deltaTexts.set(step, { prev, text });
+  return text;
+}
+
 function editText(edit: Fields): string {
-  return objectText(edit, (key, value) =>
-    key === "stack" && Array.isArray(value)
-      ? arrayText(value, (step) => remembered(stepTexts, step, () => JSON.stringify(step)))
-      : json(value),
-  );
+  return objectText(edit, (key, value) => (key === "stack" && Array.isArray(value) ? stackText(value) : json(value)));
 }
 
 function stampsText(stamps: Fields): string {
@@ -114,7 +137,10 @@ export function catalogText(data: CatalogData): string {
  *  in place (an extension holds the same objects), so a step put again is written
  *  anew. Costs one photo's history per put, not the catalogue's. */
 export function forgetStepTexts(stack: readonly object[]): void {
-  for (const step of stack) stepTexts.delete(step);
+  for (const step of stack) {
+    stepTexts.delete(step);
+    deltaTexts.delete(step);
+  }
 }
 
 /** `to` was made from the held record `from` with only its handles or preview

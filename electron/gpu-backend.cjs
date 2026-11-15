@@ -37,17 +37,54 @@ function gpuLadder(platform, isWayland) {
   return angleBackends(isWayland);
 }
 
+/** WARP is Microsoft's Direct3D drawn on the processor. */
+const WARP_BACKEND = "d3d11-warp";
+
+/** The backends Preferences offers, software last: on Windows also Direct3D 11
+ *  on 12, OpenGL and WARP, each checked in Safelight (Vulkan and Direct3D 9 give
+ *  no WebGL2 there); on macOS also OpenGL, as Chromium's own backend menu has.
+ *  Linux's ladder already holds every backend Chromium has there. Automatic
+ *  keeps to gpuLadder. */
+function backendChoices(platform, isWayland) {
+  if (platform === "win32") return ["d3d11", "d3d11on12", "gl", WARP_BACKEND, SOFTWARE_BACKEND];
+  if (platform === "darwin") return ["metal", "gl", SOFTWARE_BACKEND];
+  return gpuLadder(platform, isWayland);
+}
+
+/** The backend this launch starts on: a probe relaunch's rung, else a pick
+ *  Preferences offers (one Automatic doesn't try included), else Automatic's
+ *  rung for the cache. */
+function launchBackend(ladder, choices, cache, relaunchIdx, now, version) {
+  if (relaunchIdx === null && cache.reason === "chosen" && choices.includes(cache.backend)) return cache.backend;
+  return ladder[startRung(ladder, cache, relaunchIdx, now, version)];
+}
+
 /** The command-line switches, as [name, value?], that select `backend`.
  *  Hardware rungs ignore Chromium's GPU blocklist, which would otherwise drop a
  *  listed driver to software compositing; the software rung leaves it alone so
  *  a blocklisted driver isn't forced back into play. Metal is Chromium's own
- *  default on macOS, so that rung names no backend. */
+ *  default on macOS, so that rung names no backend. The software rung
+ *  composites on the processor, as Chromium's own software mode does: a window
+ *  composited through SwiftShader stayed empty on Windows. */
 function angleSwitches(backend) {
   if (backend === SOFTWARE_BACKEND) {
-    return [["use-gl", "angle"], ["use-angle", SOFTWARE_BACKEND], ["enable-unsafe-swiftshader"]];
+    return [
+      ["use-gl", "angle"],
+      ["use-angle", SOFTWARE_BACKEND],
+      ["enable-unsafe-swiftshader"],
+      ["disable-gpu-compositing"],
+    ];
   }
   const select = backend === "metal" ? [] : [["use-angle", backend]];
   return [...select, ["ignore-gpu-blocklist"]];
+}
+
+/** Speed-ups that need a graphics card: the faster of two cards, the page drawn
+ *  on it, and uploads straight to its memory. None in software or WARP, which
+ *  draw on the processor. */
+function graphicsCardSwitches(backend) {
+  if (backend === SOFTWARE_BACKEND || backend === WARP_BACKEND) return [];
+  return [["force_high_performance_gpu"], ["enable-gpu-rasterization"], ["enable-zero-copy"]];
 }
 
 /** Whether app.getGPUFeatureStatus() says WebGL2 is off or unavailable. WebGL
@@ -78,29 +115,58 @@ function rendererFallbackFor(ladder, backend) {
 // Preferences, or this machine failed on the graphics card and is in software.
 const SOFTWARE_REASONS = new Set(["chosen", "webgl2-unavailable", "gpu-crashes", "renderer-failed"]);
 
+// The trial lines, from the fifth line on: the selection a change in Preferences
+// goes back to if it isn't kept, and the change that went back and why, which
+// the launch after going back names.
+const REVERT_TO = "revert-to";
+const REVERTED_FROM = "reverted-from";
+const UNKEPT = "unkept";
+
+/** How long the first window on a changed backend has for the user to keep it.
+ *  A window that opens but draws nothing reports no error, and nobody can press
+ *  Keep in it. */
+const CONFIRM_WITHIN_MS = 20_000;
+
 /** The cache file's text: the backend on the first line; for software the
  *  reason on the second, on the third when software began (epoch ms) and how
  *  many launches have used it since, and on the fourth the app version that
- *  put it there. Earlier versions read only the first three lines. */
-function formatBackendCache({ backend, reason, since, launches, version }) {
-  if (since === null) return reason ? `${backend}\n${reason}\n` : `${backend}\n`;
-  return `${backend}\n${reason || ""}\n${since} ${launches}\n${version ? `${version}\n` : ""}`;
+ *  put it there. A change on trial adds its lines after those four, which are
+ *  then padded out. Earlier versions read only the first four lines. */
+function formatBackendCache({ backend, reason, since, launches, version, revertTo, reverted }) {
+  const head =
+    since === null
+      ? [backend ?? "", ...(reason ? [reason] : [])]
+      : [backend, reason || "", `${since} ${launches}`, ...(version ? [version] : [])];
+  const trial = [
+    ...(revertTo === undefined ? [] : [`${REVERT_TO} ${revertTo}`]),
+    ...(reverted === undefined ? [] : [`${REVERTED_FROM} ${reverted.from}${reverted.because === UNKEPT ? ` ${UNKEPT}` : ""}`]),
+  ];
+  if (trial.length === 0) return `${head.join("\n")}\n`;
+  return `${[...head, ...Array(4 - head.length).fill(""), ...trial].join("\n")}\n`;
 }
 
-/** Every backend any platform's ladder names. */
-const ALL_BACKENDS = ["gl", "gles", "vulkan", "d3d11", "metal", SOFTWARE_BACKEND];
+/** Every backend any platform's ladder or picks name. */
+const ALL_BACKENDS = ["gl", "gles", "vulkan", "d3d11", "d3d11on12", WARP_BACKEND, "metal", SOFTWARE_BACKEND];
+
+/** The Preferences entry that lets Safelight pick the backend itself. */
+const AUTOMATIC = "auto";
 
 /** The backend the cache names, if `backends` has it, a known reason, the
  *  software clock, and the app version when one was stored. A backend the user
  *  picked that this ladder lacks (Vulkan, picked under X11, read in a Wayland
  *  session) comes back as `elsewhere`, so the launch neither starts on it nor
- *  writes over it. */
+ *  writes over it. A selection to go back to that `backends` lacks reads as
+ *  Automatic. */
 function parseBackendCache(text, backends) {
-  const [first = "", second = "", third = "", fourth = ""] = String(text).split(/\r?\n/).map((line) => line.trim());
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim());
+  const [first = "", second = "", third = "", fourth = ""] = lines;
   const backend = backends.includes(first) ? first : null;
   const reason = backend && SOFTWARE_REASONS.has(second) ? second : null;
   const clock = backend ? /^(\d+) (\d+)$/.exec(third) : null;
   const elsewhere = !backend && ALL_BACKENDS.includes(first) && second === "chosen" ? first : null;
+  const trialLine = (key) => lines.slice(4).find((line) => line.startsWith(`${key} `))?.slice(key.length + 1).trim();
+  const revertTo = trialLine(REVERT_TO);
+  const [revertedFrom, because] = trialLine(REVERTED_FROM)?.split(/\s+/) ?? [];
   return {
     backend,
     reason,
@@ -108,22 +174,32 @@ function parseBackendCache(text, backends) {
     launches: clock ? Number(clock[2]) : 0,
     ...(clock && fourth ? { version: fourth } : {}),
     ...(elsewhere ? { elsewhere } : {}),
+    ...(revertTo === undefined ? {} : { revertTo: backends.includes(revertTo) ? revertTo : AUTOMATIC }),
+    ...(revertedFrom === AUTOMATIC || ALL_BACKENDS.includes(revertedFrom)
+      ? { reverted: { from: revertedFrom, because: because === UNKEPT ? UNKEPT : "failed" } }
+      : {}),
   };
 }
 
 /** What Preferences shows: the backend this launch draws with and the one the
  *  next starts on, whether either is software and why, the backend the user
- *  picked (null for Automatic), and the ones this platform can pick from. */
-function backendState(current, next, ladder, now, version) {
+ *  picked (null for Automatic), the ones this platform can pick from, the
+ *  selection a change on trial goes back to, the change this launch went back
+ *  from and why, and when a change this launch is trying goes back unless kept
+ *  (epoch ms). */
+function backendState(current, next, ladder, now, version, choices = ladder, { reverted = null, keepBy = null } = {}) {
   const nextSoftware = next.backend === SOFTWARE_BACKEND;
   return {
     software: current === SOFTWARE_BACKEND,
     nextSoftware,
     reason: nextSoftware ? next.reason : null,
     backend: current,
-    next: ladder[startRung(ladder, next, null, now, version)],
+    next: launchBackend(ladder, choices, next, null, now, version),
     choice: next.reason === "chosen" ? next.backend : null,
-    backends: ladder,
+    backends: choices,
+    revertTo: next.revertTo ?? null,
+    reverted,
+    keepBy,
   };
 }
 
@@ -171,14 +247,57 @@ function startRung(ladder, cache, relaunchIdx, now, version) {
  *  relaunching past each crashed rung is due a retry soon: on a two-rung
  *  ladder that can be a single passing crash. */
 function readyCache(backend, cache, now) {
+  const { reverted, ...kept } = cache;
+  const trial = kept.revertTo === undefined ? {} : { revertTo: kept.revertTo };
   if (backend !== SOFTWARE_BACKEND) {
-    const picked = cache.backend === backend && cache.reason === "chosen";
-    return { backend, reason: picked ? "chosen" : null, since: null, launches: 0 };
+    const picked = kept.backend === backend && kept.reason === "chosen";
+    return { backend, reason: picked ? "chosen" : null, since: null, launches: 0, ...trial };
   }
-  if (cache.backend === SOFTWARE_BACKEND) {
-    return { ...cache, since: cache.since === null ? now : cache.since, launches: cache.launches + 1 };
+  if (kept.backend === SOFTWARE_BACKEND) {
+    return { ...kept, since: kept.since === null ? now : kept.since, launches: kept.launches + 1 };
   }
-  return { backend, reason: "gpu-crashes", since: now, launches: RETRY_AFTER_LAUNCHES - 1 };
+  return { backend, reason: "gpu-crashes", since: now, launches: RETRY_AFTER_LAUNCHES - 1, ...trial };
+}
+
+/** The Preferences entry a cache stands for: the backend the user picked, or
+ *  Automatic. */
+function selectionOf(cache) {
+  return cache.reason === "chosen" && cache.backend ? cache.backend : AUTOMATIC;
+}
+
+/** The cache for a change made in Preferences, on trial until the user keeps
+ *  it: `revertTo` is where the next launch goes if it isn't kept. Not on trial
+ *  when that is the selection itself. */
+function pickCache(selection, revertTo, now, version) {
+  const cache =
+    selection === AUTOMATIC ? { backend: null, reason: null, since: null, launches: 0 } : chosenCache(selection, now, version);
+  return revertTo === undefined || revertTo === selection ? cache : { ...cache, revertTo };
+}
+
+/** Where a change made now goes back to if it isn't kept: this launch's
+ *  selection once it was kept, or when it was never on trial; while it is still
+ *  on trial, wherever it would go back to; and never a selection that failed
+ *  this session. */
+function revertTargetFor(cache, kept, failed) {
+  if (failed) return cache.revertTo ?? AUTOMATIC;
+  if (kept || cache.revertTo === undefined) return selectionOf(cache);
+  return cache.revertTo;
+}
+
+/** The cache that sends the next launch back to the selection a change on
+ *  trial came from, naming the change and `because` ("failed", or "unkept"
+ *  when its time ran out); null `because` when the user asked to go back, who
+ *  needs no word. Null off trial. */
+function revertCache(cache, now, version, because = "failed") {
+  if (cache.revertTo === undefined) return null;
+  const back = pickCache(cache.revertTo, undefined, now, version);
+  return because === null ? back : { ...back, reverted: { from: selectionOf(cache), because } };
+}
+
+/** The cache once the user has kept it: off trial. */
+function provenCache(cache) {
+  const { revertTo, ...proven } = cache;
+  return proven;
 }
 
 /** The software cache written when a session finds the graphics card unusable,
@@ -223,7 +342,17 @@ module.exports = {
   RETRY_AFTER_MS,
   angleBackends,
   gpuLadder,
+  backendChoices,
+  launchBackend,
+  CONFIRM_WITHIN_MS,
+  AUTOMATIC,
+  selectionOf,
+  pickCache,
+  revertTargetFor,
+  revertCache,
+  provenCache,
   angleSwitches,
+  graphicsCardSwitches,
   webgl2Lost,
   softwareFallbackFor,
   rendererFallbackFor,

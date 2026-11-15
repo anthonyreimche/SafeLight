@@ -74,6 +74,43 @@ describe("App", () => {
   });
 });
 
+describe("App while a project opens", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useProjectStore.setState({ root: null, opening: true, openingName: "Rome", importDone: 0, importTotal: 0 });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    useProjectStore.setState({ opening: false, openingName: "" });
+  });
+
+  it("shows the opening veil in place of the welcome grid and an empty module", () => {
+    registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
+    useUIStore.setState({ activeModule: "map" });
+    render(<App />);
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.getByRole("status").textContent).toContain("Opening Rome");
+    expect(screen.queryByText("map-main")).toBeNull();
+    expect(screen.queryByText("Recent projects")).toBeNull();
+    unregisterExtension("ext");
+  });
+
+  it("shows the import progress and is gone once the root is set", () => {
+    registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
+    useUIStore.setState({ activeModule: "map" });
+    render(<App />);
+    act(() => vi.advanceTimersByTime(300));
+    act(() => useProjectStore.setState({ importDone: 5, importTotal: 10 }));
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("50");
+    act(() =>
+      useProjectStore.setState({ root: { name: "shoot" } as unknown as FileSystemDirectoryHandle }),
+    );
+    expect(screen.queryByText(/Opening Rome/)).toBeNull();
+    expect(screen.getByText("map-main")).toBeTruthy();
+    unregisterExtension("ext");
+  });
+});
+
 describe("App without Library and Develop installed", () => {
   beforeEach(() => useExternalPluginsSettled.setState({ settled: true }));
   afterEach(() => useExternalPluginsSettled.setState({ settled: false }));

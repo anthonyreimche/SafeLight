@@ -32,7 +32,7 @@ const writer = {
   },
 };
 
-type Manifest = { id: string; name: string; permissions?: { userOrigins?: boolean } };
+type Manifest = { id: string; name: string; permissions?: { userOrigins?: boolean; network?: string[] } };
 
 function rig(
   opts: { manifests?: Manifest[]; consent?: boolean; fetchImpl?: typeof fetch; userData?: string; maxBodyBytes?: number } = {},
@@ -357,5 +357,127 @@ describe("the net:* channels", () => {
     expect(options.buttons).toEqual(["Allow", "Don't allow"]);
     const has = channels.find((c) => c.channel === "net:hasOrigin")!.handler;
     await expect(has({}, "ext.immich", "http://nas:2283")).resolves.toBe(true);
+  });
+});
+
+// An origin the extension's own manifest names in permissions.network was
+// shown to the person at install, and the page's CSP already lets the
+// extension reach it. Through the main process it reaches it without asking
+// and without the server having to answer CORS, which some APIs' content hosts
+// never do.
+describe("origins the manifest declares", () => {
+  const google = {
+    id: "ext.google",
+    name: "Google Photos",
+    permissions: {
+      network: ["https://oauth2.googleapis.com", "https://*.googleusercontent.com", "wss://live.example.com"],
+    },
+  };
+
+  it("are reached without asking, and count as allowed", async () => {
+    const { access, showConsent, fetchImpl } = rig({ manifests: [google] });
+    await expect(access.has("ext.google", "https://oauth2.googleapis.com/token")).resolves.toBe(true);
+    await expect(access.request(null, "ext.google", "https://oauth2.googleapis.com")).resolves.toBe(true);
+    const res = await access.fetch("ext.google", "r1", "https://oauth2.googleapis.com/token", { method: "POST", body: "a=b" });
+    expect(res).toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(showConsent).not.toHaveBeenCalled();
+  });
+
+  it("match a wildcard at any subdomain depth but not the bare domain, at the default port only", async () => {
+    const { access } = rig({ manifests: [google] });
+    await expect(access.has("ext.google", "https://lh3.googleusercontent.com/x")).resolves.toBe(true);
+    await expect(access.has("ext.google", "https://a.b.googleusercontent.com/x")).resolves.toBe(true);
+    await expect(access.has("ext.google", "https://googleusercontent.com/x")).resolves.toBe(false);
+    await expect(access.has("ext.google", "https://evilgoogleusercontent.com/x")).resolves.toBe(false);
+    await expect(access.has("ext.google", "https://lh3.googleusercontent.com:8443/x")).resolves.toBe(false);
+    await expect(access.has("ext.google", "http://lh3.googleusercontent.com/x")).resolves.toBe(false);
+  });
+
+  it("are the extension's own: another extension still has to ask", async () => {
+    const { access, fetchImpl } = rig({ manifests: [google, { id: "ext.other", name: "Other" }] });
+    const res = await access.fetch("ext.other", "r1", "https://oauth2.googleapis.com/token", {});
+    expect(res).toEqual({ error: { kind: "refused", message: expect.any(String) } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("don't let a wildcard over a bare top-level domain reach everything under it", async () => {
+    const broad = { id: "ext.broad", name: "Broad", permissions: { network: ["https://*.com"] } };
+    const { access } = rig({ manifests: [broad] });
+    await expect(access.has("ext.broad", "https://bank.com")).resolves.toBe(false);
+  });
+
+  it("never match an IP address with a wildcard, as the CSP never does", async () => {
+    const ips = { id: "ext.ips", name: "IPs", permissions: { network: ["https://*.0.1", "https://*.168.1.20"] } };
+    const { access } = rig({ manifests: [ips] });
+    await expect(access.has("ext.ips", "https://127.0.0.1")).resolves.toBe(false);
+    await expect(access.has("ext.ips", "https://192.168.1.20")).resolves.toBe(false);
+  });
+
+  it("drop the Authorization header when a redirect leaves the origin, as fetch does", async () => {
+    const hops = [
+      new Response(null, { status: 302, headers: { location: "/same" } }),
+      new Response(null, { status: 302, headers: { location: "https://lh5.googleusercontent.com/b" } }),
+      new Response("bytes", { status: 200 }),
+    ];
+    const { access, fetchImpl } = rig({ manifests: [google], fetchImpl: async () => hops.shift()! });
+    const res = await access.fetch("ext.google", "r1", "https://lh3.googleusercontent.com/a", {
+      headers: { Authorization: "Bearer t", "Proxy-Authorization": "p", Accept: "image/*" },
+    });
+    expect(res).toMatchObject({ status: 200 });
+    const sent = fetchImpl.mock.calls.map((c) => (c[1] as RequestInit).headers);
+    expect(sent[0]).toEqual({ Authorization: "Bearer t", "Proxy-Authorization": "p", Accept: "image/*" });
+    expect(sent[1]).toEqual({ Authorization: "Bearer t", "Proxy-Authorization": "p", Accept: "image/*" });
+    expect(sent[2]).toEqual({ Accept: "image/*" });
+  });
+
+  it("leave wss and malformed entries out of plain requests", async () => {
+    const odd = { id: "ext.odd", name: "Odd", permissions: { network: ["wss://live.example.com", "*", "https://*", "http://x.example"] } };
+    const { access } = rig({ manifests: [odd] });
+    await expect(access.has("ext.odd", "https://live.example.com")).resolves.toBe(false);
+    await expect(access.has("ext.odd", "https://anything.example")).resolves.toBe(false);
+    await expect(access.has("ext.odd", "http://x.example")).resolves.toBe(false);
+  });
+
+  it("follow a redirect to another declared origin, and refuse one to an undeclared origin", async () => {
+    const hops = [
+      new Response(null, { status: 302, headers: { location: "https://lh5.googleusercontent.com/b" } }),
+      new Response(null, { status: 302, headers: { location: "https://elsewhere.example/c" } }),
+    ];
+    const { access, fetchImpl } = rig({ manifests: [google], fetchImpl: async () => hops.shift()! });
+    const res = await access.fetch("ext.google", "r1", "https://lh3.googleusercontent.com/a", {
+      headers: { Authorization: "Bearer t" },
+    });
+    expect(res).toEqual({ error: { kind: "refused", message: expect.stringContaining("another address") } });
+    expect(fetchImpl.mock.calls.map((c) => String(c[0]))).toEqual([
+      "https://lh3.googleusercontent.com/a",
+      "https://lh5.googleusercontent.com/b",
+    ]);
+  });
+
+  it("can't be revoked: the manifest grants them", async () => {
+    const { access } = rig({ manifests: [google] });
+    await access.revoke("ext.google", "https://oauth2.googleapis.com");
+    await expect(access.has("ext.google", "https://oauth2.googleapis.com")).resolves.toBe(true);
+  });
+});
+
+describe("reading the declared origins", () => {
+  it("reads an extension's manifest once per launch, like the CSP, and again after an uninstall", async () => {
+    const manifests = [{ id: "ext.google", name: "Google Photos", permissions: { network: ["https://oauth2.googleapis.com"] } }];
+    const userData = tempDir();
+    const findManifest = vi.fn(async (id: string) => manifests.find((m) => m.id === id) ?? null);
+    const access = createNetAccess({
+      userData: () => userData,
+      fileWriter: writer,
+      findManifest,
+      showConsent: async () => false,
+      fetchImpl: async () => new Response("ok"),
+    });
+    for (let i = 0; i < 3; i++) await access.fetch("ext.google", `r${i}`, "https://oauth2.googleapis.com/token", {});
+    expect(findManifest).toHaveBeenCalledTimes(1);
+    await access.forget("ext.google");
+    await access.has("ext.google", "https://oauth2.googleapis.com");
+    expect(findManifest).toHaveBeenCalledTimes(2);
   });
 });

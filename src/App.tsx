@@ -28,6 +28,7 @@ import {
   initFirstRun,
   useSetupStore,
 } from "@/modules/welcome/setup/setup-store";
+import { OpeningVeil } from "@/ui/components/OpeningVeil";
 import { BottomBanners } from "@/ui/components/BottomBanners";
 
 function renderModule(module: AppModule) {
@@ -149,7 +150,7 @@ export function App() {
 
   return (
     <>
-      {renderModule(activeModule)}
+      {opening && !root ? <OpeningVeil /> : renderModule(activeModule)}
       <SetupFlow />
       <PreferencesDialog />
       <ExtensionsDialog />

@@ -20,8 +20,20 @@ export interface GraphicsState {
   software: boolean | null;
   /** The next launch draws in software. Null as for `software`. */
   nextSoftware: boolean | null;
+  /** Why the next launch draws in software; null when it uses the graphics card. */
+  softwareReason: NativeGpuBackendState["reason"];
   /** The notice was dismissed; it stays away for the rest of the session. */
   noticeDismissed: boolean;
+  /** As `noticeDismissed`, for the notice that Safelight moved to software. */
+  softwareNoticeDismissed: boolean;
+  /** A graphics backend change this launch went back from, why, and the
+   *  selection it went back to; null otherwise. */
+  revert: { from: string; to: string; because: "failed" | "unkept" } | null;
+  /** The change this launch is trying: the backend drawing, the selection it
+   *  goes back to, and when unless kept (epoch ms); null otherwise. */
+  keep: { drawing: string; back: string; by: number } | null;
+  /** As `noticeDismissed`, for the notice that a change was undone. */
+  revertNoticeDismissed: boolean;
 }
 
 export const useGraphics = create<GraphicsState>(() => ({
@@ -29,8 +41,51 @@ export const useGraphics = create<GraphicsState>(() => ({
   reason: null,
   software: null,
   nextSoftware: null,
+  softwareReason: null,
   noticeDismissed: false,
+  softwareNoticeDismissed: false,
+  revert: null,
+  revertNoticeDismissed: false,
+  keep: null,
 }));
+
+/** Preferences' Automatic entry, as the GPU bridge names it. */
+export const AUTOMATIC = "auto";
+
+const BACKEND_LABEL: Record<string, string> = {
+  [AUTOMATIC]: "Automatic",
+  gl: "OpenGL",
+  gles: "OpenGL ES",
+  vulkan: "Vulkan",
+  d3d11: "Direct3D 11",
+  d3d11on12: "Direct3D 11 on 12",
+  "d3d11-warp": "WARP (processor)",
+  metal: "Metal",
+  swiftshader: "SwiftShader (processor)",
+};
+
+/** A graphics backend, or Automatic, as Preferences names it. */
+export const backendLabel = (backend: string): string => BACKEND_LABEL[backend] ?? backend;
+
+/** What the user reads once a backend change was undone. */
+export function revertSentence(from: string, to: string, because: "failed" | "unkept"): string {
+  const what =
+    because === "unkept" ? `${backendLabel(from)} wasn't kept within 20 seconds` : `${backendLabel(from)} didn't work on this computer`;
+  return `${what}, so Safelight went back to ${backendLabel(to)}.`;
+}
+
+/** Software Safelight moved to by itself, as against software the user picked. */
+export type SoftwareFallback = Exclude<NativeGpuBackendState["reason"], "chosen" | null>;
+
+export const SOFTWARE_REASON: Record<SoftwareFallback, string> = {
+  "webgl2-unavailable": "Safelight switched to software because the graphics card couldn't run WebGL2.",
+  "gpu-crashes": "Safelight switched to software because the graphics driver kept crashing.",
+  "renderer-failed": "Safelight switched to software because the graphics driver couldn't run its photo renderer.",
+};
+
+export const GRAPHICS_CHANGE_FAILED = "Couldn't change the graphics setting.";
+
+export const RESTART_FAILED = "Couldn't restart Safelight. Close it and open it again.";
 
 export const GRAPHICS_UNAVAILABLE = "This computer can't run Safelight's image engine.";
 
@@ -70,7 +125,18 @@ export function probeGraphics(): GraphicsState {
 }
 
 function takeBackend(state: NativeGpuBackendState | null): void {
-  if (state) useGraphics.setState({ software: state.software, nextSoftware: state.nextSoftware });
+  if (state) {
+    useGraphics.setState({
+      software: state.software,
+      nextSoftware: state.nextSoftware,
+      softwareReason: state.reason,
+      revert: state.reverted ? { ...state.reverted, to: state.choice ?? AUTOMATIC } : null,
+      keep:
+        state.keepBy !== null && state.revertTo !== null
+          ? { drawing: state.backend, back: state.revertTo, by: state.keepBy }
+          : null,
+    });
+  }
 }
 
 export async function readGpuBackend(): Promise<void> {
@@ -98,4 +164,36 @@ export async function trySoftwareRendering(): Promise<void> {
 
 export function dismissGraphicsNotice(): void {
   useGraphics.setState({ noticeDismissed: true });
+}
+
+export function dismissSoftwareNotice(): void {
+  useGraphics.setState({ softwareNoticeDismissed: true });
+}
+
+export function dismissRevertNotice(): void {
+  useGraphics.setState({ revertNoticeDismissed: true });
+}
+
+/** Keeps the graphics backend change this launch is trying. Throws when the bridge does. */
+export async function keepGraphicsChange(): Promise<void> {
+  takeBackend((await privilegedGpu()?.keepChange()) ?? null);
+}
+
+/** The window can't start WebGL2 on the change this launch is trying: main
+ *  sends the next launch back to the selection that last worked and offers
+ *  the restart. Throws when the bridge does. */
+export async function failGraphicsChange(detail: string): Promise<void> {
+  takeBackend((await privilegedGpu()?.rendererFailed(detail)) ?? null);
+}
+
+/** Restarts Safelight, so a graphics change waiting on the next start applies.
+ *  Throws when the bridge does. */
+export async function restartSafelight(): Promise<void> {
+  await privilegedGpu()?.restart();
+}
+
+/** Goes back from the graphics backend change this launch is trying; main
+ *  restarts Safelight. Throws when the bridge does. */
+export async function undoGraphicsChange(): Promise<void> {
+  takeBackend((await privilegedGpu()?.revertChange()) ?? null);
 }

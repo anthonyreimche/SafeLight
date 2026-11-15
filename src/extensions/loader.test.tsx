@@ -23,6 +23,7 @@ import "./host";
 import type {
   ExtensionManifest,
   ExtensionModule,
+  NativeMirrorBridge,
   NativePluginsBridge,
   SafelightAPI,
 } from "./types";
@@ -72,9 +73,11 @@ vi.mock("./plugin-module", () => ({ importPluginModule: vi.fn() }));
 // The install bridge is the privileged one core claims at boot, not part of
 // window.safelightNative.
 let privilegedBridge: NativePluginsBridge | null = null;
+let mirrorBridge: NativeMirrorBridge | null = null;
 vi.mock("@/native/privileged", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/native/privileged")>()),
   privilegedPlugins: () => privilegedBridge,
+  privilegedMirror: () => mirrorBridge,
 }));
 
 const ID = "acme.widget";
@@ -1725,5 +1728,139 @@ describe("an installed extension and a dev-folder copy of its id", () => {
     expect(dev.deactivate).not.toHaveBeenCalled();
     expect(devSheet()).toBe(true);
     expect(getExtSetting(ID, "tone", 0)).toBe(3);
+  });
+});
+
+// The list of extensions turned off lives in a file main keeps (shared with
+// slu); localStorage stays the synchronous copy boot reads first.
+describe("the turned-off list in the shared file", () => {
+  let file: string[] | null;
+  let readDisabled: Mock<() => Promise<string[] | null>>;
+  let writeDisabled: Mock<(ids: string[]) => Promise<void>>;
+  const persistLocal = (ids: string[]) => {
+    localStorage.setItem("sl_ext_disabled", JSON.stringify(ids));
+    useDisabledExtensions.setState({ ids });
+  };
+  const localList = () => JSON.parse(localStorage.getItem("sl_ext_disabled") ?? "null");
+
+  beforeEach(() => {
+    file = null;
+    readDisabled = vi.fn(async () => file);
+    writeDisabled = vi.fn(async (ids: string[]) => {
+      file = [...ids];
+    });
+    privilegedBridge = { install, uninstall: vi.fn(async () => {}), settleUpdate, readDisabled, writeDisabled };
+    serve({ "1.0.0": bundle() });
+  });
+
+  it("is started from this profile's list, once, when there is no file yet", async () => {
+    persistLocal([ID, "acme.other"]);
+    await loadExternalPlugins();
+    expect(writeDisabled).toHaveBeenCalledOnce();
+    expect(file).toEqual([ID, "acme.other"]);
+    expect(live()).toBe(false);
+
+    await loadExternalPlugins();
+    expect(writeDisabled).toHaveBeenCalledOnce();
+  });
+
+  it("overrides the localStorage copy at boot, before any installed extension starts", async () => {
+    persistLocal([]);
+    file = [ID];
+    await loadExternalPlugins();
+    expect(importer).not.toHaveBeenCalled();
+    expect(live()).toBe(false);
+    expect(useDisabledExtensions.getState().ids).toEqual([ID]);
+    expect(localList()).toEqual([ID]);
+    expect(writeDisabled).not.toHaveBeenCalled();
+  });
+
+  it("turns on at boot what the file no longer lists", async () => {
+    persistLocal([ID]);
+    file = [];
+    await loadExternalPlugins();
+    expect(live()).toBe(true);
+    expect(useDisabledExtensions.getState().ids).toEqual([]);
+    expect(localList()).toEqual([]);
+  });
+
+  it("turns off a built-in the file lists", async () => {
+    const builtin: BuiltinExtension = {
+      id: "core.extra",
+      name: "Extra",
+      version: "1.0.0",
+      activate: (api) => api.registerStylesheet({ id: "core.extra.css", css: ".x{}" }),
+      deactivate: vi.fn(),
+    };
+    BUILTIN_EXTENSIONS.push(builtin);
+    try {
+      persistLocal([]);
+      loadBuiltins();
+      expect("core.extra.css" in useRegistry.getState().stylesheets).toBe(true);
+      file = ["core.extra"];
+      await loadExternalPlugins();
+      expect(builtin.deactivate).toHaveBeenCalledOnce();
+      expect("core.extra.css" in useRegistry.getState().stylesheets).toBe(false);
+    } finally {
+      BUILTIN_EXTENSIONS.splice(BUILTIN_EXTENSIONS.indexOf(builtin), 1);
+      unregisterExtension("core.extra");
+    }
+  });
+
+  it("is written when an extension is turned off or on, keeping a change slu made meanwhile", async () => {
+    file = [];
+    await loadExternalPlugins();
+    file = ["acme.cli"];
+    await setExtensionEnabled(ID, false);
+    await vi.waitFor(() => expect(file).toEqual(["acme.cli", ID]));
+    expect(localList()).toEqual([ID]);
+    await setExtensionEnabled(ID, true);
+    await vi.waitFor(() => expect(file).toEqual(["acme.cli"]));
+  });
+
+  it("keeps a change made at boot before the file was read", async () => {
+    file = ["acme.cli"];
+    persistLocal([]);
+    await setExtensionEnabled(ID, false);
+    await loadExternalPlugins();
+    expect(useDisabledExtensions.getState().ids).toEqual(["acme.cli", ID]);
+    expect(file).toEqual(["acme.cli", ID]);
+  });
+
+  it("leaves the localStorage list in charge when the file can't be read", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    readDisabled.mockRejectedValue(new Error("EACCES"));
+    persistLocal([ID]);
+    await loadExternalPlugins();
+    expect(live()).toBe(false);
+    expect(useDisabledExtensions.getState().ids).toEqual([ID]);
+    expect(writeDisabled).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("changes nothing without the bridge methods", async () => {
+    privilegedBridge = { install, uninstall: vi.fn(async () => {}), settleUpdate };
+    persistLocal([ID]);
+    await loadExternalPlugins();
+    expect(live()).toBe(false);
+    expect(useDisabledExtensions.getState().ids).toEqual([ID]);
+    expect(localList()).toEqual([ID]);
+  });
+});
+
+describe("an installed extension that starts", () => {
+  afterEach(() => {
+    mirrorBridge = null;
+  });
+
+  it("has what it registered recorded for slu under its id and version", async () => {
+    const writeDescriptors = vi.fn(async () => {});
+    mirrorBridge = { writeDescriptors };
+    list = [manifest("3.0.0")];
+    serve({ "3.0.0": bundle() });
+    await loadExternalPlugins();
+    expect(writeDescriptors).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ID, extVersion: "3.0.0", name: "Widget" }),
+    );
   });
 });

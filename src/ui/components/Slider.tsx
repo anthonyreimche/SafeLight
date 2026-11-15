@@ -7,6 +7,7 @@ import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from "react
 import { useRegistry } from "@/extensions/registry";
 import { useSettings } from "@/state/settings-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { DISCRETE_WINDOW_MS, EASE_OUT, MOTION_FAST_MS, recentDiscreteChange } from "@/ui/motion";
 import { parseDecimal } from "@/ui/parse-decimal";
 
 interface SliderProps {
@@ -34,6 +35,9 @@ interface SliderProps {
   // when that ends), for Lightroom-style "show me the effect" previews. The
   // modifier state is tracked live, so toggling Alt/Ctrl mid-drag re-fires.
   onModifierPreview?: (active: boolean) => void;
+  // Shift+double-click sets this one value automatically (a plain double-click
+  // still resets). The caller makes its own undo step.
+  onAuto?: () => void;
 }
 
 // Fine-control factor while Shift is held during a drag.
@@ -58,6 +62,8 @@ const VALUE_KEYS = new Set([
   "PageDown",
 ]);
 
+const GLIDE = `${MOTION_FAST_MS}ms ${EASE_OUT}`;
+
 // A gesture belongs to the photo open in Develop when it began. Develop commits
 // a photo's uncommitted change as it moves to the next one, so a gesture still
 // going after that writes and commits nothing, or the next photo would get it.
@@ -68,6 +74,7 @@ const openPhoto = () => useDevelopStore.getState().photoId;
 // it through stable proxies that call the latest ones, since callers pass
 // inline closures bound to a mask or key.
 const SliderView = memo(function SliderView({
+  hasAuto,
   label,
   ariaLabel,
   icon,
@@ -82,7 +89,8 @@ const SliderView = memo(function SliderView({
   onChange,
   onCommit,
   onModifierPreview,
-}: SliderProps) {
+  onAuto,
+}: Omit<SliderProps, "onAuto"> & { hasAuto: boolean; onAuto: () => void }) {
   const iconSvg = useRegistry((s) =>
     icon ? s.sliderIcons[icon]?.svg : undefined,
   );
@@ -113,6 +121,11 @@ const SliderView = memo(function SliderView({
   const focusClickRef = useRef(false);
   const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wheelPhotoRef = useRef<string | null>(null);
+  // When this slider last reset or reverted its own value: those writes aren't
+  // noted as discrete changes, but the jump should still glide.
+  const ownJumpAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const shownBeforeRef = useRef(value);
+  const glideUntilRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -173,6 +186,21 @@ const SliderView = memo(function SliderView({
   // A value outside the normal range (only reachable by typing) reads red.
   const outOfRange = shown < min || shown > max;
 
+  // Only a jump to a known end state glides: a drag, keys, typing or a live write
+  // from elsewhere must follow the input exactly. Decided here, in render, so a
+  // glide costs no state or extra render; it holds for its own duration so a
+  // re-render mid-glide doesn't cut it short. The global reduce-motion rule sets
+  // `transition: none !important`, which beats this inline style.
+  if (shown !== shownBeforeRef.current) {
+    const now = performance.now();
+    const jumped = recentDiscreteChange(now) || now - ownJumpAtRef.current <= DISCRETE_WINDOW_MS;
+    glideUntilRef.current = dragValue === null && jumped ? now + MOTION_FAST_MS : 0;
+  }
+  const glide = performance.now() < glideUntilRef.current;
+  useLayoutEffect(() => {
+    shownBeforeRef.current = shown;
+  });
+
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
   const snap = (v: number) => {
     const snapped = Math.round((clamp(v) - min) / step) * step + min;
@@ -207,6 +235,7 @@ const SliderView = memo(function SliderView({
   };
 
   const reset = () => {
+    ownJumpAtRef.current = performance.now();
     onChange(defaultValue);
     onCommit?.();
   };
@@ -325,7 +354,7 @@ const SliderView = memo(function SliderView({
             />
             <div
               className="sl-slider-marker pointer-events-none absolute top-1/2 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow ring-1 ring-black/40"
-              style={{ left: `${pct}%` }}
+              style={{ left: `${pct}%`, transition: glide ? `left ${GLIDE}` : undefined }}
             />
           </>
         ) : (
@@ -333,7 +362,7 @@ const SliderView = memo(function SliderView({
             <div className="sl-slider-track h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
               <div
                 className="sl-slider-fill h-full rounded-full bg-slider-fill"
-                style={{ width: `${pct}%` }}
+                style={{ width: `${pct}%`, transition: glide ? `width ${GLIDE}` : undefined }}
               />
             </div>
             {/* The knob exists only for extension stylesheets to show and shape;
@@ -341,7 +370,7 @@ const SliderView = memo(function SliderView({
             <span
               aria-hidden="true"
               className="sl-slider-thumb pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
-              style={{ left: `${pct}%` }}
+              style={{ left: `${pct}%`, transition: glide ? `left ${GLIDE}` : undefined }}
             />
           </>
         )}
@@ -361,8 +390,8 @@ const SliderView = memo(function SliderView({
           onKeyUp={(e) => {
             if (VALUE_KEYS.has(e.key)) onCommit?.();
           }}
-          onDoubleClick={reset}
-          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · Shift+scroll to step · double-click to reset`}
+          onDoubleClick={(e) => (e.shiftKey && hasAuto ? onAuto() : reset())}
+          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · Shift+scroll to step · double-click to reset${hasAuto ? " · Shift+double-click for auto" : ""}`}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>
@@ -396,7 +425,10 @@ const SliderView = memo(function SliderView({
               e.stopPropagation();
               const from = typedFromRef.current;
               typedFromRef.current = null;
-              if (from !== null && from !== value) onChange(from);
+              if (from !== null && from !== value) {
+                ownJumpAtRef.current = performance.now();
+                onChange(from);
+              }
               e.currentTarget.blur();
             }
           }}
@@ -418,15 +450,16 @@ const SliderView = memo(function SliderView({
   );
 });
 
-export function Slider({ onChange, onCommit, onModifierPreview, ...shown }: SliderProps) {
-  const latest = useRef({ onChange, onCommit, onModifierPreview });
+export function Slider({ onChange, onCommit, onModifierPreview, onAuto, ...shown }: SliderProps) {
+  const latest = useRef({ onChange, onCommit, onModifierPreview, onAuto });
   useLayoutEffect(() => {
-    latest.current = { onChange, onCommit, onModifierPreview };
+    latest.current = { onChange, onCommit, onModifierPreview, onAuto };
   });
   const proxies = useRef({
     onChange: (v: number) => latest.current.onChange(v),
     onCommit: () => latest.current.onCommit?.(),
     onModifierPreview: (active: boolean) => latest.current.onModifierPreview?.(active),
+    onAuto: () => latest.current.onAuto?.(),
   }).current;
-  return <SliderView {...shown} {...proxies} />;
+  return <SliderView {...shown} {...proxies} hasAuto={onAuto !== undefined} />;
 }

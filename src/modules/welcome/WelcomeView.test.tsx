@@ -7,14 +7,18 @@
 // Preferences, so the recent-projects grid doesn't offer it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const recents = vi.hoisted(() => ({
-  list: [] as { id: string; name: string; path: string | null; handle: null; openedAt: number; cover: null }[],
+  list: [] as { id: string; name: string; path: string | null; handle: null; openedAt: number; cover: Blob | null }[],
+  hold: null as Promise<void> | null,
   remove: vi.fn(async (_id: string): Promise<void> => {}),
 }));
 vi.mock("@/project/recent", () => ({
-  listRecentProjects: async () => recents.list,
+  listRecentProjects: async () => {
+    await recents.hold;
+    return recents.list;
+  },
   removeRecentProject: recents.remove,
 }));
 
@@ -25,6 +29,7 @@ beforeEach(() => {
   localStorage.clear();
   resetSetupForTests();
   recents.list = [];
+  recents.hold = null;
   recents.remove.mockClear();
 });
 
@@ -68,5 +73,87 @@ describe("WelcomeView", () => {
       await waitFor(() => expect(screen.queryByText("Rome")).toBeNull());
       expect(recents.remove).toHaveBeenCalledWith("/p/rome");
     });
+  });
+
+  describe("while the recents are read", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("shows skeleton cards only once the wait lasts", async () => {
+      recents.hold = new Promise<void>(() => {});
+      render(<WelcomeView />);
+      expect(document.querySelector(".sl-breathe")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(document.querySelectorAll(".sl-breathe").length).toBeGreaterThan(1);
+    });
+
+    it("drops the skeletons when the cards arrive", async () => {
+      let release!: () => void;
+      recents.hold = new Promise<void>((resolve) => (release = resolve));
+      recents.list = [{ id: "/p/rome", name: "Rome", path: "/p/rome", handle: null, openedAt: Date.now(), cover: null }];
+      render(<WelcomeView />);
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      await act(async () => release());
+      expect(screen.getByText("Rome")).toBeTruthy();
+      expect(document.querySelector(".sl-breathe")).toBeNull();
+    });
+  });
+
+  describe("when the cards arrive", () => {
+    const original = Element.prototype.animate;
+    afterEach(() => {
+      Element.prototype.animate = original;
+      document.documentElement.classList.remove("sl-reduce-motion");
+    });
+
+    beforeEach(() => {
+      recents.list = [0, 1, 2].map((i) => ({
+        id: "/p/" + i, name: "P" + i, path: "/p/" + i, handle: null, openedAt: Date.now(), cover: null,
+      }));
+    });
+
+    it("cascades in with a stagger", async () => {
+      const animate = vi.fn(() => ({ cancel: vi.fn() }));
+      Element.prototype.animate = animate as unknown as typeof Element.prototype.animate;
+      render(<WelcomeView />);
+      await screen.findByText("P2");
+      expect(animate).toHaveBeenCalledTimes(3);
+      const delays = (animate.mock.calls as unknown as [unknown, { delay: number }][]).map((c) => c[1].delay);
+      expect(delays).toEqual([0, 35, 70]);
+    });
+
+    it("holds still under Reduce motion", async () => {
+      const animate = vi.fn(() => ({ cancel: vi.fn() }));
+      Element.prototype.animate = animate as unknown as typeof Element.prototype.animate;
+      document.documentElement.classList.add("sl-reduce-motion");
+      render(<WelcomeView />);
+      await screen.findByText("P2");
+      expect(animate).not.toHaveBeenCalled();
+    });
+
+    it("copes with no animate in the environment", async () => {
+      // @ts-expect-error jsdom lacks it; the guard must not throw
+      Element.prototype.animate = undefined;
+      render(<WelcomeView />);
+      expect(await screen.findByText("P2")).toBeTruthy();
+    });
+  });
+
+  it("fades a cover in once it has loaded", async () => {
+    recents.list = [
+      { id: "/p/rome", name: "Rome", path: "/p/rome", handle: null, openedAt: Date.now(), cover: new Blob(["x"]) },
+    ];
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:cover", revokeObjectURL: () => {} }));
+    render(<WelcomeView />);
+    await screen.findByText("Rome");
+    const img = document.querySelector("img") as HTMLImageElement;
+    expect(img.style.opacity).toBe("0");
+    expect(img.style.transition).toContain("150ms");
+    fireEvent.load(img);
+    expect(img.style.opacity).toBe("1");
   });
 });

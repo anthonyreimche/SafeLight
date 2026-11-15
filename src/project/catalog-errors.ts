@@ -91,8 +91,10 @@ export class FolderAccessDeniedError extends Error {
 }
 
 /** The newest catalogue version this build opens: a newer one is refused, as this
- *  build's next save would drop whatever that version added. */
-export const CATALOG_VERSION = 1;
+ *  build's next save would drop whatever that version added. Version 2 stores each
+ *  edit history packed (catalog/history-pack.ts); a build that reads only version 1
+ *  would take a packed step for a step with no settings. */
+export const CATALOG_VERSION = 2;
 
 /** catalog.json was saved by a newer Safelight: opened here, its next save would
  *  drop what this version doesn't know. */

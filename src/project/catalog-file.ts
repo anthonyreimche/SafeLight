@@ -25,11 +25,12 @@ import {
   CatalogUnreadableError,
 } from "./catalog-errors";
 import { hasEditStack, openableEdit, UNREADABLE_RETRY_DELAYS } from "./edit-files";
+import { unpackStack } from "@/catalog/history-pack";
 import { nativePathOf } from "./native-fs";
 import { namesFoldCase } from "./reattach";
 
 export interface CatalogFile {
-  version: 1;
+  version: typeof CATALOG_VERSION;
   /** Tells the browser build's windows which catalogue they share (catalogKey).
    *  Catalogues saved before it have none. */
   id?: string;
@@ -119,11 +120,14 @@ function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
   const notList = (list: unknown) => list !== undefined && !Array.isArray(list);
   return {
     file: {
-      version: 1,
+      version: CATALOG_VERSION,
       id: typeof id === "string" && id !== "" ? id : undefined,
       photos: openedPhotos,
-      edits: entries(edits, hasEditStack).flatMap((edit) => {
-        const openable = openableEdit(edit);
+      edits: entries(edits, hasEditStack).flatMap((stored) => {
+        // Unpacked, a history holds its steps whole again, or null for those that
+        // can't be unpacked, which openableEdit leaves out like any it can't open.
+        const edit = { ...stored, stack: unpackStack(stored.stack) };
+        const openable = hasEditStack(edit) ? openableEdit(edit) : null;
         if (openable !== edit) skipped++;
         return openable ? [openable] : [];
       }),
@@ -200,18 +204,24 @@ export function isMainWindow(): boolean {
  *  when its backup is no better. With no backup to use, the folder is imported
  *  again: as a new project when neither file was there, else as a rebuild,
  *  keeping a damaged backup aside too, since the next session's backup would
- *  write over it. */
-export async function readSavedCatalog(sl: FileSystemDirectoryHandle): Promise<SavedCatalog> {
+ *  write over it. A `readOnly` read keeps nothing aside: it writes nothing, and
+ *  the next open that may write keeps the copy. */
+export async function readSavedCatalog(
+  sl: FileSystemDirectoryHandle,
+  { readOnly = false }: { readOnly?: boolean } = {},
+): Promise<SavedCatalog> {
+  const keep = (...args: Parameters<typeof keepAside>): Promise<string | null> =>
+    readOnly ? Promise.resolve(null) : keepAside(...args);
   const read = await readCatalogFile(sl, CATALOG);
   let asSaved: SavedCatalog | null = null;
   let kept: string | null = null;
   if (read.kind === "ok") {
     const catalog = openCatalog(read.value);
-    if (catalog.skipped > 0) kept = await keepAside(sl, read.bytes);
+    if (catalog.skipped > 0) kept = await keep(sl, read.bytes);
     asSaved = { catalog, recovered: null, bytes: read.bytes };
     if (!catalog.damaged) return asSaved;
   } else if (read.kind === "corrupt" && read.bytes.length > 0) {
-    kept = await keepAside(sl, read.bytes);
+    kept = await keep(sl, read.bytes);
   }
   const backup = await readCatalogFile(sl, BACKUP);
   if (backup.kind === "ok") {
@@ -224,7 +234,7 @@ export async function readSavedCatalog(sl: FileSystemDirectoryHandle): Promise<S
     return { catalog: null, recovered: null, bytes: null };
   const keptBackup =
     backup.kind === "corrupt" && backup.bytes.length > 0
-      ? await keepAside(sl, backup.bytes, "catalog.bak")
+      ? await keep(sl, backup.bytes, "catalog.bak")
       : null;
   return { catalog: null, recovered: { from: "rescan", kept: kept ?? keptBackup }, bytes: null };
 }

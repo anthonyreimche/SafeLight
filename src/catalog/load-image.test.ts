@@ -627,14 +627,28 @@ describe("loadPhotoImage on a cache miss", () => {
   });
 
   it("keeps the as-shot white balance the decode learned", async () => {
-    h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
+    h.decodeResult = () =>
+      Promise.resolve(floatDecode({ colorTemperature: 5200, asShotMultipliers: [2.1, 1, 1.6] }));
     const photo = rawPhoto();
     h.catalog = [photo];
 
     await loadPhotoImage(photo);
 
     expect(photo.exif.colorTemperature).toBe(5200);
+    expect(photo.exif.asShotMultipliers).toEqual([2.1, 1, 1.6]);
     expect(h.saved).toEqual([photo]);
+  });
+
+  it("learns the as-shot multipliers of a photo imported before they were kept", async () => {
+    h.decodeResult = () =>
+      Promise.resolve(floatDecode({ colorTemperature: 5200, asShotMultipliers: [2.1, 1, 1.6] }));
+    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
+    h.catalog = [photo];
+
+    await loadPhotoImage(photo);
+
+    expect(photo.exif).toMatchObject({ colorTemperature: 4000, asShotMultipliers: [2.1, 1, 1.6] });
+    expect(h.saved).toHaveLength(1);
   });
 
   it("stores what the decode learned on the photo as the catalogue has it by then", async () => {

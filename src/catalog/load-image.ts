@@ -367,6 +367,7 @@ export async function loadPhotoImage(
           // next time.
           const learned: DecodeLearned = {};
           if (f.colorTemperature && !photo.exif.colorTemperature) learned.colorTemperature = f.colorTemperature;
+          if (f.asShotMultipliers && !photo.exif.asShotMultipliers) learned.asShotMultipliers = f.asShotMultipliers;
           if (f.rawExposureBias !== undefined && photo.exif.rawExposureBias !== f.rawExposureBias) {
             learned.rawExposureBias = f.rawExposureBias;
           }

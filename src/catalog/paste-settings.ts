@@ -10,12 +10,11 @@
 // white balance, which a RAW's import may have left for the background pass to
 // read, so both read it first.
 
-import { normalizeParams, withoutProcessVersion } from "./types";
+import { pasteLook } from "./paste-look";
 import { appendStoredSnapshots, storedSnapshotTargets } from "./stored-edit";
 import { loadSavedEdit, type SavedEdit } from "./edit-params";
 import { settlePendingMetadata } from "@/modules/library/import-photos";
 import { useCatalogStore } from "@/state/catalog-store";
-import { normalizeParamBag } from "@/extensions/param-registry";
 import type { DevelopClipboard } from "@/state/develop-clipboard";
 
 const PASTE_LABEL = "Paste Settings";
@@ -27,10 +26,7 @@ export async function pasteSettings(
   clip: DevelopClipboard,
 ): Promise<number> {
   await settlePendingMetadata(ids);
-  return appendStoredSnapshots(storedSnapshotTargets(ids), PASTE_LABEL, (base) => ({
-    params: normalizeParams({ ...base.params, ...withoutProcessVersion(clip.params) }),
-    paramBag: { ...base.paramBag, ...normalizeParamBag(clip.paramBag) },
-  }));
+  return appendStoredSnapshots(storedSnapshotTargets(ids), PASTE_LABEL, (base) => pasteLook(base, clip));
 }
 
 /** The saved edit Copy settings offers from `photoId`, as Develop would open it,

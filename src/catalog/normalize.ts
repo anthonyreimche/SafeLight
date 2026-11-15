@@ -265,13 +265,17 @@ function normRadial(g: Partial<RadialMaskGeo> | undefined): RadialMaskGeo {
     angle: clampN(g?.angle, -7, 7, 0),
   };
 }
-// The tip and angle a stroke-start dab carries. Only that dab is read, and a tip
-// is named by a short string; the id of one that is not registered bakes as the disc.
+// The tip a stroke-start dab carries: only that dab's is read, and a tip is
+// named by a short string; the id of one that is not registered bakes as the disc.
 const MAX_TIP_ID_LENGTH = 128;
-function strokeBrushTip(d: BrushDab): Pick<BrushDab, "tip" | "angle"> {
+function strokeBrushTip(d: BrushDab): Pick<BrushDab, "tip"> {
   const named = typeof d.tip === "string" && d.tip.length > 0 && d.tip.length <= MAX_TIP_ID_LENGTH;
+  return named ? { tip: d.tip } : {};
+}
+// Any dab may carry its own turn; one without takes its stroke's.
+function dabAngle(d: BrushDab): Pick<BrushDab, "angle"> {
   const turn = typeof d.angle === "number" && Number.isFinite(d.angle) ? d.angle % (2 * Math.PI) : 0;
-  return { ...(named ? { tip: d.tip } : {}), ...(turn !== 0 ? { angle: turn } : {}) };
+  return turn !== 0 ? { angle: turn } : {};
 }
 function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
   const dabs = Array.isArray(g?.dabs) ? g!.dabs : [];
@@ -288,6 +292,7 @@ function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
         opacity: clampN(d.opacity, 0, 1, 1),
         flow: clampN(d.flow, 0, 1, 1),
         ...(d.strokeStart === true ? { strokeStart: true, ...strokeBrushTip(d) } : {}),
+        ...dabAngle(d),
       })),
   };
 }

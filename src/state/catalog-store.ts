@@ -297,6 +297,8 @@ interface CatalogState {
   applyColorLabel: (ids: string[], label: ColorLabel) => Promise<void>;
   applyFlag: (ids: string[], flag: FlagStatus) => Promise<void>;
   rotatePhotos: (ids: string[], deg: number) => Promise<void>;
+  /** Degrees each tile is shown turned while its preview is still being baked. */
+  pendingRotation: Record<string, number>;
 
   addKeyword: (id: string, keyword: string) => Promise<void>;
   removeKeyword: (id: string, keyword: string) => Promise<void>;
@@ -327,6 +329,22 @@ let lastProject: LastProjectOpener | null = null;
 export function setLastProjectOpener(opener: LastProjectOpener): void {
   lastProject = opener;
 }
+
+/** Takes `turn` off each id's shown turn, dropping an entry that comes back to none,
+ *  so a turn still being made for the same photo stays shown. */
+const untilTurned = (
+  record: Record<string, number>,
+  ids: string[],
+  turn: number,
+): Record<string, number> => {
+  const rest = { ...record };
+  for (const id of ids) {
+    const left = (rest[id] ?? 0) - turn;
+    if (left === 0) delete rest[id];
+    else rest[id] = left;
+  }
+  return rest;
+};
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
   // Tell the windows (this one's own listeners included) the catalogue changed. The
@@ -385,6 +403,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
 
   return {
     photos: [],
+    pendingRotation: {},
     selectedIds: new Set(),
     activePhotoId: null,
     loading: false,
@@ -679,50 +698,70 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       const turnBlob = (blob: Blob | null) => (blob ? rotateBlob(blob, d) : Promise.resolve(null));
       const updates = new Map<string, CatalogPhoto>();
 
-      // The photos may change, or leave the catalogue, while their previews turn:
-      // each is turned as it is now, and only if it's still here. A preview stored
-      // meanwhile (an edit's) is turned again in place of the one it began with,
-      // and the turn keeps the edit its source shows.
-      let pending = new Set(ids);
-      while (pending.size > 0) {
-        const sources = get().photos.filter((p) => pending.has(p.id));
-        const turned = new Map(
-          await mapLimit(
-            sources,
-            ROTATE_CONCURRENCY,
-            async (from) => [from.id, { from, blob: await turnBlob(from.thumbnailBlob) }] as const,
-          ),
-        );
-        pending = new Set();
-        const round: CatalogPhoto[] = [];
-        const shown = get().photos;
-        const photos = shown.map((current) => {
-          const t = turned.get(current.id);
-          if (!t) return current;
-          if (current.thumbnailBlob !== t.from.thumbnailBlob) {
-            pending.add(current.id);
-            return current;
-          }
-          const turn = {
-            rotation: normalizeRotation((current.rotation ?? 0) + d),
-            width: swap ? current.height : current.width,
-            height: swap ? current.width : current.height,
-            thumbnailBlob: t.blob ?? current.thumbnailBlob,
-            thumbnailUrl: t.blob ? URL.createObjectURL(t.blob) : current.thumbnailUrl,
-            previewEdit: t.from.previewEdit,
-          };
-          if (current.thumbnailUrl && current.thumbnailUrl !== turn.thumbnailUrl)
-            revokePreviewUrl(current.thumbnailUrl);
-          const updated: CatalogPhoto = { ...current, ...turn };
-          round.push(updated);
-          updates.set(updated.id, updated);
-          return updated;
-        });
-        if (round.length === 0) continue;
-        // Shown before it is written: an edit's preview rendered from here on is
-        // made at the new rotation, and one stored later replaces this one.
-        set({ photos: keepStructure(shown, photos, changedFields(shown, photos) ?? []) });
-        await catalogStorage().putPhotos(round);
+      // Shown turned at once, the short way round (a turn left is -90, not 270). This
+      // call's turn comes off each tile in the set that lands its preview, and the
+      // finally takes off what never landed (a throw, a photo that left).
+      const shownTurn = d > 180 ? d - 360 : d;
+      const landed = new Set<string>();
+      set((s) => ({
+        pendingRotation: {
+          ...s.pendingRotation,
+          ...Object.fromEntries(ids.map((id) => [id, (s.pendingRotation[id] ?? 0) + shownTurn])),
+        },
+      }));
+      try {
+        // The photos may change, or leave the catalogue, while their previews turn:
+        // each is turned as it is now, and only if it's still here. A preview stored
+        // meanwhile (an edit's) is turned again in place of the one it began with,
+        // and the turn keeps the edit its source shows.
+        let pending = new Set(ids);
+        while (pending.size > 0) {
+          const sources = get().photos.filter((p) => pending.has(p.id));
+          const turned = new Map(
+            await mapLimit(
+              sources,
+              ROTATE_CONCURRENCY,
+              async (from) => [from.id, { from, blob: await turnBlob(from.thumbnailBlob) }] as const,
+            ),
+          );
+          pending = new Set();
+          const round: CatalogPhoto[] = [];
+          const shown = get().photos;
+          const photos = shown.map((current) => {
+            const t = turned.get(current.id);
+            if (!t) return current;
+            if (current.thumbnailBlob !== t.from.thumbnailBlob) {
+              pending.add(current.id);
+              return current;
+            }
+            const turn = {
+              rotation: normalizeRotation((current.rotation ?? 0) + d),
+              width: swap ? current.height : current.width,
+              height: swap ? current.width : current.height,
+              thumbnailBlob: t.blob ?? current.thumbnailBlob,
+              thumbnailUrl: t.blob ? URL.createObjectURL(t.blob) : current.thumbnailUrl,
+              previewEdit: t.from.previewEdit,
+            };
+            if (current.thumbnailUrl && current.thumbnailUrl !== turn.thumbnailUrl)
+              revokePreviewUrl(current.thumbnailUrl);
+            const updated: CatalogPhoto = { ...current, ...turn };
+            round.push(updated);
+            updates.set(updated.id, updated);
+            return updated;
+          });
+          if (round.length === 0) continue;
+          // Shown before it is written: an edit's preview rendered from here on is
+          // made at the new rotation, and one stored later replaces this one.
+          set((s) => ({
+            photos: keepStructure(shown, photos, changedFields(shown, photos) ?? []),
+            pendingRotation: untilTurned(s.pendingRotation, round.map((p) => p.id), shownTurn),
+          }));
+          for (const p of round) landed.add(p.id);
+          await catalogStorage().putPhotos(round);
+        }
+      } finally {
+        const left = ids.filter((id) => !landed.has(id) && id in get().pendingRotation);
+        if (left.length > 0) set((s) => ({ pendingRotation: untilTurned(s.pendingRotation, left, shownTurn) }));
       }
 
       await emitMetadataChange({

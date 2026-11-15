@@ -5,9 +5,10 @@
 
 // Anchors: a point in the develop program's main() for each of the core
 // tools, where the stage that takes the tool over writes its block. Only
-// Safelight's own stages may name one. A stage there is written as it reads,
-// with no braces around it, so a program whose blocks moved onto anchors can
-// still be the frozen program token for token.
+// Safelight's own stages may name one, bar the tone anchor (below). A stage
+// of Safelight's there is written as it reads, with no braces around it, so a
+// program whose blocks moved onto anchors can still be the frozen program
+// token for token.
 
 import { describe, expect, it } from "vitest";
 import type { ProcessingStageContribution, StageAnchor } from "@/extensions/types";
@@ -162,5 +163,82 @@ describe("the anchor contract", () => {
   it("accepts Safelight's own anchored stage", () => {
     const check = checkStageContract(anchored("tone", "lin = lin;"), CORE_EXTENSION_ID);
     expect(check).toEqual({ error: null, readsIgnored: null, warnings: [] });
+  });
+});
+
+// The tone anchor is open to every extension (3.2.5): a stage there runs on
+// `lin` ahead of the tone block (Basic's exposure, its curves and the default
+// shoulder), so an exposure tool can work before the tone mapping. It is
+// written as any extension's block is, namespaced and braced, and keeps to
+// what a block at that point can be: no passes, no space, no mask copies, no
+// reading the current image and nothing produced for other stages.
+describe("the tone anchor, for every extension", () => {
+  const gain = (extra: Partial<ProcessingStageContribution> = {}): ProcessingStageContribution => ({
+    id: "acme.exposure",
+    name: "Exposure",
+    phase: "scene-linear",
+    priority: 10,
+    anchor: "tone",
+    glsl: "lin *= exp2(stops);",
+    uniforms: [{ key: "stops", glslType: "float", default: 0 }],
+    ...extra,
+  });
+
+  it("writes the stage's block at the anchor, namespaced and braced, outside the scene-linear group", () => {
+    const built = buildStageInjection([gain()], V2_VARIANT);
+    const tone = built.injection.anchors?.tone ?? "";
+    expect(tone.startsWith("{")).toBe(true);
+    expect(tone).toContain("lin *= exp2(");
+    expect(tone).not.toMatch(/exp2\(stops\)/);
+    expect(built.injection.sceneLinear).toBe("");
+    expect(built.bindings.map((b) => b.qualifiedKey)).toEqual(["acme.exposure.stops"]);
+    expect(built.steps).toContainEqual({ kind: "stage", group: "sceneLinear", stageId: "acme.exposure", anchor: "tone" });
+  });
+
+  for (const variant of [V1_VARIANT, V2_VARIANT, V3_VARIANT]) {
+    it(`runs ahead of Basic's tone block (version ${variant.version})`, () => {
+      const { injection } = buildStageInjection([...builtinStages(), gain()], variant);
+      const main = buildFragmentShader(null, injection, variant);
+      const body = main.slice(main.indexOf("void main()"));
+      const ours = body.indexOf("lin *= exp2(");
+      expect(ours).toBeGreaterThan(body.indexOf(LANDMARKS["white-balance"]));
+      expect(ours).toBeLessThan(body.indexOf(LANDMARKS.tone));
+    });
+  }
+
+  it("runs with Safelight's own stages at the anchor by priority", () => {
+    const { injection } = buildStageInjection(
+      [anchored("tone", "slCore();", { priority: 100 }), gain({ priority: 10 })],
+      V2_VARIANT,
+    );
+    const tone = injection.anchors?.tone ?? "";
+    expect(tone).toContain("lin *= exp2(");
+    expect(tone.indexOf("lin *= exp2(")).toBeLessThan(tone.indexOf("slCore();"));
+  });
+
+  it("leaves every other anchor to Safelight's own stages", () => {
+    const { injection } = buildStageInjection([gain({ anchor: "masks" })], V2_VARIANT);
+    expect(injection.anchors).toBeUndefined();
+    expect(injection.sceneLinear).toContain("lin *= exp2(");
+  });
+
+  it("is accepted without a warning", () => {
+    expect(checkStageContract(gain(), "acme")).toEqual({ error: null, readsIgnored: null, warnings: [] });
+  });
+
+  it.each([
+    ["passes", { passes: [{ glsl: "c = readPrev(srcUv);" }] }],
+    ["a space", { space: { encoding: "linear", primaries: "rec2020" } }],
+    ["a mask", { mask: { maskable: true } }],
+    ["reads", { reads: "current" }],
+    ["produces", { produces: [{ name: "acmeGain", glslType: "float" }] }],
+  ] as [string, Partial<ProcessingStageContribution>][])("refuses %s at the tone anchor", (what, extra) => {
+    const check = checkStageContract(gain(extra), "acme");
+    expect(check.error).toBe(`stage "acme.exposure": a stage at the tone anchor can't declare ${what}`);
+  });
+
+  it("refuses a phase that isn't scene-linear at the tone anchor", () => {
+    const check = checkStageContract(gain({ phase: "display-adjust" }), "acme");
+    expect(check.error).toBe('stage "acme.exposure": a stage at the tone anchor must be in the scene-linear phase');
   });
 });

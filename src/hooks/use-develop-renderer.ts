@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RefObject } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { CatalogPhoto, CropRect, DevelopParams } from "@/catalog/types";
 import { usesSignedOutput } from "@/catalog/types";
 import type { ImageWindow } from "@/ui/viewport-view";
@@ -33,6 +33,9 @@ import { createHistogramScheduler } from "./histogram-scheduler";
 import { NO_STAGES, useDevelopPhotoLoad } from "./use-develop-photo-load";
 import { useNativeFrame } from "./use-native-frame";
 import { useDevelopPicture, type DevelopTier } from "./use-develop-picture";
+import { createEditFade } from "./edit-fade";
+import { useFullPending } from "./use-full-pending";
+import { cancelCrossfade, crossfading } from "@/ui/canvas-crossfade";
 
 export type { DevelopTier };
 
@@ -76,6 +79,17 @@ function stageBag(
 // preset's extension adjustments preview too.
 const drawnParams = (s: DevelopState): DevelopParams => s.previewParams ?? s.params;
 const drawnBag = (s: DevelopState): Record<string, unknown> => s.previewParamBag ?? s.paramBag;
+
+/** Whether `s`, a discrete edit, ended the Presets hover by making the hovered look
+ *  the edit (the hovered preset applied), rather than another look (some other preset
+ *  applied while hovering). Compared by value, since applying normalizes the preset
+ *  afresh; runs once per apply. */
+function appliesHover(s: DevelopState, prev: DevelopState): boolean {
+  const hovered = prev.previewParams;
+  if (!hovered || s.previewParams) return false;
+  const bag = prev.previewParamBag ?? prev.paramBag;
+  return JSON.stringify(s.params) === JSON.stringify(hovered) && JSON.stringify(s.paramBag) === JSON.stringify(bag);
+}
 
 /** What a push handed the worker (the edit drawn and the bag), and what each was
  *  made from. */
@@ -199,6 +213,11 @@ interface RendererStatus {
   tier: DevelopTier | null;
   // The canvas corner's label for it (useTierLabel), or why nothing of the photo shows.
   status: string | null;
+  // Whether the photo's full image is still on its way: from the load's start until
+  // its first frame, unless the load ends with none to come (useFullPending).
+  fullPending: boolean;
+  // Whether a render asked for has had no frame for a while (RenderBridge.setOnStall).
+  renderStalled: boolean;
   // The processing stages the last frame of the photo was drawn without, for want
   // of a GPU texture unit: they are on, but change nothing.
   overflowedStages: readonly string[];
@@ -230,7 +249,7 @@ export function useDevelopRenderer(
   }, [photo?.id]);
   // The push of the edit to the worker (below), for the store's subscription, and
   // what it last handed the worker.
-  const pushRef = useRef<() => void>(() => {});
+  const pushRef = useRef<() => boolean>(() => false);
   const pushedRef = useRef<Pushed | null>(null);
   // Whether an edit's render waits for its microtask (queueRender).
   const renderQueuedRef = useRef(false);
@@ -265,8 +284,13 @@ export function useDevelopRenderer(
   // took every source it held: each time, the photo is loaded again.
   const [restores, setRestores] = useState(0);
   const [loading, setLoading] = useState(false);
+  const fullWait = useFullPending();
+  const [renderStalled, setRenderStalled] = useState(false);
   const picture = useDevelopPicture(canvasRef, fadeCanvasRef);
   const { size, tier, ctxRef, present, dropPending } = picture;
+  // Whether the next frame eases in: armed by a discrete edit or the Presets hover,
+  // taken by the first frame drawn after it (edit-fade.ts).
+  const [editFade] = useState(createEditFade);
   // Size of the source the last frame was drawn from, as the renderer holds it
   // (already upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
@@ -372,7 +396,9 @@ export function useDevelopRenderer(
       const finalGen = finalGenRef.current;
       const frameTier: DevelopTier =
         finalGen !== null && frame.sourceGen >= finalGen ? "final" : "preview";
+      if (frameTier === "final") fullWait.shownFinal();
       present({
+        fade: editFade.take(frame.seq) ?? undefined,
         bitmap: frame.bitmap,
         width: frame.width,
         height: frame.height,
@@ -434,6 +460,10 @@ export function useDevelopRenderer(
     bridge.setOnSourcePixels(({ data, width, height }) => {
       setSourcePixels(data, width, height);
     });
+    bridge.setOnStall(setRenderStalled);
+    // A worker answering renders with errors (a stage throwing) draws no frame of the
+    // full image, so the bar would wait on one for good.
+    bridge.setOnRenderError(() => fullWait.settle(false));
 
     // The bridge repaints stage and pipeline swaps itself, past the push.
     const stopWatchingStages = useRegistry.subscribe((s, prev) => {
@@ -442,10 +472,40 @@ export function useDevelopRenderer(
       }
     });
 
+    // How a change of what is drawn reaches the canvas: a discrete edit or the Presets
+    // hover arms a fade for the first frame of a render posted after it; anything else
+    // is a live write, which cuts, and stops a fade still running so the picture
+    // follows the hand. Another photo's edit landing (the hover cleared with it) is no
+    // edit of this one. An apply of the preset the hover shows draws the same look, so
+    // the hover's fade, if its frame is still to come, is the only one. Returns whether
+    // this change armed a fade.
+    const noteFade = (s: DevelopState, prev: DevelopState): boolean => {
+      const after = bridge.lastRenderSeq;
+      const samePhoto = s.photoId === prev.photoId;
+      if (samePhoto && s.discreteEdits !== prev.discreteEdits) {
+        if (appliesHover(s, prev)) return false;
+        if (editFade.discrete(after)) return true;
+      } else if (
+        samePhoto &&
+        (s.previewParams !== prev.previewParams || s.previewParamBag !== prev.previewParamBag)
+      ) {
+        editFade.preview(after);
+        return true;
+      } else {
+        editFade.live();
+      }
+      const overlay = fadeCanvasRef?.current;
+      if (overlay && crossfading(overlay)) cancelCrossfade(overlay);
+      return false;
+    };
+
     // The edit goes to the worker from the store, with no render of the view between.
+    // A fade armed for an edit that draws nothing new would ease the next unrelated
+    // frame (the clipping toggle, a mask hover), so it is dropped.
     const stopWatchingEdit = useDevelopStore.subscribe((s, prev) => {
       if (drawnParams(s) !== drawnParams(prev) || drawnBag(s) !== drawnBag(prev)) {
-        pushRef.current();
+        const armed = noteFade(s, prev);
+        if (!pushRef.current() && armed) editFade.live();
       }
     });
 
@@ -465,25 +525,50 @@ export function useDevelopRenderer(
       bridge.setOnSourceError(null);
       bridge.setOnAvailability(null);
       bridge.setOnSourcePixels(null);
+      bridge.setOnStall(null);
+      bridge.setOnRenderError(null);
+      setRenderStalled(false);
       bridgeRef.current = null;
       ctxRef.current = null;
       dropPending();
       // No photo is open: the stage textures it drew with may be let go of.
       noteLiveStageBag({});
     };
-  }, [canvasRef, present, dropPending]);
+  }, [canvasRef, fadeCanvasRef, present, dropPending, editFade, fullWait.shownFinal, fullWait.settle]);
+
+  // A load's first picture cuts, so a fade an edit armed before it is dropped.
+  const { beginPhoto } = picture;
+  const beginLoad = useCallback(
+    (bridge: RenderBridge, photoId: string) => {
+      editFade.clear();
+      beginPhoto(bridge, photoId);
+    },
+    [beginPhoto, editFade],
+  );
+
+  // A load's start and end also start and settle the wait for its full image: at its
+  // end, the image it settled on is the full one when finalGenRef holds its number.
+  const { begin: beginWait, settle: settleWait } = fullWait;
+  const setLoad = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (next) => {
+      setLoading(next);
+      if (next === true) beginWait();
+      else if (next === false) settleWait(finalGenRef.current !== null);
+    },
+    [beginWait, settleWait],
+  );
 
   const { holdEditedPreview } = useDevelopPhotoLoad({
     photo,
     // The load runs again when either moves on.
     fileAccessNonce: fileAccessNonce + restores,
     bridgeRef,
-    picture,
+    picture: { ...picture, beginPhoto: beginLoad },
     openPhotoIdRef,
     awaitingSourceRef,
     finalGenRef,
     sentGenRef,
-    setLoading,
+    setLoading: setLoad,
     setCantShow,
     setSettledReason,
     setOverflowedStages,
@@ -497,10 +582,11 @@ export function useDevelopRenderer(
 
   // Hands the worker the edit as the stores hold it now, and renders it, unless it
   // draws what was pushed last. The frame that answers asks for the histogram
-  // (setOnFrame above), throttled or settled per Preferences.
-  const push = () => {
+  // (setOnFrame above), throttled or settled per Preferences. Returns whether it
+  // queued a render.
+  const push = (): boolean => {
     const bridge = bridgeRef.current;
-    if (!bridge) return;
+    if (!bridge) return false;
     const st = useDevelopStore.getState();
     const params = drawnParams(st);
     const paramBag = drawnBag(st);
@@ -519,7 +605,8 @@ export function useDevelopRenderer(
     };
     const last = pushedRef.current;
     pushedRef.current = next;
-    if (!last || !drawsSame(last, next)) {
+    const renders = !last || !drawsSame(last, next);
+    if (renders) {
       bridge.setAsShotTemperature(next.asShotTemperature);
       bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues), paramBag);
       bridge.setParams(next.drawn);
@@ -528,6 +615,7 @@ export function useDevelopRenderer(
     }
     // An edited stored preview standing in for the photo holds only while it shows the edit.
     if (!last || last.params !== params || last.paramBag !== paramBag) holdEditedPreview(null);
+    return renders;
   };
   pushRef.current = push;
 
@@ -657,6 +745,9 @@ export function useDevelopRenderer(
     sourceHeight: sourceSize.height,
     tier,
     status,
+    // Not beside the notice of a renderer that is lost or failed: no frame is coming.
+    fullPending: fullWait.pending && cantShow === null && availability === "ready",
+    renderStalled,
     overflowedStages,
     pictureCanvas: picture.pictureCanvas,
     setViewport,

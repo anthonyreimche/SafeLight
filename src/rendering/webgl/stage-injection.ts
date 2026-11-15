@@ -41,7 +41,7 @@ import { simpleHash } from "./hash";
 import type { DormantRule } from "./stage-coverage";
 import { V1_VARIANT, type ShaderVariant, type StageInjection } from "./shaders";
 import { sortStages } from "./stage-order";
-import { STAGE_ANCHORS, anchorOf } from "./stage-anchors";
+import { STAGE_ANCHORS, anchorOf, openAnchorOf } from "./stage-anchors";
 import { laterLineReads, standIns } from "./core-reads";
 
 // ---------------------------------------------------------------------------
@@ -1191,7 +1191,8 @@ function declarePrepass(
 }
 
 const ANCHOR_RANK = new Map(Object.keys(STAGE_ANCHORS).map((a, i) => [a, i]));
-const anchorRank = (s: ProcessingStageContribution): number => ANCHOR_RANK.get(anchorOf(s) ?? "") ?? -1;
+const anchorRank = (s: ProcessingStageContribution): number =>
+  ANCHOR_RANK.get(anchorOf(s) ?? openAnchorOf(s) ?? "") ?? -1;
 
 /** `ordered` with its anchored stages, in the places they hold, put in the
  *  order their anchors have in main(): an official extension's stage registers
@@ -1239,6 +1240,14 @@ export function buildStageInjection(
       const { domain, group: listed } = STAGE_ANCHORS[anchor];
       const group = listed ?? (domain === "scene" ? "sceneLinear" : "effects");
       writer.steps.push({ kind: "stage", group, stageId: stage.id, anchor });
+      continue;
+    }
+    // An extension's stage at an open anchor: its own namespaced block, on
+    // `lin` as the anchor has it (linear Rec.709), so no space to convert.
+    const open = openAnchorOf(stage);
+    if (open) {
+      (anchored[open] ??= []).push(emitExtensionStage(stage, declared, undefined, layered, variant, "scene"));
+      writer.steps.push({ kind: "stage", group: "sceneLinear", stageId: stage.id, anchor: open });
       continue;
     }
     const { group, domain } = phaseInfo(stage.phase);

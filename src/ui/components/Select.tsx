@@ -352,7 +352,7 @@ export function Select({
               maxHeight: pos.maxH,
               zIndex: 9999,
             }}
-            className="overflow-y-auto rounded-md border border-border bg-surface-1 p-1 shadow-xl"
+            className="sl-enter-fade overflow-y-auto rounded-md border border-border bg-surface-1 p-1 shadow-xl"
           >
             {groupList.map((g, gi) => (
               <div key={gi}>

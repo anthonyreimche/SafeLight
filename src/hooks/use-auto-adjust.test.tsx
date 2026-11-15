@@ -12,7 +12,7 @@ import { setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage, type MemoryEdits } from "@/catalog/stored-edit.fixtures";
 import { whiteBalanceStepFromLinear } from "@/rendering/auto-adjust";
 import type { HistogramData } from "@/rendering/histogram";
-import { autoAdjust, whiteBalanceFromSample } from "./use-auto-adjust";
+import { SETTLE_TIMEOUT_MS, autoAdjust, whiteBalanceFromSample } from "./use-auto-adjust";
 
 class SilentChannel {
   postMessage(): void {}
@@ -20,12 +20,26 @@ class SilentChannel {
   removeEventListener(): void {}
 }
 
+function histogramOf(luma: Uint32Array): HistogramData {
+  return { r: luma.slice(), g: luma.slice(), b: luma.slice(), luma };
+}
+
 // Every pixel at display level 30: far darker than Auto Tone's mid-grey aim, so
 // no single step converges and the run keeps waiting on fresh renders.
 function darkHistogram(): HistogramData {
   const luma = new Uint32Array(256);
   luma[30] = 1000;
-  return { r: luma.slice(), g: luma.slice(), b: luma.slice(), luma };
+  return histogramOf(luma);
+}
+
+// Median at Auto Tone's aim, the 0.25th and 99.75th percentiles at its black and
+// white points, nothing clipped: the step that measures it is the last.
+function convergedHistogram(): HistogramData {
+  const luma = new Uint32Array(256);
+  luma[6] = 25;
+  luma[115] = 9949;
+  luma[250] = 26;
+  return histogramOf(luma);
 }
 
 const s = () => useDevelopStore.getState();
@@ -34,6 +48,21 @@ const labels = () => s().history.map((h) => h.label);
 const INITIAL = useDevelopStore.getState();
 
 let storage: MemoryEdits;
+let stopRendering: () => void = () => {};
+
+/** Stands in for Develop's view: every edit is drawn `ms` later, with a new
+ *  histogram of the dark photo. */
+function renderEditsAfter(ms: number): void {
+  stopRendering = useDevelopStore.subscribe((state, prev) => {
+    if (state.params !== prev.params) setTimeout(() => s().setHistogram(darkHistogram()), ms);
+  });
+}
+
+function settledFlag(run: Promise<void>): () => boolean {
+  let settled = false;
+  void run.then(() => (settled = true));
+  return () => settled;
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -43,9 +72,78 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  stopRendering();
+  stopRendering = () => {};
   vi.useRealTimers();
   vi.unstubAllGlobals();
   setCatalogStorage(null);
+});
+
+// Each step is measured on the frame drawn with it. On a slow graphics card that
+// frame takes seconds, and measuring the frame before it again repeats the same
+// correction: Exposure ran away while the rest barely moved.
+describe("Auto Tone on a slow render", () => {
+  it("measures each step on its own render, however long it takes", async () => {
+    await s().loadEdit("A", 5000);
+    s().setHistogram(darkHistogram());
+
+    const running = autoAdjust.tone();
+    await vi.advanceTimersByTimeAsync(0);
+    const firstStep = s().params.exposure;
+    expect(firstStep).toBeGreaterThan(0);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s().params.exposure).toBe(firstStep);
+
+    s().setHistogram(convergedHistogram());
+    await vi.advanceTimersByTimeAsync(0);
+    await running;
+
+    expect(s().params.exposure).toBe(firstStep);
+    expect(labels()).toEqual(["Original", "Auto Tone"]);
+  });
+
+  it("ends at once when the photo is left right after a step, before its wait begins", async () => {
+    await s().loadEdit("A", 5000);
+    s().setHistogram(darkHistogram());
+
+    const settled = settledFlag(autoAdjust.tone());
+    useDevelopStore.setState({ photoId: null });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(settled()).toBe(true);
+  });
+
+  it("ends at once when a step can't move anything", async () => {
+    await s().loadEdit("A", 5000);
+    s().setParam("exposure", 5);
+    s().setParam("whites", 100);
+    s().setParam("blacks", -100);
+    s().setHistogram(darkHistogram());
+
+    const settled = settledFlag(autoAdjust.tone());
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(settled()).toBe(true);
+  });
+
+  it("keeps the steps so far, without measuring the old frame again, when no render comes", async () => {
+    await s().loadEdit("A", 5000);
+    s().setHistogram(darkHistogram());
+
+    const running = autoAdjust.tone();
+    await vi.advanceTimersByTimeAsync(0);
+    const firstStep = s().params.exposure;
+    const settled = settledFlag(running);
+
+    await vi.advanceTimersByTimeAsync(SETTLE_TIMEOUT_MS - 100);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(settled()).toBe(true);
+    expect(s().params.exposure).toBe(firstStep);
+    expect(labels()).toEqual(["Original", "Auto Tone"]);
+  });
 });
 
 describe("Auto after a photo switch", () => {
@@ -77,6 +175,7 @@ describe("White-balance eyedropper", () => {
     const want = whiteBalanceStepFromLinear(...WARM, s().params, s().asShotTemperature);
     const replies: (Rgb | null)[] = [WARM, null];
     const sample = vi.fn(async () => replies.shift() ?? null);
+    renderEditsAfter(50);
 
     const running = whiteBalanceFromSample(sample);
     await vi.advanceTimersByTimeAsync(5000);
@@ -117,6 +216,7 @@ describe("White-balance eyedropper", () => {
       if (reads++ === 0) return WARM;
       throw new Error("worker gone");
     });
+    renderEditsAfter(50);
 
     const running = whiteBalanceFromSample(sample);
     await vi.advanceTimersByTimeAsync(5000);

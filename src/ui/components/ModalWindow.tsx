@@ -153,7 +153,7 @@ export function ModalWindow({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center"
+      className="sl-enter-fade fixed inset-0 z-[100] flex items-center justify-center"
       style={{ backgroundColor: `rgba(0, 0, 0, ${dim})` }}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -167,7 +167,7 @@ export function ModalWindow({
         tabIndex={-1}
         onKeyDown={onBoxKeyDown}
         data-maximized={maximized || undefined}
-        className={`${maximized ? MAXIMIZED_BOX : (boxClassName ?? DEFAULT_BOX)} outline-none`}
+        className={`sl-enter-pop ${maximized ? MAXIMIZED_BOX : (boxClassName ?? DEFAULT_BOX)} outline-none`}
         style={{
           transform: !maximized && (pos.x || pos.y) ? `translate(${pos.x}px, ${pos.y}px)` : undefined,
         }}

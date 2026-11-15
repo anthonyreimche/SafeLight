@@ -9,15 +9,17 @@
 // graphics backend itself, and only while the next launch would still use the
 // graphics card.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { detachedModule } from "@/state/detach";
 import {
   GRAPHICS_STILL_WORKS,
   GRAPHICS_UNAVAILABLE,
+  RESTART_FAILED,
   dismissGraphicsNotice,
   graphicsUnavailableDetail,
   probeGraphics,
   readGpuBackend,
+  restartSafelight,
   trySoftwareRendering,
   useGraphics,
 } from "@/state/graphics-store";
@@ -30,6 +32,7 @@ export function GraphicsNotice() {
   const software = useGraphics((s) => s.software);
   const nextSoftware = useGraphics((s) => s.nextSoftware);
   const dismissed = useGraphics((s) => s.noticeDismissed);
+  const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
     if (main && probeGraphics().webgl2 === "no") void readGpuBackend();
@@ -37,11 +40,21 @@ export function GraphicsNotice() {
 
   if (!main || webgl2 !== "no" || dismissed) return null;
 
+  const restartNow = () => {
+    setProblem(null);
+    restartSafelight().catch((err: unknown) => {
+      console.warn("[safelight] couldn't restart", err);
+      setProblem(RESTART_FAILED);
+    });
+  };
+  // Software turned on for the next launch, which this one doesn't use yet.
+  const restartPending = nextSoftware === true && software === false;
+
   return (
     <div
       role="alert"
       aria-live="assertive"
-      className="mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-danger/40 bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
+      className="sl-enter-rise mx-4 mb-2 flex max-w-xl self-center items-start gap-3 rounded border border-danger/40 bg-surface-2 px-4 py-3 text-[11px] text-text-secondary shadow-lg"
     >
       <span className="text-danger" aria-hidden="true">
         ⚠
@@ -50,9 +63,8 @@ export function GraphicsNotice() {
         <p className="break-words text-text-primary" title={graphicsUnavailableDetail(reason)}>
           {GRAPHICS_UNAVAILABLE} {GRAPHICS_STILL_WORKS}
         </p>
-        {nextSoftware === true && software === false && (
-          <p>Software rendering takes effect when you restart Safelight.</p>
-        )}
+        {restartPending && <p>Software rendering takes effect when you restart Safelight.</p>}
+        {problem && <p>{problem}</p>}
         <div className="flex flex-wrap gap-2">
           {nextSoftware === false && (
             <button
@@ -60,6 +72,14 @@ export function GraphicsNotice() {
               className="rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
             >
               Try software rendering
+            </button>
+          )}
+          {restartPending && (
+            <button
+              onClick={restartNow}
+              className="rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
+            >
+              Restart Safelight
             </button>
           )}
           <button

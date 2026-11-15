@@ -41,6 +41,13 @@ vi.mock("@/ui/use-device-pixel-ratio", async (importOriginal) => {
   return { ...real, useDevicePixelRatio: vi.fn(real.useDevicePixelRatio) };
 });
 
+// What the stand-in renderer says of the load, set by a test before it draws the canvas.
+const said = vi.hoisted(() => ({
+  status: null as string | null,
+  fullPending: false,
+  renderStalled: false,
+}));
+
 vi.mock("@/hooks/use-develop-renderer", async () => {
   const { useDevelopStore: store } = await import("@/state/develop-store");
   // The same functions on every render, as the real renderer's are.
@@ -53,7 +60,7 @@ vi.mock("@/hooks/use-develop-renderer", async () => {
         supported: true,
         availability: "ready",
         availabilityReason: null,
-        status: null,
+        ...said,
         overflowedStages: [],
         width: 1000,
         height: 750,
@@ -108,6 +115,7 @@ const drag = () => {
 };
 
 beforeEach(() => {
+  Object.assign(said, { status: null, fullPending: false, renderStalled: false });
   vi.stubGlobal("ResizeObserver", FixedFrameObserver);
   useDevelopStore.setState({ photoId: PHOTO.id, params: DEFAULT_DEVELOP_PARAMS, paramBag: {} });
   overlayRenders = 0;
@@ -376,5 +384,76 @@ describe("DevelopCanvas's pick-drag tool", () => {
     await press();
     expect(probe).toHaveBeenCalledTimes(1);
     expect(onDown).not.toHaveBeenCalled();
+  });
+});
+
+// A RAW's full decode takes seconds after its preview shows, and a stage's program can
+// take as long to build: a thin bar along the top of the frame says the picture is
+// still coming, once the wait has lasted long enough to matter.
+describe("DevelopCanvas's loading bar", () => {
+  const bar = () => screen.queryByRole("progressbar", { name: "Loading the full image" });
+  /** Draws the canvas again, as the renderer does when what it says changes. */
+  const redraw = () => act(() => useDevelopStore.getState().setParam("exposure", Math.random()));
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows once the full image has been coming for 300 ms, fading in, and goes when it lands", () => {
+    vi.useFakeTimers();
+    said.fullPending = true;
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => vi.advanceTimersByTime(299));
+    expect(bar()).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(bar()).not.toBeNull();
+    expect(bar()?.className).toContain("sl-enter-fade");
+
+    said.fullPending = false;
+    redraw();
+    expect(bar()).toBeNull();
+  });
+
+  it("shows at once for a render that has stalled, which has waited already", () => {
+    said.renderStalled = true;
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    expect(bar()).not.toBeNull();
+
+    said.renderStalled = false;
+    redraw();
+    expect(bar()).toBeNull();
+  });
+
+  it("shows nothing while nothing is coming", () => {
+    vi.useFakeTimers();
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(bar()).toBeNull();
+  });
+
+  it("says Loading with stepping dots", () => {
+    said.status = "Loading…";
+    const { container } = render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    expect(container.querySelector(".sl-dots")).not.toBeNull();
+    expect(screen.getByText("Loading")).toBeTruthy();
+  });
+});
+
+// The canvas is built anew per photo, so a tool held while browsing shows at once on
+// each; one taken up on this photo fades in.
+describe("DevelopCanvas's canvas tool overlay", () => {
+  const ToolOverlay = () => <div data-testid="tool-overlay" />;
+  const layer = () => screen.getByTestId("tool-overlay").closest(".absolute.inset-0");
+
+  it("fades in a tool taken up on the open photo", () => {
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    act(() => setCanvasTool("acme.tool", { overlay: ToolOverlay }));
+    expect(layer()?.className).toContain("sl-enter-fade");
+  });
+
+  it("shows a tool already held as the photo opens at once", () => {
+    act(() => setCanvasTool("acme.tool", { overlay: ToolOverlay }));
+    render(<DevelopCanvas photo={PHOTO} zoom={null} onZoomChange={() => {}} />);
+    expect(layer()?.className).not.toContain("sl-enter-fade");
   });
 });

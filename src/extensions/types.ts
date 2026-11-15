@@ -14,4 +14,6 @@ export * from "./api/store-types";
 export * from "./api/native-bridge";
 export * from "./api/variables";
 export * from "./api/network";
+export * from "./api/sockets";
+export * from "./api/secrets";
 export * from "./api/sources";

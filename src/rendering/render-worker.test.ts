@@ -151,6 +151,16 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.waking.push("wake all");
     }
 
+    /** The version of each prepareFullProgramAsync call. */
+    fullBuilds: number[] = [];
+    /** Finishes the build the last prepareFullProgramAsync started. */
+    finishFullBuild: () => void = () => {};
+
+    prepareFullProgramAsync(version: number): Promise<void> {
+      this.fullBuilds.push(version);
+      return new Promise((resolve) => (this.finishFullBuild = resolve));
+    }
+
     prepareProgram(version: number) {
       this.waking.push("prepare");
       this.preparedWith.push(this.contributedParams);
@@ -1519,6 +1529,116 @@ describe("render-worker dormant stages", () => {
   it("drops a hint that arrives before there is a renderer", () => {
     expect(() => send({ cmd: "prewarmStages", stageIds: ["acme.grain"] })).not.toThrow();
     expect(posted).toEqual([]);
+  });
+});
+
+// The live view leaves dormant stages out, so the program with every stage in is
+// first built by a frame that needs it: another photo's grid preview, an export,
+// an extension's frame. After an install or update that holds the worker for
+// seconds. Chromium keeps every program it links, by its text, for any context and
+// later launches, so the worker has the live renderer build it in the background
+// once the worker has been quiet a while after the stages, the display transform
+// or the photo's version change: one build at a time, never during a drag.
+describe("render-worker full program", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const QUIET_MS = 3000;
+  const develop = () => FakeRenderer.instances[0];
+  const params = (processVersion: number): WorkerRequest => ({
+    cmd: "setParams",
+    derived: {},
+    params: { ...DEFAULT_DEVELOP_PARAMS, processVersion } as DevelopParams,
+  });
+  const stage = (id: string): ProcessingStageContribution => ({ id, name: id, phase: "scene-linear", glsl: "", uniforms: [] });
+
+  /** Finishes the build in progress, and lets the worker hear of it. */
+  async function finishBuild() {
+    develop().finishFullBuild();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("builds it once the worker has been quiet for 3 s after the renderer is made", async () => {
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS - 1);
+    expect(develop().fullBuilds).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(develop().fullBuilds).toEqual([CURRENT_PROCESS_VERSION]);
+  });
+
+  it("puts it off while messages keep coming", async () => {
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS - 1000);
+    send({ cmd: "render", seq: 1 });
+    await vi.advanceTimersByTimeAsync(QUIET_MS - 1000);
+    send({ cmd: "render", seq: 2 });
+    await vi.advanceTimersByTimeAsync(QUIET_MS - 1);
+    expect(develop().fullBuilds).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(develop().fullBuilds).toEqual([CURRENT_PROCESS_VERSION]);
+  });
+
+  it("builds it for the open photo's version", async () => {
+    send(params(1));
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    expect(develop().fullBuilds).toEqual([1]);
+  });
+
+  it("builds again for new stages, a new display transform or a photo on another version", async () => {
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    await finishBuild();
+    send({ cmd: "setStages", stages: [stage("acme.grain")] });
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    await finishBuild();
+    send({ cmd: "setPipeline", pipeline: PICK });
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    await finishBuild();
+    send(params(1));
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    const v = CURRENT_PROCESS_VERSION;
+    expect(develop().fullBuilds).toEqual([v, v, v, 1]);
+  });
+
+  it("builds nothing again while none of them change", async () => {
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    await finishBuild();
+    send(params(CURRENT_PROCESS_VERSION));
+    send({ cmd: "render", seq: 1 });
+    await vi.advanceTimersByTimeAsync(QUIET_MS * 3);
+    expect(develop().fullBuilds).toEqual([CURRENT_PROCESS_VERSION]);
+  });
+
+  it("starts no build while one is in progress, and the one the change calls for after it", async () => {
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    send({ cmd: "setStages", stages: [stage("acme.grain")] });
+    await vi.advanceTimersByTimeAsync(QUIET_MS * 3);
+    expect(develop().fullBuilds).toHaveLength(1);
+    await finishBuild();
+    await vi.advanceTimersByTimeAsync(QUIET_MS - 1);
+    expect(develop().fullBuilds).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(develop().fullBuilds).toHaveLength(2);
+  });
+
+  it("builds nothing while there is no renderer, and for the one made later", async () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    send({ cmd: "setStages", stages: [stage("acme.grain")] });
+    await vi.advanceTimersByTimeAsync(QUIET_MS * 2);
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+    await vi.advanceTimersByTimeAsync(QUIET_MS);
+    expect(FakeRenderer.instances.map((r) => r.fullBuilds)).toEqual([[CURRENT_PROCESS_VERSION]]);
   });
 });
 

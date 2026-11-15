@@ -70,9 +70,21 @@ const privileged = {
     pickFile: (filters) =>
       ipcRenderer.invoke("fs:pickFile", Array.isArray(filters) ? filters : []),
     reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
+    // The writer lock a project's catalogue is held under, so the app and the
+    // command-line tool don't write one at once.
+    lockProject: (workingDir, owner) =>
+      ipcRenderer.invoke("fs:lockProject", String(workingDir), String(owner)),
+    refreshProjectLock: (workingDir, token) =>
+      ipcRenderer.invoke("fs:refreshProjectLock", String(workingDir), String(token)),
+    releaseProjectLock: (workingDir, token) =>
+      ipcRenderer.invoke("fs:releaseProjectLock", String(workingDir), String(token)),
   },
   // Putting extension code on disk and taking it off again.
   plugins: {
+    // Which extensions are turned off, in a file the command-line tool reads too.
+    readDisabled: () => ipcRenderer.invoke("plugins:readDisabled"),
+    writeDisabled: (ids) =>
+      ipcRenderer.invoke("plugins:writeDisabled", Array.isArray(ids) ? ids.map(String) : []),
     install: (spec, version) =>
       version == null
         ? ipcRenderer.invoke("plugins:install", String(spec))
@@ -83,6 +95,12 @@ const privileged = {
     settleUpdate: (id, outcome) =>
       ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
   },
+  // Copies of the app's settings and of what each extension declares, written
+  // to userData for the command-line tool.
+  mirror: {
+    writeSharedSettings: (doc) => ipcRenderer.invoke("mirror:writeSharedSettings", doc),
+    writeDescriptors: (doc) => ipcRenderer.invoke("mirror:writeDescriptors", doc),
+  },
   capture: {
     page: () => ipcRenderer.invoke("diagnostics:capturePage"),
   },
@@ -92,6 +110,9 @@ const privileged = {
     setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
     setBackend: (choice) => ipcRenderer.invoke("gpu:setBackend", typeof choice === "string" ? choice : null),
     rendererFailed: (detail) => ipcRenderer.invoke("gpu:rendererFailed", String(detail)),
+    keepChange: () => ipcRenderer.invoke("gpu:keepChange"),
+    revertChange: () => ipcRenderer.invoke("gpu:revertChange"),
+    restart: () => ipcRenderer.invoke("gpu:restart"),
   },
   // The window's material (acrylic, mica): a theme asks for it, the system
   // draws it. Privileged so an extension can't change how the window paints.
@@ -127,6 +148,29 @@ const privileged = {
         timeoutMs: init && Number.isFinite(init.timeoutMs) ? Number(init.timeoutMs) : undefined,
       }),
     abort: (requestId) => ipcRenderer.invoke("net:abort", String(requestId)),
+    // Signing in to a web service: a one-time listener on 127.0.0.1 for the
+    // browser's redirect (oauth-loopback.cjs).
+    authorizeListen: (id, timeoutMs) =>
+      ipcRenderer.invoke("net:authorizeListen", String(id), Number.isFinite(timeoutMs) ? Number(timeoutMs) : undefined),
+    authorizeOpen: (id, session, url) =>
+      ipcRenderer.invoke("net:authorizeOpen", String(id), String(session), String(url)),
+    authorizeCancel: (id, session) => ipcRenderer.invoke("net:authorizeCancel", String(id), String(session)),
+  },
+  // Values an extension keeps encrypted by the OS keychain
+  // (extension-secrets.cjs). Privileged so core names the asking extension.
+  secrets: {
+    available: () => ipcRenderer.invoke("secrets:available"),
+    get: (id, key) => ipcRenderer.invoke("secrets:get", String(id), String(key)),
+    set: (id, key, value) => ipcRenderer.invoke("secrets:set", String(id), String(key), String(value)),
+    delete: (id, key) => ipcRenderer.invoke("secrets:delete", String(id), String(key)),
+  },
+  // Live connections the person allowed an extension to open (socket-access.cjs).
+  // Privileged so core names the asking extension, not the page.
+  sockets: {
+    request: (id, url) => ipcRenderer.invoke("sockets:request", String(id), String(url)),
+    status: (id, url) => ipcRenderer.invoke("sockets:status", String(id), String(url)),
+    list: (id) => ipcRenderer.invoke("sockets:list", String(id)),
+    revoke: (id, url) => ipcRenderer.invoke("sockets:revoke", String(id), String(url)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.
@@ -140,7 +184,58 @@ const privileged = {
   },
 };
 
+// The `slu` engine's hidden page (electron/engine-mode.cjs) talks to the main
+// process over a MessagePort, which can't cross the context bridge, so the page
+// gets a stand-in for it: postMessage, addEventListener("message") and close.
+// Messages wait until the first listener is added. One taker: the engine's own
+// boot code, which asks before any extension loads.
+const onEnginePage =
+  location.protocol === "app:" && location.host === "bundle" && location.pathname === "/engine.html";
+let enginePort = null;
+let enginePortTaker = null;
+let enginePortTaken = false;
+
+function handOverEnginePort() {
+  if (!enginePort || !enginePortTaker) return;
+  const port = enginePort;
+  const take = enginePortTaker;
+  enginePort = null;
+  enginePortTaker = null;
+  const listeners = [];
+  port.addEventListener("message", (e) => {
+    for (const listener of listeners) listener({ data: e.data });
+  });
+  take({
+    postMessage: (message) => port.postMessage(message),
+    addEventListener: (type, listener) => {
+      if (type !== "message" || typeof listener !== "function") return;
+      listeners.push(listener);
+      port.start();
+    },
+    close: () => port.close(),
+  });
+}
+
+if (onEnginePage) {
+  ipcRenderer.on("engine:port", (event) => {
+    enginePort = event.ports[0] ?? null;
+    handOverEnginePort();
+  });
+}
+
 contextBridge.exposeInMainWorld("safelightNative", {
+  ...(onEnginePage
+    ? {
+        engine: {
+          onPort: (cb) => {
+            if (enginePortTaken) throw new Error("The engine port is already taken.");
+            enginePortTaken = true;
+            enginePortTaker = cb;
+            handOverEnginePort();
+          },
+        },
+      }
+    : {}),
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

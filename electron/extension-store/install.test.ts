@@ -85,6 +85,86 @@ describe("uninstallPlugin", () => {
   });
 });
 
+// The GUI installs several extensions at once; only the move into plugins/ is
+// exclusive, the downloads must overlap.
+describe("installPlugin locking", () => {
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function slowInstaller(log: string[], underLock: <T>(fn: () => Promise<T>) => Promise<T>) {
+    return createInstaller({
+      pluginsDir: () => pluginsDir,
+      pluginWorkDir: () => path.join(root, "work"),
+      appVersion: () => "3.0.0",
+      fetchTrustList: async () => ({ repos: [], owners: [], reason: {} }),
+      registryVersionsFor: async () => undefined,
+      underLock,
+      releases: {
+        fetchTarballFiles: async (_owner: string, repo: string) => {
+          log.push(`download ${repo}`);
+          await delay(60);
+          log.push(`downloaded ${repo}`);
+          const manifest = { id: repo, name: "Thing", version: "1.0.0", main: "index.js" };
+          return [
+            { name: "safelight.json", data: Buffer.from(JSON.stringify(manifest)) },
+            { name: "index.js", data: Buffer.from("export {};") },
+          ];
+        },
+        fetchBuffer: async () => Buffer.alloc(0),
+        releaseLists: { get: async () => [] },
+      },
+    } as never);
+  }
+
+  function exclusiveLock(log: string[]) {
+    let held = false;
+    return async <T>(fn: () => Promise<T>): Promise<T> => {
+      while (held) await delay(1);
+      held = true;
+      log.push("lock");
+      try {
+        return await fn();
+      } finally {
+        log.push("unlock");
+        held = false;
+      }
+    };
+  }
+
+  it("overlaps the downloads of concurrent installs", async () => {
+    const log: string[] = [];
+    const installer = slowInstaller(log, exclusiveLock(log));
+    await Promise.all([installer.installPlugin("o/one#main"), installer.installPlugin("o/two#main")]);
+    expect(log.indexOf("downloaded one")).toBeGreaterThan(log.indexOf("download two"));
+    expect(log.indexOf("downloaded two")).toBeGreaterThan(log.indexOf("download one"));
+    expect(log.slice(0, 2).sort()).toEqual(["download one", "download two"]);
+  });
+
+  it("holds the lock only for the move into plugins/", async () => {
+    const log: string[] = [];
+    await slowInstaller(log, exclusiveLock(log)).installPlugin("o/one#main");
+    expect(log).toEqual(["download one", "downloaded one", "lock", "unlock"]);
+    expect(fs.existsSync(path.join(pluginsDir, "one", "safelight.json"))).toBe(true);
+  });
+
+  it("keeps the swaps exclusive", async () => {
+    const log: string[] = [];
+    const installer = slowInstaller(log, exclusiveLock(log));
+    await Promise.all([installer.installPlugin("o/one#main"), installer.installPlugin("o/two#main")]);
+    const locks = log.filter((entry) => entry === "lock" || entry === "unlock");
+    expect(locks).toEqual(["lock", "unlock", "lock", "unlock"]);
+  });
+
+  it("holds the lock for settle and uninstall", async () => {
+    const log: string[] = [];
+    const installer = slowInstaller(log, exclusiveLock(log));
+    await installer.installPlugin("o/one#main");
+    log.length = 0;
+    await installer.settleUpdate("one", "keep");
+    await installer.uninstallPlugin("one");
+    expect(log).toEqual(["lock", "unlock", "lock", "unlock"]);
+  });
+});
+
 // A first launch that can't reach the trust registry has no blocklist at all,
 // so only Safelight's own extensions can be checked without it.
 describe("installPlugin before the blocklist was ever fetched", () => {

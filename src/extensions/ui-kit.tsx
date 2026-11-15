@@ -27,6 +27,9 @@ import type {
 import { inputCls, labelCls } from "./SettingsFieldList";
 import { Select as CoreSelect, type SelectGroup, type SelectOption } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
+import { LoadingDots } from "@/ui/components/LoadingDots";
+import { Skeleton } from "@/ui/components/Skeleton";
+import { useDelayedFlag } from "@/ui/use-delayed-flag";
 import { parseDecimal } from "@/ui/parse-decimal";
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
@@ -296,15 +299,37 @@ export function Badge({ children, color }: BadgeProps) {
 }
 
 export interface ProgressBarProps {
-  /** 0..1. */
-  value: number;
+  /** 0..1. Ignored while `indeterminate`. */
+  value?: number;
+  /** A wait of unknown length: a segment slides along the track instead. */
+  indeterminate?: boolean;
+  /** Stay hidden until the bar has been shown this long, so a quick task never flashes it. */
+  delayMs?: number;
+  /** What is in progress, for screen readers, such as "Exporting". */
+  label?: string;
 }
 
-export function ProgressBar({ value }: ProgressBarProps) {
-  const pct = Math.max(0, Math.min(1, value)) * 100;
+export function ProgressBar({ value = 0, indeterminate = false, delayMs = 0, label }: ProgressBarProps) {
+  const shown = useDelayedFlag(true, delayMs);
+  if (!shown) return null;
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
   return (
-    <div className="h-1 w-full overflow-hidden rounded bg-surface-3">
-      <div className="h-full bg-slider-fill transition-[width]" style={{ width: `${pct}%` }} />
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={indeterminate ? undefined : 0}
+      aria-valuemax={indeterminate ? undefined : 100}
+      aria-valuenow={indeterminate ? undefined : pct}
+      className="sl-enter-fade relative h-1 w-full overflow-hidden rounded bg-surface-3"
+    >
+      {indeterminate ? (
+        <div className="sl-indeterminate absolute inset-y-0 w-1/3 bg-slider-fill" />
+      ) : (
+        <div
+          className="h-full bg-slider-fill transition-[width] duration-240 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      )}
     </div>
   );
 }
@@ -392,6 +417,9 @@ export const uiKit = {
   Card,
   Badge,
   ProgressBar,
+  LoadingDots,
+  Skeleton,
+  useDelayedFlag,
   Stack,
   Row,
   tokens,

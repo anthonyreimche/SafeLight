@@ -31,6 +31,9 @@ const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
  *   setSoftwareRendering: (on: boolean) => unknown,
  *   setGraphicsBackend: (choice: string | null) => unknown,
  *   rendererFailed: (detail: string) => unknown,
+ *   keepChange: () => unknown,
+ *   revertChange: () => unknown,
+ *   restartApp: () => void,
  * }} deps
  */
 function diagnosticsChannels({
@@ -44,6 +47,9 @@ function diagnosticsChannels({
   setSoftwareRendering,
   setGraphicsBackend,
   rendererFailed,
+  keepChange,
+  revertChange,
+  restartApp,
 }) {
   const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
 
@@ -133,6 +139,23 @@ function diagnosticsChannels({
       channel: "gpu:rendererFailed",
       privileged: true,
       handler: (_e, detail) => rendererFailed(String(detail).slice(0, 500)),
+    },
+    // The bar on the first window of a changed backend: keep it, or go back now.
+    {
+      channel: "gpu:keepChange",
+      privileged: true,
+      handler: () => keepChange(),
+    },
+    {
+      channel: "gpu:revertChange",
+      privileged: true,
+      handler: () => revertChange(),
+    },
+    // A graphics change waits on the next start; the user can restart now.
+    {
+      channel: "gpu:restart",
+      privileged: true,
+      handler: () => restartApp(),
     },
     {
       channel: "diagnostics:metrics",

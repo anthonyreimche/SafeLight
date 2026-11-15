@@ -58,6 +58,10 @@ export interface SliderProps {
   /** Fired with true while a drag is held with Alt or Ctrl down, and false
    *  when that ends. */
   onModifierPreview?: (active: boolean) => void;
+  /** Shift+double-click on the track sets this one value automatically; a
+   *  plain double-click still resets. Make your own undo step. Needs
+   *  Safelight 3.2.5; older builds reset on any double-click. */
+  onAuto?: () => void;
 }
 
 /** Tonal zones across the histogram, left (dark) to right (light). */
@@ -260,8 +264,25 @@ export interface BadgeProps {
 }
 
 export interface ProgressBarProps {
-  /** 0..1. */
-  value: number;
+  /** 0..1. Ignored while `indeterminate`. */
+  value?: number;
+  /** A wait of unknown length: a segment slides along the track instead. */
+  indeterminate?: boolean;
+  /** Stay hidden until the bar has been shown this long, so a quick task never flashes it. */
+  delayMs?: number;
+  /** What is in progress, for screen readers, such as "Exporting". */
+  label?: string;
+}
+
+export interface LoadingDotsProps {
+  /** Text before the dots, such as "Loading". Read out as written; the dots are not. */
+  label?: string;
+}
+
+export interface SkeletonProps {
+  /** Size and shape: the width and height of what will arrive. */
+  style?: CSSProperties;
+  className?: string;
 }
 
 export interface StackProps {
@@ -318,7 +339,15 @@ export interface UIKit {
   Section: (props: SectionProps) => JSX.Element;
   Card: (props: CardProps) => JSX.Element;
   Badge: (props: BadgeProps) => JSX.Element;
-  ProgressBar: (props: ProgressBarProps) => JSX.Element;
+  /** Renders nothing until `delayMs` has passed. */
+  ProgressBar: (props: ProgressBarProps) => JSX.Element | null;
+  /** An ellipsis whose dots step in turn, for status text of a wait with no known end. */
+  LoadingDots: (props: LoadingDotsProps) => JSX.Element;
+  /** A breathing block standing in for content still loading, at its expected size. */
+  Skeleton: (props: SkeletonProps) => JSX.Element;
+  /** True once `active` has stayed true for `ms` (default 300), false the moment it
+   *  ends: gate a wait indicator on it so a quick load never flashes one. A hook. */
+  useDelayedFlag: (active: boolean, ms?: number) => boolean;
   Stack: (props: StackProps) => JSX.Element;
   Row: (props: RowProps) => JSX.Element;
   tokens: UITokens;

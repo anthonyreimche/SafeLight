@@ -8,21 +8,23 @@
 // bridge and names the asking extension itself (src/extensions/network.ts).
 
 const { createNetAccess } = require("../net-access.cjs");
+const { createLoopbackAuth } = require("../oauth-loopback.cjs");
 const { listDevManifests, readDevFolder } = require("../extension-origins.cjs");
 
 /**
  * @param {{
  *   BrowserWindow: { fromWebContents(contents: Electron.WebContents): Electron.BrowserWindow | null },
  *   dialog: Pick<Electron.Dialog, "showMessageBox">,
+ *   shell: Pick<Electron.Shell, "openExternal">,
  *   userData: () => string,
  *   fileWriter: { write: (p: string, bytes: Uint8Array) => Promise<void> },
- *   listPlugins: () => Promise<{ id: string, name: string, permissions?: { userOrigins?: boolean } }[]>,
+ *   listPlugins: () => Promise<{ id: string, name: string, permissions?: { userOrigins?: boolean, network?: string[] } }[]>,
  *   devFolderFile: () => string,
  *   fetchImpl?: typeof fetch,
  *   onUninstalled?: (forget: (id: string) => Promise<void>) => void,
  * }} deps
  */
-function netChannels({ BrowserWindow, dialog, userData, fileWriter, listPlugins, devFolderFile, fetchImpl, onUninstalled }) {
+function netChannels({ BrowserWindow, dialog, shell, userData, fileWriter, listPlugins, devFolderFile, fetchImpl, onUninstalled }) {
   const findManifest = async (id) =>
     (await listPlugins()).find((m) => m.id === id) ??
     (await listDevManifests(await readDevFolder(devFolderFile()))).find((m) => m.id === id) ??
@@ -53,6 +55,7 @@ function netChannels({ BrowserWindow, dialog, userData, fileWriter, listPlugins,
 
   const access = createNetAccess({ userData, fileWriter, findManifest, showConsent, fetchImpl });
   if (onUninstalled) onUninstalled((id) => access.forget(id));
+  const auth = createLoopbackAuth({ openExternal: (url) => shell.openExternal(url) });
 
   return [
     {
@@ -80,6 +83,21 @@ function netChannels({ BrowserWindow, dialog, userData, fileWriter, listPlugins,
       channel: "net:abort",
       privileged: true,
       handler: (_e, requestId) => access.abort(String(requestId)),
+    },
+    {
+      channel: "net:authorizeListen",
+      privileged: true,
+      handler: (_e, id, timeoutMs) => auth.listen(String(id), Number(timeoutMs) || undefined),
+    },
+    {
+      channel: "net:authorizeOpen",
+      privileged: true,
+      handler: (_e, id, session, url) => auth.open(String(id), String(session), String(url)),
+    },
+    {
+      channel: "net:authorizeCancel",
+      privileged: true,
+      handler: (_e, id, session) => auth.cancel(String(id), String(session)),
     },
   ];
 }
