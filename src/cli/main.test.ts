@@ -66,14 +66,14 @@ describe("main", () => {
   it("answers an unknown verb with exit 1 and a suggestion", async () => {
     const h = harness();
     expect(await main(["sett", "a.ARW"], h.io)).toBe(1);
-    expect(h.err()).toBe(`safelight: "sett" isn't a safelight verb. Did you mean set?\n     safelight help lists them.\n`);
+    expect(h.err()).toBe(`safelight: "sett" isn't a safelight verb. Did you mean set?\n           safelight help lists them.\n`);
     expect(h.out()).toBe("");
   });
 
   it("answers a verb nothing is close to without a suggestion", async () => {
     const h = harness();
     expect(await main(["frobnicate"], h.io)).toBe(1);
-    expect(h.err()).toBe(`safelight: "frobnicate" isn't a safelight verb.\n     safelight help lists them.\n`);
+    expect(h.err()).toBe(`safelight: "frobnicate" isn't a safelight verb.\n           safelight help lists them.\n`);
   });
 
   it("registers one command per verb, each with its usage", () => {

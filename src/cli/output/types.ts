@@ -54,7 +54,7 @@ export interface Output {
   verbHelp(v: VerbHelp): string;
   doctor(items: DoctorItem[]): string;
   previewCaption(c: PreviewCaption): string;
-  problem(kind: "error" | "warning", p: Problem): string;        // `${COMMAND}: …\n     hint`
+  problem(kind: "error" | "warning", p: Problem): string;        // "safelight: …\n           hint"
   progressText(p: ProgressState): string;
   // writers
   print(text: string): void;                                     // stdout, adds "\n"; silent when quiet

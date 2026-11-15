@@ -690,7 +690,7 @@ describe("writers", () => {
     o.out.warn({ message: "one warning" });
     o.out.error({ message: "one error", hint: "do this" });
     expect(o.stdout()).toBe("78 photos\n");
-    expect(o.stderr()).toBe("safelight: one warning\nsafelight: one error\n     do this\n");
+    expect(o.stderr()).toBe("safelight: one warning\nsafelight: one error\n           do this\n");
   });
 
   it("keeps quiet except for errors", () => {
