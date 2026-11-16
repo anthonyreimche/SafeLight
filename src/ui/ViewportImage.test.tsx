@@ -12,7 +12,7 @@
 // clock are faked: frames come every 16 ms of advance().
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { resetAllBindings, setBinding } from "@/state/keybindings-store";
 import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
@@ -164,6 +164,42 @@ function roll(
 
 beforeEach(() => zoomSpy.mockClear());
 afterEach(() => resetAllBindings());
+
+describe("a drag on the image", () => {
+  // The browser starts a text selection from the press, and a pan dragged over
+  // a panel would select its text.
+  const selectionStarts = (): boolean => {
+    const e = new Event("selectstart", { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(e);
+    return !e.defaultPrevented;
+  };
+  const press = { button: 0, pointerId: 1, clientX: 400, clientY: 300 };
+
+  it("selects no text from the press until the button is let go", () => {
+    const { frame } = mount({ start: 1 });
+    fireEvent.pointerDown(frame, press);
+    fireEvent.pointerMove(frame, { ...press, clientX: 300 });
+    expect(selectionStarts()).toBe(false);
+    fireEvent.pointerUp(frame, { ...press, clientX: 300 });
+    expect(selectionStarts()).toBe(true);
+  });
+
+  it("lets selection go when the drag is cancelled, or the view goes mid-drag", () => {
+    const { frame, unmount } = mount({ start: 1 });
+    fireEvent.pointerDown(frame, press);
+    fireEvent.pointerCancel(frame, press);
+    expect(selectionStarts()).toBe(true);
+    fireEvent.pointerDown(frame, press);
+    unmount();
+    expect(selectionStarts()).toBe(true);
+  });
+
+  it("leaves selection alone for a button that doesn't pan", () => {
+    const { frame } = mount({ start: 1 });
+    fireEvent.pointerDown(frame, { ...press, button: 2 });
+    expect(selectionStarts()).toBe(true);
+  });
+});
 
 describe("wheel zoom", () => {
   it("zooms in from fit, anchored at the cursor", () => {

@@ -27,6 +27,7 @@ import type {
   StylesheetContribution,
   ThemeContribution,
 } from "./contributions";
+import type { CommandContribution } from "./commands";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -85,6 +86,11 @@ export interface RegisteredStylesheet extends StylesheetContribution {
 export interface RegisteredModule extends ModuleContribution {
   extensionId: string;
 }
+/** A console command as the registry holds it, keyed by its name (`id`). */
+export interface RegisteredCommandEntry extends CommandContribution {
+  id: string;
+  extensionId: string;
+}
 
 export interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -115,6 +121,8 @@ export interface RegistryState {
   stylesheets: Record<string, RegisteredStylesheet>;
   /** Keyed by module id. Top-level modules, Library and Develop among them. */
   modules: Record<string, RegisteredModule>;
+  /** Keyed by command name. Console commands (api.commands). */
+  commands: Record<string, RegisteredCommandEntry>;
 }
 
 /** A stage uniform another extension contributed, as api.params lists it. */

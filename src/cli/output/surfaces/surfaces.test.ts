@@ -16,7 +16,7 @@ import type { HelpVerb, HomeStatus, Output, ToolRow } from "../index";
 import { cells } from "../width";
 import { progressFrame, workingFrame } from "./export";
 import { LOGO_ART, LOGO_ART_WIDTH, logoParts, paintLogoRow } from "../logo/art";
-import { bulbRows, homeLayout } from "./home";
+import { LOGO_FROM, bulbRows, homeLayout } from "./home";
 
 const page = (text: string): string => `\n${text}\n`;
 const shape = (text: string): string => page(untag(text));
@@ -63,18 +63,24 @@ describe("home", () => {
     `);
   });
 
-  it("paints the globe red and the script and base in the strong foreground, and nothing else red", () => {
+  it("paints the globe's highlights and shadows in two reds, the lettering and base strong and the caption muted, and nothing else red", () => {
     const text = formatHome(HOME, richOptions(96));
-    expect(text).toContain(`‹bulb›${LOGO_ART[1].trim()}‹/›`);
-    expect(text).toContain("‹strong›########‹/›");
+    expect(text).toContain("‹bulb›---‹/›‹lampShade›..........‹/›");
+    expect(text).toContain("‹strong›##+######‹/›");
+    expect(text).toContain("‹strong›/___/\\_,_/_/‹/›");
+    expect(text).toContain("‹muted›u‹/› ‹muted›n‹/›");
     expect(text).toContain("‹amber›2 updates‹/›");
     const outsideArt = text.split("\n").slice(1 + LOGO_ART.length).join("\n");
     expect(outsideArt).not.toContain("‹bulb›");
+    expect(outsideArt).not.toContain("‹lampShade›");
   });
 
-  it("takes a - or . that touches a stroke as part of the stroke", () => {
-    expect(logoParts("##.  .-.")).toEqual(["stroke", "stroke", "stroke", "space", "space", "globe", "globe", "globe"]);
-    expect(paintLogoRow(" #- .. ", (part, run) => `[${part}:${run}]`)).toBe(" [stroke:#-] [globe:..] ");
+  it("reads - as the lit globe and . as its shade, a - inside the lettering as lettering, and words as the caption", () => {
+    expect(logoParts(".-  -_) ab #+")).toEqual([
+      "shade", "globe", "space", "space", "stroke", "stroke", "stroke", "space", "caption", "caption", "space", "stroke", "stroke",
+    ]);
+    expect(paintLogoRow(" ##+.. -.  u n", (part, run) => `[${part}:${run}]`))
+      .toBe(" [stroke:##+][shade:..] [globe:-][shade:.]  [caption:u] [caption:n]");
   });
 
   it("is plain ASCII, and the same art, with no colour and on a legacy console", () => {
@@ -113,10 +119,10 @@ describe("home", () => {
     expect(untag(text)).toContain("│ Safelight has it open, so changes here will be     │");
   });
 
-  it("leaves the art out where it doesn't fit, and goes compact under 60 columns", () => {
-    const fits = LOGO_ART_WIDTH + 3 + 1;
-    expect(artAt(untag(formatHome(HOME, richOptions(fits))).split("\n"))).toBe(1);
-    expect(artAt(untag(formatHome(HOME, richOptions(fits - 1))).split("\n"))).toBe(-1);
+  it("draws the art once there is room for it over the card, and goes compact under that", () => {
+    expect(LOGO_FROM).toBe(Math.max(LOGO_ART_WIDTH, 54) + 3 + 1);
+    expect(artAt(untag(formatHome(HOME, richOptions(LOGO_FROM))).split("\n"))).toBe(1);
+    expect(artAt(untag(formatHome(HOME, richOptions(LOGO_FROM - 1))).split("\n"))).toBe(-1);
     expect(shape(formatHome(HOME, richOptions(50)))).toMatchInlineSnapshot(`
       "
 
@@ -144,12 +150,12 @@ describe("home", () => {
     }
   });
 
-  it("warms the globe from ember to lit, leaves the strokes alone, and the last frame is the static render", () => {
+  it("warms the globe from ember to lit, its shade a step behind, leaves the strokes alone, and the last frame is the static render", () => {
     const look = taggedLook(96);
     const lit = bulbRows(look, 1);
     expect(bulbRows(look)).toEqual(lit);
-    expect(bulbRows(look, 0)).toEqual(lit.map((row) => row.replaceAll("‹bulb›", "‹ember›")));
-    expect(bulbRows(look, 0.5)).toEqual(lit.map((row) => row.replaceAll("‹bulb›", "‹lampShade›")));
+    expect(bulbRows(look, 0)).toEqual(lit.map((row) => row.replaceAll("‹lampShade›", "‹ember›").replaceAll("‹bulb›", "‹ember›")));
+    expect(bulbRows(look, 0.5)).toEqual(lit.map((row) => row.replaceAll("‹lampShade›", "‹ember›").replaceAll("‹bulb›", "‹lampShade›")));
     expect(lit.join("\n")).toContain("‹strong›");
     expect(lit.map(cells)).toEqual(Array(LOGO_ART.length).fill(LOGO_ART_WIDTH));
     expect(homeLayout(HOME, look, 1).lines).toEqual(homeLayout(HOME, look).lines);

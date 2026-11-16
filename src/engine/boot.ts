@@ -83,6 +83,7 @@ export async function boot(channel: EngineChannel): Promise<void> {
     preview: (req, out, signal) => session.preview(req, out, signal),
     import: (req, out, signal) => session.import(req, out, signal),
     thumbs: (req, out, signal) => session.thumbs(req, out, signal),
+    command: (req, out, signal) => session.command(req, out, signal),
     shutdown: () => session.close(),
   });
 }

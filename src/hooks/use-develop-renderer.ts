@@ -16,6 +16,8 @@ import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
 import { useStageViewValues } from "@/modules/develop/stage-view-values";
 import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge, noteLiveStageBag } from "@/rendering/render-bridge";
+import { setLiveViewSource, useLiveStatus } from "@/rendering/render-bridge/live-status";
+import { shaderVariantFor } from "@/rendering/webgl/shaders";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { setSourcePixels } from "@/rendering/source-pixels";
@@ -294,8 +296,9 @@ export function useDevelopRenderer(
   // Size of the source the last frame was drawn from, as the renderer holds it
   // (already upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
-  // The stages the last frame of the photo was drawn without (FrameResult).
-  const [overflowedStages, setOverflowedStages] = useState<readonly string[]>(NO_STAGES);
+  // The stages the last frame of the photo was drawn without (FrameResult), which the
+  // bridge keeps with the rest of what the live view drew.
+  const overflowedStages = useLiveStatus((s) => s.live?.overflowed ?? NO_STAGES);
   // The edit itself isn't read here: it goes to the worker from the store (push below),
   // so a slider tick renders nothing of the view. What the view needs of it is read
   // narrowly, through the edit drawn (drawnParams).
@@ -385,6 +388,10 @@ export function useDevelopRenderer(
 
     const bridge = getRenderBridge();
     bridgeRef.current = bridge;
+    setLiveViewSource({
+      photoId: () => useDevelopStore.getState().photoId,
+      processVersion: () => shaderVariantFor(drawnParams(useDevelopStore.getState()).processVersion).version,
+    });
 
     const offFilled = watchCacheFills(bridge, openPhotoIdRef);
 
@@ -410,10 +417,6 @@ export function useDevelopRenderer(
             : null,
         crop: frame.crop,
       });
-      const overflowed = frame.overflowedStages;
-      setOverflowedStages((s) =>
-        s.length === overflowed.length && s.every((id, i) => id === overflowed[i]) ? s : overflowed,
-      );
       // The renderer's own size of the source, which the drawn transform's aspect
       // comes from, so the crop overlay agrees with the pixels on screen. A source
       // bound from the GPU cache is reported by its frames alone.
@@ -518,6 +521,7 @@ export function useDevelopRenderer(
       // A view set up again (StrictMode) pushes the edit again, and renders it.
       pushedRef.current = null;
       histogram.dispose();
+      setLiveViewSource(null);
       bridge.setOnFrame(null);
       bridge.setOnHistogram(null);
       bridge.setOnHistogramError(null);
@@ -571,7 +575,6 @@ export function useDevelopRenderer(
     setLoading: setLoad,
     setCantShow,
     setSettledReason,
-    setOverflowedStages,
     drawSourceRef,
   });
 

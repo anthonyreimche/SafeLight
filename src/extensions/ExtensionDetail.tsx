@@ -35,6 +35,7 @@ import { TextSkeleton } from "./StoreSkeletons";
 import { LoadingDots } from "@/ui/components/LoadingDots";
 import { Markdown } from "./Markdown";
 import { AllowedSockets } from "./AllowedSockets";
+import { AllowedPrograms } from "./AllowedPrograms";
 import { openUrl } from "@/update/update-checker";
 import { isNewer } from "@/update/semver";
 
@@ -562,6 +563,8 @@ export function ExtensionDetail({
         (target.manifest.permissions.network?.length ||
           target.manifest.permissions.userOrigins ||
           target.manifest.permissions.userSockets ||
+          target.manifest.permissions.programs ||
+          target.manifest.permissions.commands ||
           target.manifest.permissions.reason) && (
           <div className="border-b border-border-subtle px-3 py-2 text-[11px]">
             <div className="mb-0.5 font-medium text-text-secondary">Permissions</div>
@@ -581,6 +584,14 @@ export function ExtensionDetail({
             )}
             {target.manifest.permissions.userSockets && (
               <AllowedSockets extensionId={id} installed={!!target.installed} />
+            )}
+            {target.manifest.permissions.programs && (
+              <AllowedPrograms extensionId={id} installed={!!target.installed} />
+            )}
+            {target.manifest.permissions.commands && (
+              <div className="text-text-muted">
+                Runs other extensions' console commands when you type them.
+              </div>
             )}
             {target.manifest.permissions.reason && (
               <div className="mt-0.5 text-text-muted">

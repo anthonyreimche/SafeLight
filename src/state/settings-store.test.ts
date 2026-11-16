@@ -367,13 +367,13 @@ describe("validation", () => {
     expect(s.exportPresets).toEqual([]);
   });
 
-  it("defaults developDynamicDetail off, keeps a stored boolean and refuses other types", async () => {
-    expect((await boot("{}")).getSettings().developDynamicDetail).toBe(false);
-    expect((await boot('{"developDynamicDetail":true}')).getSettings().developDynamicDetail).toBe(true);
-    expect((await boot('{"developDynamicDetail":"yes"}')).getSettings().developDynamicDetail).toBe(false);
+  it("defaults developDynamicDetail on, keeps a stored boolean and refuses other types", async () => {
+    expect((await boot("{}")).getSettings().developDynamicDetail).toBe(true);
+    expect((await boot('{"developDynamicDetail":false}')).getSettings().developDynamicDetail).toBe(false);
+    expect((await boot('{"developDynamicDetail":"no"}')).getSettings().developDynamicDetail).toBe(true);
     const { updateSettings } = await boot("{}");
-    updateSettings({ developDynamicDetail: true });
-    expect(persisted()).toMatchObject({ developDynamicDetail: true });
+    updateSettings({ developDynamicDetail: false });
+    expect(persisted()).toMatchObject({ developDynamicDetail: false });
   });
 
   it("keeps a key from a newer build through a load and save", async () => {

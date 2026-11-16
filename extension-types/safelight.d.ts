@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.3.0. GPL-3.0-only.
+// Safelight 3.2.6. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -2210,6 +2210,10 @@ export interface SafelightAPI {
      *  typed in and allowed (the manifest declares `permissions.userSockets`):
      *  see SocketsAPI. Needs Safelight 3.2.5; absent on older builds. */
     sockets: SocketsAPI;
+    /** Run a native program the person chose, such as the `gmic` command-line
+     *  program (the manifest declares `permissions.programs`): see ProgramsAPI.
+     *  Needs Safelight 3.2.6; absent on older builds. */
+    programs: ProgramsAPI;
     /** Presets: the file formats and the descriptions the Presets panel and
      *  Copy Settings share. */
     presets: {
@@ -2303,12 +2307,22 @@ export interface SafelightAPI {
             gpuInfo?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["gpuInfo"];
             metrics?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["metrics"];
         };
+        /** Every extension this window knows of: running, turned off, failed to
+         *  start, or sitting in the dev folder. Absent before Safelight 3.2.6. */
+        extensions?: DevtoolsExtensions;
+        /** What the live Develop view last drew, the stages the GPU refused and the
+         *  values a stage was drawn with. Absent before Safelight 3.2.6. */
+        render?: DevtoolsRender;
     };
     /** Shared variables: named JSON values any extension can register, read,
      *  subscribe to and write, synced across windows. A set() from an extension
      *  that hasn't seen the current value is refused and reported; use update()
      *  for read-modify-write. See docs/dev/api/stores.md. */
     variables: SharedVariablesAPI;
+    /** Console commands: register a verb the Terminal and the `safelight` CLI
+     *  run, and run other extensions' verbs (with `permissions.commands`). See
+     *  CommandsAPI. Needs Safelight 3.2.6; absent on older builds. */
+    commands: CommandsAPI;
 }
 
 export interface ExtensionModule {
@@ -2471,6 +2485,23 @@ export interface ExtensionManifest {
      *  ambient access (your catalogue, files); that is NOT confined by this field,
      *  so install only extensions you trust. See EXTENSIONS.md. */
     permissions?: ExtensionPermissions;
+    /** The console commands the extension registers (api.commands) that the
+     *  `safelight` CLI offers: it reads them here, without starting the
+     *  extension, for its help, completion and verbs. One the extension doesn't
+     *  register when it runs fails with a message. Needs Safelight 3.2.6. */
+    commands?: ManifestCommand[];
+}
+
+/** A console command as a manifest declares it (see CommandContribution). */
+export interface ManifestCommand {
+    name: string;
+    summary: string;
+    usage: string[];
+    examples?: string[];
+    subcommands?: {
+        name: string;
+        summary: string;
+    }[];
 }
 
 /** The update-relevant fields of the safelight.json a repo currently publishes. */
@@ -2508,6 +2539,14 @@ export interface ExtensionPermissions {
      *  person in a dialogue naming the extension, and joins the network policy at
      *  the next launch. Needs Safelight 3.2.5. */
     userSockets?: boolean;
+    /** The extension runs one native program the person picks (api.programs),
+     *  such as the `gmic` command-line program. The person allows each program
+     *  in a dialogue that names the extension and the full path, and can forget
+     *  it on the extension's page. Needs Safelight 3.2.6. */
+    programs?: boolean;
+    /** The extension runs other extensions' console commands (api.commands.run),
+     *  as the Terminal does. Needs Safelight 3.2.6. */
+    commands?: boolean;
     /** Optional human-readable rationale shown to the user beside the request. */
     reason?: string;
 }
@@ -3314,6 +3353,34 @@ export interface NativeSocketsBridge {
     revoke(id: string, url: string): Promise<void>;
 }
 
+/** Native programs the person allowed an extension to run (api.programs).
+ *  Privileged so core, not the page, names the asking extension, and so only
+ *  core hears what a program prints. The answers are read as untrusted
+ *  (src/extensions/programs.ts checks them). */
+export interface NativeProgramsBridge {
+    pick(id: string, options: {
+        title?: string;
+        replacing: string | null;
+    }): Promise<unknown>;
+    locate(id: string, name: string): Promise<unknown>;
+    list(id: string): Promise<unknown[]>;
+    forget(id: string, token: string): Promise<void>;
+    /** Resolves once the program has stopped. `stream` asks for its output as
+     *  `onOutput` events tagged with `runId`. */
+    run(id: string, runId: string, token: string, args: string[], options: {
+        files?: Record<string, Uint8Array>;
+        outputs?: string[];
+        timeoutMs?: number;
+        stream: boolean;
+    }): Promise<unknown>;
+    cancel(runId: string): Promise<void>;
+    onOutput(cb: (event: {
+        runId: unknown;
+        stream: unknown;
+        text: unknown;
+    }) => void): () => void;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
     fs: NativeFsBridge;
@@ -3338,6 +3405,8 @@ export interface PrivilegedBridge {
     secrets?: NativeSecretsBridge;
     /** Optional: absent in older Electron builds. */
     sockets?: NativeSocketsBridge;
+    /** Optional: absent in older Electron builds. */
+    programs?: NativeProgramsBridge;
 }
 
 declare global {
@@ -3652,6 +3721,93 @@ export interface SocketsAPI {
     revokeAccess(url: string): Promise<void>;
 }
 
+// src/extensions/api/programs.ts
+
+/** A program the person allowed this extension to run. `token` is what
+ *  `run` and `forget` take; the extension never holds anything it could run
+ *  without it. */
+export interface KeptProgram {
+    token: string;
+    /** The program's full path, for showing. */
+    path: string;
+    /** The file's own name, such as `gmic.exe`. */
+    name: string;
+}
+
+export interface ProgramRunOptions {
+    /** Files written into the run's empty folder before the program starts. The
+     *  program runs with that folder as its working directory. Names are plain:
+     *  letters, digits, `.`, `_` and `-`, up to 128, no names Windows reserves
+     *  (`con`, `nul`, `com1`…) and none that differ only by case. */
+    files?: Record<string, Uint8Array>;
+    /** Files to read back from that folder once the program ends, by name. A
+     *  name ending in `*` takes every file that starts with the rest
+     *  (`"out_*"`), in the folder only. Missing files are left out. At most 16
+     *  files and 1 GB come back; more rejects the run. */
+    outputs?: string[];
+    /** Stops the program. The run then resolves with `killed: "cancelled"`. */
+    signal?: AbortSignal;
+    /** Stops the program after this long: 10 minutes when left out, 2 hours at
+     *  most. */
+    timeoutMs?: number;
+    /** What the program prints, as it arrives, in pieces that never cut a
+     *  character in half. Delivered a few times a second, not once per line. */
+    onOutput?(stream: "stdout" | "stderr", text: string): void;
+}
+
+export interface ProgramRunResult {
+    /** The program's exit code, or null when it was stopped. */
+    exitCode: number | null;
+    killed: "timeout" | "cancelled" | null;
+    /** The last 4 MB of what the program printed on each stream. */
+    stdout: string;
+    stderr: string;
+    /** The files asked for in `outputs`. Empty when the program was stopped. */
+    files: Record<string, Uint8Array>;
+}
+
+/** Runs one native program the person chose, such as the `gmic` command-line
+ *  program. The extension declares `"permissions": { "programs": true }`. The
+ *  person picks the program in the system's file dialogue (or has Safelight
+ *  look for it on `PATH`) and confirms in a second dialogue that names the
+ *  extension and the full path; the extension then holds a token for it, never
+ *  the right to name another program. The grant lasts across launches, until
+ *  the person forgets it on the extension's page in the Extensions window or
+ *  the extension is uninstalled; an update keeps it.
+ *
+ *  A run starts the program directly, with no shell, in a fresh empty folder
+ *  that is removed afterwards. It is an ordinary program with the person's own
+ *  rights: it can read, change and delete their files. Other extensions that
+ *  run this extension's commands (Terminal, say) reach it through them. On
+ *  Windows the program must be an `.exe` or `.com`. Needs Safelight 3.2.6. */
+export interface ProgramsAPI {
+    /** The system's file dialogue, then the consent dialogue. Kept for this
+     *  extension across launches. Null when the person cancels or refuses.
+     *  Ask from a click. `replacing` is a token this pick takes the place of:
+     *  the dialogue opens beside it, and it is forgotten once the new one is
+     *  kept. */
+    pick(options?: {
+        title?: string;
+        replacing?: string | null;
+    }): Promise<KeptProgram | null>;
+    /** Looks for `name` (such as `"gmic"`) on `PATH`, and on macOS and Linux in
+     *  `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`, and asks for
+     *  consent exactly as `pick` does. Null when it isn't found or the person
+     *  refuses. */
+    locate(name: string): Promise<KeptProgram | null>;
+    /** The programs kept for this extension. */
+    list(): Promise<KeptProgram[]>;
+    /** Stops allowing the program. */
+    forget(token: string): Promise<void>;
+    /** Runs a kept program with `args`, each its own argument. Rejects when the
+     *  token isn't this extension's, the file is gone, the program can't start,
+     *  or the files, names or arguments are refused (at most 4096 arguments,
+     *  each up to 32 KB). A program that runs and fails is not a rejection: look
+     *  at `exitCode`. Rejects with "NotSupportedError" outside the desktop
+     *  app. */
+    run(token: string, args: string[], options?: ProgramRunOptions): Promise<ProgramRunResult>;
+}
+
 // src/extensions/api/secrets.ts
 
 /** Text an extension keeps secret, such as a sign-in's refresh token: each
@@ -3778,6 +3934,134 @@ export interface LibrarySourceEntry {
     extensionId: string;
     /** Whether it is the project open now. */
     open: boolean;
+}
+
+// src/extensions/api/commands.ts
+
+/** A line of progress a command shows while it works. */
+export interface CommandProgress {
+    /** Replace the line; `fraction` (0 to 1) shows how far along it is. */
+    update(text: string, fraction?: number): void;
+    /** Take the line away, leaving `text` as a note when given. */
+    done(text?: string): void;
+}
+
+/** Where a command's output goes. */
+export interface CommandOutput {
+    /** Plain output: the lines a person, or a script reading the CLI's output,
+     *  asked for. */
+    print(text: string): void;
+    /** A dim note about what the command is doing. */
+    info(text: string): void;
+    warn(text: string): void;
+    progress(text: string): CommandProgress;
+}
+
+/** What a command gets when it runs. */
+export interface CommandRunContext extends CommandOutput {
+    /** The words after the verb, as typed: nothing is read as an option, so
+     *  "-blur" stays a word. */
+    words: string[];
+    /** The photos it acts on: the Terminal's targets (the Develop photo or the
+     *  Library selection), or the photos the CLI chose. May be empty. */
+    photos: CatalogPhoto[];
+    /** "app" when it runs in Safelight (the Terminal, or another extension
+     *  through `run`), "cli" when the `safelight` command runs it. */
+    caller: "app" | "cli";
+    /** The extension id that ran it, or "cli". */
+    from: string;
+    /** Aborts when the person stops the command (Ctrl+C, the Terminal's stop).
+     *  Stop at the next point you can. */
+    signal: AbortSignal;
+    /** Null when a result can be saved beside `photo`, else why not (the
+     *  photo's folder is read-only, the project is a library source). Ask
+     *  before long work whose result would have nowhere to go. */
+    canSaveBeside(photo: CatalogPhoto): Promise<string | null>;
+    /** Save `data` as a new photo in `photo`'s folder, named
+     *  "<name>-<suffix>.<ext>" after the photo (a virtual copy's name included),
+     *  or "<name>-<suffix>-2.<ext>" and on while a name is taken; nothing is
+     *  overwritten. `suffix` is 1 to 32 lower-case letters, digits or "-", and
+     *  `ext` a photo type Safelight opens ("png", "tif", "jpg"). Resolves with
+     *  the new file's name once it is a photo of the catalogue: in the app it
+     *  is imported at once; under the CLI it is written now and imported when
+     *  the command ends. Rejects with the reason it couldn't be saved. */
+    saveBeside(photo: CatalogPhoto, data: Blob, suffix: string, ext: string): Promise<string>;
+    /** A structured result, printed by `safelight … --json` and handed back by
+     *  `run`. The last call wins; plain JSON data only. */
+    result(value: unknown): void;
+}
+
+/** A console verb. */
+export interface CommandContribution {
+    /** The verb: a lower-case letter, then 1 to 31 lower-case letters, digits
+     *  or "-". A `safelight` verb, one of the prompt's own words (cd, next,
+     *  prev, close, home, clear, cls, exit, quit, open) or a verb another
+     *  extension holds is refused with a warning. */
+    name: string;
+    /** One line about what it does. */
+    summary: string;
+    /** One line per form, without "safelight": "gmic <pipeline…>". */
+    usage: string[];
+    /** Whole lines that run it: "gmic blur 3". */
+    examples?: string[];
+    /** The words that may come first, for help and completion. */
+    subcommands?: {
+        name: string;
+        summary: string;
+    }[];
+    /** Runs the command. A throw ends it with the error's message. */
+    run(ctx: CommandRunContext): Promise<void>;
+}
+
+/** A command as `list` gives it. */
+export interface RegisteredCommand {
+    name: string;
+    summary: string;
+    usage: string[];
+    examples: string[];
+    subcommands: {
+        name: string;
+        summary: string;
+    }[];
+    /** The extension that registered it. */
+    extensionId: string;
+}
+
+/** Verbs an extension adds to Safelight's consoles. A command registered here
+ *  runs in the app through `run` (the Terminal extension's console), and one
+ *  the manifest also declares under `commands` runs from the `safelight` CLI
+ *  too, as `safelight <name> <words…> [-- photos…]`. Dropped when the
+ *  extension stops. Needs Safelight 3.2.6. */
+export interface CommandsAPI {
+    /** Add a command, or replace one of your own by name. */
+    register(c: CommandContribution): void;
+    /** Remove a command you registered. */
+    unregister(name: string): void;
+    /** Every extension's commands, by name. */
+    list(): RegisteredCommand[];
+    /** Called when the list changes. Returns the unsubscribe function. */
+    subscribe(cb: () => void): () => void;
+    /** Run a registered command with `words` on `photos`, its output going to
+     *  the functions given. Resolves with its `result` (undefined when it gave
+     *  none) and the names it saved; rejects with the command's own error, or
+     *  for a name nobody registered. Needs `"permissions": { "commands": true }`
+     *  in your manifest; without it the call rejects with a NotAllowedError. */
+    run(name: string, options: CommandOutput & {
+        words: string[];
+        photos: CatalogPhoto[];
+        signal?: AbortSignal;
+    }): Promise<{
+        result: unknown;
+        saved: string[];
+    }>;
+    /** Null when a result can be saved beside `photo`, else why not: the run
+     *  context's canSaveBeside, for a panel of your own. No permission needed. */
+    canSaveBeside(photo: CatalogPhoto): Promise<string | null>;
+    /** Save `data` as a new photo beside `photo` and import it, exactly as the
+     *  run context's saveBeside does in the app; resolves with the new file's
+     *  name. No permission needed: it only writes into the open project, beside
+     *  a photo of it. */
+    saveBeside(photo: CatalogPhoto, data: Blob, suffix: string, ext: string): Promise<string>;
 }
 
 // src/catalog/develop-params.ts
@@ -4742,6 +5026,12 @@ export interface RegisteredModule extends ModuleContribution {
     extensionId: string;
 }
 
+/** A console command as the registry holds it, keyed by its name (`id`). */
+export interface RegisteredCommandEntry extends CommandContribution {
+    id: string;
+    extensionId: string;
+}
+
 export interface RegistryState {
     panels: Record<string, RegisteredPanel>;
     themes: Record<string, RegisteredTheme>;
@@ -4771,6 +5061,8 @@ export interface RegistryState {
     stylesheets: Record<string, RegisteredStylesheet>;
     /** Keyed by module id. Top-level modules, Library and Develop among them. */
     modules: Record<string, RegisteredModule>;
+    /** Keyed by command name. Console commands (api.commands). */
+    commands: Record<string, RegisteredCommandEntry>;
 }
 
 /** A stage uniform another extension contributed, as api.params lists it. */
@@ -5448,6 +5740,79 @@ export interface WebGLInfo {
     fragmentUniformVectors: number;
     /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
     colorBufferFloat: boolean;
+}
+
+/** A value that can be read now, watched, or used as a React hook. */
+export interface DevtoolsObservable<T> {
+    get(): T;
+    subscribe(listener: () => void): () => void;
+    use(): T;
+}
+
+export interface DevExtensionInfo {
+    id: string;
+    name: string;
+    version: string;
+    source: "builtin" | "installed" | "dev";
+    /** An instance of it is live in this window. */
+    running: boolean;
+    /** Not in the turned-off list. */
+    enabled: boolean;
+    /** Why it failed to start, while that stands. */
+    failure: {
+        reason: string;
+        message: string;
+    } | null;
+    /** 1 while one of its callbacks has thrown and been guarded, else 0. */
+    callbackFailures: number;
+    /** A dev-folder copy's load error. */
+    devError: string | null;
+}
+
+/** Every extension this window knows of: running, turned off, failed to start
+ *  or sitting in the dev folder. */
+export interface DevtoolsExtensions extends DevtoolsObservable<readonly DevExtensionInfo[]> {
+    /** Reload a dev-folder extension from disk. */
+    reloadDev(id: string): Promise<void>;
+}
+
+/** What this window's live develop view last drew. */
+export interface LiveRenderStatus {
+    /** Date.now() of the last live frame written. A frame that changes nothing
+     *  but its time is written at most once a second. */
+    at: number;
+    photoId: string | null;
+    processVersion: ProcessVersion;
+    /** Stage ids in the live program, program order; mask copies as `id@n`. */
+    programStages: readonly string[];
+    /** Stages (and copies) the live renderer has built without since it
+     *  started: no frame has needed them. */
+    dormant: readonly string[];
+    /** The last frame's overflowedStages. */
+    overflowed: readonly string[];
+    /** The request-to-answer time of the last render the view asked for, ms. */
+    frameMs: number | null;
+    /** The last renderError, while no later frame has succeeded. */
+    lastError: {
+        at: number;
+        message: string;
+    } | null;
+}
+
+export interface StageFailureInfo {
+    log: string;
+    /** The log is the GPU's crash notice, not a compile or link error. */
+    crashed: boolean;
+}
+
+export interface DevtoolsRender {
+    /** This window's live develop view; null with none since launch. */
+    live: DevtoolsObservable<LiveRenderStatus | null>;
+    /** Standing failures, by stage id. */
+    stageFailures: DevtoolsObservable<Readonly<Record<string, StageFailureInfo>>>;
+    /** The values this window's live view last drew for the stage's uniforms,
+     *  by uniform key, derived values included; null with no live view. */
+    liveValues(stageId: string): Readonly<Record<string, unknown>> | null;
 }
 
 // src/project/storage-options.ts

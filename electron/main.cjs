@@ -528,6 +528,10 @@ function handlePrivileged(channel, handler) {
   ipcMain.handle(channel, guardPrivileged(channel, handler, { committedUrls }));
 }
 
+// What is running for extensions (programs they were allowed to start) is
+// stopped as the app quits.
+const shutdownHooks = [];
+
 async function registerIpcChannels() {
   // Nothing is in flight before the first window: a previous version still in
   // the work area belongs to an update that was never settled, so it goes back.
@@ -566,6 +570,7 @@ async function registerIpcChannels() {
     revertChange,
     restartApp: restartNow,
     appWindows,
+    onShutdown: (stop) => void shutdownHooks.push(stop),
   });
   registerIpc(channels, { ipcMain, handlePrivileged });
 }
@@ -974,6 +979,7 @@ if (!app.requestSingleInstanceLock()) {
   // stuck disk can't keep the app from quitting.
   let writesDrained = false;
   app.on("will-quit", async (event) => {
+    for (const stop of shutdownHooks) stop();
     if (writesDrained || fileWriter.activePaths() === 0) return;
     event.preventDefault();
     writesDrained = true;

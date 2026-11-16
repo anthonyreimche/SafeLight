@@ -74,7 +74,6 @@ export interface PhotoLoadArgs {
   setCantShow: Dispatch<SetStateAction<string | null>>;
   /** Why the load settled on a preview for good (previewReason), for the label. */
   setSettledReason: Dispatch<SetStateAction<string | null>>;
-  setOverflowedStages: Dispatch<SetStateAction<readonly string[]>>;
   /** Draws the source just handed over (sent, or bound from the GPU cache) with the
    *  photo's edit. */
   drawSourceRef: RefObject<(bridge: RenderBridge, photo: CatalogPhoto) => void>;
@@ -92,7 +91,6 @@ export function useDevelopPhotoLoad({
   setLoading,
   setCantShow,
   setSettledReason,
-  setOverflowedStages,
   drawSourceRef,
 }: PhotoLoadArgs): {
   /** Checks an edited stored preview standing in for the photo; `bitmap` is a fresh draw
@@ -165,7 +163,6 @@ export function useDevelopPhotoLoad({
     sentGenRef.current = null;
     setCantShow(null);
     setSettledReason(null);
-    setOverflowedStages(NO_STAGES);
     editedPreviewRef.current = null;
     bridge.clearSource();
     useDevelopStore.getState().setHistogram(null);

@@ -77,6 +77,9 @@ export interface WorkerState {
   fullProgramTimer: ReturnType<typeof setTimeout> | null;
   fullProgramFor: FullProgramFor | null;
   fullProgramBuilding: boolean;
+  // The program status last posted for the develop renderer (programStatus); null
+  // until its first frame, and again for each new renderer.
+  postedProgram: { programStages: readonly string[]; dormant: readonly string[] } | null;
 }
 
 export function initialState(): WorkerState {
@@ -104,6 +107,7 @@ export function initialState(): WorkerState {
     fullProgramTimer: null,
     fullProgramFor: null,
     fullProgramBuilding: false,
+    postedProgram: null,
   };
 }
 
@@ -150,6 +154,20 @@ export interface LiveFrameRequest {
   wantExtended?: boolean;
 }
 
+const sameIds = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((id, i) => id === b[i]);
+
+// Tells the window which stages the program drawing the live view holds, when that
+// is not what it was last told.
+function postProgramStatus(ctx: WorkerContext, renderer: WebGLRenderer): void {
+  const { state } = ctx;
+  const { programStages, dormantStages: dormant } = renderer;
+  const posted = state.postedProgram;
+  if (posted && sameIds(posted.programStages, programStages) && sameIds(posted.dormant, dormant)) return;
+  state.postedProgram = { programStages, dormant };
+  ctx.respond({ type: "programStatus", programStages: [...programStages], dormant: [...dormant] });
+}
+
 // Draws the live view and posts it, then the histogram it asked for. Every way out
 // answers by `seq`.
 export function postLiveFrame(
@@ -164,6 +182,7 @@ export function postLiveFrame(
   try {
     renderer.render();
     state.liveStateStale = false;
+    postProgramStatus(ctx, renderer);
     bitmap = canvas.transferToImageBitmap();
     const sourceFull = renderer.sourceFullSize;
     const resp: WorkerResponse = {

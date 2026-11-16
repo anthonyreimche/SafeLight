@@ -172,6 +172,32 @@ const privileged = {
     list: (id) => ipcRenderer.invoke("sockets:list", String(id)),
     revoke: (id, url) => ipcRenderer.invoke("sockets:revoke", String(id), String(url)),
   },
+  // Native programs the person allowed an extension to run (program-access.cjs),
+  // with what a running one prints. Privileged so core names the asking
+  // extension, and so only core hears the output.
+  programs: {
+    pick: (id, options) =>
+      ipcRenderer.invoke("programs:pick", String(id), {
+        title: options && typeof options.title === "string" ? options.title : undefined,
+        replacing: options && options.replacing != null ? String(options.replacing) : null,
+      }),
+    locate: (id, name) => ipcRenderer.invoke("programs:locate", String(id), String(name)),
+    list: (id) => ipcRenderer.invoke("programs:list", String(id)),
+    forget: (id, token) => ipcRenderer.invoke("programs:forget", String(id), String(token)),
+    run: (id, runId, token, args, options) =>
+      ipcRenderer.invoke("programs:run", String(id), String(runId), String(token), Array.isArray(args) ? args : [], {
+        files: options && options.files && typeof options.files === "object" ? options.files : undefined,
+        outputs: options && Array.isArray(options.outputs) ? options.outputs.map(String) : undefined,
+        timeoutMs: options && Number.isFinite(options.timeoutMs) ? Number(options.timeoutMs) : undefined,
+        stream: !!(options && options.stream),
+      }),
+    cancel: (runId) => ipcRenderer.invoke("programs:cancel", String(runId)),
+    onOutput: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on("programs:output", handler);
+      return () => ipcRenderer.removeListener("programs:output", handler);
+    },
+  },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.
   osOpen: {

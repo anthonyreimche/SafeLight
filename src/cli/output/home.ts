@@ -46,7 +46,9 @@ function lookFor(opts: OutputOptions): Look {
 }
 
 function logoRows(look: Look): string[] {
-  return LOGO_ART.map((row) => paintLogoRow(row, (part, text) => (part === "globe" ? look.red(text) : look.palette.heading(text))));
+  const { palette, red } = look;
+  const paint = { globe: (text: string) => red(text), shade: (text: string) => red(text, "shade"), stroke: palette.heading, caption: palette.dim };
+  return LOGO_ART.map((row) => paintLogoRow(row, (part, text) => paint[part](text)));
 }
 
 const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
@@ -118,10 +120,12 @@ const NO_PROJECT: readonly Starter[] = [
   ["help", "every command"],
 ];
 
-function starters(status: HomeStatus, look: Look, indent: string, described: boolean): string[] {
+/** The starter commands, each with what it does where `describe` and there is room for the widest. */
+function starters(status: HomeStatus, look: Look, indent: string, describe: boolean): string[] {
   const { palette } = look;
   const list = status.project ? IN_A_PROJECT : NO_PROJECT;
   const column = Math.max(...list.map(([command]) => command.length)) + GAP.length;
+  const described = describe && indent.length + 2 + column + Math.max(...list.map(([, does]) => does.length)) <= look.width;
   return [
     indent + palette.dim("Try"),
     ...list.map(([command, does]) => `${indent}  ${described ? command.padEnd(column) + palette.dim(does) : command}`),

@@ -15,5 +15,7 @@ export * from "./api/native-bridge";
 export * from "./api/variables";
 export * from "./api/network";
 export * from "./api/sockets";
+export * from "./api/programs";
 export * from "./api/secrets";
 export * from "./api/sources";
+export * from "./api/commands";

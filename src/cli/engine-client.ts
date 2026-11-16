@@ -57,6 +57,8 @@ const LINK_CLOSE_GRACE_MS = 500;
 const PER_PHOTO_TIMEOUT_S = 30;
 const SHUTDOWN_GRACE_MS = 2000;
 const CANCEL_GRACE_S = 10;
+/** A command's limit on silence; the engine sends a heartbeat every 10 s while one runs. */
+const COMMAND_QUIET_S = 300;
 
 type CancelRequest = Extract<EngineRequest, { type: "cancel" }>;
 type ImportRequest = Extract<EngineRequest, { type: "import" }>;
@@ -80,16 +82,17 @@ function timeoutOverride(env: CliEnv): number | null {
   return env.env.SLU_ENGINE_TIMEOUT !== undefined && Number.isFinite(override) && override > 0 ? override : null;
 }
 
-function timeoutSeconds(env: CliEnv, req: EngineRequest): number {
+export function timeoutSeconds(env: CliEnv, req: EngineRequest): number {
   const override = timeoutOverride(env);
   if (override !== null) return override;
+  if (req.type === "command") return COMMAND_QUIET_S;
   const photos = req.type === "export" || req.type === "thumbs" ? req.photoIds.length : 0;
   return BASE_TIMEOUT_S + PER_PHOTO_TIMEOUT_S * photos;
 }
 
-/** An import's length isn't known when it starts, so its limit is on silence:
- *  every event it sends starts the time again. */
-const timesOutWhenQuiet = (req: EngineRequest): boolean => req.type === "import";
+/** An import's or a command's length isn't known when it starts, so its limit
+ *  is on silence: every event it sends starts the time again. */
+export const timesOutWhenQuiet = (req: EngineRequest): boolean => req.type === "import" || req.type === "command";
 
 function cancelGraceSeconds(env: CliEnv): number {
   const override = Number(env.env.SLU_ENGINE_CANCEL_GRACE);

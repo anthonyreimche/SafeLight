@@ -43,6 +43,7 @@ function handlers(over: Partial<EngineHandlers> = {}): EngineHandlers {
     preview: async () => {},
     import: async () => {},
     thumbs: async () => {},
+    command: async () => {},
     shutdown: async () => {},
     ...over,
   };
@@ -172,6 +173,28 @@ describe("serveEngine", () => {
     await settle();
     expect(seen).toEqual(["import 1", "thumbs 2"]);
     expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
+  });
+
+  it("takes a command request to its handler, and ends it with the command's failure", async () => {
+    const seen: string[] = [];
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      command: async (req, out) => {
+        seen.push(`${req.extension} ${req.name} ${req.words.join(" ")}`);
+        out.emit({ id: req.id, type: "command-output", stream: "out", text: "hi" });
+        if (req.id === 2) throw new EngineFailure("command", "gmic didn't register gmac; is it on?");
+      },
+    }));
+    port.deliver({ id: 1, type: "command", extension: "gmic", name: "gmic", words: ["-blur", "3"], photoIds: [], settings: null });
+    port.deliver({ id: 2, type: "command", extension: "gmic", name: "gmac", words: [], photoIds: [], settings: "{}" });
+    await settle();
+    expect(seen).toEqual(["gmic gmic -blur 3", "gmic gmac "]);
+    expect(port.events()).toEqual([
+      { id: 1, type: "command-output", stream: "out", text: "hi" },
+      { id: 1, type: "done" },
+      { id: 2, type: "command-output", stream: "out", text: "hi" },
+      { id: 2, type: "error", code: "command", message: "gmic didn't register gmac; is it on?" },
+    ]);
   });
 
   it("logs a message that isn't a request instead of failing", async () => {

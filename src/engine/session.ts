@@ -11,6 +11,7 @@
 // write is an import (import.ts), after which the catalogue is read again.
 
 import type { CatalogPhoto, EditState } from "@/catalog/types";
+import { photoDisplayName } from "@/catalog/copy-name";
 import { freshParams } from "@/catalog/types";
 import { historyCursor } from "@/catalog/history-cursor";
 import { convertedTargetEdge } from "@/catalog/input-profiles";
@@ -38,9 +39,15 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { showsEdit, standsForPhoto } from "@/state/fallback-rules";
 import { getSettings } from "@/state/settings-store";
+import type { CommandRunContext } from "@/extensions/api/commands";
+import { MAX_SAVE_TRIES, readOnlyFolder, saveExtension, saveName, saveRefusal } from "@/extensions/command-rules";
+import { canWriteFolder } from "@/extensions/commands";
+import { replaceExtSettings } from "@/extensions/ext-settings";
+import { registeredCommand } from "@/extensions/registry";
+import { folderSegments } from "@/project/entry-names";
 import type { ExportWireSettings, LookOverride, PreviewRegion, ProjectWire } from "./protocol";
 import { runImport } from "./import";
-import { EngineFailure, type ExportRequest, type ImportRequest, type PreviewRequest, type RequestOut, type ThumbsRequest } from "./rpc";
+import { EngineFailure, type CommandRequest, type ExportRequest, type ImportRequest, type PreviewRequest, type RequestOut, type ThumbsRequest } from "./rpc";
 
 /** The project as the engine reads it: its records, the storage they came from,
  *  and each photo's grid preview as the Library shows it. */
@@ -62,6 +69,8 @@ export interface SessionDeps {
   encodeFrame(bitmap: ImageBitmap, maxWidth: number, maxHeight: number, encoding: "png" | "rgba"): Promise<EncodedFrame>;
   exists(path: string): Promise<boolean>;
   writeFile(path: string, blob: Blob): Promise<void>;
+  /** Whether a file can be written into the folder at `dir` now. */
+  canWrite(dir: string): Promise<boolean>;
   decodePreview(blob: Blob): Promise<ImageBitmap>;
   importProject(req: ImportRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
 }
@@ -146,6 +155,7 @@ const DEFAULT_DEPS: SessionDeps = {
     await w.write(blob);
     await w.close();
   },
+  canWrite: canWriteFolder,
   decodePreview: (blob) => createImageBitmap(blob),
   importProject: (req, out, signal) => runImport(req, out, signal),
 };
@@ -229,6 +239,22 @@ const NO_BYPASS: Record<string, boolean> = {};
 
 // Photos rendered per renderer: one call holds every blob it made until it returns.
 const EXPORT_BATCH = 8;
+
+/** How often a running command tells `slu` it is still at work. */
+export const COMMAND_HEARTBEAT_MS = 10_000;
+
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** `value` as it survives the trip to `slu` as JSON; undefined, a function or a
+ *  value JSON can't hold (a cycle) goes as null, with a warning. */
+function jsonValue(value: unknown, warn: (text: string) => void): unknown {
+  try {
+    const text = JSON.stringify(value);
+    if (text !== undefined) return JSON.parse(text);
+  } catch {}
+  warn("The command's result isn't plain JSON data, so it is left out.");
+  return null;
+}
 
 export class EngineSession {
   private readonly deps: SessionDeps;
@@ -329,6 +355,110 @@ export class EngineSession {
         photoId,
       }));
     }
+  }
+
+  /** Runs an extension's console command for `slu`. The extension's settings
+   *  become the app's (`req.settings`) first, as `slu` read them. A result the
+   *  command saves is written beside its photo, under a name nothing has yet,
+   *  and named in a "command-saved" event; `slu` imports it afterwards, as the
+   *  catalogue's writer. Where it goes comes from the catalogue's record of
+   *  the photo, never from the command. */
+  async command(req: CommandRequest, out: RequestOut, signal: AbortSignal): Promise<void> {
+    replaceExtSettings(req.extension, req.settings);
+    const photos: CatalogPhoto[] = [];
+    if (req.photoIds.length > 0) {
+      if (!req.project) throw new EngineFailure("project", "Photos came without their project.");
+      await this.open(req.project, undefined, req.catalogue);
+      for (const photoId of req.photoIds) {
+        const found = this.photo(photoId);
+        if (!found) throw new EngineFailure("project", "This photo isn't in the catalogue.");
+        photos.push(found);
+      }
+    }
+    const entry = registeredCommand(req.name);
+    if (!entry || entry.extensionId !== req.extension) {
+      throw new EngineFailure("command", `${req.extension} didn't register ${req.name}; is it on?`);
+    }
+
+    const root = req.project?.root ?? "";
+    const given = new Map(photos.map((p) => [p.id, p]));
+    const say = (stream: "out" | "info" | "warn") => (text: string) =>
+      out.emit({ id: req.id, type: "command-output", stream, text: String(text) });
+    const progressLine = (text: string, fraction?: number) =>
+      out.emit({
+        id: req.id,
+        type: "progress",
+        done: fraction === undefined ? 0 : Math.round(Math.min(1, Math.max(0, fraction)) * 100),
+        total: fraction === undefined ? 0 : 100,
+        text: String(text),
+      });
+    const place = (photo: CatalogPhoto): { photo: CatalogPhoto; dir: string; folder: string } | { problem: string } => {
+      const id: unknown = photo?.id;
+      const record = typeof id === "string" ? given.get(id) : undefined;
+      if (!record) return { problem: "This photo isn't one of the photos the command was given." };
+      const segments = folderSegments(record.folder);
+      if (segments === null) return { problem: "This photo's folder isn't one Safelight can save into." };
+      const folder = segments.join("/");
+      return { photo: record, dir: folder ? pathJoin(root, folder) : root, folder };
+    };
+    const answer: { result?: { value: unknown } } = {};
+    const ctx: CommandRunContext = {
+      words: [...req.words],
+      photos,
+      caller: "cli",
+      from: "cli",
+      signal,
+      print: say("out"),
+      info: say("info"),
+      warn: say("warn"),
+      progress: (text) => {
+        progressLine(text);
+        return {
+          update: (next, fraction) => progressLine(next, fraction),
+          done: (last) => {
+            out.emit({ id: req.id, type: "progress", done: 0, total: 0, text: "" });
+            if (last !== undefined) say("info")(last);
+          },
+        };
+      },
+      canSaveBeside: async (photo) => {
+        const placed = place(photo);
+        if ("problem" in placed) return placed.problem;
+        return (await this.deps.canWrite(placed.dir)) ? null : readOnlyFolder(placed.folder);
+      },
+      saveBeside: async (photo, data, suffix, ext) => {
+        const refusal = saveRefusal(suffix, ext);
+        if (refusal) throw new Error(refusal);
+        if (!(data instanceof Blob)) throw new Error("The data to save must be a Blob.");
+        const placed = place(photo);
+        if ("problem" in placed) throw new Error(placed.problem);
+        const type = saveExtension(ext) ?? "";
+        const shown = photoDisplayName(placed.photo);
+        for (let n = 1; n <= MAX_SAVE_TRIES; n++) {
+          const name = saveName(shown, suffix, type, n);
+          const path = pathJoin(placed.dir, name);
+          if (await this.deps.exists(path)) continue;
+          await this.deps.writeFile(path, data);
+          const relPath = placed.folder ? `${placed.folder}/${name}` : name;
+          out.emit({ id: req.id, type: "command-saved", photoId: placed.photo.id, relPath });
+          return name;
+        }
+        throw new Error(`Every name up to ${saveName(shown, suffix, type, MAX_SAVE_TRIES)} is in use.`);
+      },
+      result: (value) => {
+        answer.result = { value };
+      },
+    };
+
+    const heartbeat = setInterval(() => out.emit({ id: req.id, type: "progress", done: 0, total: 0 }), COMMAND_HEARTBEAT_MS);
+    try {
+      await entry.run(ctx);
+    } catch (e) {
+      throw new EngineFailure("command", errorText(e));
+    } finally {
+      clearInterval(heartbeat);
+    }
+    if (answer.result) out.emit({ id: req.id, type: "command-result", value: jsonValue(answer.result.value, say("warn")) });
   }
 
   /** Imports as the request asks (import.ts), holding no catalogue of its own

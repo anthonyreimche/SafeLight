@@ -155,6 +155,20 @@ export interface ExtensionManifest {
    *  ambient access (your catalogue, files); that is NOT confined by this field,
    *  so install only extensions you trust. See EXTENSIONS.md. */
   permissions?: ExtensionPermissions;
+  /** The console commands the extension registers (api.commands) that the
+   *  `safelight` CLI offers: it reads them here, without starting the
+   *  extension, for its help, completion and verbs. One the extension doesn't
+   *  register when it runs fails with a message. Needs Safelight 3.2.6. */
+  commands?: ManifestCommand[];
+}
+
+/** A console command as a manifest declares it (see CommandContribution). */
+export interface ManifestCommand {
+  name: string;
+  summary: string;
+  usage: string[];
+  examples?: string[];
+  subcommands?: { name: string; summary: string }[];
 }
 
 /** The update-relevant fields of the safelight.json a repo currently publishes. */
@@ -192,6 +206,14 @@ export interface ExtensionPermissions {
    *  person in a dialogue naming the extension, and joins the network policy at
    *  the next launch. Needs Safelight 3.2.5. */
   userSockets?: boolean;
+  /** The extension runs one native program the person picks (api.programs),
+   *  such as the `gmic` command-line program. The person allows each program
+   *  in a dialogue that names the extension and the full path, and can forget
+   *  it on the extension's page. Needs Safelight 3.2.6. */
+  programs?: boolean;
+  /** The extension runs other extensions' console commands (api.commands.run),
+   *  as the Terminal does. Needs Safelight 3.2.6. */
+  commands?: boolean;
   /** Optional human-readable rationale shown to the user beside the request. */
   reason?: string;
 }

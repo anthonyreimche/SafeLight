@@ -221,6 +221,10 @@ Export options: `--format jpg\|png\|tiff\|webp`, `--quality 1-100` (JPEG and Web
 
 A name can be an id (`local-contrast`, `safelight.basic`), the id without `safelight.`, the repository name, `owner/repo`, or the display name with dashes (`contrast-and-texture`). `safelight install essentials` installs a kit. A name that matches several extensions lists them and installs none. Installs, updates and removals take effect the next time Safelight starts.
 
+#### Extension commands
+
+An extension can add commands of its own, such as `gmic` from the G'MIC extension. They are listed under Extensions in `safelight help` and run like any other: `safelight gmic blur 3 -- @all`. Everything after the command's name is the extension's to read, so options go before it (`safelight --json gmic …`) and photos after `--`. Naming no photo uses the open photo at the prompt. A result the command keeps is saved beside its photo under a new name, such as `IMG_1-gmic.png`, and imported once the command ends, after `safelight` waits for Safelight to let go of the folder (`--wait`). `--json` prints the command's result and the files it saved. The extension must be installed and on; `safelight doctor` lists the commands it found, and any it left out because a `safelight` command or another extension already uses the name.
+
 ### More
 
 | Command | What it does |

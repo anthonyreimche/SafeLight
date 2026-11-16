@@ -50,6 +50,8 @@ import type { SourceSample } from "./source-sample";
 import { setSourcePixels, sourcePixels } from "./source-pixels";
 import { stageSignature } from "./webgl/stage-injection";
 import { stageFailuresOf, useStageFailures } from "./render-bridge/stage-failures";
+import { resetLiveStatus, setLiveViewSource, useLiveStatus } from "./render-bridge/live-status";
+import { devtoolsRender } from "./render-bridge/devtools-render";
 import { forgetCrashesOf } from "./gpu-crash-guard";
 import { setExtensionName } from "@/extensions/param-registry";
 
@@ -3919,6 +3921,32 @@ describe("RenderBridge derived stage values", () => {
     expect(lastOf(worker, "setDerived")?.derived).toEqual({ [KEY]: 1 });
   });
 
+  describe("liveStageValues", () => {
+    it("reads a stage's derived values and the bag's values under its uniform keys", () => {
+      registerProcessingStage("acme", {
+        id: "acme.grain",
+        name: "Grain",
+        phase: "effects",
+        glsl: "c += uAmount;",
+        uniforms: [{ key: "uAmount", glslType: "float", default: 0 }, { key: "uSize", glslType: "float", default: 1 }],
+      });
+      try {
+        const bridge = new RenderBridge();
+        bridge.setParams(normalizeParams({ exposure: 1.5 }));
+        bridge.setContributedParams({ "acme.grain.uAmount": 0.25, "acme.other.uAmount": 9 });
+        expect(bridge.liveStageValues("safelight.basic.tone")).toEqual({ uToneExposure: 1.5 });
+        expect(bridge.liveStageValues("acme.grain")).toEqual({ uAmount: 0.25 });
+      } finally {
+        unregisterExtension("acme");
+      }
+    });
+
+    it("is empty for a stage nothing has been drawn with", () => {
+      const bridge = new RenderBridge();
+      expect(bridge.liveStageValues("safelight.basic.tone")).toEqual({});
+    });
+  });
+
   it("sends them again when the stage's extension changes a setting", () => {
     unregisterExtension("safelight.basic");
     registerProcessingStage("safelight.basic", {
@@ -4261,5 +4289,135 @@ describe("a headless frame naming a variant made on demand", () => {
     expect(after?.failure).toBeNull();
     expect(Object.keys(getStageTextures())).toEqual(["acme.calib.table#v2"]);
     setExtensionTextureBudget(null);
+  });
+});
+
+describe("RenderBridge live status", () => {
+  const frameFor = (seq: number, extra: Partial<Extract<WorkerResponse, { type: "frame" }>> = {}): WorkerResponse => ({
+    type: "frame",
+    seq,
+    bitmap: { width: 4, height: 3, close: () => undefined },
+    width: 4,
+    height: 3,
+    sourceWidth: 4,
+    sourceHeight: 3,
+    sourceGen: 1,
+    ...extra,
+  });
+  const live = () => useLiveStatus.getState().live;
+
+  let worker: FakeWorker;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    resetLiveStatus();
+    setLiveViewSource({ photoId: () => "photo-1", processVersion: () => 2 });
+  });
+
+  afterEach(() => {
+    disposeRenderBridge();
+    setLiveViewSource(null);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  describe("for the shared bridge the Develop view draws through", () => {
+    beforeEach(() => {
+      worker = (getRenderBridge(), FakeWorker.instances[0]);
+      worker.reply({ type: "ready", pipelineFloat: true });
+    });
+
+    it("writes a frame's overflowed stages, the program and how long the render took", () => {
+      getRenderBridge().setOnFrame(() => undefined);
+      getRenderBridge().render();
+      vi.advanceTimersByTime(40);
+      worker.reply({ type: "programStatus", programStages: ["a", "a@0"], dormant: ["b"] });
+      worker.reply(frameFor(1, { overflowedStages: ["a"] }));
+      expect(live()).toMatchObject({
+        photoId: "photo-1",
+        processVersion: 2,
+        programStages: ["a", "a@0"],
+        dormant: ["b"],
+        overflowed: ["a"],
+        frameMs: 40,
+        lastError: null,
+      });
+    });
+
+    it("records a render error and clears it with the next frame", () => {
+      const bridge = getRenderBridge();
+      bridge.setOnFrame(() => undefined);
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      bridge.render();
+      worker.reply({ type: "renderError", seq: 1, message: "stage threw" });
+      expect(live()?.lastError).toMatchObject({ message: "stage threw" });
+      bridge.render();
+      worker.reply(frameFor(2));
+      expect(live()?.lastError).toBeNull();
+    });
+
+    it("ignores the frames of a photo the view has moved on from, until the next source", () => {
+      const bridge = getRenderBridge();
+      bridge.setOnFrame(() => undefined);
+      bridge.render();
+      worker.reply(frameFor(1, { overflowedStages: ["old"] }));
+      bridge.clearSource();
+      expect(live()?.overflowed).toEqual([]);
+      bridge.render();
+      worker.reply(frameFor(2, { overflowedStages: ["old"] }));
+      expect(live()?.overflowed).toEqual([]);
+      bridge.setImage({ kind: "float", data: new Float32Array(4), width: 1, height: 1 });
+      bridge.render();
+      worker.reply(frameFor(3, { overflowedStages: ["new"] }));
+      expect(live()?.overflowed).toEqual(["new"]);
+    });
+
+    it("leaves out a frame of the source before the one last handed over, still in flight", () => {
+      const bridge = getRenderBridge();
+      bridge.setOnFrame(() => undefined);
+      const image = { kind: "float" as const, data: new Float32Array(4), width: 1, height: 1 };
+      bridge.setImage(image);
+      bridge.render();
+      worker.reply(frameFor(1, { sourceGen: 1, overflowedStages: ["first"] }));
+      expect(live()?.overflowed).toEqual(["first"]);
+      bridge.setImage(image);
+      bridge.render();
+      worker.reply(frameFor(2, { sourceGen: 1, overflowedStages: ["stale"] }));
+      expect(live()?.overflowed).toEqual(["first"]);
+      worker.reply(frameFor(2, { sourceGen: 2 }));
+      expect(live()?.overflowed).toEqual([]);
+    });
+
+    it("hands Developer Tools no live values once the Develop view has gone", () => {
+      const bridge = getRenderBridge();
+      bridge.setOnFrame(() => undefined);
+      bridge.render();
+      worker.reply(frameFor(1));
+      expect(devtoolsRender.liveValues("acme.film")).toEqual({});
+      setLiveViewSource(null);
+      expect(devtoolsRender.liveValues("acme.film")).toBeNull();
+    });
+  });
+
+  it("writes nothing for a bridge that isn't the shared one", () => {
+    const other = new RenderBridge();
+    const otherWorker = FakeWorker.instances[0];
+    other.setOnFrame(() => undefined);
+    other.render();
+    otherWorker.reply({ type: "programStatus", programStages: ["a"], dormant: [] });
+    otherWorker.reply(frameFor(1, { overflowedStages: ["a"] }));
+    otherWorker.reply({ type: "renderError", seq: 1, message: "x" });
+    expect(live()).toBeNull();
+    other.dispose();
+  });
+
+  it("forgets what it drew when the shared bridge is disposed", () => {
+    getRenderBridge().setOnFrame(() => undefined);
+    FakeWorker.instances[0].reply(frameFor(1));
+    expect(live()).not.toBeNull();
+    disposeRenderBridge();
+    expect(live()).toBeNull();
   });
 });

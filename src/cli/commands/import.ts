@@ -31,18 +31,21 @@ function stringOption(args: ParsedArgs, name: string): string | null {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Resolves once nobody holds the writer lock, waiting as --wait allows. False when Ctrl+C stopped the wait. */
-async function waitForLock(ctx: CommandContext, plan: ImportPlan, signal: AbortSignal | undefined): Promise<boolean> {
-  const workingDir = plan.existing?.workingDir ?? path.join(plan.root, ".safelight");
+/** Resolves once nobody holds the writer lock of the project at `root`, waiting as --wait allows. False when
+ *  Ctrl+C stopped the wait. */
+export async function waitForWriterLock(ctx: Pick<CommandContext, "waitSeconds">, root: string, workingDir: string, signal: AbortSignal | undefined): Promise<boolean> {
   const deadline = Date.now() + (ctx.waitSeconds ?? 0) * 1000;
   for (;;) {
     if (signal?.aborted) return false;
     const holder = await heldLock(workingDir);
     if (holder === null) return true;
-    if (Date.now() >= deadline) throw lockHeldError(plan.root, holder);
+    if (Date.now() >= deadline) throw lockHeldError(root, holder);
     await sleep(Math.min(LOCK_POLL_MS, Math.max(0, deadline - Date.now())));
   }
 }
+
+const waitForLock = (ctx: CommandContext, plan: ImportPlan, signal: AbortSignal | undefined): Promise<boolean> =>
+  waitForWriterLock(ctx, plan.root, plan.existing?.workingDir ?? path.join(plan.root, ".safelight"), signal);
 
 async function dryRunOutcome(ctx: CommandContext, plan: ImportPlan): Promise<CommandOutcome> {
   const report = await dryRun(plan, ctx.env.platform);

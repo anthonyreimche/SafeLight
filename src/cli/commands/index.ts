@@ -60,3 +60,4 @@ export const COMMANDS: CommandSpec[] = [
 export const NOT_IN_THIS_RELEASE: ReadonlySet<string> = new Set([autoCommand.verb, savePresetCommand.verb]);
 
 export { findCommand } from "../args";
+export { extensionVerbs, withExtensionVerbs } from "./extension-verbs";

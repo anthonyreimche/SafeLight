@@ -48,9 +48,13 @@ const N = "\x1b[22m";
 const AMBER = "\x1b[38;5;166m";
 const FG = "\x1b[39m";
 const BRAND = "\x1b[38;2;243;34;63m";
+const BRAND_SHADE = "\x1b[38;2;196;26;50m";
 const RED = "\x1b[38;5;196m";
+const RED_SHADE = "\x1b[38;5;160m";
 
 const LOGO_LINES = LOGO_ART.map((row) => (row === "" ? "" : `  ${row}`));
+/** One column short of the logo, its margin and a cell to spare. */
+const NARROW = LOGO_ART_WIDTH + 2;
 
 describe("formatHome", () => {
   it("draws the logo exactly as drawn, then the title and status at 80 columns", () => {
@@ -96,8 +100,8 @@ describe("formatHome", () => {
     expect(formatHome(IN_PROJECT, at(LOGO_ART_WIDTH + 2)).split("\n")[1]).toBe("● Safelight Unplugged 3.3.0");
   });
 
-  it("stacks under a one-line lamp below 60 columns", () => {
-    expect(formatHome(IN_PROJECT, at(40))).toBe(screen(
+  it("stacks under a one-line lamp where the logo doesn't fit", () => {
+    expect(formatHome(IN_PROJECT, at(NARROW))).toBe(screen(
       "",
       "● Safelight Unplugged 3.3.0",
       "",
@@ -115,7 +119,7 @@ describe("formatHome", () => {
       "  exit to leave",
       "",
     ));
-    expect(formatHome(IN_PROJECT, at(40, { unicode: false }))).toBe(screen(
+    expect(formatHome(IN_PROJECT, at(NARROW, { unicode: false }))).toBe(screen(
       "",
       "(o) Safelight Unplugged 3.3.0",
       "",
@@ -156,7 +160,7 @@ describe("formatHome", () => {
       "    exit to leave",
       "",
     ));
-    expect(formatHome(NOWHERE, at(40, { unicode: false }))).toBe(screen(
+    expect(formatHome(NOWHERE, at(NARROW, { unicode: false }))).toBe(screen(
       "",
       "(o) Safelight Unplugged 3.3.0",
       "",
@@ -198,21 +202,23 @@ describe("formatHome", () => {
     expect(text).toContain("3 installed · 1 update\n");
   });
 
-  it("paints the globe in the brand red and the script and base bold, with amber only for the update", () => {
+  it("paints the globe in the brand red with its shade, the lettering and base bold and the caption dim, with amber only for the update", () => {
     const text = formatHome(IN_PROJECT, at(80, { colour: true, trueColour: true }));
-    const globe = LOGO_ART[1].trim();
-    expect(text).toContain(`${BRAND}${globe}${FG}`);
-    expect(text).toContain(`${B}########${N}`);
+    expect(text).toContain(`${BRAND}---${FG}${BRAND_SHADE}..........${FG}`);
+    expect(text).toContain(`${B}##+######${N}`);
+    expect(text).toContain(`${B}/___/\\_,_/_/${N}`);
+    expect(text).toContain(`${D}u${N} ${D}n${N}`);
     expect(text).toContain(`${AMBER}2 updates${FG}`);
     const belowLogo = text.split("\n").slice(1 + LOGO_LINES.length).join("\n");
     expect(belowLogo).not.toContain(BRAND);
+    expect(belowLogo).not.toContain(BRAND_SHADE);
   });
 
-  it("falls back to the 256-colour red", () => {
+  it("falls back to the 256-colour reds", () => {
     const text = formatHome(IN_PROJECT, at(80, { colour: true }));
-    expect(text).toContain(`${RED}${LOGO_ART[1].trim()}${FG}`);
+    expect(text).toContain(`${RED}---${FG}${RED_SHADE}..........${FG}`);
     expect(text).not.toContain("38;2;");
-    expect(formatHome(IN_PROJECT, at(40, { colour: true })).split("\n")[1])
+    expect(formatHome(IN_PROJECT, at(NARROW, { colour: true })).split("\n")[1])
       .toBe(`${RED}●${FG} ${B}Safelight${N} ${D}Unplugged 3.3.0${N}`);
   });
 

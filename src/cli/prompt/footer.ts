@@ -21,7 +21,7 @@ const LISTS_DISK = new Set(["import", "ls"]);
 
 function verbFooter(spec: CommandSpec | null, builtin: { usage: string; summary: string } | null): FooterView {
   const found = spec ?? builtin;
-  return found ? { kind: "verb", usage: found.usage, summary: found.summary } : { kind: "hints" };
+  return found ? { kind: "verb", usage: found.usage.split("\n")[0], summary: found.summary } : { kind: "hints" };
 }
 
 const nameOf = (rel: string): string => rel.slice(rel.lastIndexOf("/") + 1);

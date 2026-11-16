@@ -55,7 +55,9 @@ export interface Manifest {
   version: string;
   description?: string;
   repository?: string;
-  permissions?: { network?: string[]; userOrigins?: boolean; userSockets?: boolean };
+  permissions?: { network?: string[]; userOrigins?: boolean; userSockets?: boolean; programs?: boolean; commands?: boolean };
+  /** The console commands it offers as verbs, unchecked: commands/extension-verbs.ts reads them. */
+  commands?: unknown;
 }
 
 interface CatalogueItem { fullName: string; name?: string; description?: string | null; categories?: string[] }
@@ -151,6 +153,8 @@ function permissionLines(m: Manifest): string[] {
     ...(p.network ?? []).map((origin) => `reach ${origin}`),
     ...(p.userOrigins ? ["reach web addresses you type in"] : []),
     ...(p.userSockets ? ["open live connections to addresses you type in"] : []),
+    ...(p.programs ? ["run a program on this computer that you choose"] : []),
+    ...(p.commands ? ["run other extensions' commands"] : []),
   ];
 }
 

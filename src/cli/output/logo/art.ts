@@ -3,73 +3,49 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The home screen's logo: Anthony's own ASCII rendering of the sticker, kept
-// exactly as he drew it. Only the shared left margin and trailing spaces are
-// trimmed. The globe is the `-` and `.` texture; the script and the screw base
-// are the `#` and `+` strokes.
+// The home screen's logo: Anthony's own ASCII bulb, shrunk to a small size with
+// its texture kept (`-` for the lit globe, `.` for its shade, the blank
+// highlight), his `#` and `+` screw base, and "Safelight" in figlet's small
+// slant letters where his script crossed the globe, with the caption under it.
 
-const DRAWN = `
-                                   -+----.--.-..--.
-                                .------.....-.....-..-
-                              -----....................-
-                             ---.-.......................
-                            --.-...........   . ...........
-                           ----..........            ......
-                          ----.........               ......
-                          ..-...-....                   .....
-                         .-.-.-.....                     ....
-                         ----.....                      . ..  #       ##
-                          ........         .##           .   #+      ##
-               ####       -....           ## #              ##     #######
-           ###-   ##      -..  ## #      .# #  ##          ##  #    ##
-         ###    ##         .  ##         # #       #####  ## ###   ##
-        ##.                . ##    ###  ###  ##   #   #. ###  ##  ##
-        ####          # ##  #### ##  # ##    #  +#   ## ###  ## .### #
-          #####    -#  ##   ##  ###+  ###   ## ### #### ##   ##   ##      #
-              ##+ ##  ##  .##  ###   #### ####.  # +##                   ##
-              ### #- ### ###   -####              +######################
-             ###  ##- ## -## -.                 # ##          .####.
-     #     ###           ##  -...-..  .      +#  ##
-    ########            ##   ..........      # +##
-                        #   ##### ........
-                      ####  ##-##  # ....
-                     ####  #### ## ##
-                    ####  ###+## ### #
-                   +##  # #-#########
-                     ##  #.### #####
-                     ### ##########
-                      ############
-                        # #######
-                          -
-`;
-
-function trimmed(drawn: string): string[] {
-  const lines = drawn.split("\n").map((line) => line.trimEnd());
-  while (lines[0] === "") lines.shift();
-  while (lines.at(-1) === "") lines.pop();
-  const margin = Math.min(...lines.filter((line) => line !== "").map((line) => line.length - line.trimStart().length));
-  return lines.map((line) => line.slice(margin));
-}
-
-export const LOGO_ART: readonly string[] = trimmed(DRAWN);
+export const LOGO_ART: readonly string[] = [
+  "                 -..-..-",
+  "             ---..........",
+  "            --.....    ....",
+  "           --....         ..",
+  "           --...           .",
+  "           -...",
+  "   ____     ___    ___      __   __",
+  "  / __/__ _/ _/__ / (_)__ _/ /  / /_",
+  " _\\ \\/ _ `/ _/ -_) / / _ `/ _ \\/ __/",
+  "/___/\\_,_/_/ \\__/_/_/\\_, /_//_/\\__/",
+  "           .-...    /___/",
+  "           ....... u n p l u g g e d",
+  "         ## ###+..",
+  "        ##+######",
+  "        #++#####",
+  "         ######",
+];
 export const LOGO_ART_WIDTH = Math.max(...LOGO_ART.map((line) => line.length));
 
 /** Which part of the logo a character belongs to. */
-export type LogoPart = "globe" | "stroke" | "space";
+export type LogoPart = "globe" | "shade" | "stroke" | "caption" | "space";
 
-const STROKE = /[#+]/;
+const GLOBE = /[-.]/;
 
 /**
- * The globe is the `-` and `.` texture; the script and the base are drawn in
- * `#` and `+`. A `-` or `.` touching a stroke on its row is part of that
- * stroke (the script's joins and the base's threads use them too).
+ * `-` is the lit globe and `.` its shade, except that a `-` beside a lettering
+ * character belongs to the lettering (the e's bar). Lowercase words are the
+ * caption; everything else, the lettering and the base, is a stroke.
  */
 export function logoParts(line: string): LogoPart[] {
   return [...line].map((char, x) => {
     if (char === " ") return "space";
-    if (STROKE.test(char)) return "stroke";
-    const touches = STROKE.test(line[x - 1] ?? "") || STROKE.test(line[x + 1] ?? "");
-    return touches ? "stroke" : "globe";
+    if (/[a-z]/.test(char)) return "caption";
+    if (char === ".") return "shade";
+    if (char !== "-") return "stroke";
+    const besideLettering = [line[x - 1] ?? " ", line[x + 1] ?? " "].some((next) => next !== " " && !GLOBE.test(next));
+    return besideLettering ? "stroke" : "globe";
   });
 }
 

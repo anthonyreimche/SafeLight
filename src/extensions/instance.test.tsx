@@ -368,3 +368,60 @@ describe("stopInstance with a source", () => {
     expect(isInstanceLive("acme.dev", "installed")).toBe(false);
   });
 });
+
+describe("the running list", () => {
+  const WORKING: BuiltinExtension = {
+    id: "acme.working",
+    name: "Working",
+    version: "9.9.9",
+    activate: vi.fn(),
+  };
+
+  afterEach(() => stopBuiltin(WORKING));
+
+  it("carries each instance's source, name and version", async () => {
+    await startInstance({
+      id: "acme.installed",
+      source: "installed",
+      name: "Installed",
+      version: "1.2.3",
+      bundle: "installed:acme.installed",
+      read: async () => ({ load: async () => ({ activate: vi.fn() }) }),
+    });
+    await startInstance({
+      id: "acme.dev",
+      source: "dev",
+      name: "Dev copy",
+      version: "0.1.0",
+      bundle: "dev:acme.dev",
+      read: async () => ({ load: async () => ({ activate: vi.fn() }) }),
+    });
+    const { instances } = useRunningPlugins.getState();
+    expect(instances).toEqual(
+      expect.arrayContaining([
+        { id: "acme.installed", source: "installed", name: "Installed", version: "1.2.3" },
+        { id: "acme.dev", source: "dev", name: "Dev copy", version: "0.1.0" },
+      ]),
+    );
+  });
+
+  it("lists a built-in as Safelight with the app version, without adding it to the installed ids", () => {
+    startBuiltin(WORKING);
+    const state = useRunningPlugins.getState();
+    expect(state.instances).toContainEqual({
+      id: "acme.working",
+      source: "builtin",
+      name: "Safelight",
+      version: __APP_VERSION__,
+    });
+    expect(state.ids).not.toContain("acme.working");
+    stopBuiltin(WORKING);
+    expect(useRunningPlugins.getState().instances.map((i) => i.id)).not.toContain("acme.working");
+  });
+
+  it("drops a stopped instance", async () => {
+    await bundle("acme.dev", "dev", { activate: vi.fn() }).start;
+    stopInstance("acme.dev");
+    expect(useRunningPlugins.getState().instances.map((i) => i.id)).not.toContain("acme.dev");
+  });
+});

@@ -17,7 +17,7 @@ function verbHelpOf(spec: CommandSpec): VerbHelp {
   return {
     verb: spec.verb,
     usage: spec.usage,
-    summary: spec.summary,
+    summary: spec.rawArgs ? `${spec.summary} Options go before ${spec.verb}; every word after it is its own, and photos come after --.` : spec.summary,
     options: spec.options.map((o) => ({ flag: flagOf(o), summary: o.summary })),
     examples: spec.examples,
   };
@@ -36,7 +36,9 @@ export const helpCommand: CommandSpec = {
   writes: false,
   async run(ctx, args) {
     // index.ts builds the registry from this file, so it is read once a verb runs.
-    const { COMMANDS, NOT_IN_THIS_RELEASE, findCommand } = await import("./index");
+    const index = await import("./index");
+    const { NOT_IN_THIS_RELEASE, findCommand } = index;
+    const COMMANDS = index.withExtensionVerbs(index.COMMANDS, ctx.env.userData);
     const word = args.positionals[0];
     if (word === undefined) {
       const verbs = COMMANDS.filter((c) => !NOT_IN_THIS_RELEASE.has(c.verb)).map(({ verb, group, summary }) => ({ verb, group, summary }));

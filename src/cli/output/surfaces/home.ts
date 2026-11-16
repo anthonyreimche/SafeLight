@@ -21,16 +21,17 @@ import { cells, clip, clipStart, indent, padEnd } from "../width";
 const BULB_MARGIN = 3;
 const CARD_WIDTH = 54;
 
-/** The logo needs its own width, its margin and a cell to spare. */
-const LOGO_FROM = LOGO_ART_WIDTH + BULB_MARGIN + 1;
+/** The logo sits over the card, so it needs the wider of the two, its margin and a cell to spare. */
+export const LOGO_FROM = Math.max(LOGO_ART_WIDTH, CARD_WIDTH) + BULB_MARGIN + 1;
 
 const globeToken = (warmth: number): ColourToken => (warmth < 1 / 3 ? "ember" : warmth < 2 / 3 ? "lampShade" : "bulb");
+const shadeToken = (warmth: number): ColourToken => (warmth < 2 / 3 ? "ember" : "lampShade");
 
-/** The logo's rows, each as wide as the logo. `warmth` 0 is the ember the globe starts from, 1 is lit. */
+/** The logo's rows, each as wide as the logo. `warmth` 0 is the ember the globe starts from, 1 is lit; the shade is a step behind. */
 export function bulbRows(look: Look, warmth = 1): string[] {
   const { theme } = look;
-  const globe = globeToken(warmth);
-  return LOGO_ART.map((row) => paintLogoRow(row, (part, text) => theme.paint(part === "globe" ? globe : "strong", text))
+  const tokens = { globe: globeToken(warmth), shade: shadeToken(warmth), stroke: "strong", caption: "muted" } as const;
+  return LOGO_ART.map((row) => paintLogoRow(row, (part, text) => theme.paint(tokens[part], text))
     + " ".repeat(LOGO_ART_WIDTH - row.length));
 }
 

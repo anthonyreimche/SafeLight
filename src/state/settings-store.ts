@@ -364,7 +364,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rawCachePrefetch: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
-  developDynamicDetail: false,
+  developDynamicDetail: true,
   gpuSourceCacheBytes: 512 * 1024 * 1024,
   developPrefetchNeighbors: true,
   highBitDepth: true,

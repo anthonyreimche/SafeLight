@@ -84,6 +84,8 @@ import type {
 import type { DevelopedPixels as RealDevelopedPixels } from "@/rendering/render-protocol";
 import type { ProcessVersion as RealProcessVersion } from "@/rendering/webgl/shaders";
 import type { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
+import type { devtoolsExtensions } from "../devtools/extension-status";
+import type { devtoolsRender } from "@/rendering/render-bridge/devtools-render";
 
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
@@ -205,6 +207,8 @@ describe("SafelightAPI public shapes", () => {
     >();
     same<Devtools["webglInfo"], typeof readWebGLInfo>();
     same<Devtools["appVersion"], typeof readAppVersion>();
+    same<Devtools["extensions"], typeof devtoolsExtensions | undefined>();
+    same<Devtools["render"], typeof devtoolsRender | undefined>();
     expect(true).toBe(true);
   });
 

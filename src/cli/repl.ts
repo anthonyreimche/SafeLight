@@ -199,8 +199,12 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
   let cwd = io.cwd;
   const envNow = (): CliEnv => ({ ...baseEnv, cwd });
   const options = (): OutputOptions => resolveOutputOptions(streams, io.env, "normal");
-  // The prompt knows `open` whether or not the verbs list has it.
-  const commands = withVerb(io.commands ?? (await import("./commands")).COMMANDS, openCommand);
+  // The prompt knows `open` whether or not the verbs list has it, and the installed extensions' verbs.
+  const verbsNow = async (): Promise<CommandSpec[]> => {
+    const index = await import("./commands");
+    return withVerb(io.commands ?? index.withExtensionVerbs(index.COMMANDS, baseEnv.userData), openCommand);
+  };
+  const commands = await verbsNow();
 
   const engines = createEngineSession((out) => createEngineClient(envNow(), out));
   const previews = createPreviewCache();
@@ -684,7 +688,10 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
       else if (!first.startsWith("-") && !findCommand(commands, first)) unknown(first, line);
       else {
         const code = await dispatch(words);
-        if (CHANGES_EXTENSIONS.has(first)) data.reloadValues();
+        if (CHANGES_EXTENSIONS.has(first)) {
+          commands.splice(0, commands.length, ...(await verbsNow()));
+          data.reloadValues();
+        }
         if (first === "ls" && code === 0) listed = listedFolder(words.slice(1));
         await data.refresh();
       }

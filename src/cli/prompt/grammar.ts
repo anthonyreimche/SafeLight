@@ -72,6 +72,12 @@ export function findBuiltin(builtins: readonly BuiltinSpec[], word: string): Bui
 
 const grammarCache = new Map<string, Grammar>();
 
+/** A verb whose words are its own (CommandSpec.rawArgs): any words, then photos after `--`. */
+const RAW_GRAMMAR: Grammar = {
+  slots: [{ kind: "text", required: false, many: true }, { kind: "photo", required: false, many: true }],
+  assigns: "none",
+};
+
 /** The slots a usage line names: `set <photos> key=value…`, `flag <photos> pick|reject|none`. */
 export function grammarOf(usage: string): Grammar {
   const cached = grammarCache.get(usage);
@@ -164,7 +170,14 @@ export function analyze(line: string, cursor: number, ctx: PromptContext): Analy
       spec = findCommand(ctx.commands, token.text);
       builtin = spec ? null : findBuiltin(ctx.builtins, token.text);
       const usage = spec?.usage ?? builtin?.usage;
-      grammar = usage ? grammarOf(usage) : null;
+      grammar = spec?.rawArgs ? RAW_GRAMMAR : usage ? grammarOf(usage) : null;
+      continue;
+    }
+    if (spec?.rawArgs && !afterDashDash) {
+      if (token.quote === null && token.text === "--") {
+        afterDashDash = true;
+        push({ kind: "option", spec: null });
+      } else push({ kind: "slot", slot: RAW_GRAMMAR.slots[0] });
       continue;
     }
     if (valueNext) {

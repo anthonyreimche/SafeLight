@@ -9,5 +9,17 @@ import { create } from "zustand";
 // module, so the renderer's bridge and the photo geometry can read it without
 // importing the loader.
 
-/** The installed extensions running in this window, by id. */
-export const useRunningPlugins = create<{ ids: string[] }>(() => ({ ids: [] }));
+/** One running extension: where it came from and what to call it. */
+export interface RunningInstance {
+  id: string;
+  source: "builtin" | "installed" | "dev";
+  name: string;
+  version: string;
+}
+
+/** `ids` are the installed and dev-folder extensions running in this window.
+ *  `instances` are those and the running built-ins too. */
+export const useRunningPlugins = create<{ ids: string[]; instances: RunningInstance[] }>(() => ({
+  ids: [],
+  instances: [],
+}));

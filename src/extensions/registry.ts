@@ -12,6 +12,7 @@ import { useShallow } from "zustand/react/shallow";
 import { DEFAULT_DEVELOP_PARAMS, type CatalogPhoto } from "@/catalog/types";
 import type {
   CatalogHooksContribution,
+  CommandContribution,
   ExportProcessorContribution,
   FilenameTemplateContribution,
   GridFilterContribution,
@@ -59,6 +60,8 @@ import { dropExtensionVariables } from "./variables-host";
 import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardCallback, guardExtension } from "./guard";
 import { forgetStartFailure } from "./start-failures";
 import { isPlainObject } from "@/project/fs";
+import { commandNameRefusal } from "./command-rules";
+import type { RegisteredCommand } from "./api/commands";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -117,6 +120,11 @@ export interface RegisteredStylesheet extends StylesheetContribution {
 export interface RegisteredModule extends ModuleContribution {
   extensionId: string;
 }
+/** A console command as the registry holds it, keyed by its name (`id`). */
+export interface RegisteredCommandEntry extends CommandContribution {
+  id: string;
+  extensionId: string;
+}
 
 /** A tab in the module strip: a registered module. */
 export interface ModuleTab {
@@ -154,6 +162,8 @@ export interface RegistryState {
   /** Keyed by module id. Top-level modules an extension contributed, Library
    *  and Develop among them. */
   modules: Record<string, RegisteredModule>;
+  /** Keyed by command name. Console commands (api.commands). */
+  commands: Record<string, RegisteredCommandEntry>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -175,6 +185,7 @@ export const useRegistry = create<RegistryState>(() => ({
   librarySorts: {},
   stylesheets: {},
   modules: {},
+  commands: {},
 }));
 
 /** What each id-keyed registry map holds, before the registry stamps the
@@ -197,6 +208,7 @@ interface ContributionOf {
   librarySorts: LibrarySortContribution;
   stylesheets: StylesheetContribution;
   modules: ModuleContribution;
+  commands: CommandContribution & { id: string };
 }
 
 type IdKind = keyof ContributionOf;
@@ -399,7 +411,43 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
       return claim() ? c : null;
     },
   },
+  commands: {
+    call: "commands.register",
+    vet: (extensionId, c, claim) => {
+      const problem = commandNameRefusal(c.name) ?? commandShapeProblem(c);
+      if (problem) {
+        console.warn(`[extensions] ${extensionId}: ${problem}; commands.register ignored`);
+        return null;
+      }
+      if (!claim()) return null;
+      return {
+        id: c.name,
+        name: c.name,
+        summary: c.summary,
+        usage: [...c.usage],
+        examples: [...(c.examples ?? [])],
+        subcommands: (c.subcommands ?? []).map((s) => ({ name: s.name, summary: s.summary })),
+        run: c.run,
+      };
+    },
+  },
 };
+
+const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string");
+
+/** What is wrong with a command's fields besides its name, or null. */
+function commandShapeProblem(c: CommandContribution): string | null {
+  const shape: Record<string, unknown> = { ...c };
+  if (typeof shape.run !== "function") return `command "${c.name}" has no run function`;
+  if (typeof shape.summary !== "string") return `command "${c.name}" has no summary`;
+  if (!isStringList(shape.usage)) return `command "${c.name}": usage isn't a list of lines`;
+  if (shape.examples !== undefined && !isStringList(shape.examples)) return `command "${c.name}": examples isn't a list of lines`;
+  const subs = shape.subcommands;
+  if (subs !== undefined && !(Array.isArray(subs) && subs.every((s) => isPlainObject(s) && typeof s.name === "string" && typeof s.summary === "string"))) {
+    return `command "${c.name}": subcommands isn't a list of { name, summary }`;
+  }
+  return null;
+}
 
 function registerKind<K extends IdKind>(kind: K, extensionId: string, c: ContributionOf[K]): void {
   const spec: KindSpec<K> = KINDS[kind];
@@ -485,6 +533,39 @@ export function moduleEntry<T>(
 
 export function registerModule(extensionId: string, c: ModuleContribution): void {
   registerKind("modules", extensionId, c);
+}
+
+/** Register a console command, keyed by its name. */
+export function registerCommand(extensionId: string, c: CommandContribution): void {
+  const name: unknown = isPlainObject(c) ? c.name : undefined;
+  if (!isPlainObject(c)) {
+    console.warn(`[extensions] ${extensionId}: a command must be an object; commands.register ignored`);
+    return;
+  }
+  registerKind("commands", extensionId, { ...c, id: typeof name === "string" ? name : "" });
+}
+
+export function unregisterCommand(extensionId: string, name: string): void {
+  unregisterKind("commands", extensionId, name);
+}
+
+/** The command registered as `name`, if any. */
+export function registeredCommand(name: string): RegisteredCommandEntry | undefined {
+  return moduleEntry(useRegistry.getState().commands, name);
+}
+
+/** Every registered command, by name. */
+export function listCommands(): RegisteredCommand[] {
+  return Object.values(useRegistry.getState().commands)
+    .map((c) => ({
+      name: c.name,
+      summary: c.summary,
+      usage: [...c.usage],
+      examples: [...(c.examples ?? [])],
+      subcommands: (c.subcommands ?? []).map((s) => ({ ...s })),
+      extensionId: c.extensionId,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Sort order of the contributions that declare one: lower first, 100 when unset. */

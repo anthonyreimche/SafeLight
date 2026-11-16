@@ -38,7 +38,7 @@ const ELECTRON_SOURCES = [
 ].map(read);
 
 const PRIVILEGED =
-  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|secrets:.+|sockets:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update|readDisabled|writeDisabled)|mirror:.+)$/;
+  /^(?:fs:.+|updates:.+|os-open:take|diagnostics:capturePage|gpu:.+|window:(?:setMaterial|openApp|closeApp|focusMain)|net:.+|secrets:.+|sockets:.+|programs:.+|devtools:sync-dev-folder|plugins:(?:install|uninstall|settle-update|readDisabled|writeDisabled)|mirror:.+)$/;
 
 type Deps = Parameters<typeof ipcChannels>[0];
 type Channel = ReturnType<typeof ipcChannels>[number];
@@ -955,5 +955,39 @@ describe("main process error handling", () => {
   it("installs the rejection handler before anything else runs, and catches a failed startup", () => {
     expect(MAIN).toMatch(/installMainErrorHandlers\(process, crashLog, console\.error\);/);
     expect(MAIN).toMatch(/app\.whenReady\(\)\.then\(async \(\) => \{[\s\S]*?\}\)\.catch\(\(e\) => \{[\s\S]*?dialog\.showErrorBox\([\s\S]*?app\.quit\(\);/);
+  });
+});
+
+describe("program channels", () => {
+  const privilegedSurface = PRELOAD.slice(0, PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+  const publicSurface = PRELOAD.slice(PRELOAD.indexOf("contextBridge.exposeInMainWorld"));
+
+  it("answers only the app's own document, and is handed out on the privileged bridge alone", () => {
+    const channels = [
+      "programs:pick",
+      "programs:locate",
+      "programs:list",
+      "programs:forget",
+      "programs:run",
+      "programs:cancel",
+    ];
+    const handedOut = registrations(privilegedSurface, "ipcRenderer\s*\.\s*invoke").map(channelOf);
+    for (const channel of channels) {
+      expect(privilegedChannels()).toContain(channel);
+      expect(handedOut).toContain(channel);
+    }
+  });
+
+  it("listens for a program's output on the privileged surface only", () => {
+    expect(privilegedSurface).toMatch(/ipcRenderer\.on\("programs:output"/);
+    expect(publicSurface).not.toMatch(/programs:/);
+  });
+
+  it("stops what is running as the app quits, and as the engine stops", () => {
+    expect(MAIN).toMatch(/onShutdown: \(stop\) => void shutdownHooks\.push\(stop\)/);
+    expect(MAIN).toMatch(/app\.on\("will-quit", async \(event\) => \{\s*for \(const stop of shutdownHooks\) stop\(\);/);
+    const engine = read("engine-mode.cjs");
+    expect(engine).toMatch(/stopping = true;\s*for \(const hook of shutdownHooks\) hook\(\);/);
+    expect(engine).toMatch(/onShutdown: \(hook\) => void shutdownHooks\.push\(hook\)/);
   });
 });

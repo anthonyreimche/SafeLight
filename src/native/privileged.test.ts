@@ -195,3 +195,25 @@ describe("privilegedOsOpen", () => {
     expect((await boot()).privilegedOsOpen()).toBeNull();
   });
 });
+
+describe("privilegedPrograms", () => {
+  it("hands core the programs bridge from the bundle", async () => {
+    const programs = {
+      pick: () => Promise.resolve(null),
+      locate: () => Promise.resolve(null),
+      list: () => Promise.resolve([]),
+      forget: () => Promise.resolve(),
+      run: () => Promise.resolve({}),
+      cancel: () => Promise.resolve(),
+      onOutput: () => () => {},
+    };
+    const mod = await boot(() => ({ ...bundle("core"), programs }));
+    mod.claimPrivileged();
+    expect(mod.privilegedPrograms()).toBe(programs);
+  });
+
+  it("is null for an older preload without it, and in the browser build", async () => {
+    expect((await boot(preloadOneShot("core"))).privilegedPrograms()).toBeNull();
+    expect((await boot()).privilegedPrograms()).toBeNull();
+  });
+});

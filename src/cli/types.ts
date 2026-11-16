@@ -61,6 +61,11 @@ export interface CommandSpec {
   writes: boolean;
   /** Winds down by itself on the first Ctrl+C, through `ctx.stops`; without it main stops the command where it stands. */
   ownsStop?: boolean;
+  /** The words after the verb are its own, untouched, up to `--`: none is an option or a key=value, and
+   *  only the global and photo options before the verb count (an extension's command). */
+  rawArgs?: true;
+  /** The words that may come first after the verb, for completion and help. */
+  subcommands?: readonly { name: string; summary: string }[];
   run(ctx: CommandContext, args: ParsedArgs): Promise<CommandOutcome>;
 }
 

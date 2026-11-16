@@ -80,7 +80,25 @@ async function extensionItems(ctx: CommandContext): Promise<DoctorItem[]> {
       hint: "Make edits that need them in Safelight.",
     });
   }
-  return items;
+  return [...items, ...(await extensionCommandItems(ctx))];
+}
+
+/** The verbs extensions add, and each declared command that didn't become one. */
+async function extensionCommandItems(ctx: CommandContext): Promise<DoctorItem[]> {
+  // index.ts builds the registry from this file, so it is read once doctor runs.
+  const { COMMANDS, extensionVerbs } = await import("./index");
+  const { specs, skipped } = extensionVerbs(COMMANDS, ctx.env.userData);
+  if (specs.length === 0 && skipped.length === 0) return [];
+  const label = "Extension commands";
+  return [
+    { label, value: specs.length > 0 ? specs.map((s) => s.verb).join(", ") : "none", status: "info" },
+    ...skipped.map((s): DoctorItem => ({
+      label,
+      value: `${s.extension}: ${s.reason}; not offered`,
+      status: "warn",
+      hint: "Turn one of the extensions off, or ask its author to rename the command.",
+    })),
+  ];
 }
 
 async function lockItem(ctx: CommandContext): Promise<DoctorItem> {

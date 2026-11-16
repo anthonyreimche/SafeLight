@@ -12,12 +12,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import "../host";
 import { initDevFolder, setDevFolder, teardownDevFolder, useDevFolder } from "./dev-folder";
 import { DevFolderControls } from "./DevFolderControls";
 import { prepareEssentialsMigration } from "../essentials-migration";
 import { officialExtension } from "../official-extensions";
 import { useExtSettings } from "../ext-settings";
 import { EXTENSION_TIMEOUT_MS } from "../guard";
+import { isInstanceLive, startInstance, stopInstances } from "../instance";
+import { DEVTOOLS_EXTENSION_ID } from "../official-extensions";
 
 const FOLDER = "D:\\Repositories\\Extensions";
 const TILES = "https://tiles.openfreemap.org";
@@ -302,5 +305,46 @@ describe("the dev folder setting", () => {
 
     expect(useDevFolder.getState().folder).toBe(FOLDER);
     await vi.waitFor(() => expect(sync).toHaveBeenCalledWith(FOLDER));
+  });
+});
+
+describe("Developer Tools loaded from its own dev folder", () => {
+  // Developer Tools owns the folder loader: its activate starts it and its
+  // deactivate tears it down. A copy of it from the folder replaces the running
+  // one, which must hand the loader over rather than tear it down: a teardown
+  // restarts the installed copy, whose scan loads the folder copy again.
+  const devtools = (source: "installed" | "dev") =>
+    startInstance({
+      id: DEVTOOLS_EXTENSION_ID,
+      source,
+      bundle: `${source}:${DEVTOOLS_EXTENSION_ID}`,
+      read: async () => ({
+        load: async () => ({ activate: () => initDevFolder(), deactivate: () => teardownDevFolder() }),
+      }),
+    });
+
+  afterEach(() => stopInstances("dev"));
+
+  it("keeps the loader and the folder's extensions when its dev copy replaces it", async () => {
+    setDevFolder(FOLDER);
+    await devtools("installed");
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledWith(FOLDER));
+    const item = { id: "acme.tool", name: "Tool", version: "1.0.0", dir: `${FOLDER}\tool`, status: "loaded" as const };
+    useDevFolder.setState({ items: [item] });
+    sync.mockClear();
+
+    await devtools("dev");
+
+    expect(isInstanceLive(DEVTOOLS_EXTENSION_ID, "dev")).toBe(true);
+    expect(useDevFolder.getState().items).toEqual([item]);
+    expect(sync).not.toHaveBeenCalledWith(null);
+  });
+
+  it("still tears the loader down when it is stopped for good", async () => {
+    setDevFolder(FOLDER);
+    await devtools("dev");
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledWith(FOLDER));
+    stopInstances("dev");
+    expect(sync).toHaveBeenLastCalledWith(null);
   });
 });

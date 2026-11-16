@@ -59,6 +59,8 @@ import type {
   ParamScope,
 } from "./develop";
 import type {
+  DevtoolsExtensions,
+  DevtoolsRender,
   ProcessVersion,
   PipelineRow,
   ScreenTarget,
@@ -99,8 +101,10 @@ import type {
   UIState,
 } from "./stores";
 import type { SharedVariablesAPI } from "./variables";
+import type { CommandsAPI } from "./commands";
 import type { NetworkAPI } from "./network";
 import type { SocketsAPI } from "./sockets";
+import type { ProgramsAPI } from "./programs";
 import type { SecretsAPI } from "./secrets";
 import type { LibrarySourceContribution, LibrarySourceEntry } from "./sources";
 import type { DevelopOverlayState } from "../develop-host";
@@ -993,6 +997,10 @@ export interface SafelightAPI {
    *  typed in and allowed (the manifest declares `permissions.userSockets`):
    *  see SocketsAPI. Needs Safelight 3.2.5; absent on older builds. */
   sockets: SocketsAPI;
+  /** Run a native program the person chose, such as the `gmic` command-line
+   *  program (the manifest declares `permissions.programs`): see ProgramsAPI.
+   *  Needs Safelight 3.2.6; absent on older builds. */
+  programs: ProgramsAPI;
   /** Presets: the file formats and the descriptions the Presets panel and
    *  Copy Settings share. */
   presets: {
@@ -1094,12 +1102,22 @@ export interface SafelightAPI {
       gpuInfo?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["gpuInfo"];
       metrics?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["metrics"];
     };
+    /** Every extension this window knows of: running, turned off, failed to
+     *  start, or sitting in the dev folder. Absent before Safelight 3.2.6. */
+    extensions?: DevtoolsExtensions;
+    /** What the live Develop view last drew, the stages the GPU refused and the
+     *  values a stage was drawn with. Absent before Safelight 3.2.6. */
+    render?: DevtoolsRender;
   };
   /** Shared variables: named JSON values any extension can register, read,
    *  subscribe to and write, synced across windows. A set() from an extension
    *  that hasn't seen the current value is refused and reported; use update()
    *  for read-modify-write. See docs/dev/api/stores.md. */
   variables: SharedVariablesAPI;
+  /** Console commands: register a verb the Terminal and the `safelight` CLI
+   *  run, and run other extensions' verbs (with `permissions.commands`). See
+   *  CommandsAPI. Needs Safelight 3.2.6; absent on older builds. */
+  commands: CommandsAPI;
 }
 
 export interface ExtensionModule {

@@ -112,6 +112,14 @@ export function complete(line: string, cursor: number, ctx: PromptContext): Comp
     const verbs = [...ctx.commands.map((c) => ({ verb: c.verb, summary: c.summary })), ...ctx.builtins];
     return reply(verbs.filter((v) => startsWith(v.verb, typed, ctx.fold)).map((v) => ({ text: v.verb, label: v.verb, detail: v.summary })));
   }
+  if (analysis.spec?.rawArgs && analysis.verb !== null && start > analysis.verb.start) {
+    const afterDashDash = analysis.words.some((w) => w.role.kind === "option" && w.text === "--" && w.end <= start);
+    if (afterDashDash) return word?.role.kind === "option" ? reply([]) : reply(paths(typed, word?.quote ?? null, ctx, false));
+    const raw = analysis.words.filter((w) => w.role.kind === "slot" && w !== word && w.end <= start);
+    if (raw.length > 0 || word?.role.kind === "option") return reply([]);
+    const subcommands = analysis.spec.subcommands ?? [];
+    return reply(subcommands.filter((s) => startsWith(s.name, typed, false)).map((s) => ({ text: s.name, label: s.name, detail: s.summary })));
+  }
   if (word?.role.kind === "option" || (word && typed.startsWith("-") && word.role.kind !== "assign")) {
     if (typed.includes("=")) return reply([]);
     const options = [...GLOBAL_OPTIONS, ...(analysis.spec?.options ?? [])];

@@ -91,6 +91,7 @@ const ENGINE_REFUSED = new Set([
   "mirror:writeDescriptors",
   "plugins:writeDisabled",
   "devtools:sync-dev-folder",
+  "programs:forget",
 ]);
 
 const refuse = async () => {
@@ -293,10 +294,12 @@ function run({
       else resolve();
     });
 
+  const shutdownHooks = [];
   let stopping = false;
   const stop = async (code) => {
     if (stopping) return;
     stopping = true;
+    for (const hook of shutdownHooks) hook();
     await within(fileWriter.drain(), 5000);
     await within(endLink(), 2000);
     app.exit(code);
@@ -400,6 +403,7 @@ function run({
         revertChange: gpuState,
         restartApp: () => {},
         appWindows: NO_WINDOWS,
+        onShutdown: (hook) => void shutdownHooks.push(hook),
       });
       registerIpc(engineChannels(channels), {
         ipcMain,

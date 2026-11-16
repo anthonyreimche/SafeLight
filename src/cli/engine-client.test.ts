@@ -2,8 +2,8 @@ import { EventEmitter } from "node:events";
 import { connect, type Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { encodeWire, WIRE_FRAME, WIRE_JSON, type EngineEvent, type EngineRequest } from "@/engine/protocol";
-import { createEngineClient, createEngineSession, importEvents, thumbFrames, type EngineChild, type EngineFrame, type EngineSpawn } from "./engine-client";
+import { ENGINE_PROTOCOL, encodeWire, WIRE_FRAME, WIRE_JSON, type EngineEvent, type EngineRequest } from "@/engine/protocol";
+import { createEngineClient, createEngineSession, importEvents, thumbFrames, timeoutSeconds, timesOutWhenQuiet, type EngineChild, type EngineFrame, type EngineSpawn } from "./engine-client";
 import type { Output } from "./output/types";
 import { CliError, type CliEnv } from "./types";
 
@@ -59,7 +59,7 @@ async function until(check: () => boolean) {
   expect(check()).toBe(true);
 }
 
-const READY: EngineEvent = { id: 0, type: "ready", protocol: 2, appVersion: "3.3.0", backend: "d3d11", software: false, extensions: [] };
+const READY: EngineEvent = { id: 0, type: "ready", protocol: ENGINE_PROTOCOL, appVersion: "3.3.0", backend: "d3d11", software: false, extensions: [] };
 
 function env(extra: Record<string, string> = {}): CliEnv {
   return {
@@ -102,7 +102,7 @@ describe("engine client", () => {
     await run;
     expect(calls).toHaveLength(1);
     expect(calls[0].command).toBe("/electron");
-    expect(calls[0].args.slice(0, 3)).toEqual(["/app", "--engine", "--slu-protocol=2"]);
+    expect(calls[0].args.slice(0, 3)).toEqual(["/app", "--engine", `--slu-protocol=${ENGINE_PROTOCOL}`]);
     expect(calls[0].args[3]).toMatch(/^--slu-pipe=.*safelight-engine-\d+-[0-9a-f]+/);
     expect("ELECTRON_RUN_AS_NODE" in calls[0].env).toBe(false);
     expect(calls[0].env.PATH).toBe("/bin");
@@ -276,6 +276,14 @@ describe("engine client", () => {
     child.send({ id: 4, type: "import-done", moved: [], dropped: [], pending: 0, stopped: "safelight-opened" });
     const items = await run;
     expect(items.map((i) => ("type" in i ? i.type : "bytes"))).toEqual(["import-done"]);
+  });
+
+  it("gives a command five quiet minutes, started again by every event, unless SLU_ENGINE_TIMEOUT says otherwise", () => {
+    const command: EngineRequest = { id: 5, type: "command", extension: "gmic", name: "gmic", words: [], photoIds: ["a", "b"], settings: null };
+    expect(timeoutSeconds(env(), command)).toBe(300);
+    expect(timesOutWhenQuiet(command)).toBe(true);
+    expect(timeoutSeconds(env({ SLU_ENGINE_TIMEOUT: "7" }), command)).toBe(7);
+    expect(timesOutWhenQuiet(preview(1))).toBe(false);
   });
 
   it("times an import out only when the engine goes quiet", async () => {

@@ -52,17 +52,27 @@ export function syncCrashFailures(stages: Stages): void {
   if (changed) useStageFailures.setState(next, true);
 }
 
-/** The failures of `extensionId`'s stages that still stand: each stage is
- *  registered as it was when it failed. */
+/** Whether `failure` still stands: its stage is registered as it was when it failed. */
+function stands(failure: QuarantinedStage, stages: Stages): boolean {
+  const stage = stages[failure.stageId];
+  return stage !== undefined && stageSignature(stage) === failure.signature;
+}
+
+/** The failures of `extensionId`'s stages that still stand. */
 export function stageFailuresOf(
   extensionId: string,
   failures: Readonly<Record<string, QuarantinedStage>>,
   stages: Stages,
 ): QuarantinedStage[] {
-  return Object.values(failures).filter((f) => {
-    const stage = stages[f.stageId];
-    return stage?.extensionId === extensionId && stageSignature(stage) === f.signature;
-  });
+  return Object.values(failures).filter((f) => stages[f.stageId]?.extensionId === extensionId && stands(f, stages));
+}
+
+/** The failures of every extension's stages that still stand, by stage id. */
+export function standingStageFailures(
+  failures: Readonly<Record<string, QuarantinedStage>>,
+  stages: Stages,
+): Record<string, QuarantinedStage> {
+  return Object.fromEntries(Object.entries(failures).filter(([, f]) => stands(f, stages)));
 }
 
 export function useStageFailuresOf(extensionId: string): QuarantinedStage[] {

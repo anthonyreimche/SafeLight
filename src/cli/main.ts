@@ -112,9 +112,10 @@ export async function main(argv: string[], io: MainIO): Promise<ExitCode> {
     // Core modules read window and localStorage, so the shims go in before the verbs load them.
     const bridge = createNodeFsBridge(env.userData);
     installNodeHost({ bridge, platform: env.platform, storage: readSharedSettings(env.userData)?.storage ?? {} });
-    const commands = io.commands ?? (await import("./commands")).COMMANDS;
+    const index = io.commands ? null : await import("./commands");
+    const commands: readonly CommandSpec[] = io.commands ?? index?.withExtensionVerbs(index.COMMANDS, env.userData) ?? [];
 
-    const first = parseArgs(argv, null);
+    const first = parseArgs(argv, null, (word) => findCommand(commands, word)?.rawArgs === true);
     json = first.options.json === true;
     out = outputFor(verbosityOf(first.options));
 

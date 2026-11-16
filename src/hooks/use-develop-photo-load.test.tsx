@@ -100,7 +100,6 @@ beforeEach(() => {
     setLoading,
     setCantShow,
     setSettledReason: vi.fn(),
-    setOverflowedStages: vi.fn(),
     drawSourceRef: { current: vi.fn() },
   };
   useExternalPluginsSettled.setState({ settled: true });

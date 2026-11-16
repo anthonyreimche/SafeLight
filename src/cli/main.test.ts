@@ -264,4 +264,30 @@ describe("main", () => {
     expect(await main(["photos", "-"], h.io)).toBe(0);
     expect(text).toBe("a.ARW\nb.ARW\n");
   });
+
+  it("hands a verb that takes its words raw every word after it, and reads options only before it", async () => {
+    let seen: { args: ParsedArgs; json: boolean; verbosity: string } | null = null;
+    const gmic: CommandSpec = {
+      ...fake("gmic", async (ctx, args) => {
+        seen = { args, json: ctx.json, verbosity: ctx.verbosity };
+        return { code: 0, json: { ok: true } };
+      }),
+      rawArgs: true,
+    };
+    const h = harness({ commands: [gmic] });
+    expect(await main(["--json", "gmic", "-v", "-1", "-blur", "3", "--blur", "--help", "--", "@all"], h.io)).toBe(0);
+    expect(seen).toMatchObject({ json: true, verbosity: "normal" });
+    expect(seen!.args.positionals).toEqual(["-v", "-1", "-blur", "3", "--blur", "--help"]);
+    expect(seen!.args.afterDashDash).toEqual(["@all"]);
+    expect(JSON.parse(h.out())).toEqual({ ok: true });
+
+    const plain = harness({ commands: [gmic] });
+    expect(await main(["gmic", "--json", "blur"], plain.io)).toBe(0);
+    expect(seen!.json).toBe(false);
+    expect(plain.out()).toBe("");
+
+    const valueless = harness({ commands: [gmic] });
+    expect(await main(["gmic", "filters", "--project"], valueless.io)).toBe(0);
+    expect(seen!.args.positionals).toEqual(["filters", "--project"]);
+  });
 });

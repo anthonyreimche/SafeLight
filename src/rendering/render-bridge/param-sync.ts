@@ -94,6 +94,11 @@ export class ParamSync {
     this.unsubscribeSettings();
   }
 
+  /** The values the stages derive from the live params, as last posted. */
+  get derived(): Readonly<Record<string, unknown>> {
+    return this.lastPostedDerived ?? {};
+  }
+
   /** A fresh renderer: the next params and bag go whole. */
   reset() {
     this.lastPostedParams = null;

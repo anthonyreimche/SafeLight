@@ -25,6 +25,7 @@ import type {
   NativeNetBridge,
   NativeOsOpenBridge,
   NativePluginsBridge,
+  NativeProgramsBridge,
   NativeSecretsBridge,
   NativeSocketsBridge,
   NativeUpdatesBridge,
@@ -44,6 +45,7 @@ let netBridge: NativeNetBridge | null = null;
 let mirrorBridge: NativeMirrorBridge | null = null;
 let secretsBridge: NativeSecretsBridge | null = null;
 let socketsBridge: NativeSocketsBridge | null = null;
+let programsBridge: NativeProgramsBridge | null = null;
 
 /** Claim the privileged bridge into module scope. Idempotent. Must run before
  *  the first extension loads — call it at the very top of renderer boot. */
@@ -63,6 +65,7 @@ export function claimPrivileged(): void {
   mirrorBridge = priv?.mirror ?? null;
   secretsBridge = priv?.secrets ?? null;
   socketsBridge = priv?.sockets ?? null;
+  programsBridge = priv?.programs ?? null;
 }
 
 /** The privileged fs bridge, or null in the plain-browser build. Lazily claims
@@ -140,4 +143,11 @@ export function privilegedSecrets(): NativeSecretsBridge | null {
 export function privilegedSockets(): NativeSocketsBridge | null {
   if (!claimed) claimPrivileged();
   return socketsBridge;
+}
+
+/** The native programs the person allowed an extension to run, or null
+ *  outside Electron. */
+export function privilegedPrograms(): NativeProgramsBridge | null {
+  if (!claimed) claimPrivileged();
+  return programsBridge;
 }

@@ -130,6 +130,8 @@ import { keptDirectoriesAPI } from "./kept-directories";
 import { networkAPI } from "./network";
 import { secretsAPI } from "./secrets";
 import { socketsAPI } from "./sockets";
+import { commandsAPI } from "./commands";
+import { programsAPI } from "./programs";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
 import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -147,6 +149,8 @@ import { useTitleBarOverlay } from "@/ui/window-chrome";
 import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
 import { initDevFolder, teardownDevFolder } from "./devtools/dev-folder";
 import { DevFolderControls } from "./devtools/DevFolderControls";
+import { devtoolsExtensions } from "./devtools/extension-status";
+import { devtoolsRender } from "@/rendering/render-bridge/devtools-render";
 import {
   PIPELINE_VERSIONS,
   useOpenProcessVersion,
@@ -268,6 +272,8 @@ function devtoolsAPI(): DevtoolsAPI {
     appVersion: readAppVersion,
     electron: window.safelightNative?.devtools,
     native: nativeDetails(),
+    extensions: devtoolsExtensions,
+    render: devtoolsRender,
   };
 }
 
@@ -587,6 +593,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     network: networkAPI(extensionId),
     secrets: secretsAPI(extensionId),
     sockets: socketsAPI(extensionId),
+    programs: programsAPI(extensionId),
     presets: {
       useImporters: usePresetImporters,
       describeBag: describePresetBag,
@@ -612,6 +619,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     titleBar: { useOverlay: useTitleBarOverlay },
     devtools: extensionId === DEVTOOLS_EXTENSION_ID ? devtoolsAPI() : undefined,
     variables: variableRegistry().scoped(extensionId),
+    commands: commandsAPI(extensionId),
   };
 }
 

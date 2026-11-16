@@ -474,6 +474,72 @@ Live connections (WebSockets) to a server whose address the person types in, suc
 - In the browser build there is no dialogue: `wss://` addresses answer `"allowed"` and the page's own policy decides.
 - Keep what you send sealed if the server isn't yours alone to read: the server sees everything a socket carries.
 
+## `api.programs` (3.2.6)
+
+```ts
+interface KeptProgram { token: string; path: string; name: string }
+pick(options?: { title?: string; replacing?: string | null }): Promise<KeptProgram | null>;
+locate(name: string): Promise<KeptProgram | null>;
+list(): Promise<KeptProgram[]>;
+forget(token: string): Promise<void>;
+run(token: string, args: string[], options?: ProgramRunOptions): Promise<ProgramRunResult>;
+```
+
+Runs one native program the person chose, such as the `gmic` command-line program for a G'MIC extension. Declare `"permissions": { "programs": true }` in `safelight.json`. You never name a program yourself: the person picks it, and you hold a token for it.
+
+- `pick` opens the system's file dialogue, then a second dialogue that names your extension and the full path and asks whether it may run it. It answers `null` if the person cancels or says no. `locate("gmic")` looks on `PATH` (and, on macOS and Linux, in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`) and asks the same question about what it finds. Call either from a click. On Windows only an `.exe` or `.com` is taken.
+- A yes is kept across launches until `forget`, the person's Forget on your extension's page in the Extensions window, or your extension being uninstalled; an update keeps it. `pick({ replacing })` takes the place of an earlier token and forgets it once the new one is kept. One consent dialogue per extension at a time: asking while yours is open answers `null`.
+- `run` starts the program directly, with no shell, so each item of `args` is one argument exactly as you wrote it. Core makes a fresh empty folder under the system's temporary folder, writes `files` into it, runs the program with that folder as its working directory, reads back `outputs`, and removes the folder, however the run ends. Several runs can go at once.
+- File names, in `files` and `outputs`, are plain: letters, digits, `.`, `_` and `-`, up to 128, no `.` or `..`, no trailing dot, no name Windows reserves (`con`, `nul`, `com1`…, with any extension), and no two that differ only by case. In `outputs`, a name ending in `*` takes every file whose name starts with the rest (`"out_*"`), within the folder only. A missing file is left out. At most 16 files and 1 GB come back, and more rejects the run.
+- At most 4096 arguments, each up to 32 KB, with no NUL.
+- `onOutput(stream, text)` gets what the program prints as it arrives, decoded as UTF-8 without cutting a character in half, a few times a second rather than once per line. `stdout` and `stderr` in the result keep the last 4 MB of each.
+- `signal` stops the program (and everything it started), and so does `timeoutMs` (10 minutes by default, 2 hours at most). A stopped run resolves with `killed: "cancelled"` or `"timeout"`, `exitCode: null` and no files. A program that runs and fails is a result, not a rejection: look at `exitCode`.
+- `run` rejects when the token isn't yours, your manifest stopped declaring `programs`, the file is gone, the program can't start, or a name, argument or output is refused. Outside the desktop app it rejects with `NotSupportedError`, and `pick` and `locate` answer `null`.
+- The program is an ordinary program with the person's own rights. It can read, change and delete their files, and the dialogue says so. Other extensions that run your extension's commands, such as Terminal, can use the program through you, and the dialogue says that too.
+- The program's environment is the app's, without `LD_LIBRARY_PATH`, `APPDIR`, `APPIMAGE` or anything starting `ELECTRON_`, so it doesn't load the app's own libraries.
+- Large files cross between the page and the main process in one message each way. Very large images (hundreds of megabytes) haven't been measured here.
+
+## `api.commands` (3.2.6)
+
+```ts
+register(c: CommandContribution): void;
+unregister(name: string): void;
+list(): RegisteredCommand[];
+subscribe(cb: () => void): () => void;
+run(name: string, options: CommandOutput & { words: string[]; photos: CatalogPhoto[]; signal?: AbortSignal }): Promise<{ result: unknown; saved: string[] }>;
+canSaveBeside(photo: CatalogPhoto): Promise<string | null>;
+saveBeside(photo: CatalogPhoto, data: Blob, suffix: string, ext: string): Promise<string>;
+// CommandContribution = { name, summary, usage: string[], examples?, subcommands?: { name, summary }[], run(ctx) }
+```
+
+A console verb your extension adds, such as `gmic` for a G'MIC extension. The Terminal extension's console runs it in the app, and the `safelight` command runs it from a terminal: `safelight gmic blur 3 -- @all`. One `run` function serves both; its context says which one called.
+
+- `name` is a lower-case letter, then 1 to 31 lower-case letters, digits or `-`. A `safelight` verb (`export`, `set`…), one of the prompt's own words (`cd`, `next`, `prev`, `close`, `home`, `clear`, `cls`, `exit`, `quit`, `open`) or a name another extension holds is refused with a warning. Registering a name you hold replaces it. Your commands go when your extension stops.
+- `run(ctx)` gets `ctx.words`, the words after the verb exactly as typed: nothing in them is read as an option, so `-blur` stays a word. `ctx.photos` are the photos it acts on (the Develop photo or the Library selection in the Terminal, the photos the command line chose in the CLI), and may be empty. `ctx.caller` is `"app"` or `"cli"`, and `ctx.from` the id of the extension that ran it, or `"cli"`.
+- Write with `ctx.print` (the output proper; under `--json` the CLI leaves it out), `ctx.info` and `ctx.warn` (notes), and `ctx.progress(text)`, whose `update(text, fraction?)` and `done(text?)` move and end the line. Give a script something to read with `ctx.result(value)`: plain JSON data, the last call wins.
+- Stop when `ctx.signal` aborts (Ctrl+C, the Terminal's stop). Throw to fail: the message is what the person sees, and `run` rejects with your error.
+- `ctx.saveBeside(photo, blob, suffix, ext)` keeps a result as a new photo in the photo's folder, named after it: `IMG_1-gmic.png`, then `IMG_1-gmic-2.png` and on to `-99` while a name is taken. Nothing is overwritten. `suffix` is 1 to 32 lower-case letters, digits or `-`, and `ext` a type of photo Safelight opens (`png`, `tif`, `jpg`…). It resolves with the new file's name. In the app the file is imported at once; under the CLI it is written now and imported when the command ends. Where it goes comes from the catalogue's record of the photo, never from the object you pass.
+- `ctx.canSaveBeside(photo)` answers `null` when a result can be saved there, else why not (the folder is read-only, the project is a library source, the browser build). Ask before long work.
+- `api.commands.canSaveBeside` and `api.commands.saveBeside` do the same for a panel of your own, outside any command: no permission needed.
+
+**Running another extension's command** (what the Terminal does) needs `"permissions": { "commands": true }` in your `safelight.json`; without it `run` rejects with a `NotAllowedError`. Pass the words, the photos and where the output goes. `run` resolves with the command's result and the names it saved, and rejects with the command's own error, or when nobody registered the name. `list` gives every extension's commands, by name; `subscribe` calls you when that list changes.
+
+**Offering it to the `safelight` command.** The CLI reads your manifest, not your running code, so declare each command there too:
+
+```json
+"commands": [
+  {
+    "name": "gmic",
+    "summary": "Runs G'MIC on photos.",
+    "usage": ["gmic <pipeline…>", "gmic filters [search]"],
+    "examples": ["gmic blur 3 -- @all"],
+    "subcommands": [{ "name": "filters", "summary": "Lists G'MIC's filters." }]
+  }
+]
+```
+
+Declared commands show in `safelight help`, complete at the prompt (the subcommands as the first word), and run as `safelight [options] <name> <words…> [-- photos…]`. Only the global and photo options before the name count; every word after it is yours. Naming no photo acts on the prompt's open photo, or on none. The engine starts your extension as the app would, with your settings as the app last saved them. A name the CLI already has, or one another extension declared first (by lower id), is left out, and `safelight doctor` says so. A command you register without declaring it still runs in the Terminal.
+
 ## `api.variables` (shared variables)
 
 Named JSON values any extension can register, read, subscribe to and write, kept in step across every Safelight window. Values last for the session. Needs Safelight 3.0.1 (set `minAppVersion` to `"3.0.1"`).

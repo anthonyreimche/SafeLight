@@ -16,6 +16,7 @@ export type ExportRequest = Extract<EngineRequest, { type: "export" }>;
 export type PreviewRequest = Extract<EngineRequest, { type: "preview" }>;
 export type ImportRequest = Extract<EngineRequest, { type: "import" }>;
 export type ThumbsRequest = Extract<EngineRequest, { type: "thumbs" }>;
+export type CommandRequest = Extract<EngineRequest, { type: "command" }>;
 type QueuedRequest = Exclude<EngineRequest, { type: "cancel" }>;
 
 /** A frame's payload, sent right after the event that names its number. */
@@ -56,10 +57,11 @@ export interface EngineHandlers {
   preview(req: PreviewRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
   import(req: ImportRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
   thumbs(req: ThumbsRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
+  command(req: CommandRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-const REQUEST_TYPES: ReadonlySet<string> = new Set(["export", "preview", "import", "thumbs", "cancel", "shutdown"]);
+const REQUEST_TYPES: ReadonlySet<string> = new Set(["export", "preview", "import", "thumbs", "command", "cancel", "shutdown"]);
 
 function parseRequest(data: unknown): EngineRequest | string {
   let value = data;
@@ -106,6 +108,8 @@ export function serveEngine(channel: EngineChannel, handlers: EngineHandlers): v
         return handlers.import(req, out, signal);
       case "thumbs":
         return handlers.thumbs(req, out, signal);
+      case "command":
+        return handlers.command(req, out, signal);
     }
   };
 

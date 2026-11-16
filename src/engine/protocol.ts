@@ -9,7 +9,7 @@
 import type { DevelopParams } from "@/catalog/types";
 import type { LockInfo, MovedPhoto } from "@/project/storage-options";
 
-export const ENGINE_PROTOCOL = 2;
+export const ENGINE_PROTOCOL = 3;
 
 export interface ProjectWire { root: string; workingDir: string; location: "in-folder" | "external" }
 export interface LookOverride { params?: Partial<DevelopParams>; paramBag?: Record<string, unknown> }
@@ -45,6 +45,10 @@ export type EngineRequest =
   | { id: number; type: "import"; project: { root: string }; scope: ImportScope; metadata: boolean; keepBackup: true }
   /** Each photo's stored grid preview, fitted inside edge × edge. */
   | { id: number; type: "thumbs"; project: ProjectWire; photoIds: string[]; edge: number; encoding: "png" | "rgba" }
+  /** Runs console command `name` of `extension` (api.commands) with `words` on the photos, after taking
+   *  `settings` (the app's stored text of the extension's settings) as its own. `project` comes with
+   *  photos; `catalogue` is its stamp, as for a preview. */
+  | { id: number; type: "command"; extension: string; name: string; words: string[]; project?: ProjectWire; photoIds: string[]; catalogue?: string; settings: string | null }
   /** Stops request `target`, served at once rather than queued, and not answered:
    *  `target` ends on its own "done", after what it sent before it stopped. */
   | { id: number; type: "cancel"; target: number }
@@ -55,14 +59,23 @@ export interface EngineExtensionState { id: string; version: string; started: bo
 export type EngineEvent =
   | { id: 0; type: "ready"; protocol: number; appVersion: string; backend: string; software: boolean; extensions: EngineExtensionState[] }
   | { id: 0; type: "log"; level: "info" | "warn" | "error"; message: string }
-  | { id: number; type: "progress"; phase?: "files" | "camera-data"; done: number; total: number; photoId?: string }
+  /** `text` is a command's progress line, "" when it is done with it; a command's progress without
+   *  `text` only says it is still running. */
+  | { id: number; type: "progress"; phase?: "files" | "camera-data"; done: number; total: number; photoId?: string; text?: string }
   | { id: number; type: "exported"; photoId: string; path?: string; frame?: number; width: number; height: number; colourSpace: string; bytes: number }
   | { id: number; type: "frame"; frame: number; width: number; height: number; encoding: "png" | "rgba"; photoId?: string }
   | { id: number; type: "import-plan"; workingDir: string; location: "in-folder" | "external"; created: boolean; newFiles: number }
   | { id: number; type: "import-file"; relPath: string; photoId?: string; state: "ok" | "no-preview" | "failed"; error?: string }
   | { id: number; type: "import-done"; moved: MovedPhoto[]; dropped: ImportDrop[]; pending: number; stopped: null | "interrupted" | "safelight-opened" }
-  /** `heldBy` comes with "locked": who holds the project's writer lock. */
-  | { id: number; type: "error"; code: "decode" | "render" | "project" | "locked" | "internal"; message: string; photoId?: string; heldBy?: LockInfo }
+  /** What a command printed: "out" is its output proper, "info" and "warn" notes about it. */
+  | { id: number; type: "command-output"; stream: "out" | "info" | "warn"; text: string }
+  /** A command saved a result beside photo `photoId`: the new file, from the project root. */
+  | { id: number; type: "command-saved"; photoId: string; relPath: string }
+  /** The result the command gave (CommandRunContext.result). */
+  | { id: number; type: "command-result"; value: unknown }
+  /** `heldBy` comes with "locked": who holds the project's writer lock. "command": the command failed,
+   *  or nothing registered it. */
+  | { id: number; type: "error"; code: "decode" | "render" | "project" | "locked" | "command" | "internal"; message: string; photoId?: string; heldBy?: LockInfo }
   | { id: number; type: "done" };
 
 /** A photo the import dropped because its file is gone, edits and all. */

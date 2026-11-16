@@ -214,3 +214,34 @@ describe("doctor", () => {
     expect(outcome.json).toMatchObject({ slu: 1, items: expect.any(Array) });
   });
 });
+
+describe("extension verbs in help and doctor", () => {
+  function install(id: string, commands: unknown): void {
+    const dir = join(userData, "plugins", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "safelight.json"), JSON.stringify({ id, name: id, version: "1.0.0", main: "index.js", commands }));
+  }
+  const gmic = { name: "gmic", summary: "Runs G'MIC.", usage: ["gmic <pipeline…>", "gmic filters [search]"] };
+
+  it("lists an installed extension's verbs on the help screen and explains one", async () => {
+    install("gmic", [gmic]);
+    const { ctx, seen } = fakeContext();
+    await helpCommand.run(ctx, args());
+    expect(seen.screen?.verbs).toContainEqual({ verb: "gmic", group: "Extensions", summary: "Runs G'MIC." });
+    await helpCommand.run(ctx, args("gmic"));
+    expect(seen.verb).toMatchObject({ verb: "gmic", usage: "gmic <pipeline…>\nsafelight gmic filters [search]" });
+    expect(seen.verb?.summary).toContain("photos come after --");
+  });
+
+  it("names a command that lost to a safelight verb or to another extension", async () => {
+    install("acme", [gmic, { name: "export", summary: "x", usage: ["export"] }]);
+    install("zed", [gmic]);
+    const items = await doctorItems(fakeContext().ctx);
+    const notes = items.filter((i) => i.label === "Extension commands");
+    expect(notes[0]).toMatchObject({ status: "info", value: "gmic" });
+    expect(notes.slice(1).map((i) => [i.status, i.value])).toEqual([
+      ["warn", "acme: export is one of safelight's own verbs; not offered"],
+      ["warn", "zed: gmic is acme's (acme); not offered"],
+    ]);
+  });
+});

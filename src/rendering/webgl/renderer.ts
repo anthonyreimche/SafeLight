@@ -603,6 +603,8 @@ export class WebGLRenderer {
   private readonly drawnPrograms = new WeakMap<WebGLProgram, Set<string>>();
   // The ids of the stages the program in use was built from.
   private programStageIds: ReadonlySet<string> = new Set();
+  // The same stages, copies by their own ids, in the order the program writes them.
+  private programStageList: readonly string[] = [];
 
   // The GPU-resident source cache (source-cache.ts).
   private readonly sources: SourceCache;
@@ -711,6 +713,12 @@ export class WebGLRenderer {
    *  another frame of the same params finishes it. */
   get prepassPending(): boolean {
     return this.prepass.copiesPutOff;
+  }
+
+  /** The stages the program in use holds, in the order it writes them, each mask
+   *  copy by its own id ("{stageId}@{n}"). */
+  get programStages(): readonly string[] {
+    return this.programStageList;
   }
 
   /** The stages, each mask copy after its stage, the program in use was built
@@ -2194,6 +2202,7 @@ export class WebGLRenderer {
     this.droppedCopies = chosen.dropped;
     this.dormantIds = chosen.stages.dormant;
     this.programStageIds = chosen.stages.ids;
+    this.programStageList = chosen.stages.built.steps.flatMap((step) => (step.kind === "stage" ? [step.stageId] : []));
     this.programs.setCurrent(e);
     // A stage-set change invalidates the pass programs and prepass results of
     // the stages it changed (stageSetChanged), and every split. No process
