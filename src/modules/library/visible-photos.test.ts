@@ -7,14 +7,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // visiblePhotos reads the subfolder preference itself (so the grid, culling and
 // develop navigation can't disagree); the mock lets each test drive it.
-const h = vi.hoisted(() => ({ settings: { showSubfolderPhotos: false } }));
+// It reads each photo's edit time the same way; `edits` holds the edited ones.
+const h = vi.hoisted(() => ({
+  settings: { showSubfolderPhotos: false },
+  edits: new Map<string, number>(),
+}));
 vi.mock("@/state/settings-store", () => ({ getSettings: () => h.settings }));
+vi.mock("@/catalog/edit-times", () => ({ editedAt: (id: string) => h.edits.get(id) }));
 
 import {
   isFilterActive,
   NO_FILTER,
   orderFieldsRead,
   placeAmongShown,
+  readsEditTimes,
   visiblePhotos,
   type LibraryFilter,
 } from "./visible-photos";
@@ -54,6 +60,7 @@ const ids = (photos: CatalogPhoto[]) => photos.map((p) => p.id);
 
 beforeEach(() => {
   h.settings.showSubfolderPhotos = false;
+  h.edits.clear();
 });
 
 describe("isFilterActive", () => {
@@ -71,6 +78,51 @@ describe("isFilterActive", () => {
     expect(isFilterActive(filter({ flag: "pick" }))).toBe(true);
     expect(isFilterActive(filter({ label: "red" }))).toBe(true);
     expect(isFilterActive(filter({ keywords: ["sky"] }))).toBe(true);
+  });
+
+  it("counts the Edited filter either way, and not at its default", () => {
+    expect(NO_FILTER.edited).toBe("any");
+    expect(isFilterActive(filter({ edited: "edited" }))).toBe(true);
+    expect(isFilterActive(filter({ edited: "unedited" }))).toBe(true);
+  });
+});
+
+describe("edits", () => {
+  const photos = [
+    photo({ id: "a", dateImported: 1 }),
+    photo({ id: "b", dateImported: 2, flag: "pick" }),
+    photo({ id: "c", dateImported: 3 }),
+    photo({ id: "d", dateImported: 4, flag: "pick" }),
+  ];
+  beforeEach(() => {
+    h.edits.set("b", 500).set("c", 900);
+  });
+
+  it("shows only the edited photos, or only the others", () => {
+    expect(ids(visiblePhotos(photos, filter({ edited: "edited" }), "dateImported", "asc"))).toEqual(["b", "c"]);
+    expect(ids(visiblePhotos(photos, filter({ edited: "unedited" }), "dateImported", "asc"))).toEqual(["a", "d"]);
+  });
+
+  it("combines the Edited filter with the others", () => {
+    expect(ids(visiblePhotos(photos, filter({ edited: "edited", flag: "pick" }), "dateImported", "asc"))).toEqual(["b"]);
+    expect(ids(visiblePhotos(photos, filter({ edited: "unedited", flag: "pick" }), "dateImported", "asc"))).toEqual(["d"]);
+  });
+
+  it("sorts by when each edit last changed, the never-edited counting as oldest", () => {
+    expect(ids(visiblePhotos(photos, NO_FILTER, "dateEdited", "desc"))).toEqual(["c", "b", "d", "a"]);
+    expect(ids(visiblePhotos(photos, NO_FILTER, "dateEdited", "asc"))).toEqual(["a", "d", "b", "c"]);
+  });
+
+  it("says when the order reads edit times", () => {
+    expect(readsEditTimes(NO_FILTER, "dateImported")).toBe(false);
+    expect(readsEditTimes(NO_FILTER, "dateEdited")).toBe(true);
+    expect(readsEditTimes(filter({ edited: "unedited" }), "filename")).toBe(true);
+  });
+
+  it("places a dropped photo by its edit time", () => {
+    const shown = visiblePhotos(photos, filter({ edited: "edited" }), "dateEdited", "desc");
+    h.edits.set("a", 700);
+    expect(placeAmongShown(photos, photos[0], shown, "dateEdited", "desc", null)).toBe(1);
   });
 });
 

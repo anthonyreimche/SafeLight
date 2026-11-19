@@ -28,13 +28,13 @@ describe("guiUserData", () => {
     expect(guiUserData("darwin", {}, "/Users/ann")).toBe("/Users/ann/Library/Application Support/Safelight");
   });
 
-  it("follows XDG_CONFIG_HOME on Linux, else ~/.config", () => {
-    expect(guiUserData("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/ann")).toBe("/xdg/Safelight");
-    expect(guiUserData("linux", {}, "/home/ann")).toBe("/home/ann/.config/Safelight");
+  it("follows XDG_CONFIG_HOME on Linux, else ~/.config, in the lowercase folder the Linux app keeps", () => {
+    expect(guiUserData("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/ann")).toBe("/xdg/safelight");
+    expect(guiUserData("linux", {}, "/home/ann")).toBe("/home/ann/.config/safelight");
   });
 
   it("ignores a relative XDG_CONFIG_HOME, as the spec says", () => {
-    expect(guiUserData("linux", { XDG_CONFIG_HOME: "rel" }, "/home/ann")).toBe("/home/ann/.config/Safelight");
+    expect(guiUserData("linux", { XDG_CONFIG_HOME: "rel" }, "/home/ann")).toBe("/home/ann/.config/safelight");
   });
 
   it("uses SLU_USER_DATA when set", () => {

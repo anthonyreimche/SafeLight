@@ -22,7 +22,8 @@ Safelight stores everything inside the folder you edit:
 
 - **Folders panel** — the project's folder tree; click a folder to scope the grid to it. Folders can be renamed, moved, created, and deleted in place.
 - **Grid / List views** — toggle in the toolbar; the grid thumbnail size is adjustable with the slider or **- / =** (default in Preferences).
-- **Sorting** — by date imported, date created, filename, or rating, ascending or descending; your choice is remembered between sessions. Extensions can add more sort orders (e.g. by camera or lens).
+- **Edited photos** — a pencil (✎) in the corner of a thumbnail, in the grid and the Filmstrip, means you've edited that photo. Undo every step and it goes. Turn it off in Preferences ▸ Library ▸ **Mark edited photos**.
+- **Sorting** — by date imported, date created, date edited, filename, or rating, ascending or descending (date edited puts the photo you changed last first when descending, with photos never edited after them); your choice is remembered between sessions. Extensions can add more sort orders (e.g. by camera or lens).
 - **Metadata panel** — EXIF for the selected photo: camera, lens, focal length, aperture, shutter speed, ISO, capture date, and GPS if present.
 - **Keywords panel** — add and remove keyword tags on the selection, with suggestions from existing keywords.
 
@@ -49,7 +50,7 @@ Navigation follows the filtered, sorted grid, so it never lands on a hidden phot
 
 ### Filters
 
-The Filters panel narrows the grid by minimum rating (with a comparison operator), flag status, and colour label, with quick "All / Picks / Rejects" scopes. Extensions can add further filters (e.g. a text/EXIF search bar) that combine with the built-in ones; **Clear filters** resets them all.
+The Filters panel narrows the grid by minimum rating (with a comparison operator), flag status, colour label, and edits (only photos you've edited in Develop, or only those you haven't), with quick "All / Picks / Rejects" scopes. Extensions can add further filters (e.g. a text/EXIF search bar) that combine with the built-in ones; **Clear filters** resets them all.
 
 ## Develop Module
 
@@ -146,10 +147,11 @@ Library and Develop can each be detached into a separate OS window from the top 
 
 ### Preferences (Ctrl+,)
 
-Preferences is organized into sections: **Interface**, **Library**, **Rendering**, **Performance**, **Export**, **Shortcuts**, **Extensions**, **Updates**, and **About**.
+Preferences is organized into sections: **Interface**, **Library**, **Previews**, **File formats**, **Rendering**, **Performance**, **Export**, **Shortcuts**, **Extensions**, **Updates**, and **About**.
 
 - **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
-- **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
+- **Library** — default grid size, sort field/direction, edited marks and file type on thumbnails, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
+- **File formats** — the decoders that read each format, in the order they're tried. Safelight's own decoder (**Built-in**) comes first until you move another above it; each extension's decoder shows the extension's name. An extension can add a decoder for a format Safelight already reads, a RAW format included, and it joins the end of that format's list. A decoder that can't read a file passes it to the next one. Moving a decoder redoes the grid previews of that format's photos you haven't edited; a RAW's preview is redone only when previews are rendered from the RAW rather than taken from the camera.
 - **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Colour profile in System Settings instead and leave this empty (see the FAQ on oversaturated colours). **Graphics backend** picks how Safelight talks to the graphics card. Automatic tries this platform's backends in order and keeps the first that works. Pick another one (OpenGL, OpenGL ES or Vulkan on Linux; Direct3D 11, Direct3D 11 on 12 or OpenGL on Windows; Metal or OpenGL on macOS) to try it if photos draw slowly or wrongly on your driver. **SwiftShader (processor)**, and on Windows also **WARP (processor)**, draw on the processor: much slower, but they work in virtual machines such as VirtualBox and with drivers that can't run WebGL2. Every choice runs Safelight's WebGL2 engine; the choice is only what WebGL2 runs on. Automatic switches to software by itself when the graphics card can't run WebGL2 or its driver keeps crashing, and says which, here and in a notice at the bottom of the window. The notice's **Try the graphics card again** does the same as picking Automatic here. Changes apply when you restart Safelight: **Restart Safelight**, beside the note, here and in those notices, does it at once. After the restart a bar at the bottom of the window asks you to keep the new setting. **Go back**, or no answer within 20 seconds (say the window opens but stays empty), returns to the setting that last worked, as does a change that fails before you keep it; a notice then says which change went back and why.
 - **Performance** — **Integrated graphics** sets lighter settings in one click for laptops and other computers whose graphics share memory with the processor (Safelight names the graphics it found): a 2560 px render cap, a 256 MB GPU source cache, no neighbour prefetch and a histogram that waits for edits to settle. RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (2560/3072/4096/6144/8192 px, or Dynamic, the default: a 4096 px buffer, zoom measured against the photo's own pixels so 100% is one photo pixel per screen pixel, and for RAW photos the area in view sharpened from the original when you zoom past the buffer); GPU source-cache budget; neighbour prefetch; high bit-depth previews; live histogram; opening zoom.
 - **Export** — default format, TIFF and PNG bit depth, quality, long edge, colour space, metadata and location, and ZIP bundling. Export presets are saved from the Export panel, not here.
@@ -166,6 +168,7 @@ The built-in **Accessibility** extension (under **Extensions**) adds opt-in acco
 | Go to Library / Develop | **G / D** | General |
 | Open folder | **Ctrl+O** | General |
 | Hide/show all panels | **Tab** | General |
+| Reopen closed panel | **Ctrl+Shift+T** | General |
 | Fullscreen | **F** | General |
 | Preferences | **Ctrl+,** | General |
 | Extensions | **Ctrl+Shift+X** | General |

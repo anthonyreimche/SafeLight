@@ -172,7 +172,10 @@
             "ppm",
             "pgm",
             "pbm",
-            "pnm"
+            "pnm",
+            "heic",
+            "heif",
+            "hif"
           ],
           "name": "Photo",
           "role": "Editor",
@@ -265,6 +268,8 @@
         "image/x-portable-graymap",
         "image/x-portable-bitmap",
         "image/x-portable-anymap",
+        "image/heic",
+        "image/heif",
         "image/x-nikon-nef",
         "image/x-nikon-nrw",
         "image/x-canon-cr2",
@@ -369,6 +374,7 @@
     }
   },
   "dependencies": {
+    "libheif-js": "1.23.5",
     "utif2": "^4.1.0"
   }
 }

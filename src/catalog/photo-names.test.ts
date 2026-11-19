@@ -50,9 +50,15 @@ describe("isSupportedName", () => {
     for (const name of names) expect(isSupportedName(name), name).toBe(appIsSupportedName(name));
   });
 
-  it("refuses HEIC and HEIF, which the app doesn't take", () => {
-    expect(isSupportedName("a.heic")).toBe(false);
-    expect(isSupportedName("a.heif")).toBe(false);
+  it("takes HEIC and HEIF, Sony and Canon's .hif included", () => {
+    expect(isSupportedName("IMG_0001.HEIC")).toBe(true);
+    expect(isSupportedName("a.heif")).toBe(true);
+    expect(isSupportedName("C0001.HIF")).toBe(true);
+  });
+
+  it("refuses formats no decoder reads", () => {
+    expect(isSupportedName("a.jxl")).toBe(false);
+    expect(isSupportedName("a.gif")).toBe(false);
   });
 
   it("reaches no DOM module", () => {

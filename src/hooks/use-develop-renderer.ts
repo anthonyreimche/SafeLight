@@ -279,6 +279,7 @@ export function useDevelopRenderer(
   );
   const [cantShow, setCantShow] = useState<string | null>(null);
   const [settledReason, setSettledReason] = useState<string | null>(null);
+  const [sourceNotice, setSourceNotice] = useState<string | null>(null);
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
   const [availabilityReason, setAvailabilityReason] = useState<string | null>(null);
@@ -575,6 +576,7 @@ export function useDevelopRenderer(
     setLoading: setLoad,
     setCantShow,
     setSettledReason,
+    setSourceNotice,
     drawSourceRef,
   });
 
@@ -732,7 +734,7 @@ export function useDevelopRenderer(
 
   const label = useTierLabel(tier, loading, photo && `${photo.id}:${fileAccessNonce}`);
   const status =
-    cantShow ?? (label === "Preview" && settledReason ? `Preview (${settledReason})` : label);
+    cantShow ?? (label === "Preview" && settledReason ? `Preview (${settledReason})` : (label ?? sourceNotice));
 
   return {
     supported,

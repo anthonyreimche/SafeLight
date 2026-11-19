@@ -12,10 +12,11 @@ import type { CliEnv } from "./types";
 
 type EnvVars = Readonly<Record<string, string | undefined>>;
 
-// Electron names userData after package.json productName, which electron-builder
-// writes from build.productName. A development run (`electron .`) has none, so
-// it uses the lowercase `name`; that only differs on case-sensitive Linux.
+// The folder Electron names userData after. The Windows and macOS builds use
+// productName; the Linux AppImage keeps it in lowercase `safelight` (checked on
+// the 3.2.2 and 3.2.5 releases), which differs there as paths are case-sensitive.
 const APP_NAME = "Safelight";
+const LINUX_APP_NAME = "safelight";
 
 /** The installed app's userData folder: SLU_USER_DATA when set, else the folder
  *  Electron picks for this app on the platform. */
@@ -31,7 +32,7 @@ export function guiUserData(
   }
   if (platform === "darwin") return paths.join(home, "Library", "Application Support", APP_NAME);
   const xdg = env.XDG_CONFIG_HOME;
-  return paths.join(xdg && paths.isAbsolute(xdg) ? xdg : paths.join(home, ".config"), APP_NAME);
+  return paths.join(xdg && paths.isAbsolute(xdg) ? xdg : paths.join(home, ".config"), LINUX_APP_NAME);
 }
 
 function isSafelightPackage(file: string): boolean {

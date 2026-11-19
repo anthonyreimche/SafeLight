@@ -55,10 +55,10 @@ What doesn't come across: Lightroom's edits themselves. Lightroom's processing i
 If you ingest and cull with Photo Mechanic, keep doing that for now. Safelight doesn't yet:
 
 - copy from cards, make backups or rename files on ingest (it opens the folder the files are already in),
-- edit IPTC captions, copyright or metadata templates, or do code replacements,
+- do code replacements,
 - send files by FTP, or capture tethered.
 
-Ratings, labels, flags and keywords from Photo Mechanic come across through XMP sidecars with **XMP Tools**. Culling in Safelight is all keyboard (**1–5**, **P / X / U**, **6–9**, arrows), and **Delete from disk…** has no key until you give it one in **Preferences ▸ Shortcuts**.
+Ratings, labels, flags and keywords from Photo Mechanic come across through XMP sidecars with **XMP Tools**. For captions and IPTC, install **Advanced EXIF Tools**. Its Metadata tab edits creator, copyright, caption, headline, credit, rights, location and job fields across a selection. It saves metadata templates and fills in variables such as `{date}`, `{name}` and `{seq}` for each photo. It also reads the IPTC that Photo Mechanic already embedded in JPEGs. Turn on **Embed IPTC metadata** in the Export panel and exported JPEGs carry all of it as XMP and IPTC-IIM. Culling in Safelight is all keyboard (**1–5**, **P / X / U**, **6–9**, arrows), and **Delete from disk…** has no key until you give it one in **Preferences ▸ Shortcuts**.
 
 ## Working at volume
 

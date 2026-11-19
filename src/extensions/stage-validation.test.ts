@@ -816,3 +816,24 @@ describe("keepsDetail", () => {
     expect(checkStageContract(withFields({ phase: "decode", keepsDetail: "yes" })).error).toMatch(/keepsDetail must be true or false/);
   });
 });
+
+describe("plainSource", () => {
+  const atRest = { uniforms: [{ key: "on", glslType: "float", default: 0 }], dormantWhen: { on: 0 } };
+
+  it("takes true or false on a stage that says when it is at rest", () => {
+    expect(checkStageContract(withFields({ phase: "decode", ...atRest, plainSource: true })).error).toBeNull();
+    expect(checkStageContract(withFields({ phase: "decode", ...atRest, plainSource: false })).error).toBeNull();
+  });
+
+  it("refuses anything else", () => {
+    expect(checkStageContract(withFields({ phase: "decode", ...atRest, plainSource: 1 })).error).toMatch(
+      /plainSource must be true or false/,
+    );
+  });
+
+  it("refuses a stage without dormantWhen, which would take the baseline off every photo", () => {
+    expect(checkStageContract(withFields({ phase: "decode", plainSource: true })).error).toMatch(
+      /plainSource needs dormantWhen/,
+    );
+  });
+});

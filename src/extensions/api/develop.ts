@@ -79,8 +79,10 @@ export interface CanvasTool {
 /** "pre-output": the signed colour every stage has finished with, as the
  *  output stage receives it. "output": what the output stage makes of it in
  *  sRGB, in [0, 1]. "scene": the scene-linear colour the display transform
- *  receives, signed, before any display tool. */
-export type CapturePoint = "pre-output" | "output" | "scene";
+ *  receives, signed, before any display tool. "decode": the linear colour
+ *  the decode and noise-reduction stages leave, ahead of the built-in noise
+ *  reduction, white balance and every later tool (Safelight 3.2.6). */
+export type CapturePoint = "pre-output" | "output" | "scene" | "decode";
 
 export interface FloatCaptureOptions {
   /** Default linear Rec.709. */

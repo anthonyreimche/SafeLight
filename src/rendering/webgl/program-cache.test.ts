@@ -131,14 +131,17 @@ function fakeGl(link: () => void = () => {}, busyPolls?: number) {
   return { gl, sources, types, statusReads };
 }
 
-/** The fragment source createProgram hands the driver for `fsSrc`. */
-function compiledFragment(vsSrc: string, fsSrc: string): string {
+/** The source createProgram hands the driver for the shader of `type`. */
+function compiledShader(vsSrc: string, fsSrc: string, type: "vertex" | "fragment"): string {
   const { gl, sources, types } = fakeGl();
   createProgram(gl, vsSrc, fsSrc);
-  const fragment = [...sources].find(([shader]) => types.get(shader) === gl.FRAGMENT_SHADER);
-  if (!fragment) throw new Error("no fragment shader compiled");
-  return fragment[1];
+  const want = type === "vertex" ? gl.VERTEX_SHADER : gl.FRAGMENT_SHADER;
+  const shader = [...sources].find(([s]) => types.get(s) === want);
+  if (!shader) throw new Error(`no ${type} shader compiled`);
+  return shader[1];
 }
+
+const compiledFragment = (vsSrc: string, fsSrc: string) => compiledShader(vsSrc, fsSrc, "fragment");
 
 const count = (text: string, part: string) => text.split(part).length - 1;
 
@@ -169,6 +172,24 @@ describe("createProgram's fragment precision", () => {
   it("leaves a source that declares its sampler precision as it is", () => {
     const src = `${PASS_PRELUDE}uniform sampler2D uSrc;\nvoid main() { fragColor = texture(uSrc, vec2(0.0)); }\n`;
     expect(compiledFragment(PASS_VERTEX_SHADER, src)).toBe(src);
+  });
+
+  // A pass with a region declares the same samplers in its vertex program. A
+  // vertex sampler2D is lowp by default too, and Mesa's linker refuses a uniform
+  // whose precision differs between the two, used or not ("declarations for
+  // uniform `uPrevPass` have mismatching precision qualifiers"), so the pass
+  // never built under ANGLE's OpenGL ES backend on Linux.
+  it("declares it in a region pass's vertex program, so both programs' samplers agree", () => {
+    const regioned: ProcessingStageContribution = {
+      ...BLURRED,
+      passes: [{ glsl: "c = readPrev(vUv);", region: "return ivec4(0, 0, 4, 4);" }],
+    };
+    const pass = buildStageInjection([regioned], V2_VARIANT).prepass[0].passes[0];
+    if (!pass.vertexSource) throw new Error("a region pass has its own vertex program");
+    const vertex = compiledShader(pass.vertexSource, pass.fragmentSource, "vertex");
+    expect(vertex).toMatch(/\buniform sampler2D uPrevPass\b/);
+    expect(count(vertex, "precision highp sampler2D;")).toBe(1);
+    expect(vertex.split("\n").slice(0, 2)).toEqual(["#version 300 es", "precision highp sampler2D;"]);
   });
 });
 

@@ -38,6 +38,7 @@ export {
 } from "./dock/layouts";
 export type { UserLayout } from "./dock/layouts";
 export {
+  reopenClosedDockPanel,
   toggleDockPanel,
   toggleDockPanelFloating,
   toggleDockVisibility,

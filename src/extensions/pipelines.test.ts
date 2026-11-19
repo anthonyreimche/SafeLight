@@ -327,3 +327,32 @@ describe("resolving a tuned transform", () => {
     expect(resolvePipelineFor("test.same").sig).not.toBe(asParams);
   });
 });
+
+describe("a transform with a pre-pass", () => {
+  const PASS = { glsl: "c *= k;", uniforms: [{ key: "k", glslType: "float" as const, default: 1 }] };
+  const WITH = {
+    id: "test.prepass",
+    name: "Pre-pass",
+    glsl: "vec3 pipelineToDisplay(vec3 lin) { return slTransformPass; }",
+    prepass: { passes: [PASS], dormantWhen: { k: 0 } },
+  };
+
+  it("resolves with its passes and declares the result's global", () => {
+    registerPipeline("test", WITH);
+    const p = resolvePipelineFor(WITH.id);
+    expect(p.prepass).toEqual(WITH.prepass);
+    expect(p.uniformDecls).toContain("vec3 slTransformPass = vec3(0.0);");
+  });
+
+  it("signs a change of its passes apart", () => {
+    registerPipeline("test", WITH);
+    const before = resolvePipelineFor(WITH.id).sig;
+    registerPipeline("test", { ...WITH, prepass: { passes: [{ ...PASS, glsl: "c *= 2.0 * k;" }] } });
+    expect(resolvePipelineFor(WITH.id).sig).not.toBe(before);
+  });
+
+  it("leaves transforms without one as they were", () => {
+    expect(resolvePipelineFor(AGX.id).prepass).toBeUndefined();
+    expect(resolvePipelineFor(AGX.id).uniformDecls ?? "").not.toContain("slTransformPass");
+  });
+});

@@ -8,8 +8,9 @@ import { create } from "zustand";
 // Stage values the live view draws over the photo's own (api.develop
 // .setViewValues): view-only feedback an extension gives on its own stages,
 // such as a hovered layer's highlight. Never saved, undone or exported, and
-// not in thumbnails; a panel held off drops them with the rest of its stages'
-// values. Each extension sets its own, dropped when it stops.
+// not in thumbnails; a panel held off drops those it owns with the rest of
+// its values in the bag (panel-bypass.tsx). Each extension sets its own,
+// dropped when it stops.
 
 const EMPTY: Readonly<Record<string, unknown>> = Object.freeze({});
 

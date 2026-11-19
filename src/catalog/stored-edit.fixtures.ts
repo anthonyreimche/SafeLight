@@ -7,7 +7,7 @@
 // Develop (stored-edit, update-processing): a catalogue photo, snapshots in the
 // two shapes a stack can hold, and an in-memory catalogue storage.
 
-import { setCatalogStorage, type CatalogStorage } from "./storage";
+import { heldEditsChanged, setCatalogStorage, type CatalogStorage } from "./storage";
 import {
   CURRENT_PROCESS_VERSION,
   normalizeParams,
@@ -86,15 +86,18 @@ export function installMemoryStorage(...seed: EditState[]): MemoryEdits {
     putPhotos: async () => {},
     deletePhotos: async () => {},
     getEditState: async (id) => states.get(id),
+    heldEditState: (id) => states.get(id),
     putEditState: async (editState) => {
       states.set(editState.photoId, editState);
       edits.written.push(editState);
       edits.singles.push(editState);
+      heldEditsChanged(storage);
     },
     putEditStates: async (editStates) => {
       for (const editState of editStates) states.set(editState.photoId, editState);
       edits.written.push(...editStates);
       edits.batches.push([...editStates]);
+      heldEditsChanged(storage);
     },
   };
   setCatalogStorage(storage);

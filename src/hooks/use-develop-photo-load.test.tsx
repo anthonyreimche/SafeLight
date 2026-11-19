@@ -16,6 +16,9 @@ import { useDevelopStore } from "@/state/develop-store";
 import type { DevelopPicture } from "./use-develop-picture";
 import { useDevelopPhotoLoad, type PhotoLoadArgs } from "./use-develop-photo-load";
 import { dropInputProfiles, registerInputProfiles } from "@/catalog/input-profiles";
+import { dropImageDecoders, registerImageDecoder } from "@/catalog/image-decoders";
+import type { ImageDecoderContribution } from "@/extensions/api/library";
+import { useSettings } from "@/state/settings-store";
 
 // The essentials an edit needs: none, unless a test says so, so the extensions'
 // settling is all a photo can wait on.
@@ -100,6 +103,7 @@ beforeEach(() => {
     setLoading,
     setCantShow,
     setSettledReason: vi.fn(),
+    setSourceNotice: vi.fn(),
     drawSourceRef: { current: vi.fn() },
   };
   useExternalPluginsSettled.setState({ settled: true });
@@ -267,8 +271,60 @@ describe("useDevelopPhotoLoad before the extensions have settled", () => {
     }
   });
 
+  it("doesn't hold a HEIC, which input profiles don't read", async () => {
+    renderHook(() => useDevelopPhotoLoad({ ...args, photo: { ...PHOTO, filename: "p.heic" } }));
+    await settle();
+
+    expect(bindSource).toHaveBeenCalledOnce();
+  });
+
   it("doesn't hold a RAW whose edit needs nothing that is still to come", async () => {
     renderHook(() => useDevelopPhotoLoad({ ...args, photo: { ...PHOTO, filename: "p.nef" } }));
+    await settle();
+
+    expect(bindSource).toHaveBeenCalledOnce();
+  });
+});
+
+// A decoder the person put first for a format is an extension's, registered as
+// the app boots: a photo opened before then would decode with the next one.
+describe("useDevelopPhotoLoad before a decoder put first has registered", () => {
+  const HEIC = { ...PHOTO, filename: "p.heic", mimeType: "image/heic" };
+  const fast: ImageDecoderContribution = { id: "fast", label: "Fast", extensions: [".heic"], decode: async () => null };
+
+  beforeEach(() => {
+    bindSource.mockResolvedValue(true);
+    useExternalPluginsSettled.setState({ settled: false });
+    localStorage.clear();
+    useSettings.setState({ decoderOrder: { heif: ["ext.heic/fast", "heif"] } });
+  });
+
+  afterEach(() => {
+    dropImageDecoders("ext.heic");
+    useSettings.setState({ decoderOrder: {} });
+    useDisabledExtensions.setState({ ids: [] });
+  });
+
+  it("holds a photo of that format until the decoder registers", async () => {
+    renderHook(() => useDevelopPhotoLoad({ ...args, photo: HEIC }));
+    await settle();
+    expect(bindSource).not.toHaveBeenCalled();
+
+    act(() => registerImageDecoder("ext.heic", fast));
+    await settle();
+    expect(bindSource).toHaveBeenCalledOnce();
+  });
+
+  it("doesn't hold a photo of another format", async () => {
+    renderHook(() => useDevelopPhotoLoad(args));
+    await settle();
+
+    expect(bindSource).toHaveBeenCalledOnce();
+  });
+
+  it("doesn't hold it when the decoder's extension is turned off", async () => {
+    useDisabledExtensions.setState({ ids: ["ext.heic"] });
+    renderHook(() => useDevelopPhotoLoad({ ...args, photo: HEIC }));
     await settle();
 
     expect(bindSource).toHaveBeenCalledOnce();

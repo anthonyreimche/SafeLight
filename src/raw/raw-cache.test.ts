@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   /** What reached the cache worker, in the order it was sent. */
   sent: [] as string[],
+  /** The keys the worker was asked to delete. */
+  deleted: [] as string[],
   /** The worker cannot make a write: the disk or the storage quota is full. */
   refuseWrites: false,
   /** What the worker lists. */
@@ -36,7 +38,9 @@ vi.mock("./cache-bridge", () => ({
     h.reads.push([key, sample]);
     return null;
   },
-  workerDeleteCachedPreview: async () => {},
+  workerDeleteCachedPreview: async (key: string) => {
+    h.deleted.push(key);
+  },
   workerClearRawCache: async () => {
     if (h.clear instanceof Error) throw h.clear;
     return h.clear;
@@ -66,6 +70,7 @@ const pixels = () => new Float32Array(4);
 
 beforeEach(() => {
   h.sent = [];
+  h.deleted = [];
   h.refuseWrites = false;
   h.entries = [];
   h.entriesWritten = [];
@@ -82,6 +87,11 @@ describe("rawCacheKey", () => {
     expect(rawCacheKey("2026/DSCF2946.RAF", 31_457_280, 90)).toBe(
       "v6:2026/DSCF2946.RAF:31457280:90",
     );
+  });
+
+  it("adds the decoders that read the file only when an extension's leads", () => {
+    expect(rawCacheKey("a.NEF", 7, 0, "")).toBe("v6:a.NEF:7:0");
+    expect(rawCacheKey("a.NEF", 7, 0, "ext.raw/fast@1.2.0>libraw")).toBe("v6:a.NEF:7:0:ext.raw/fast@1.2.0>libraw");
   });
 });
 
@@ -222,6 +232,28 @@ describe("writeCachedPreview", () => {
   it("reports a write the worker had nowhere to put", async () => {
     h.stores = false;
     expect(await writeCachedPreview("k", pixels(), 1, 1, rawCacheGeneration())).toBe(false);
+  });
+});
+
+describe("writeCachedPreview and the verdicts struck against the photo", () => {
+  const strikes = (key: string, decoder: string) =>
+    ["unsupported", "suspicious"].flatMap((kind) => [`${kind}@${decoder}#1:${key}`, `${kind}@${decoder}#2:${key}`]);
+
+  it("clears libraw's under the key it writes", async () => {
+    await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, rawCacheGeneration());
+
+    expect(h.deleted.sort()).toEqual(strikes("v6:a.NEF:64:0", "libraw-0.22.1+1").sort());
+  });
+
+  it("clears the decoder's that made the entry, under the key markers are kept under", async () => {
+    const plain = "v6:a.NEF:64:0";
+
+    await writeCachedPreview(`${plain}:ext.raw/fast@1.2.0>libraw`, pixels(), 1, 1, rawCacheGeneration(), undefined, {
+      markerKey: plain,
+      decoder: "ext.raw/fast@1.2.0",
+    });
+
+    expect(h.deleted.sort()).toEqual(strikes(plain, "ext.raw/fast@1.2.0").sort());
   });
 });
 

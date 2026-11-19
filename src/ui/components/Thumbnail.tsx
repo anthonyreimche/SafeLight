@@ -6,10 +6,16 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { useEditedAt } from "@/catalog/edit-times";
+import { boundaryKey } from "@/extensions/guard";
+import { useThumbnailBadges } from "@/extensions/registry";
 import { useCatalogStore } from "@/state/catalog-store";
 import { revokePreviewUrl } from "@/state/preview-urls";
+import { useSettings } from "@/state/settings-store";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { Rating } from "./Rating";
 import { StackBadge } from "./StackBadge";
+import { ThumbnailBadge } from "./ThumbnailBadge";
 import { usePhotoOption } from "./use-photo-option";
 import { usePreviewFade } from "./use-preview-fade";
 import { usePreviewRequest } from "./use-preview-request";
@@ -109,6 +115,10 @@ function ThumbnailImpl({
   // opened folder loads on-screen thumbnails first instead of all of them up front.
   const cellRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
   const optionProps = usePhotoOption(cellRef, photo.id, selected, active, onDoubleClick);
+  const fileType = useSettings((s) => s.thumbnailFileType) ? fileTypeOf(photo.filename) : null;
+  const showEdited = useSettings((s) => s.thumbnailEdited);
+  const isEdited = useEditedAt(photo.id) !== undefined;
+  const badges = useThumbnailBadges();
 
   return (
     <div
@@ -153,17 +163,36 @@ function ThumbnailImpl({
         <div className="sl-breathe h-full w-full bg-surface-2" />
       )}
 
-      {(photo.flag === "pick" || photo.flag === "reject") && (
-        <div
-          role="img"
-          aria-label={isReject ? "Rejected" : "Pick"}
-          className={`absolute top-1 right-1 rounded bg-black/50 px-1 text-[10px] leading-tight ${
-            isReject ? "text-label-red" : "text-flag-pick"
-          }`}
-        >
-          {isReject ? "✕" : "⚑"}
-        </div>
-      )}
+      {/* Extension badges by order, then edited, the file type and the flag in the corner. */}
+      <div data-thumbnail-badges="" className="absolute top-1 right-1 flex items-start gap-0.5">
+        {badges.map(({ id, component: Badge }) => (
+          <ErrorBoundary
+            key={boundaryKey(id, Badge)}
+            what={`Thumbnail badge "${id}"`}
+            compact
+            className="rounded bg-black/50 px-1 text-[10px] leading-tight text-danger"
+          >
+            <Badge photo={photo} />
+          </ErrorBoundary>
+        ))}
+        {showEdited && isEdited && (
+          <ThumbnailBadge title="Edited">
+            <span aria-hidden="true">✎</span>
+          </ThumbnailBadge>
+        )}
+        {fileType && <ThumbnailBadge title={`${fileType} file`}>{fileType}</ThumbnailBadge>}
+        {(photo.flag === "pick" || photo.flag === "reject") && (
+          <div
+            role="img"
+            aria-label={isReject ? "Rejected" : "Pick"}
+            className={`rounded bg-black/50 px-1 text-[10px] leading-tight ${
+              isReject ? "text-label-red" : "text-flag-pick"
+            }`}
+          >
+            {isReject ? "✕" : "⚑"}
+          </div>
+        )}
+      </div>
 
       {photo.keywords.length > 0 && (
         <div
@@ -200,6 +229,12 @@ function ThumbnailImpl({
 }
 
 export const Thumbnail = memo(ThumbnailImpl);
+
+/** A file name's extension in capitals ("NEF", "JPG"), or null when it has none. */
+function fileTypeOf(filename: string): string | null {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 && dot < filename.length - 1 ? filename.slice(dot + 1).toUpperCase() : null;
+}
 
 const colorLabelClasses: Record<string, string> = {
   red: "bg-label-red",

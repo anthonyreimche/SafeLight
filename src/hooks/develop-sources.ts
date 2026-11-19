@@ -78,6 +78,17 @@ function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage)
 export function noteSource(bridge: RenderBridge, key: string, image: DecodedImage): void {
   notePreviewSource(bridge, key, image);
   noteStaleSource(bridge, key, image);
+  if (image.kind === "float16" && image.hdrShownAsSdr) hdrShownSources.add(key);
+  else hdrShownSources.delete(key);
+}
+
+// The keys of sources put in the GPU cache that are an HDR photo shown as SDR,
+// so one bound from there again still says so.
+const hdrShownSources = new Set<string>();
+
+/** Whether the source under `key` is an HDR photo shown as SDR. */
+export function shownAsSdr(key: string): boolean {
+  return hdrShownSources.has(key);
 }
 
 /** What the source under `key` fell back on when it was put in the GPU cache: undefined

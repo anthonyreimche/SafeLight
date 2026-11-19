@@ -47,6 +47,10 @@ interface PipelineContribution {
     uniforms: UniformDeclaration[];
     fn(values: Record<string, unknown>): Record<string, UniformValue>;
   };
+  prepass?: {                 // GPU passes over the transform's input (3.2.6)
+    passes: StagePass[];
+    dormantWhen?: Record<string, UniformValue>;
+  };
 }
 ```
 
@@ -56,6 +60,7 @@ interface PipelineContribution {
 - **Encoding out-of-range values.** `linearToSrgb()` is a display encode that clips: it clamps its input to 0..1 first, so highlights above 1.0 and anything below 0 are lost. Use it only for a final, display-bound value. To keep HDR highlights, use `linearToSrgbU()`, which clamps at 0 but lets values above 1.0 through (the curve continues past 1.0). To keep negative values too, which wide-gamut and noise-reduced pixels can have, use `slEncodePerceptual()` (version 2 photos only), which encodes the magnitude and keeps the sign. There is no signed variant that also works on version 1; copy the maths under your own name if you need one there.
 - **`params`** are float, int or bool settings stored per photo under `"{id}.{key}"`. Without `derive`, each is a uniform named by its key. Changing one never recompiles. Presets and copy/paste carry all of them. `api.pipelines.paramKeys(id)` lists them. Don't give a stage and a transform the same id: they share the bag.
 - **`derive`** computes uniforms from the params in JavaScript, for coefficients or matrices that are costly or precision-sensitive to compute in GLSL. It runs on the main thread, memoized. A throw or a bad result binds the uniforms' defaults.
+- **`prepass`** gives a transform a pixel's neighbourhood, for a local-contrast or detail term. Its passes run like a [stage's passes](#passes), only while the photo renders with this transform. The first draw reads `lin` as the transform receives it: linear Rec.709 after every edit and stage ahead of it, but before the core shoulder's path to white when the transform doesn't set `skipToneShoulder`. The last draw's rgb reaches `glsl` and `helpers` as the global `vec3 slTransformPass`, sampled at the pixel `pipelineToDisplay` is drawing. A pass uniform binds the bag's `"{id}.{key}"`, so a pass that declares a param's key reads that param; derived uniforms don't reach the passes. `dormantWhen` names the pass uniform values at which the passes change nothing: then no pass runs, the live view leaves them out of a version 2 photo's program, and `slTransformPass` holds no result, so read it only under the params that make the passes run. Without `dormantWhen` the passes run on every frame. A pass that fails to build, or that the GPU crash guard blames for a driver reset, takes the photo to the built-in transform until the transform is registered changed, as a transform whose own `glsl` fails does; the error is in the console. Don't name a param or derived uniform `stageResult` or `stageResultLayer` in a transform with a pre-pass. It needs Safelight 3.2.6: older builds don't declare `slTransformPass`, so the transform fails to compile there and renders with the built-in one.
 - Omit `glsl` to reuse the built-in transform with different flags. A transform that fails to compile renders with the built-in one and logs the error. Invalid fields refuse the registration, with the reason in the console. `params`, `helpers` and `derive` need Safelight 3.1.0.
 
 ## `ProcessingStageContribution` — GPU stage
@@ -92,6 +97,7 @@ interface ProcessingStageContribution {
   dormantWhen?: Record<string, number | number[] | boolean>; // 3.2.1, see below
   viewOnly?: boolean;         // 3.2.4: a view aid, see below
   keepsDetail?: boolean;      // 3.2.4: keeps Dynamic's detail on, see below
+  plainSource?: boolean;      // 3.2.6: the decode without the camera look, see below
 }
 
 interface UniformDeclaration {
@@ -315,6 +321,12 @@ A stage whose result keeps the photo's own detail in place, such as a chromatic-
 
 A stage is at work on a photo once the photo holds a value of its own that isn't zero or false and its passes draw. A stage with `dormantWhen` is at work while that rule doesn't hold. A stage that is only installed costs no photo its detail.
 
+### The decode as recorded: `plainSource`
+
+A RAW photo reaches the stages with Safelight's camera look already in it: the baseline tone (applied before the decode phase), the camera baseline after it (the refit, the maker's exposure offset and the camera match's Shadows lift), and channel reconstruction of clipped highlights. A stage whose maths needs the sensor's own values, such as a film negative inversion reading the film's densities, sets `plainSource: true`. While it is at work on a photo, that photo renders without all three, in Develop, thumbnails, exports, captures and every stage's passes; at rest, nothing changes.
+
+The stage must declare `dormantWhen`, which says when it is at rest; registration refuses it otherwise, because the stage would take the camera look off every photo. A stage whose `dormantWhen` is ignored (see above) never takes it off. Photos other than RAWs carry no baseline and render as before. Older builds ignore the field.
+
 ### View aids: `viewOnly`
 
 `viewOnly: true` makes a stage a view aid, such as a focus or exposure overlay, that is drawn only in the frames the live Develop view shows. Everything else draws the photo without it, whatever the bag holds: exports, thumbnails, `renderPhotoFrame` and the other headless renders, captures and float captures (unless `asShown`), probes and colour pickers, the histogram, Auto Tone, Auto White Balance and Upright.
@@ -454,13 +466,14 @@ interface GridFilterContribution {
   id: string;
   test(photo: CatalogPhoto): boolean; // false hides it from the grid and culling
   reads?: readonly (keyof CatalogPhoto)[]; // the photo fields test reads
+  readsEdits?: boolean;               // test calls api.catalog.editedAt (3.2.6)
   onClear?(): void;                   // called by Library "Clear filters"
 }
 ```
 
 Combined with the Library's own filters (AND). Re-register with the same id when your query changes.
 
-Set `reads` to the photo fields `test` reads, by their top-level name: `["keywords"]`, or `["exif"]` for anything inside `photo.exif`. The grid then filters and sorts again only when one of those fields changes on some photo, or when you register the filter again. Without it, every rating, flag, keyword and background metadata read runs the filter and the sort over the whole catalogue, which a large one feels on each key press. While your filter is off and `test` passes every photo, register it with `reads: []`. Data `test` reads from outside the photo (a collection's members, a keyword tree) is yours to follow: register again when it changes.
+Set `reads` to the photo fields `test` reads, by their top-level name: `["keywords"]`, or `["exif"]` for anything inside `photo.exif`. The grid then filters and sorts again only when one of those fields changes on some photo, or when you register the filter again. Without it, every rating, flag, keyword and background metadata read runs the filter and the sort over the whole catalogue, which a large one feels on each key press. While your filter is off and `test` passes every photo, register it with `reads: []`. Data `test` reads from outside the photo (a collection's members, a keyword tree) is yours to follow: register again when it changes. Edit times are the exception: set `readsEdits: true` when `test` calls `api.catalog.editedAt`, and the grid filters again each time an edit is stored.
 
 ## `LibrarySortContribution`
 
@@ -469,10 +482,35 @@ interface LibrarySortContribution {
   id: string; label: string;          // id is also the saved sort id
   compare(a: CatalogPhoto, b: CatalogPhoto): number; // ascending; the toolbar flips it
   reads?: readonly (keyof CatalogPhoto)[]; // the photo fields compare reads
+  readsEdits?: boolean;               // compare calls api.catalog.editedAt (3.2.6)
 }
 ```
 
-Adds an entry to the Library toolbar's sort menu. Set `reads` as for a grid filter: while your sort is the one in use, the grid then sorts again only when one of those fields changes.
+Adds an entry to the Library toolbar's sort menu. Set `reads` and `readsEdits` as for a grid filter: while your sort is the one in use, the grid then sorts again only when one of those fields changes, or an edit is stored.
+
+## `ThumbnailBadgeContribution`
+
+```typescript
+interface ThumbnailBadgeContribution {
+  id: string;
+  component: ComponentType<{ photo: CatalogPhoto }>; // null for a photo it doesn't mark
+  order?: number;                     // lower = further from the corner; default 100
+}
+```
+
+Draws a badge in the top-right corner of every Library grid and Filmstrip thumbnail, such as a duplicate, collection or location marker. Register it with `api.registerThumbnailBadge` and take it back with `api.unregisterThumbnailBadge(id)`. Core lays the badges out in one row, yours by `order`, then the edited pencil and the file type (Preferences ▸ Library ▸ Mark edited photos, Show file type on thumbnails) and the flag nearest the corner. Draw yours with [`components.ThumbnailBadge`](components.md#thumbnailbadge) so it matches them:
+
+```tsx
+api.registerThumbnailBadge({
+  id: "my-ext.gps",
+  component: ({ photo }) =>
+    photo.exif.gpsLatitude === undefined ? null : (
+      <api.components.ThumbnailBadge title="Has a location">GPS</api.components.ThumbnailBadge>
+    ),
+});
+```
+
+The component renders once per visible cell, so keep it cheap: read your own state through a hook that selects just this photo's answer. A badge that throws shows a "!" whose tooltip says why, and the cell carries on. Needs Safelight 3.2.6.
 
 ## `GridMenuItemContribution`
 

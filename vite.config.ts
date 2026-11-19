@@ -106,6 +106,9 @@ export default defineConfig({
         // is intentionally not matched here — it ships its own worker/.wasm.
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
+          // Reached only through a dynamic import (the HEIF workers carry their
+          // own copy): in "vendor" it would load with the app.
+          if (id.includes("libheif")) return "libheif";
           if (id.includes("dockview")) return "dockview";
           if (
             id.includes("react-dom") ||

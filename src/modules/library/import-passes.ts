@@ -17,8 +17,7 @@ import {
 } from "@/catalog/orient";
 import { isRawFile } from "@/raw/raw-preview";
 import type { DecodeRequest } from "@/raw/decode-pool";
-import { deleteCachedPreview, hasDecodeMarker } from "@/raw/raw-cache";
-import { photoCacheKey } from "@/raw/photo-cache-key";
+import { deletePhotoDecodes, unsupportedByEvery } from "@/raw/photo-cache-key";
 import { getSettings } from "@/state/settings-store";
 import { photoById, useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
 import { catalogStorage, type PutOptions } from "@/catalog/storage";
@@ -104,9 +103,8 @@ export async function repairMissingPreviews(
   for (const photo of todo) {
     if (signal?.aborted) return;
     try {
-      const key = photoCacheKey(photo);
       const raw = isRawFile({ name: photo.filename } as File);
-      if (raw && (await hasDecodeMarker(key, "unsupported"))) continue;
+      if (raw && (await unsupportedByEvery(photo))) continue;
       const file = await photo.fileHandle!.getFile();
       if (signal?.aborted) return;
       const bytes = await rawBytesOf(file);
@@ -426,7 +424,7 @@ export async function reimportPhotos(
       // decoder can't use the file, so the next Develop open re-decodes from
       // the current file. The key folds in fileSize, so a changed file already
       // misses — this also covers a same-size edit.
-      await deleteCachedPreview(photoCacheKey(photo));
+      await deletePhotoDecodes(photo);
 
       // Refresh file-derived metadata. Re-parse EXIF (date / orientation /
       // camera) and, for RAW, the frame size and as-shot WB (metadata-only).

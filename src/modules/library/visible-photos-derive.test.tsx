@@ -26,7 +26,10 @@ vi.mock("./visible-photos", async (importOriginal) => {
   };
 });
 
-import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
+import { installMemoryStorage, snapshot } from "@/catalog/stored-edit.fixtures";
+import { editedAt } from "@/catalog/edit-times";
+import { catalogStorage } from "@/catalog/storage";
+import type { EditState } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { registerGridFilter, registerLibrarySort, useRegistry } from "@/extensions/registry";
@@ -62,6 +65,13 @@ function photo(i: number): CatalogPhoto {
 }
 
 const preview = (): LoadedPreview => new Blob(["jpg"]);
+
+/** A photo's history with one step after the original, made at `timestamp`. */
+const edited = (photoId: string, timestamp: number): EditState => ({
+  photoId,
+  stack: [snapshot("Original", {}), { ...snapshot("Exposure", { exposure: 1 }), timestamp }],
+  currentIndex: 1,
+});
 
 const createObjectURL = URL.createObjectURL;
 const revokeObjectURL = URL.revokeObjectURL;
@@ -168,6 +178,73 @@ describe("visible photos derive", () => {
     });
     expect(result.current.find((p) => p.id === target)?.rating).toBe(5);
     expect(result.current[0].id).not.toBe(target);
+  });
+
+  it("re-derives once an edit is stored while the sort reads edit times", async () => {
+    installMemoryStorage();
+    useUIStore.setState({ sortField: "dateEdited", sortDirection: "desc" });
+    const { result } = renderHook(() => useVisiblePhotos());
+    await act(async () => {
+      await catalogStorage().putEditState(edited("p7", 5_000));
+    });
+    expect(result.current[0].id).toBe("p7");
+    expect(visibleList()[0].id).toBe("p7");
+  });
+
+  it("re-derives once an edit is stored while the Edited filter is on", async () => {
+    installMemoryStorage();
+    useUIStore.setState({ filter: { ...NO_FILTER, edited: "edited" } });
+    const { result } = renderHook(() => useVisiblePhotos());
+    expect(result.current).toEqual([]);
+    await act(async () => {
+      await catalogStorage().putEditState(edited("p3", 5_000));
+    });
+    expect(result.current.map((p) => p.id)).toEqual(["p3"]);
+  });
+
+  it("re-derives once an edit is stored while an extension filter says it reads edits", async () => {
+    installMemoryStorage();
+    registerGridFilter("acme", {
+      id: "acme.edited",
+      test: (p) => editedAt(p.id) !== undefined,
+      reads: [],
+      readsEdits: true,
+    });
+    const { result } = renderHook(() => useVisiblePhotos());
+    expect(result.current).toEqual([]);
+    await act(async () => {
+      await catalogStorage().putEditState(edited("p3", 5_000));
+    });
+    expect(result.current.map((p) => p.id)).toEqual(["p3"]);
+    expect(visibleList().map((p) => p.id)).toEqual(["p3"]);
+  });
+
+  it("re-derives once an edit is stored while an extension sort says it reads edits", async () => {
+    installMemoryStorage();
+    registerLibrarySort("acme", {
+      id: "acme.edited",
+      label: "Edited",
+      compare: (a, b) => (editedAt(a.id) ?? 0) - (editedAt(b.id) ?? 0),
+      reads: [],
+      readsEdits: true,
+    });
+    useUIStore.setState({ sortField: "acme.edited", sortDirection: "desc" });
+    const { result } = renderHook(() => useVisiblePhotos());
+    await act(async () => {
+      await catalogStorage().putEditState(edited("p9", 5_000));
+    });
+    expect(result.current[0].id).toBe("p9");
+  });
+
+  it("doesn't re-derive on an edit while nothing reads edit times", async () => {
+    installMemoryStorage();
+    renderHook(() => useVisiblePhotos());
+    const before = derives.count;
+    await act(async () => {
+      await catalogStorage().putEditState(edited("p7", 5_000));
+    });
+    visibleList();
+    expect(derives.count).toBe(before);
   });
 
   it("re-derives when a rebuild changes more than the preview", () => {

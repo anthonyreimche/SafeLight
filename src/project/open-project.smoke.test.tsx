@@ -204,20 +204,21 @@ describe("smoke: opening a folder of mixed files", () => {
     expect(state.openError).toBeNull();
     expect(state.opening).toBe(false);
     const names = useCatalogStore.getState().photos.map((p) => p.filename).sort();
-    expect(names).toEqual(["IMG_0001.CR2", LONG_NAME, "empty.jpg", "good.jpg", "good.png"].sort());
+    expect(names).toEqual(["IMG_0001.CR2", LONG_NAME, "empty.jpg", "good.jpg", "good.png", "phone.heic"].sort());
 
     expect(photo("good.jpg")?.decodeError).toBeUndefined();
     expect(photo("good.png")?.decodeError).toBeUndefined();
     expect(photo(LONG_NAME)).toMatchObject({ relPath: `trip/${LONG_NAME}`, width: 640 });
     expect(photo("empty.jpg")).toMatchObject({ width: 0, decodeError: "No decoder could read this file." });
     expect(photo("IMG_0001.CR2")).toMatchObject({ width: 0, decodeError: "This RAW file can't be decoded." });
+    expect(photo("phone.heic")).toMatchObject({ width: 0, decodeError: "This HEIC file can't be decoded." });
 
     const notice = state.storageNotice ?? "";
     expect(notice).toContain("The folder “locked” couldn't be read, so it was skipped.");
-    expect(notice).toContain("1 HEIC file was skipped — HEIC isn't supported yet.");
+    expect(notice).not.toMatch(/HEIC/);
     expect(notice).not.toMatch(/txt/i);
     expect(says(notice)).toBe(true);
-    expect(screen.getByText("5 photos in catalogue")).toBeTruthy();
+    expect(screen.getByText("6 photos in catalogue")).toBeTruthy();
     expect(state.tree?.children.find((c) => c.name === "locked")).toMatchObject({ unreadable: true });
 
     const saved = JSON.parse(fs.text(`${SL}/catalog.json`) ?? "null") as { photos: { filename: string }[] };

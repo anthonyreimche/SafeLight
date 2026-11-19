@@ -32,6 +32,9 @@ import type {
   SliderIconContribution,
   StylesheetContribution,
   ThemeContribution,
+  ThumbnailBadgeContribution,
+  TopBarButtonContribution,
+  WindowContribution,
 } from "./types";
 import {
   getAllDescriptors,
@@ -56,7 +59,9 @@ import { setStageViewValues } from "@/modules/develop/stage-view-values";
 import { dropBrushTips } from "@/rendering/brush-tip-registry";
 import { dropInputProfiles } from "@/catalog/input-profiles";
 import { dropLibrarySources } from "@/project/library-sources";
+import { dropImageDecoders } from "@/catalog/image-decoders";
 import { dropExtensionVariables } from "./variables-host";
+import { hideWindow, showWindow, useOpenWindow } from "./window-store";
 import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardCallback, guardExtension } from "./guard";
 import { forgetStartFailure } from "./start-failures";
 import { isPlainObject } from "@/project/fs";
@@ -114,10 +119,19 @@ export interface RegisteredPanelHeaderAccessory
 export interface RegisteredLibrarySort extends LibrarySortContribution {
   extensionId: string;
 }
+export interface RegisteredThumbnailBadge extends ThumbnailBadgeContribution {
+  extensionId: string;
+}
 export interface RegisteredStylesheet extends StylesheetContribution {
   extensionId: string;
 }
 export interface RegisteredModule extends ModuleContribution {
+  extensionId: string;
+}
+export interface RegisteredTopBarButton extends TopBarButtonContribution {
+  extensionId: string;
+}
+export interface RegisteredWindow extends WindowContribution {
   extensionId: string;
 }
 /** A console command as the registry holds it, keyed by its name (`id`). */
@@ -156,6 +170,8 @@ export interface RegistryState {
   panelHeaderAccessories: Record<string, RegisteredPanelHeaderAccessory>;
   /** Keyed by contribution id. Extra Library sort orders. */
   librarySorts: Record<string, RegisteredLibrarySort>;
+  /** Keyed by contribution id. Badges drawn on grid and Filmstrip thumbnails. */
+  thumbnailBadges: Record<string, RegisteredThumbnailBadge>;
   /** Keyed by contribution id, in registration order. CSS applied to every
    *  window after the core styles (see stylesheets.ts). */
   stylesheets: Record<string, RegisteredStylesheet>;
@@ -164,6 +180,10 @@ export interface RegistryState {
   modules: Record<string, RegisteredModule>;
   /** Keyed by command name. Console commands (api.commands). */
   commands: Record<string, RegisteredCommandEntry>;
+  /** Keyed by contribution id. Icon buttons in the main window's top bar. */
+  topBarButtons: Record<string, RegisteredTopBarButton>;
+  /** Keyed by contribution id. Window-style pop-ups (api.registerWindow). */
+  windows: Record<string, RegisteredWindow>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -183,9 +203,12 @@ export const useRegistry = create<RegistryState>(() => ({
   slots: {},
   panelHeaderAccessories: {},
   librarySorts: {},
+  thumbnailBadges: {},
   stylesheets: {},
   modules: {},
   commands: {},
+  topBarButtons: {},
+  windows: {},
 }));
 
 /** What each id-keyed registry map holds, before the registry stamps the
@@ -206,9 +229,12 @@ interface ContributionOf {
   slots: SlotContribution;
   panelHeaderAccessories: PanelHeaderAccessoryContribution;
   librarySorts: LibrarySortContribution;
+  thumbnailBadges: ThumbnailBadgeContribution;
   stylesheets: StylesheetContribution;
   modules: ModuleContribution;
   commands: CommandContribution & { id: string };
+  topBarButtons: TopBarButtonContribution;
+  windows: WindowContribution;
 }
 
 type IdKind = keyof ContributionOf;
@@ -256,6 +282,44 @@ function knownOwns(extensionId: string, c: PanelContribution): PanelContribution
   return c.owns.filter((k) => !unknown.includes(k));
 }
 
+/** `ownsBag` with the entries that aren't strings left out, with a warning. */
+function knownOwnsBag(extensionId: string, c: PanelContribution): PanelContribution["ownsBag"] {
+  const ownsBag: unknown = c.ownsBag;
+  if (ownsBag === undefined) return undefined;
+  if (!Array.isArray(ownsBag)) {
+    console.warn(`[extensions] ${extensionId}: panel "${c.id}" ownsBag isn't a list of param-bag keys; ignored`);
+    return undefined;
+  }
+  const keys = ownsBag.filter((k): k is string => typeof k === "string");
+  if (keys.length < ownsBag.length) {
+    console.warn(`[extensions] ${extensionId}: panel "${c.id}" ownsBag holds entries that aren't strings; ignored`);
+  }
+  return keys;
+}
+
+/** What is wrong with a top-bar button, or null. Its icon is drawn as a mask
+ *  from a data URL, so only inline svg markup is taken: never a URL to fetch. */
+function topBarButtonProblem(c: TopBarButtonContribution): string | null {
+  const label: unknown = c.label;
+  const svg: unknown = c.svg;
+  const onClick: unknown = c.onClick;
+  if (typeof label !== "string") return `top-bar button "${c.id}" has no label`;
+  if (typeof onClick !== "function") return `top-bar button "${c.id}" has no onClick function`;
+  if (typeof svg !== "string" || !svg.trim().startsWith("<svg")) return `top-bar button "${c.id}": svg isn't inline <svg> markup`;
+  return null;
+}
+
+/** What is wrong with a window, or null. */
+function windowProblem(c: WindowContribution): string | null {
+  const title: unknown = c.title;
+  const component: unknown = c.component;
+  if (typeof title !== "string") return `window "${c.id}" has no title`;
+  if (typeof component !== "function" && (typeof component !== "object" || component === null)) {
+    return `window "${c.id}" has no component`;
+  }
+  return null;
+}
+
 /** The official extension module `id` belongs to, if any: the list row
  *  without a built-in named "safelight.<id>" (Library, Develop). */
 function officialModuleOwner(id: ModuleId): string | undefined {
@@ -287,7 +351,8 @@ const derivesValues = (c: ProcessingStageContribution, extensionId: string): boo
 const KINDS: { [K in IdKind]: KindSpec<K> } = {
   panels: {
     call: "registerPanel",
-    vet: (extensionId, c, claim) => (claim() ? { ...c, owns: knownOwns(extensionId, c) } : null),
+    vet: (extensionId, c, claim) =>
+      claim() ? { ...c, owns: knownOwns(extensionId, c), ownsBag: knownOwnsBag(extensionId, c) } : null,
   },
   themes: {
     call: "registerTheme",
@@ -391,6 +456,7 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
   slots: { call: "registerSlot" },
   panelHeaderAccessories: { call: "registerPanelHeaderAccessory" },
   librarySorts: { call: "registerLibrarySort" },
+  thumbnailBadges: { call: "registerThumbnailBadge" },
   stylesheets: { call: "registerStylesheet" },
   modules: {
     call: "registerModule",
@@ -429,6 +495,28 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
         subcommands: (c.subcommands ?? []).map((s) => ({ name: s.name, summary: s.summary })),
         run: c.run,
       };
+    },
+  },
+  topBarButtons: {
+    call: "registerTopBarButton",
+    vet: (extensionId, c, claim) => {
+      const problem = topBarButtonProblem(c);
+      if (problem) {
+        console.warn(`[extensions] ${extensionId}: ${problem}; registerTopBarButton ignored`);
+        return null;
+      }
+      return claim() ? c : null;
+    },
+  },
+  windows: {
+    call: "registerWindow",
+    vet: (extensionId, c, claim) => {
+      const problem = windowProblem(c);
+      if (problem) {
+        console.warn(`[extensions] ${extensionId}: ${problem}; registerWindow ignored`);
+        return null;
+      }
+      return claim() ? c : null;
     },
   },
 };
@@ -480,8 +568,28 @@ function unregisterKind(kind: IdKind, extensionId: string, id: string): void {
   if (ownerOf(kind, id) === extensionId) dropEntry(kind, id);
 }
 
+/** unregisterKind for a call that refuses another extension's id out loud: it
+ *  stays, with a warning naming both. Returns whether `id` was removed. */
+function unregisterOwn(kind: IdKind, call: string, extensionId: string, id: string): boolean {
+  const holder = ownerOf(kind, id);
+  if (holder === undefined) return false;
+  if (holder !== extensionId) {
+    console.warn(`[extensions] ${extensionId}: "${id}" is registered by ${holder}; ${call} ignored`);
+    return false;
+  }
+  dropEntry(kind, id);
+  return true;
+}
+
 export function registerPanel(extensionId: string, c: PanelContribution): void {
   registerKind("panels", extensionId, c);
+}
+
+/** Remove panel `id` if `extensionId` registered it, as its extension being
+ *  disabled would: layouts keep the id, and registering it again puts it back
+ *  where it was. Returns whether it was removed. */
+export function unregisterPanel(extensionId: string, id: string): boolean {
+  return unregisterOwn("panels", "unregisterPanel", extensionId, id);
 }
 
 /** The name a panel goes by in the View menu and its dock header. An
@@ -750,6 +858,56 @@ export function registerPanelHeaderAccessory(
   registerKind("panelHeaderAccessories", extensionId, c);
 }
 
+export function registerTopBarButton(extensionId: string, c: TopBarButtonContribution): void {
+  registerKind("topBarButtons", extensionId, c);
+}
+
+export function unregisterTopBarButton(extensionId: string, id: string): void {
+  unregisterOwn("topBarButtons", "unregisterTopBarButton", extensionId, id);
+}
+
+/** Reactive, order-sorted list of the extension buttons in the top bar. */
+export function useTopBarButtons(): RegisteredTopBarButton[] {
+  return useRegistry(useShallow((s) => Object.values(s.topBarButtons).sort(byOrder)));
+}
+
+export function registerWindow(extensionId: string, c: WindowContribution): void {
+  registerKind("windows", extensionId, c);
+}
+
+/** Remove window `id` if `extensionId` registered it, closing it if open. */
+export function unregisterWindow(extensionId: string, id: string): void {
+  if (unregisterOwn("windows", "unregisterWindow", extensionId, id)) hideWindow(id);
+}
+
+/** Whether `extensionId` registered window `id`; a warning names the call
+ *  refused when it didn't. */
+function ownsWindow(extensionId: string, id: string, call: string): boolean {
+  const holder = ownerOf("windows", id);
+  if (holder === extensionId) return true;
+  console.warn(
+    holder === undefined
+      ? `[extensions] ${extensionId}: no window "${id}" is registered; ${call} ignored`
+      : `[extensions] ${extensionId}: "${id}" is registered by ${holder}; ${call} ignored`,
+  );
+  return false;
+}
+
+/** Open window `id`, closing any other extension window that is open. */
+export function openWindow(extensionId: string, id: string): void {
+  if (ownsWindow(extensionId, id, "windows.open")) showWindow(id);
+}
+
+export function closeWindow(extensionId: string, id: string): void {
+  if (ownsWindow(extensionId, id, "windows.close")) hideWindow(id);
+}
+
+export function toggleWindow(extensionId: string, id: string): void {
+  if (!ownsWindow(extensionId, id, "windows.toggle")) return;
+  if (useOpenWindow.getState().open === id) hideWindow(id);
+  else showWindow(id);
+}
+
 /** Reactive, order-sorted list of controls to render in every panel header. */
 export function usePanelHeaderAccessories(): RegisteredPanelHeaderAccessory[] {
   return useRegistry(useShallow((s) => Object.values(s.panelHeaderAccessories).sort(byOrder)));
@@ -786,6 +944,19 @@ export function registerLibrarySort(
 /** Reactive list of extension-contributed Library sort orders, for the toolbar. */
 export function useLibrarySorts(): RegisteredLibrarySort[] {
   return useRegistry(useShallow((s) => Object.values(s.librarySorts)));
+}
+
+export function registerThumbnailBadge(extensionId: string, c: ThumbnailBadgeContribution): void {
+  registerKind("thumbnailBadges", extensionId, c);
+}
+
+export function unregisterThumbnailBadge(extensionId: string, id: string): void {
+  unregisterKind("thumbnailBadges", extensionId, id);
+}
+
+/** Reactive, order-sorted list of the badges extensions draw on thumbnails. */
+export function useThumbnailBadges(): RegisteredThumbnailBadge[] {
+  return useRegistry(useShallow((s) => Object.values(s.thumbnailBadges).sort(byOrder)));
 }
 
 // ─── Catalogue hook emitters (called by core) ─────────────────────────────────
@@ -1005,6 +1176,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => dropBrushTips(id),
   (id) => dropInputProfiles(id),
   (id) => dropLibrarySources(id),
+  (id) => dropImageDecoders(id),
   (id) => dropExtensionVariables(id),
   (id) => forgetCallbackFailures(id),
   (id) => dropSubscriptions(id),
@@ -1026,6 +1198,8 @@ export function unregisterExtension(extensionId: string): void {
     owned.push(s.id);
   }
   unregisterExtensionParams(extensionId);
+  const openWindowId = useOpenWindow.getState().open;
+  if (openWindowId !== null && ownerOf("windows", openWindowId) === extensionId) hideWindow(openWindowId);
   useRegistry.setState((s) =>
     Object.fromEntries(SWEPT_MAPS.map((kind) => [kind, drop<{ extensionId: string }>(s[kind])])),
   );

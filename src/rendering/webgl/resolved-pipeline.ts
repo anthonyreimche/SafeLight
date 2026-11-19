@@ -3,6 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import type { TransformPrepass } from "@/extensions/types";
 import type { ContributedBinding } from "./stage-injection";
 
 export interface ResolvedPipeline {
@@ -17,6 +18,9 @@ export interface ResolvedPipeline {
   uniformDecls?: string;
   /** The bag key each of those uniforms binds from, and its default. */
   bindings?: readonly ContributedBinding[];
+  /** The transform's pre-pass, which the renderer runs as a stage of its own
+   *  while it draws with this pipeline (transform-prepass.ts). */
+  prepass?: TransformPrepass;
   /** Change signature the renderer caches its compiled programs and their
    *  flags by: it differs whenever the shader or either flag does. */
   sig: string;

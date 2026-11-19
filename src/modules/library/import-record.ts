@@ -7,6 +7,7 @@
 // file into a catalogue record with its grid preview, EXIF and orientation.
 
 import type { CatalogPhoto, ExifData, LoadedPreview } from "@/catalog/types";
+import { formatOf } from "@/catalog/image-decoders";
 import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
 import { bakeFor, orientationToRotation } from "@/catalog/orient";
 import {
@@ -37,6 +38,8 @@ const SUPPORTED_TYPES = new Set([
   "image/webp",
   "image/avif",
   "image/tiff",
+  "image/heic",
+  "image/heif",
 ]);
 
 const SUPPORTED_EXTENSIONS = new Set(Object.keys(photoTypes.standard));
@@ -132,6 +135,7 @@ export function decodeFailureReason(file: File, failure: DecodeFailure | null): 
       : "This RAW file couldn't be read this time.";
   }
   if (isTiffName(file.name)) return "This kind of TIFF file isn't supported.";
+  if (formatOf(file.name)?.id === "heif") return "This HEIC file can't be decoded.";
   return "No decoder could read this file.";
 }
 

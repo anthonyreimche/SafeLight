@@ -139,6 +139,7 @@ describe("clearing filters", () => {
       flag: "any",
       label: "any",
       keywords: [],
+      edited: "any",
     });
   });
 });

@@ -51,7 +51,7 @@ import {
   type StoredPhoto,
 } from "@/catalog/types";
 import { historyCursor } from "@/catalog/history-cursor";
-import type { CatalogStorage } from "@/catalog/storage";
+import { heldEditsChanged, type CatalogStorage } from "@/catalog/storage";
 import type { LoadedPreview } from "@/state/thumbnail-loader";
 import {
   broadcast,
@@ -1307,6 +1307,10 @@ export class ProjectStorage implements CatalogStorage {
     return this.photos.get(id);
   }
 
+  heldEditState(photoId: string): EditState | undefined {
+    return this.edits.get(photoId);
+  }
+
   /** The record this copy holds for `id`, shown or kept, as catalog.json stores it. */
   private heldRecord(id: string): StoredPhoto | undefined {
     const shown = this.photos.get(id);
@@ -1650,6 +1654,7 @@ export class ProjectStorage implements CatalogStorage {
       this.editStamps.set(editState.photoId, stamp);
       this.changedEdits.add(editState.photoId);
     }
+    heldEditsChanged(this);
     this.dirty = true;
     // Sent before the save lands, so the other windows hear of it at once.
     this.send({ edits: stored }, since);
@@ -1977,6 +1982,7 @@ export class ProjectStorage implements CatalogStorage {
       if (this.photos.has(id)) shown.edits.push(editState);
       changed = true;
     }
+    if (changed) heldEditsChanged(this);
     let shownFiles: Set<string> | null = null;
     for (const stored of records.photos) {
       const id = stored.id;

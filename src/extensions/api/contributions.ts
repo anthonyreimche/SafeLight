@@ -6,7 +6,7 @@
 // Extension contribution shapes: what a plugin registers through the SafelightAPI.
 
 import type { ComponentType } from "react";
-import type { BrushDab, ModuleId } from "@/catalog/types";
+import type { BrushDab, CatalogPhoto, ModuleId } from "@/catalog/types";
 
 export type { ModuleId };
 
@@ -77,10 +77,21 @@ export interface PanelContribution {
    *  user would expect the eye to hide, including another tool's that is
    *  meaningless without yours (Transform lists the crop, which is authored in
    *  the transformed frame). The extension's stage params stay as they are;
-   *  a panel without `owns` previews off by dropping them all. Keys that
-   *  aren't develop params are dropped at registration, with a warning. Older
-   *  builds ignore it. */
+   *  a panel without `owns` or `ownsBag` previews off by dropping them all.
+   *  Keys that aren't develop params are dropped at registration, with a
+   *  warning. Older builds ignore it. */
   owns?: readonly (keyof import("@/catalog/types").DevelopParams)[];
+  /** The param-bag keys this panel's effect lives in: an exact qualified key
+   *  ("my-ext.f.abc"), or a prefix ending in "." ("my-ext.f.abc.") for every
+   *  key under it. While the panel's preview-off eye is held, Develop draws
+   *  without those keys, in the photo's bag and in your view values alike, and
+   *  leaves your extension's other stage params as they are; with `owns` too,
+   *  both are previewed off. For an extension whose stages serve several
+   *  panels. An empty list says the panel has no effect of its own (a store or
+   *  a list beside your stages): it gets no eye, and holding nothing off. Entries
+   *  that aren't strings are dropped at registration, with a warning. Needs
+   *  Safelight 3.2.6. */
+  ownsBag?: readonly string[];
   /** A control rendered in the dock header to the left of the title (e.g. the
    *  per-panel bypass eye). Must handle its own clicks; the header swallows
    *  pointerdowns on buttons so it won't start a drag. */
@@ -262,6 +273,38 @@ export interface PipelineContribution {
    *  its uniforms' keys, and the params are values only. Needs Safelight
    *  3.1.0, like `params`. */
   derive?: TransformDerive;
+  /** GPU passes over the image as it enters the transform, for a transform
+   *  that needs a pixel's neighbourhood (a local-contrast or detail term).
+   *  Needs `glsl`, and Safelight 3.2.6: older builds don't declare the
+   *  result, so the transform fails to compile there and renders with the
+   *  built-in. Set the manifest's `minAppVersion` to "3.2.6". */
+  prepass?: TransformPrepass;
+}
+
+/** A display transform's pre-pass (PipelineContribution.prepass). The passes
+ *  run as a stage's do (StagePass), only while the photo renders with this
+ *  transform. Their first draw reads the image as the transform's `lin` holds
+ *  it: linear Rec.709, after every edit and stage ahead of the transform, but
+ *  before the core shoulder's path to white on a transform that doesn't set
+ *  `skipToneShoulder`. Their last draw's rgb reaches `glsl` and `helpers` as
+ *  the global `vec3 slTransformPass`, sampled at the pixel pipelineToDisplay
+ *  is drawing. While the passes don't run (dormantWhen holds) it holds no
+ *  result: read it only under the params that make them run. A pass uniform binds the
+ *  bag's "{transformId}.{key}", so a pass declaring a param's key reads that
+ *  param's value; derived uniforms don't reach the passes. A transform with a
+ *  pre-pass must not declare a param or derived key named `stageResult` or
+ *  `stageResultLayer`, which the result's sampler is named with. A pass that
+ *  fails to build, or that the GPU crash guard blames for a driver reset,
+ *  takes the photo to the built-in transform, as a transform whose own `glsl`
+ *  fails does. */
+export interface TransformPrepass {
+  passes: StagePass[];
+  /** When the passes change nothing, as ProcessingStageContribution.dormantWhen:
+   *  pass uniform key → value. While every listed uniform holds its value, no
+   *  pass draws, and the live view leaves them out of a process version 2 or
+   *  later photo's program. Read slTransformPass only when the passes ran:
+   *  gate it on the same params. */
+  dormantWhen?: Readonly<Record<string, UniformValue>>;
 }
 
 export interface TransformDerive {
@@ -981,6 +1024,18 @@ export interface ProcessingStageContribution {
    *  older builds ignore it. */
   keepsDetail?: boolean;
 
+  /** The stage needs the decode as the sensor recorded it, as a film negative
+   *  inversion does to read the film's densities. While the stage is at work
+   *  on a photo (its `dormantWhen` doesn't hold), the photo renders without
+   *  the baseline tone, the camera baseline after it (the refit, the maker's
+   *  exposure offset and the camera match's Shadows lift) and channel
+   *  reconstruction: in Develop, thumbnails, exports and captures alike, and
+   *  in every stage's passes. At rest, nothing changes. Needs `dormantWhen`
+   *  (registration refuses the stage without it). Only RAW photos carry a
+   *  baseline; other photos render as before. Needs Safelight 3.2.6; older
+   *  builds ignore it. */
+  plainSource?: boolean;
+
   /** How this stage's params behave in presets. "global" (the default) is a
    *  look that applies to any photo — e.g. a film sim or a curve — so it is
    *  offered when saving a preset and pre-selected when changed. "per-image" is
@@ -1142,6 +1197,10 @@ export interface GridFilterContribution {
    *  test that reads none, such as one that passes every photo while its filter
    *  is off. Left out, every change to any photo runs the filter again. */
   reads?: readonly (keyof import("@/catalog/types").CatalogPhoto)[];
+  /** Set when `test` calls api.catalog.editedAt: edit times are no photo field,
+   *  so `reads` can't name them, and the grid is filtered again each time an
+   *  edit is stored only while this is set. Needs Safelight 3.2.6. */
+  readsEdits?: boolean;
   /** Invoked by the Library "Clear filters" action so search clears too. */
   onClear?(): void;
 }
@@ -1167,6 +1226,9 @@ export interface LibrarySortContribution {
    *  "rating"). Declared, the grid is sorted again only when one of them changes
    *  on some photo; left out, every change to any photo sorts it again. */
   reads?: readonly (keyof import("@/catalog/types").CatalogPhoto)[];
+  /** Set when `compare` calls api.catalog.editedAt, as for a grid filter's
+   *  `readsEdits`. Needs Safelight 3.2.6. */
+  readsEdits?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,6 +1286,72 @@ export interface SlotContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Thumbnail badges (a marker in the corner of every grid and Filmstrip cell)
+// ---------------------------------------------------------------------------
+
+export interface ThumbnailBadgeProps {
+  /** The photo the cell shows. */
+  photo: CatalogPhoto;
+}
+
+/** A badge in the top-right corner of every Library grid and Filmstrip
+ *  thumbnail, beside the flag, such as a duplicate, collection or location
+ *  marker. `component` draws it for one photo, or returns null for a photo it
+ *  doesn't mark; draw it with `api.components.ThumbnailBadge` so it looks like
+ *  core's own. It renders once per visible cell, so keep it cheap, and read
+ *  your own state through a hook to redraw when that changes. Re-registering
+ *  the same id replaces it; disabling the extension removes it. Needs
+ *  Safelight 3.2.6. */
+export interface ThumbnailBadgeContribution {
+  /** Globally unique, e.g. "my-ext.duplicate". */
+  id: string;
+  component: ComponentType<ThumbnailBadgeProps>;
+  /** Place in the row, lower = further from the corner. Default 100; core's
+   *  file type and flag sit nearest the corner. */
+  order?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Top-bar buttons (an icon beside the built-in ones in the main window's bar)
+// ---------------------------------------------------------------------------
+
+/** An icon button in the main window's top bar, beside the built-in icons, e.g.
+ *  to open an extension's own store. Re-registering the same id replaces it;
+ *  disabling the extension removes it. Needs Safelight 3.2.6. */
+export interface TopBarButtonContribution {
+  /** Globally unique, e.g. "my-ext.store". */
+  id: string;
+  /** Tooltip and accessible name. */
+  label: string;
+  /** Inline `<svg…>` markup, drawn as a mask in the top bar's icon colour: its
+   *  shapes give the icon, their own colours are ignored. Anything else (a URL)
+   *  is refused at registration, with a warning. */
+  svg: string;
+  /** Called when the button is clicked. A throw is logged and the bar carries on. */
+  onClick(): void;
+  /** Sort position among extension buttons (lower = further left). Default 100. */
+  order?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Windows (a pop-up over the app, like the Extensions window)
+// ---------------------------------------------------------------------------
+
+/** A window-style pop-up an extension opens over the app, drawn like the
+ *  Extensions window: a dimmed backdrop, a titlebar to drag it by, and a close
+ *  button; Esc and a click outside close it. Needs Safelight 3.2.6. */
+export interface WindowContribution {
+  /** Globally unique, e.g. "gmic.store". */
+  id: string;
+  /** The titlebar's text. */
+  title: string;
+  /** The window's content. It fills the window below the titlebar and manages its own scrolling. */
+  component: ComponentType;
+  /** Offer Maximize/Restore beside the close button, as the Extensions window does. */
+  maximizable?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Panel header accessories (a control on EVERY panel's dock header)
 // ---------------------------------------------------------------------------
 
@@ -1236,7 +1364,8 @@ export interface PanelHeaderContext {
   /** The extension that registered the panel ("host"/"core.*" for built-ins). */
   extensionId: string;
   /** True when the develop renderer can preview this panel's effect off — i.e.
-   *  it governs core adjustments or its extension owns a GPU stage. False for
+   *  it governs core adjustments, declares `ownsBag`, or its extension owns a
+   *  GPU stage. False for
    *  panels with no image effect (Histogram, Edit, Presets), so a preview eye can
    *  hide itself there. */
   previewable: boolean;

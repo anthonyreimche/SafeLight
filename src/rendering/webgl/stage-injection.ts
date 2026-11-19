@@ -42,6 +42,7 @@ import type { DormantRule } from "./stage-coverage";
 import { V1_VARIANT, type ShaderVariant, type StageInjection } from "./shaders";
 import { sortStages } from "./stage-order";
 import { STAGE_ANCHORS, anchorOf, openAnchorOf } from "./stage-anchors";
+import { isTransformPrepass } from "./transform-prepass";
 import { laterLineReads, standIns } from "./core-reads";
 
 // ---------------------------------------------------------------------------
@@ -443,6 +444,9 @@ export interface PrepassStage {
   passesOf?: string;
   /** The stage's dormantWhen (dormantRule): its passes don't run while it holds. */
   dormant?: DormantRule;
+  /** A display transform's pre-pass (transform-prepass.ts): active on every
+   *  frame, bar while its dormantWhen holds. */
+  transformPrepass?: true;
   /** A view-only stage's (ProcessingStageContribution.viewOnly): its passes
    *  run only for a frame that draws view stages (PrepassFrame.viewStages). */
   viewOnly?: true;
@@ -1180,6 +1184,7 @@ function declarePrepass(
     ...(layerUniform ? { layerUniform } : {}),
     ...(passesOf ? { passesOf } : {}),
     ...(dormant ? { dormant } : {}),
+    ...(isTransformPrepass(s) ? { transformPrepass: true as const } : {}),
     ...(s.viewOnly === true ? { viewOnly: true as const } : {}),
     ...(input ? { inputSource: input.fragmentSource } : {}),
   });

@@ -19,6 +19,7 @@ import { DevToolsWindowHost } from "@/extensions/devtools/DevToolsWindowHost";
 import { AppShell } from "@/ui/components/AppShell";
 import { PreferencesDialog } from "@/ui/components/PreferencesDialog";
 import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
+import { ExtensionWindowHost } from "@/extensions/ExtensionWindowHost";
 import { ReportIssueDialog } from "@/ui/components/ReportIssueDialog";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ModuleView } from "@/ui/components/ModuleView";
@@ -93,6 +94,7 @@ export function App() {
         {renderModule(dm)}
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ExtensionWindowHost />
         <ReportIssueDialog />
         <ConfirmDialogHost />
         <BottomBanners />
@@ -119,6 +121,7 @@ export function App() {
         <SetupFlow />
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ExtensionWindowHost />
         <ReportIssueDialog />
         <ConfirmDialogHost />
         <BottomBanners />
@@ -141,6 +144,7 @@ export function App() {
         <SetupFlow />
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ExtensionWindowHost />
         <ReportIssueDialog />
         <ConfirmDialogHost />
         <BottomBanners />
@@ -154,6 +158,7 @@ export function App() {
       <SetupFlow />
       <PreferencesDialog />
       <ExtensionsDialog />
+      <ExtensionWindowHost />
       <ReportIssueDialog />
       <ConfirmDialogHost />
       <BottomBanners />

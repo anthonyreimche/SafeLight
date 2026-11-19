@@ -13,6 +13,7 @@ import { settings, type PrefSection } from "@/ui/preferences/section-model";
 const SORT_FIELDS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Date imported" },
   { value: "dateCreated", label: "Date created" },
+  { value: "dateEdited", label: "Date edited" },
   { value: "filename", label: "Filename" },
   { value: "rating", label: "Rating" },
 ];
@@ -65,6 +66,18 @@ export function LibrarySection() {
         hint="When a folder is selected, also show photos from its subfolders. Off shows only photos directly inside the selected folder."
         checked={s.showSubfolderPhotos}
         onChange={(v) => updateSettings({ showSubfolderPhotos: v })}
+      />
+      <ToggleField
+        label="Mark edited photos"
+        hint="Show a pencil on the thumbnails in the grid and the Filmstrip of photos you've edited. Undoing every edit takes it away."
+        checked={s.thumbnailEdited}
+        onChange={(v) => updateSettings({ thumbnailEdited: v })}
+      />
+      <ToggleField
+        label="Show file type on thumbnails"
+        hint="Mark each thumbnail in the grid and the Filmstrip with its file type, such as NEF, DNG or JPG, to tell a RAW from its JPEG at a glance."
+        checked={s.thumbnailFileType}
+        onChange={(v) => updateSettings({ thumbnailFileType: v })}
       />
       <ToggleField
         label="Confirm before removing photos"

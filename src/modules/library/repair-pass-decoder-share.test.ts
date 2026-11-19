@@ -42,6 +42,8 @@ vi.mock("./import-thumb-task", () => ({ createThumbnail: async () => new Blob(["
 vi.mock("./import-thumb-pool", () => ({ processThumb: async () => ({ ok: false }) }));
 
 vi.mock("@/raw/raw-cache", () => ({
+  DECODER_ID: "libraw",
+  decoderMarkerId: () => "libraw",
   cachedKeys: async () => new Set<string>(),
   cacheListing: async () => ({ done: new Set<string>(), stale: new Set<string>() }),
   deleteCachedPreview: async () => {},

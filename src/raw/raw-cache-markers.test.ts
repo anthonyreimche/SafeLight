@@ -245,6 +245,16 @@ describe("markers and the photo's preview", () => {
 
     expect(h.store.size).toBe(0);
   });
+
+  it("drops the markers of each decoder it is told of", async () => {
+    const cache = await strikeInNewSession();
+    await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), "ext.raw/fast@1");
+    await cache.markDecode(KEY, "suspicious", cache.rawCacheGeneration(), "ext.raw/fast@1");
+
+    await cache.deleteCachedPreview(KEY, [cache.DECODER_ID, "ext.raw/fast@1"]);
+
+    expect(h.store.size).toBe(0);
+  });
 });
 
 describe("hasDecodeMarker and cachedKeys", () => {
@@ -271,5 +281,46 @@ describe("hasDecodeMarker and cachedKeys", () => {
     const cache = await session();
 
     expect([...(await cache.cachedKeys())]).toEqual([OTHER]);
+  });
+});
+
+describe("markers of each decoder", () => {
+  const EXTENSION = "ext.raw/fast@1.2.0";
+
+  it("keeps libraw's under DECODER_ID and an extension decoder's under its id and version", async () => {
+    const { DECODER_ID, decoderMarkerId } = await session();
+    const decoder = { id: "fast", label: "Fast", extensions: [".nef"], decode: async () => null };
+    const extension = { id: "ext.raw/fast", owner: "ext.raw", label: "Fast", version: "1.2.0", formats: ["nef"], decoder };
+
+    expect(DECODER_ID).toBe("libraw-0.22.1+1");
+    expect(decoderMarkerId({ id: "libraw", owner: "core", label: "Built-in" })).toBe(DECODER_ID);
+    expect(decoderMarkerId(extension)).toBe(EXTENSION);
+  });
+
+  it("strikes and finds one decoder's verdict apart from another's", async () => {
+    let cache = await session();
+    await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), EXTENSION);
+    cache = await session();
+    await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), EXTENSION);
+
+    expect(await cache.hasDecodeMarker(KEY, "unsupported", EXTENSION)).toBe(true);
+    expect(await cache.hasDecodeMarker(KEY, "unsupported")).toBe(false);
+    expect(await cache.hasDecodeMarker(KEY, "unsupported", cache.DECODER_ID)).toBe(false);
+  });
+
+  it("names the decoder in the marker's key", async () => {
+    const cache = await session();
+
+    expect(cache.decodeMarkerKey(KEY, "unsupported", EXTENSION)).toContain(EXTENSION);
+    expect(cache.decodeMarkerKey(KEY, "unsupported", EXTENSION)).not.toBe(cache.decodeMarkerKey(KEY, "unsupported"));
+  });
+
+  it("leaves a photo an extension decoder gave up on off the list nothing needs decoding for", async () => {
+    let cache = await session();
+    await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), EXTENSION);
+    cache = await session();
+    await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), EXTENSION);
+
+    expect((await cache.cachedKeys()).has(KEY)).toBe(false);
   });
 });

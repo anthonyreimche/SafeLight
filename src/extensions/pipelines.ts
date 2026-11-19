@@ -20,6 +20,7 @@ import {
   uniformPrefix,
 } from "@/rendering/webgl/shader-compiler";
 import { BUILTIN_RESOLVED } from "@/rendering/webgl/builtin-pipeline";
+import { TRANSFORM_PASS_DECLARATION } from "@/rendering/webgl/transform-prepass";
 import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
 import { getParamDescriptor } from "./param-registry";
 import { bagDiffersFromDefault, useRegistry, type RegisteredPipeline } from "./registry";
@@ -59,7 +60,7 @@ function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline 
   if (!c?.glsl && !skipBaseCurve && !skipToneShoulder) return BUILTIN_RESOLVED;
   const flags = `${skipBaseCurve ? "b" : "-"}${skipToneShoulder ? "s" : "-"}`;
   const declared = c?.derive?.uniforms ?? c?.params ?? [];
-  if (!c?.glsl || (declared.length === 0 && !c.helpers)) {
+  if (!c?.glsl || (declared.length === 0 && !c.helpers && !c.prepass)) {
     const glsl = c?.glsl || null;
     return { id, glsl, skipBaseCurve, skipToneShoulder, sig: `${id}\n${flags}\n${glsl ?? ""}` };
   }
@@ -79,8 +80,14 @@ function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline 
     glslType: u.glslType,
     default: u.default,
   }));
-  const uniformDecls = declared.map((u) => emitUniformDecl(u, uPfx)).join("\n");
+  const prepass = c.prepass;
+  const uniformDecls = [
+    ...declared.map((u) => emitUniformDecl(u, uPfx)),
+    ...(prepass ? [TRANSFORM_PASS_DECLARATION] : []),
+  ].join("\n");
   const mode = derived ? "derive" : "params";
+  // The passes compile into programs of their own, so their text signs the pipeline too.
+  const passes = prepass ? `\n${JSON.stringify(prepass)}` : "";
   return {
     id,
     glsl,
@@ -88,7 +95,8 @@ function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline 
     skipToneShoulder,
     uniformDecls,
     bindings,
-    sig: `${id}\n${flags}\n${mode}\n${uniformDecls}\n${glsl}`,
+    ...(prepass ? { prepass } : {}),
+    sig: `${id}\n${flags}\n${mode}\n${uniformDecls}\n${glsl}${passes}`,
   };
 }
 

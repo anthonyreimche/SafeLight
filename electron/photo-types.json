@@ -10,7 +10,10 @@
     ".ppm": "image/x-portable-pixmap",
     ".pgm": "image/x-portable-graymap",
     ".pbm": "image/x-portable-bitmap",
-    ".pnm": "image/x-portable-anymap"
+    ".pnm": "image/x-portable-anymap",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".hif": "image/heif"
   },
   "raw": {
     ".nef": "image/x-nikon-nef",

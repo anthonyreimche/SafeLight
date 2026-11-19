@@ -134,7 +134,9 @@ export const useCursorStore = create<CursorState>(() => ({
 
 const urlCache = new Map<string, string>();
 
-function imageToUrl(image: string): string {
+/** An image as a CSS url: inline `<svg…>` markup as a data URL, anything else
+ *  as it is. */
+export function imageToUrl(image: string): string {
   const cached = urlCache.get(image);
   if (cached) return cached;
   const s = image.trim();

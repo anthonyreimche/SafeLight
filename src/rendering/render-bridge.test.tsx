@@ -1408,6 +1408,26 @@ describe("stage textures sent to the worker", () => {
     expect(patched).toBeLessThan(cmds.lastIndexOf("render"));
   });
 
+  // The live view's render goes in a microtask, ahead of the frame that posts the
+  // textures: a bag naming a variant set in the same task would draw it as black.
+  it("posts the textures set so far ahead of a render asked for before the frame", () => {
+    const bridge = getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    setStageTexture("acme.film.lut#r1", texture(1));
+    bridge.setContributedParams({ "acme.film.lut": "r1" });
+    bridge.render(false);
+    const cmds = worker.posted.map((m) => m.cmd);
+    const patched = cmds.indexOf("patchStageTextures");
+    expect(patched).toBeGreaterThan(-1);
+    expect(patched).toBeLessThan(cmds.lastIndexOf("render"));
+    expect(posts(worker)).toEqual([
+      { cmd: "patchStageTextures", set: { "acme.film.lut#r1": texture(1) }, remove: [] },
+    ]);
+
+    vi.advanceTimersToNextFrame();
+    expect(posts(worker)).toHaveLength(1);
+  });
+
   it("hands a new bridge the whole bag, and nothing it held back for the last one", () => {
     getRenderBridge();
     setStageTexture("acme.film.lut", texture(1));

@@ -16,8 +16,9 @@ import { bakeRotation, manualRotation, normalizeRotation, rotateFloatRGBA } from
 import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/raw/raw-preview";
-import { markDecode, rawCacheGeneration, writeCachedPreview } from "@/raw/raw-cache";
-import { photoCacheKey } from "@/raw/photo-cache-key";
+import { decoderMarkerId, hasDecodeMarker, markDecode, rawCacheGeneration, writeCachedPreview } from "@/raw/raw-cache";
+import { photoCacheKey, photoMarkerKey, rawDecoders, rawSignature } from "@/raw/photo-cache-key";
+import type { ChainEntry } from "./image-decoders";
 import { cutSourceSample } from "@/rendering/source-sample";
 import { getSettings } from "@/state/settings-store";
 import { rememberLearned, hasCameraMatch, learnedMatch } from "./decode-learned";
@@ -26,9 +27,16 @@ import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
 
 /** "refused": a write the cache could not take (the disk or the quota is full),
  *  which a pass counts to know when to stop. "nothing": a failed or rejected
- *  decode (marked as the pass marks them), an abandoned one, or a photo without
- *  a file. */
+ *  decode (marked as the pass marks them), an abandoned one, a photo without
+ *  a file, or one every decoder has failed on for good. */
 export type CacheFillResult = "taken" | "refused" | "nothing";
+
+/** Which of `decoders` have failed on the photo for good, by marker id. */
+async function ruledOutOf(markerKey: string, decoders: readonly ChainEntry[]): Promise<ReadonlySet<string>> {
+  const ids = decoders.map(decoderMarkerId);
+  const marked = await Promise.all(ids.map((id) => hasDecodeMarker(markerKey, "unsupported", id)));
+  return new Set(ids.filter((_, i) => marked[i]));
+}
 
 /** Decode the photo and write its cache entry, or mark what the decode showed.
  *  `generation` is the cache's when the work began (rawCacheGeneration), so the
@@ -44,6 +52,14 @@ export async function fillCacheEntry(
   // Background work never fetches a library source's original.
   if (isSourceFile(photo.fileHandle) && !(await sourceOriginalHeld(photo.fileHandle))) return "nothing";
   const key = photoCacheKey(photo);
+  // Markers are kept per decoder, under the key without the chain.
+  const markerKey = photoMarkerKey(photo);
+  const signature = rawSignature(photo);
+  // libraw's own marker, while it is the only decoder, keeps the photo out of
+  // the cache pass's list already.
+  const decoders = rawDecoders(photo);
+  const ruledOut = decoders.some((entry) => "decoder" in entry) ? await ruledOutOf(markerKey, decoders) : undefined;
+  if (ruledOut?.size === decoders.length) return "nothing";
   const file = await photo.fileHandle.getFile();
   if (signal?.aborted) return "nothing";
   // Read once for the decode and the preview it is judged against, and only
@@ -54,18 +70,29 @@ export async function fillCacheEntry(
   // Full size, not half: the entry's centre sample is read as native
   // resolution. The turn and the entry are made off this thread.
   const { rawCacheMaxEdge } = getSettings();
-  const turn = manualRotation(photo.rotation ?? 0, photo.exif?.orientation);
+  const orientation = photo.exif?.orientation;
+  const turn = manualRotation(photo.rotation ?? 0, orientation);
+  const asShotMultipliers = photo.exif?.asShotMultipliers;
   const f = await decodeRawToFloat(
     file,
-    { background: true, signal, cacheEdge: rawCacheMaxEdge, ...(turn ? { turn } : {}) },
+    {
+      background: true,
+      signal,
+      cacheEdge: rawCacheMaxEdge,
+      ...(turn ? { turn } : {}),
+      ...(orientation !== undefined ? { orientation } : {}),
+      ...(asShotMultipliers ? { asShotMultipliers } : {}),
+      ...(ruledOut ? { ruledOut } : {}),
+    },
     photo.relPath,
     read,
   );
   if (signal?.aborted) return "nothing";
+  // Only a failure that would recur is remembered; any other is retried on a
+  // later pass. A decoder that names none is libraw alone.
+  for (const decoder of f.unsupportedBy ?? []) await markDecode(markerKey, "unsupported", generation, decoder);
   if ("failure" in f) {
-    // Only a failure that would recur is remembered; any other is retried on
-    // a later pass.
-    if (f.failure === "unsupported") await markDecode(key, "unsupported", generation);
+    if (f.failure === "unsupported" && !f.unsupportedBy) await markDecode(markerKey, "unsupported", generation);
     return "nothing";
   }
 
@@ -81,16 +108,21 @@ export async function fillCacheEntry(
   bytes = undefined; // the whole file, held no longer than the preview needs it
   const { use, cache, match } = await acceptDecode(f, r, preview);
   if (signal?.aborted) return "nothing";
+  // Decoders that changed while the decode was asked for made a frame kept
+  // under neither their key nor these; a later pass decodes the photo again.
+  const keyed = (f.signature ?? "") === signature;
   // The camera match, as Develop's open learns it: most RAWs are decoded here
   // before they are first opened.
-  if (use && !hasCameraMatch(photo)) rememberLearned(photo, learnedMatch(match));
+  if (use && keyed && !hasCameraMatch(photo, signature)) rememberLearned(photo, learnedMatch(match, photo, signature));
   if (!cache) {
     // Either verdict would come out the same on every pass. A marginal decode
     // is still shown in Develop; a rejected one never is.
-    await markDecode(key, use ? "suspicious" : "unsupported", generation);
+    await markDecode(markerKey, use ? "suspicious" : "unsupported", generation, f.decoder);
     return "nothing";
   }
-  if (!(await writeCachedPreview(key, r.data, r.width, r.height, generation, f.entry))) return "refused";
+  if (!keyed) return "nothing";
+  const verdicts = f.decoder === undefined ? undefined : { markerKey, decoder: f.decoder };
+  if (!(await writeCachedPreview(key, r.data, r.width, r.height, generation, f.entry, verdicts))) return "refused";
   // A write dropped because the project changed meanwhile also answers true;
   // its photo is no longer any view's to update.
   if (rawCacheGeneration() === generation) {

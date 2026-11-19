@@ -123,7 +123,7 @@ const fourcc = (bytes: Uint8Array, at: number) =>
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-function readTagTable(bytes: Uint8Array, view: DataView, size: number): Map<string, Tag> | null {
+export function readTagTable(bytes: Uint8Array, view: DataView, size: number): Map<string, Tag> | null {
   const count = view.getUint32(128);
   if (132 + count * 12 > size) return null;
   const tags = new Map<string, Tag>();
@@ -136,7 +136,7 @@ function readTagTable(bytes: Uint8Array, view: DataView, size: number): Map<stri
   return tags;
 }
 
-function readXyz(bytes: Uint8Array, view: DataView, tag: Tag): Xyz | null {
+export function readXyz(bytes: Uint8Array, view: DataView, tag: Tag): Xyz | null {
   if (tag.size < 20 || fourcc(bytes, tag.offset) !== "XYZ ") return null;
   const at = tag.offset + 8;
   return [view.getInt32(at) / 65536, view.getInt32(at + 4) / 65536, view.getInt32(at + 8) / 65536];
@@ -146,7 +146,7 @@ function readXyz(bytes: Uint8Array, view: DataView, tag: Tag): Xyz | null {
 const PARA_PARAMS = [1, 3, 4, 5, 7];
 
 /** The tag's TRC as encoded → linear, or the reason it can't be read. */
-function readCurve(bytes: Uint8Array, view: DataView, tag: Tag): Curve | string {
+export function readCurve(bytes: Uint8Array, view: DataView, tag: Tag): Curve | string {
   const at = tag.offset;
   if (tag.size < 12) return PROFILE_ERROR.notIcc;
   const type = fourcc(bytes, at);

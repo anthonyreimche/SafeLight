@@ -10,10 +10,9 @@ import {
   isRawFile,
   sensorNativeImage,
 } from "@/raw/raw-preview";
-import { decodeNetpbm, isNetpbmName } from "@/raw/netpbm";
-import { decodeTiff, isTiffName } from "@/raw/tiff-image";
-import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
-import type { DecodeRequest } from "@/raw/decode-pool";
+import { decodeNetpbm } from "@/raw/netpbm";
+import { decodeTiff } from "@/raw/tiff-image";
+import { decodeRawToBitmap, decodeRawToFloat, type RawDecodeRequest } from "@/raw/decode";
 import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
 import { samplePreview, type PreviewSample } from "@/raw/preview-sample";
 import { halfLumaSamples } from "@/raw/camera-match";
@@ -31,6 +30,7 @@ import {
 } from "./orient";
 import { verifyPermission } from "./permissions";
 import {
+  decoderMarkerId,
   hasDecodeMarker,
   markDecode,
   rawCacheGeneration,
@@ -44,7 +44,18 @@ import type { CodeDecoder } from "@/raw/profile-frame";
 import { hasCameraMatch, learnedMatch, rememberLearned, rememberSourceFrame, type DecodeLearned } from "./decode-learned";
 import { inputProfileKey, resolveInputTransform } from "./input-profiles";
 import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
-import { photoCacheKey } from "@/raw/photo-cache-key";
+import { photoCacheKey, photoMarkerKey, rawDecoders, rawSignature } from "@/raw/photo-cache-key";
+import {
+  chainSignature,
+  decoderChain,
+  formatOf,
+  isExtensionEntry,
+  runExtensionDecoder,
+  UNNAMED_FORMAT_DECODER,
+  type ChainEntry,
+} from "./image-decoders";
+import { convertLinearFrame, decodeHeifFrame } from "@/raw/heif-bridge";
+import type { HalfFrame } from "@/raw/profile-frame";
 
 /** What a load settled on in place of the photo's own pixels, and why. */
 export interface Fallback {
@@ -90,10 +101,19 @@ const NOT_DECODED: Shortfall = { unsupported: false, timedOut: false };
 // Develop edits are parameters (not pixels), so only identity + baked rotation
 // change the decoded buffer. A rotation change re-decodes under a new key; the old
 // entry ages out via LRU. A non-RAW photo's pixels also depend on how its input
-// profile is read (input-profiles.ts), which a RAW's never do.
+// profile is read (input-profiles.ts), which a RAW's never do. A RAW's depend on
+// the decoders that read it once an extension's leads them (rawSignature).
 export function photoSourceKey(photo: CatalogPhoto): string {
   const key = `${photo.id}:${photo.rotation ?? 0}`;
-  return isRawFile({ name: photo.filename } as File) ? key : key + inputProfileKey(photo);
+  if (isRawFile({ name: photo.filename } as File)) {
+    const signature = rawSignature(photo);
+    return signature ? `${key}:d${signature}` : key;
+  }
+  const format = formatOf(photo.filename);
+  const signature = format ? chainSignature(format.id) : "";
+  const decoded = signature ? `${key}:d${signature}` : key;
+  const readsCodes = format === null || decoderChain(format.id).some((entry) => isCodeDecoder(entry.id));
+  return readsCodes ? decoded + inputProfileKey(photo) : decoded;
 }
 
 export interface LoadImageOptions {
@@ -132,25 +152,54 @@ export interface LoadImageOptions {
 }
 
 /** What to ask of the decode of `photo`'s RAW: the manual turns baked in, the
- *  cache entry built if this load will write one, and the edge it may stop at.
+ *  cache entry built if this load will write one, the edge it may stop at, the
+ *  photo's orientation and white balance when known, and the decoders to pass by.
  *  `cached`: the entry this load found for the photo, if any. */
 function decodeRequestFor(
   photo: CatalogPhoto,
   cached: CachedPreview | null,
   opts: LoadImageOptions | undefined,
-): DecodeRequest {
+  ruledOut: ReadonlySet<string> | undefined,
+): RawDecodeRequest {
   const { rawCacheEnabled, rawCacheMaxEdge } = getSettings();
   const cachedEdge = cached ? Math.max(cached.width, cached.height) : 0;
   const fills = rawCacheEnabled && (cached === null || cached.full === null || cachedEdge < rawCacheMaxEdge);
   const targetEdge = opts?.targetEdge;
-  const turn = manualRotation(photo.rotation ?? 0, photo.exif?.orientation);
+  const orientation = photo.exif?.orientation;
+  const turn = manualRotation(photo.rotation ?? 0, orientation);
+  const asShotMultipliers = photo.exif?.asShotMultipliers;
   return {
     background: opts?.background,
     signal: opts?.signal,
     ...(turn ? { turn } : {}),
     ...(fills ? { cacheEdge: rawCacheMaxEdge } : {}),
     ...(targetEdge ? { targetEdge } : {}),
+    ...(orientation !== undefined ? { orientation } : {}),
+    ...(asShotMultipliers ? { asShotMultipliers } : {}),
+    ...(ruledOut ? { ruledOut } : {}),
   };
+}
+
+/** What earlier sessions settled about the photo's RAW decoders. */
+interface Verdicts {
+  /** Every one has failed on the photo for good. */
+  unsupported: boolean;
+  /** Those that have, by marker id, once an extension's decoder is among them. */
+  ruledOut?: ReadonlySet<string>;
+}
+
+const NO_VERDICTS: Verdicts = { unsupported: false };
+
+/** The photo's decoders' final "unsupported" markers, kept under `markerKey`.
+ *  libraw's alone is asked as it always was. */
+async function verdictsOn(markerKey: string, decoders: readonly ChainEntry[]): Promise<Verdicts> {
+  if (!decoders.some((entry) => "decoder" in entry)) {
+    return { unsupported: await hasDecodeMarker(markerKey, "unsupported") };
+  }
+  const ids = decoders.map(decoderMarkerId);
+  const marked = await Promise.all(ids.map((id) => hasDecodeMarker(markerKey, "unsupported", id)));
+  const ruledOut = new Set(ids.filter((_, i) => marked[i]));
+  return { unsupported: ruledOut.size === ids.length, ruledOut };
 }
 
 // Paint the embedded preview (camera-rendered, decodes in ~1s) so the user sees
@@ -207,9 +256,14 @@ async function cameraPreview(
 }
 
 /** What the renderer adds with the camera baseline (baseline-tone.ts): the
- *  photo's camera match once it has one, else its maker's exposure offset. */
-function cameraBaseline(photo: CatalogPhoto): { baselineExposure?: number; baselineShadows?: number } {
-  const matched = photo.exif?.baselineExposure;
+ *  photo's camera match once it has one learned from the decoders `signature`
+ *  names, else its maker's exposure offset. */
+function cameraBaseline(
+  photo: CatalogPhoto,
+  signature: string,
+): { baselineExposure?: number; baselineShadows?: number } {
+  const learned = (photo.exif?.cameraMatchDecoders ?? "") === signature;
+  const matched = learned ? photo.exif?.baselineExposure : undefined;
   const ev =
     typeof matched === "number" ? matched : baselineExposureFor(photo.exif?.cameraMake, photo.exif?.cameraModel);
   const shadows = typeof matched === "number" ? (photo.exif?.baselineShadows ?? 0) : 0;
@@ -220,26 +274,27 @@ function cameraBaseline(photo: CatalogPhoto): { baselineExposure?: number; basel
  *  original's preview once and match the entry against it, so this open renders
  *  with it. An original out of reach leaves the maker's offset for now, and a
  *  later open asks again. */
-async function learnFromEntry(photo: CatalogPhoto, cached: CachedPreview): Promise<void> {
+async function learnFromEntry(photo: CatalogPhoto, cached: CachedPreview, signature: string): Promise<void> {
   if (!photo.fileHandle || !(await verifyPermission(photo.fileHandle))) return;
   try {
     const preview = await extractRawPreview(await photo.fileHandle.getFile());
     const match = preview ? await matchCameraPreview(halfLumaSamples(cached), preview) : undefined;
-    rememberLearned(photo, learnedMatch(match));
+    rememberLearned(photo, learnedMatch(match, photo, signature));
   } catch {
     // unreadable now: a later open asks again
   }
 }
 
 /** The cached entry as the renderer takes it: the decoded size and the sample
- *  only when the entry kept them (3.1.0 and later) and the load asked. */
-function float16Of(cached: CachedPreview, photo: CatalogPhoto): Float16Source {
+ *  only when the entry kept them (3.1.0 and later) and the load asked.
+ *  `signature`: what made the entry (rawSignature). */
+function float16Of(cached: CachedPreview, photo: CatalogPhoto, signature: string): Float16Source {
   const image: Float16Source = {
     kind: "float16",
     data: cached.data,
     width: cached.width,
     height: cached.height,
-    ...cameraBaseline(photo),
+    ...cameraBaseline(photo, signature),
   };
   if (cached.full) {
     image.fullWidth = cached.full.width;
@@ -250,14 +305,16 @@ function float16Of(cached: CachedPreview, photo: CatalogPhoto): Float16Source {
 }
 
 /** Ask for the entry's rewrite unless the decoder already failed on the photo
- *  or doubted it, which would only mark it again. Settles behind the caller. */
+ *  or doubted it, which would only mark it again. Settles behind the caller.
+ *  An entry old enough to need it was written while libraw led, so libraw's
+ *  markers (under `markerKey`) are the ones asked. */
 function completeUnlessMarked(
   photo: CatalogPhoto,
-  cacheKey: string,
+  markerKey: string,
   generation: number,
-  unsupported: Promise<boolean> = hasDecodeMarker(cacheKey, "unsupported"),
+  unsupported: Promise<boolean> = hasDecodeMarker(markerKey, "unsupported"),
 ): void {
-  void Promise.all([unsupported, hasDecodeMarker(cacheKey, "suspicious")]).then(
+  void Promise.all([unsupported, hasDecodeMarker(markerKey, "suspicious")]).then(
     ([isUnsupported, isSuspicious]) => {
       if (!isUnsupported && !isSuspicious) completeCachedEntry(photo, generation);
     },
@@ -287,12 +344,13 @@ export async function loadPhotoImage(
   // through to the full decode below.
   const isRaw = isRawFile({ name: photo.filename } as File);
   const cacheKey = photoCacheKey(photo);
+  const markerKey = photoMarkerKey(photo);
+  const signature = isRaw ? rawSignature(photo) : "";
   const cacheGeneration = rawCacheGeneration();
-  // Whether the decoder has already failed on this RAW for good. Asked along
+  // Which of its decoders have already failed on this RAW for good. Asked along
   // with the cache read, so a miss doesn't wait on a second round trip.
-  const unsupportedLookup = isRaw
-    ? hasDecodeMarker(cacheKey, "unsupported")
-    : Promise.resolve(false);
+  const verdicts = isRaw ? verdictsOn(markerKey, rawDecoders(photo)) : Promise.resolve(NO_VERDICTS);
+  const unsupportedLookup = verdicts.then((v) => v.unsupported);
   const cached = isRaw ? await readCachedPreview(cacheKey, { sample: opts?.sample }) : null;
   if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
     // An entry from before 3.1.0 kept neither the decoded size nor the centre
@@ -302,10 +360,10 @@ export async function loadPhotoImage(
     // open photo's out of the waiting slot, and the neighbour is refreshed when
     // it is shown (refreshStaleSource).
     if (opts?.sample && !opts.background && !cached.full) {
-      completeUnlessMarked(photo, cacheKey, cacheGeneration, unsupportedLookup);
+      completeUnlessMarked(photo, markerKey, cacheGeneration, unsupportedLookup);
     }
-    if (!hasCameraMatch(photo)) await learnFromEntry(photo, cached);
-    return float16Of(cached, photo);
+    if (!hasCameraMatch(photo, signature)) await learnFromEntry(photo, cached, signature);
+    return float16Of(cached, photo, signature);
   }
 
   const signal = opts?.signal;
@@ -327,7 +385,7 @@ export async function loadPhotoImage(
       else {
         // Such a RAW goes straight to its camera preview: the decode would only
         // fail again.
-        const unsupported = await unsupportedLookup;
+        const { unsupported, ruledOut } = await verdicts;
         if (unsupported) shortfall = { unsupported: true, timedOut: false };
 
         // Slow path: full libraw decode. Write result to cache asynchronously
@@ -341,20 +399,22 @@ export async function loadPhotoImage(
           cameraPreview(file, photo, opts?.onPreview, !unsupported && !opts?.background),
           unsupported
             ? null
-            : decodeRawToFloat(file, decodeRequestFor(photo, cached, opts), photo.relPath),
+            : decodeRawToFloat(file, decodeRequestFor(photo, cached, opts, ruledOut), photo.relPath),
         ]);
         const preview = camera?.blob ?? null;
-        // Kept for later opens and the background pass; an abandoned open
+        // Kept for later opens and the background pass, by the decoder they
+        // are about (libraw's when the decode names none); an abandoned open
         // settles nothing about the file.
-        const remember = (marker: DecodeMarker) => {
-          if (!signal?.aborted) void markDecode(cacheKey, marker, cacheGeneration);
+        const remember = (marker: DecodeMarker, decoder?: string) => {
+          if (!signal?.aborted) void markDecode(markerKey, marker, cacheGeneration, decoder);
         };
+        for (const decoder of f?.unsupportedBy ?? []) remember("unsupported", decoder);
         if (f && "failure" in f) {
           // Passed over (background work only): the file is being decoded for another
           // request, or gave no answer earlier this session. The camera's preview served
           // instead would stand for the photo where the caller keeps what it loads.
           if (f.passedOver) return null;
-          if (f.failure === "unsupported") remember("unsupported");
+          if (f.failure === "unsupported" && !f.unsupportedBy) remember("unsupported");
           shortfall = {
             unsupported: f.failure === "unsupported",
             timedOut: f.timedOut ?? false,
@@ -390,9 +450,14 @@ export async function loadPhotoImage(
           // through to the JPEG-based float path below. The same ruling keeps
           // marginal decodes out of the cache (see accept-decode.ts).
           const { use, cache, match } = await acceptDecode(f, r, preview, camera?.sample);
+          // Decoders that changed while the decode was asked for made a frame
+          // that is shown but kept under neither their key nor these.
+          const keyed = (f.signature ?? "") === signature;
           // A photo keeps the first match it learns, so its look doesn't move
           // between a cached open and a larger export's fresh decode.
-          if (use && !hasCameraMatch(photo)) Object.assign(learned, learnedMatch(match));
+          if (use && keyed && !hasCameraMatch(photo, signature)) {
+            Object.assign(learned, learnedMatch(match, photo, signature));
+          }
           rememberLearned(photo, learned);
           if (use) {
             // Write the cache when the photo has no entry yet, upgrade one
@@ -403,16 +468,17 @@ export async function loadPhotoImage(
             const cachedEdge = cached ? Math.max(cached.width, cached.height) : 0;
             const bestEdge = Math.min(getSettings().rawCacheMaxEdge, Math.max(r.width, r.height));
             const incomplete = cached !== null && cached.full === null;
-            if (cache && (cachedEdge < bestEdge || incomplete)) {
-              writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration, f.entry);
+            if (cache && keyed && (cachedEdge < bestEdge || incomplete)) {
+              const verdicts = f.decoder === undefined ? undefined : { markerKey, decoder: f.decoder };
+              writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration, f.entry, verdicts);
             }
-            if (!cache) remember("suspicious");
+            if (!cache) remember("suspicious", f.decoder);
             const full = fullFrame(f, r);
             rememberSourceFrame(photo, full.width, full.height);
-            return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo) };
+            return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo, signature) };
           }
           console.warn("[load] RAW colour mismatch vs embedded JPEG — using JPEG fallback");
-          remember("unsupported");
+          remember("unsupported", f.decoder);
           shortfall = {
             unsupported: true,
             timedOut: false,
@@ -425,7 +491,7 @@ export async function loadPhotoImage(
         // (smaller than the caller asked for): prefer it over the embedded
         // JPEG. It is the exact linear source Develop rendered the edit
         // against, so colours stay consistent even if resolution falls short.
-        if (cached) return float16Of(cached, photo);
+        if (cached) return float16Of(cached, photo, signature);
 
         // libraw failed or produced bad colors: fall back to the embedded JPEG
         // preview as an 8-bit bitmap. We deliberately do NOT route it through
@@ -452,11 +518,13 @@ export async function loadPhotoImage(
   }
   if (signal?.aborted) return null;
   if (original) {
-    const converted = await convertedImage(photo, original, opts);
-    if (converted) rememberSourceFrame(photo, converted.fullWidth ?? converted.width, converted.fullHeight ?? converted.height);
-    if (converted || signal?.aborted) return converted;
+    const own = await decodeNonRaw(photo, original, opts);
+    if (own?.kind === "float16") rememberSourceFrame(photo, own.fullWidth ?? own.width, own.fullHeight ?? own.height);
+    else if (own?.kind === "bitmap") rememberSourceFrame(photo, own.bitmap.width, own.bitmap.height);
+    if (own || signal?.aborted) return own;
   }
-  // The bitmap path reads a RAW's original again and decodes it outside the pool.
+  // The bitmap path reads a RAW's original again and decodes it outside the
+  // pool; for any other photo it is left with the stored preview.
   const loaded = await loadBitmap(photo, opts, original);
   if (!loaded) return null;
   const { bitmap, fallback } = loaded;
@@ -495,7 +563,7 @@ export async function refreshStaleSource(
   if (cached.full && cached.sample) {
     return { fullWidth: cached.full.width, fullHeight: cached.full.height, sample: cached.sample };
   }
-  if (!cached.full) completeUnlessMarked(photo, cacheKey, generation);
+  if (!cached.full) completeUnlessMarked(photo, photoMarkerKey(photo), generation);
   return null;
 }
 
@@ -520,10 +588,115 @@ export async function loadPhotoBitmap(
   return (await loadBitmap(photo))?.bitmap ?? null;
 }
 
-/** Which decoder reads a non-RAW file's own codes (profile-frame.ts). */
-function codeDecoderFor(file: File): CodeDecoder {
-  if (isNetpbmName(file.name)) return "netpbm";
-  return isTiffName(file.name) ? "tiff" : "browser";
+/** Core's decoders that read a non-RAW file's own 8-bit codes, which an input
+ *  profile can read instead (profile-frame.ts). */
+const CODE_DECODERS: ReadonlySet<string> = new Set<CodeDecoder>(["browser", "tiff", "netpbm"]);
+
+const isCodeDecoder = (id: string): id is CodeDecoder => CODE_DECODERS.has(id);
+
+
+/** A non-RAW photo's own pixels from the first of its format's decoders, in
+ *  the person's order, that reads `file`; null when none does. */
+async function decodeNonRaw(
+  photo: CatalogPhoto,
+  file: File,
+  opts: LoadImageOptions | undefined,
+): Promise<DecodedImage | null> {
+  const format = formatOf(file.name);
+  for (const entry of format ? decoderChain(format.id) : [UNNAMED_FORMAT_DECODER]) {
+    if (opts?.signal?.aborted) return null;
+    const decoded = await decodeNonRawWith(entry, photo, file, opts);
+    if (decoded) return decoded;
+  }
+  return null;
+}
+
+function displayReferred(frame: HalfFrame): Float16Source {
+  return {
+    kind: "float16",
+    data: frame.data,
+    width: frame.width,
+    height: frame.height,
+    fullWidth: frame.fullWidth,
+    fullHeight: frame.fullHeight,
+    displayReferred: true,
+  };
+}
+
+async function decodeNonRawWith(
+  entry: ChainEntry,
+  photo: CatalogPhoto,
+  file: File,
+  opts: LoadImageOptions | undefined,
+): Promise<DecodedImage | null> {
+  const background = opts?.background ?? false;
+  const signal = opts?.signal;
+  const rotation = photo.rotation ?? 0;
+  const targetEdge = opts?.targetEdge;
+  if (isExtensionEntry(entry)) {
+    const outcome = await runExtensionDecoder(entry, file, {
+      name: file.name,
+      ...(targetEdge ? { targetEdge } : {}),
+      fullSize: false,
+      background,
+      ...(signal ? { signal } : {}),
+    });
+    if (!outcome.ok) return null;
+    const image = outcome.image;
+    const turn = image.oriented ? manualRotation(rotation, photo.exif?.orientation) : rotation;
+    if (image.kind === "linear") {
+      const converted = await convertLinearFrame(image.data, image.width, image.height, {
+        ...(targetEdge ? { targetEdge } : {}),
+        turn,
+        background,
+        ...(signal ? { signal } : {}),
+      });
+      if (!converted.ok) return null;
+      const frame = displayReferred(converted.frame);
+      const full = fullFrame(
+        { ...image, halfSize: (image.sourceWidth ?? 0) > image.width },
+        { width: frame.width, height: frame.height },
+      );
+      return frame.fullWidth && full.width > frame.fullWidth
+        ? { ...frame, fullWidth: full.width, fullHeight: full.height }
+        : frame;
+    }
+    try {
+      const raw = await createImageBitmap(new ImageData(image.data, image.width, image.height));
+      const upright = await rotateBitmap(raw, turn);
+      if (upright !== raw) raw.close();
+      return { kind: "bitmap", bitmap: upright };
+    } catch {
+      return null;
+    }
+  }
+  if (entry.id === "heif") {
+    const decoded = await decodeHeifFrame(file, {
+      ...(targetEdge ? { targetEdge } : {}),
+      turn: manualRotation(rotation, photo.exif?.orientation),
+      background,
+      ...(signal ? { signal } : {}),
+    });
+    if (!decoded.ok) return null;
+    return decoded.hdr ? { ...displayReferred(decoded.frame), hdrShownAsSdr: true } : displayReferred(decoded.frame);
+  }
+  if (!isCodeDecoder(entry.id)) return null;
+  const converted = await convertedImage(photo, file, entry.id, opts);
+  if (converted || signal?.aborted) return converted;
+  try {
+    const raw =
+      entry.id === "netpbm"
+        ? await decodeNetpbm(file)
+        : entry.id === "tiff"
+          ? await decodeTiff(file)
+          : await createImageBitmap(await sensorNativeImage(file), { imageOrientation: "none" });
+    if (!raw) return null;
+    const upright = await rotateBitmap(raw, rotation);
+    if (upright !== raw) raw.close();
+    return { kind: "bitmap", bitmap: upright };
+  } catch {
+    return null;
+  }
 }
 
 /** A non-RAW photo read through the input profile resolver's transform, as
@@ -533,12 +706,12 @@ function codeDecoderFor(file: File): CodeDecoder {
 async function convertedImage(
   photo: CatalogPhoto,
   file: File,
+  decoder: CodeDecoder,
   opts: LoadImageOptions | undefined,
 ): Promise<Float16Source | null> {
   const transform = await resolveInputTransform(photo, file);
   if (!transform || opts?.signal?.aborted) return null;
   try {
-    const decoder = codeDecoderFor(file);
     const frame = await convertInputFrame(
       {
         source: decoder === "browser" ? await sensorNativeImage(file) : file,
@@ -574,7 +747,9 @@ async function readOriginal(photo: CatalogPhoto): Promise<File | null> {
   }
 }
 
-/** `held`: the original, already read by the caller. */
+/** A RAW's bitmap decode, or the stored preview of any photo. `held`: the
+ *  original, already read by the caller. A non-RAW photo's own decoders have
+ *  run by now (decodeNonRaw). */
 async function loadBitmap(
   photo: CatalogPhoto,
   opts?: LoadImageOptions,
@@ -604,14 +779,6 @@ async function loadBitmap(
             : null;
           fromPreview = raw !== null;
         }
-      } else if (isNetpbmName(file.name)) {
-        raw = await decodeNetpbm(file);
-      } else if (isTiffName(file.name)) {
-        raw = await decodeTiff(file);
-      } else {
-        raw = await createImageBitmap(await sensorNativeImage(file), {
-          imageOrientation: "none",
-        });
       }
 
       if (raw) {

@@ -7,7 +7,7 @@ import { useEffect } from "react";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
 import { detachedModule, reattachSelf } from "@/state/detach";
-import { moduleLabel } from "@/extensions/registry";
+import { moduleLabel, useTopBarButtons } from "@/extensions/registry";
 import { LoadingDots } from "./LoadingDots";
 import { ModuleTabs } from "./ModuleTabs";
 import { ViewMenu } from "./ViewMenu";
@@ -21,6 +21,8 @@ import { usePluginRunning } from "@/extensions/loader";
 import { DEVTOOLS_EXTENSION_ID } from "@/extensions/official-extensions";
 import { detachDevtools } from "@/extensions/devtools/detach";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
+import { guardCallback } from "@/extensions/guard";
+import { imageToUrl } from "@/state/cursor-store";
 
 const iconBtnCls =
   "rounded px-2 py-1 text-text-secondary transition-colors hover:text-text-primary";
@@ -89,6 +91,31 @@ function BlocksIcon() {
       <path d="M10 21V8a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H3" />
     </svg>
   );
+}
+
+/** An extension's svg drawn as a mask in the text colour, the size of the
+ *  built-in icons. The markup only ever reaches a data URL, never the page. */
+function ExtensionIcon({ svg }: { svg: string }) {
+  const mask = `url("${imageToUrl(svg)}") center / contain no-repeat`;
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block h-[15px] w-[15px]"
+      style={{ backgroundColor: "currentColor", mask, WebkitMask: mask }}
+    />
+  );
+}
+
+function ExtensionButtons() {
+  const buttons = useTopBarButtons();
+  return buttons.map((b) => {
+    const click = guardCallback(b.extensionId, "top-bar button", b.onClick, undefined, b);
+    return (
+      <button key={b.id} onClick={() => click()} title={b.label} aria-label={b.label} className={iconBtnCls}>
+        <ExtensionIcon svg={b.svg} />
+      </button>
+    );
+  });
 }
 
 const prefsButton = (
@@ -210,6 +237,7 @@ export function TopBar() {
             <BugIcon />
           </button>
         )}
+        <ExtensionButtons />
       </div>
       <div className="flex items-center gap-2" style={noDragStyle}>
         <EssentialsNotice />

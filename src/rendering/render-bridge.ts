@@ -765,9 +765,12 @@ export class RenderBridge {
   /** Draw a frame of the state the worker holds. While one is in flight only the
    *  newest request waits, asking for every histogram the requests it replaced asked
    *  for, and goes once the worker answers. Messages that set state still go at once,
-   *  so the worker has them before the render that waits. */
+   *  so the worker has them before the render that waits. The stage textures set
+   *  since the last frame go first too: a bag naming a variant set in the same
+   *  task would otherwise draw it with no data, as black. */
   render(wantHistogram = false, wantExtended = false) {
     flushStageSync();
+    flushStageTextures();
     this.mailbox.render(wantHistogram, wantExtended);
   }
 

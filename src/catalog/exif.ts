@@ -9,11 +9,13 @@ import {
   kelvinFromWhiteBalanceGains,
   whiteBalanceMultipliers,
 } from "@/rendering/blackbody";
+import { isHeifHead, readHeifExif, readHeifXmp } from "@/raw/heif-container";
 import type { ExifData } from "./types";
 
 // Lightweight, dependency-free EXIF reader. Handles JPEG (Exif APP1), TIFF-based
-// formats including RAW (NEF, DNG, CR2, ARW), and Fujifilm RAF, which keeps its
-// EXIF in the JPEG preview it embeds. We only read the tags the app surfaces;
+// formats including RAW (NEF, DNG, CR2, ARW), Fujifilm RAF, which keeps its
+// EXIF in the JPEG preview it embeds, and HEIF, which keeps it in an item
+// anywhere in the file. We only read the tags the app surfaces;
 // everything else is ignored. All parsing stays client-side.
 
 const MAX_BYTES = 1 << 20; // 1 MiB — EXIF/MakerNotes sit near the file start.
@@ -98,13 +100,25 @@ interface Entry {
   valueOffset: number; // offset of the inline value / value-pointer field
 }
 
+const readHead = async (blob: Blob): Promise<ArrayBuffer> =>
+  (blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob).arrayBuffer();
+
+/** The file's EXIF TIFF structure and where in `view` it starts. */
+async function locateTiff(blob: Blob): Promise<{ view: DataView; base: number } | null> {
+  const head = await readHead(blob);
+  if (isHeifHead(new Uint8Array(head))) {
+    const tiff = await readHeifExif(blob);
+    return tiff ? { view: new DataView(tiff.buffer), base: 0 } : null;
+  }
+  const view = new DataView(head);
+  const base = findTiffStart(view);
+  return base < 0 ? null : { view, base };
+}
+
 export async function parseExif(blob: Blob): Promise<ExifData> {
   try {
-    const slice = blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob;
-    const view = new DataView(await slice.arrayBuffer());
-    const base = findTiffStart(view);
-    if (base < 0) return {};
-    return parseTiff(view, base);
+    const tiff = await locateTiff(blob);
+    return tiff ? parseTiff(tiff.view, tiff.base) : {};
   } catch {
     return {};
   }
@@ -173,10 +187,9 @@ const HARVEST_MAX_VALUE = 8 << 10; // sanity cap; no relocatable tag is bigger
 
 export async function readExifEntries(blob: Blob): Promise<RawExifIfds | null> {
   try {
-    const slice = blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob;
-    const view = new DataView(await slice.arrayBuffer());
-    const base = findTiffStart(view);
-    if (base < 0) return null;
+    const tiff = await locateTiff(blob);
+    if (!tiff) return null;
+    const { view, base } = tiff;
     const le = view.getUint16(base, false) === 0x4949;
     if (view.getUint16(base + 2, le) !== 42) return null;
     const r: Reader = { view, base, le };
@@ -246,9 +259,12 @@ const XMP_JPEG_SIG = "http://ns.adobe.com/xap/1.0/\0"; // JPEG XMP APP1 header
 
 export async function parseXmp(blob: Blob): Promise<XmpData> {
   try {
-    const slice = blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob;
-    const view = new DataView(await slice.arrayBuffer());
-    const text = extractXmpText(view);
+    const head = await readHead(blob);
+    if (isHeifHead(new Uint8Array(head))) {
+      const xmp = await readHeifXmp(blob);
+      return xmp ? parseXmpText(new TextDecoder("utf-8").decode(xmp)) : {};
+    }
+    const text = extractXmpText(new DataView(head));
     return text ? parseXmpText(text) : {};
   } catch {
     return {};

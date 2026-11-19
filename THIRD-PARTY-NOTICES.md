@@ -36,6 +36,24 @@ and the above components, including the Emscripten build configuration used to
 produce the bundled `.wasm`, is available on request from
 **anthonyreimche@gmail.com**, and upstream at https://github.com/LibRaw/LibRaw.
 
+## HEIF/HEIC decoding — libheif and libde265 (via `libheif-js`)
+
+HEIF and HEIC photos are decoded by a WebAssembly build of **libheif**, the npm
+package **libheif-js** (`libheif-js/libheif-wasm/`, bundled into `dist/` in the
+HEIF decoder worker and a separate chunk). The WebAssembly module statically
+includes **libde265**, the HEVC decoder libheif uses. All three are licensed
+under the **GNU LGPL v3**; the license text ships with the package
+(`node_modules/libheif-js/LICENSE`, `libheif-wasm/LICENSE`).
+
+- libheif: Copyright (C) 2017-2024 Dirk Farin, struktur AG (https://github.com/strukturag/libheif). LGPL-3.0.
+- libde265: Copyright (C) 2013-2024 struktur AG, Dirk Farin (https://github.com/strukturag/libde265). LGPL-3.0.
+- libheif-js: Copyright (C) Kiril Vatev (https://github.com/catdad-experiments/libheif-js). LGPL-3.0.
+
+**Offer of source (LGPL §4):** the complete corresponding source for libheif,
+libde265 and libheif-js, including the Emscripten build used to produce the
+bundled `.wasm` (libheif-js and libheif 1.23.5), is available on request
+from **anthonyreimche@gmail.com**, and upstream at the repositories above.
+
 ## Desktop runtime — Electron / Chromium
 
 The desktop builds are distributed on top of **Electron**, which bundles

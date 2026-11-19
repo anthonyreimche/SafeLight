@@ -11,6 +11,8 @@ Where extension UI mounts in the app shell. For what goes inside, see [UI Compon
 | Per-mask panel | `registerPanel` with `mask` | The Masking panel's **+ Adjust** menu |
 | Header accessory | `registerPanelHeaderAccessory` | Every panel's dock header |
 | Slot | `registerSlot` | A fixed region of core chrome |
+| Top-bar button | `registerTopBarButton` | An icon in the main window's top bar |
+| Window | `registerWindow` | A pop-up over the app, like the Extensions window |
 | Layout | `registerLayout` | The Layout menu |
 
 ## Modules
@@ -61,6 +63,7 @@ interface PanelContribution {
   replaces?: readonly string[]; // old panel ids this one takes over
   onReset?: () => void;       // adds "Reset to defaults" to the header
   owns?: readonly (keyof DevelopParams)[]; // what the preview-off eye hides
+  ownsBag?: readonly string[];  // the bag keys it hides (3.2.6)
   headerAccessory?: ComponentType; // a control left of the title
   mask?: MaskPanelContribution;    // per-mask variant, see below
 }
@@ -77,7 +80,10 @@ Notes:
 - `onReset` should be one undoable action.
 - `replaces` is for a panel that moved, e.g. into another extension. Saved layouts naming an old id show this panel there once nothing else uses that id. Older builds ignore it, so no `minAppVersion` is needed.
 - A `headerAccessory` handles its own clicks. Clicks on a button in the header don't start a drag.
-- `owns` names the develop params your panel's effect is made of. While its preview-off eye is held, Develop draws the photo with them at their defaults, and the stored edit stays as it is. List every key the eye should hide, including another tool's that means nothing without yours: Transform lists the crop, since the crop is drawn in the transformed frame. A panel with `owns` gets the eye even without a stage of its own, and holding it leaves your extension's stage params alone; a panel without `owns` previews off by dropping all of them. Keys that aren't develop params are left out at registration, with a warning. Older builds ignore it.
+- `owns` names the develop params your panel's effect is made of. While its preview-off eye is held, Develop draws the photo with them at their defaults, and the stored edit stays as it is. List every key the eye should hide, including another tool's that means nothing without yours: Transform lists the crop, since the crop is drawn in the transformed frame. A panel with `owns` gets the eye even without a stage of its own, and holding it leaves your extension's stage params alone; a panel without `owns` or `ownsBag` previews off by dropping all of them. Keys that aren't develop params are left out at registration, with a warning. Older builds ignore it.
+- `ownsBag` (3.2.6) names the param-bag keys your panel's effect lives in, for an extension whose stages serve several panels: one panel per installed filter, say. Give an exact key (`"my-ext.f.abc"`) or a prefix ending in `.` (`"my-ext.f.abc."`) for every key under it. While the eye is held, Develop draws without those keys, from the photo's bag and from your `api.develop.setViewValues` alike, and leaves your other stage params as they are. A panel with both `owns` and `ownsBag` previews both off, and one with `ownsBag` gets the eye. An empty `ownsBag` says the panel has no effect of its own (a store or a list beside your stages): it gets no eye. Entries that aren't strings are left out at registration, with a warning. Older builds ignore it and drop all of your stage params.
+
+`api.unregisterPanel(id)` (3.2.6) removes a panel you registered, such as a filter's panel when the filter is uninstalled. The panel goes the way a disabled extension's does: saved layouts keep its id, so registering it again puts it back where it was, and meanwhile the dock shows the panel's spot as disabled or not installed, if it was open. Close it first with `api.dock.togglePanel(id)` if it shouldn't show there. A held preview-off eye on it lets go. Another extension's id is refused with a warning.
 
 To replace a stock panel, register your own and ask users to disable the built-in one in the Extensions dialogue.
 
@@ -171,6 +177,58 @@ interface SlotContribution {
 `api.unregisterSlot(id)` removes a slot contribution, e.g. a denoiser's `develop-detail` controls when it is off, so the built-in sliders return.
 
 `components.Slot` draws a slot's components wherever your own UI puts it. Its `fallback` (3.2.0) shows while the slot is empty: the Detail extension draws the built-in noise sliders as the `develop-detail` fallback.
+
+## Top-bar buttons (`registerTopBarButton`)
+
+An icon button in the main window's top bar, beside the built-in icons: the G'MIC extension's store opens from one. Needs Safelight 3.2.6.
+
+```typescript
+interface TopBarButtonContribution {
+  id: string;                 // globally unique, e.g. "my-ext.store"
+  label: string;              // tooltip and accessible name
+  svg: string;                // inline <svg …> markup
+  onClick(): void;
+  order?: number;             // lower = further left (default 100)
+}
+```
+
+The button looks and behaves like the built-in ones: same size, hover colour and tooltip. The icon is your svg's shapes filled with the bar's icon colour, so it follows the theme; colours in the markup are ignored. Draw it on a square `viewBox`; it is shown at 15 px. The markup is drawn as an image, never put into the page, and anything but inline `<svg` markup (a URL, say) is refused with a warning.
+
+`api.unregisterTopBarButton(id)` removes one you registered; another extension's id is refused with a warning. Re-registering an id replaces it, and disabling your extension removes its buttons. A throw from `onClick` is logged and the bar carries on. Pop-out windows don't show them.
+
+## Windows (`registerWindow`)
+
+A window is a pop-up over the app, drawn like the Extensions window: a dimmed backdrop, a titlebar you drag it by, and a close button. Esc or a click outside closes it. Use one for a page of its own that the user opens and puts away, such as a store; a panel suits something that stays beside the photo. The G'MIC extension's filter store opens in one, from its top-bar button. Needs Safelight 3.2.6.
+
+```typescript
+interface WindowContribution {
+  id: string;                 // globally unique, e.g. "my-ext.store"
+  title: string;              // the titlebar's text
+  component: ComponentType;   // the window's content
+  maximizable?: boolean;      // offer Maximize/Restore, as the Extensions window does
+}
+
+api.registerWindow({ id: "my-ext.store", title: "Filter store", component: Store, maximizable: true });
+api.registerTopBarButton({ id: "my-ext.store", label: "Filter store", svg, onClick: () => api.windows.toggle("my-ext.store") });
+```
+
+Registering a window doesn't show it. Open it with `api.windows`:
+
+| Call | What it does |
+|---|---|
+| `open(id)` | Opens the window, closing any other extension's window that is open |
+| `close(id)` | Closes it |
+| `toggle(id)` | Opens it if closed, closes it if open |
+| `isOpen(id)` | Whether it is open now (not reactive) |
+| `useOpen(id)` | React hook: whether it is open, re-rendering when that changes |
+
+One extension window is open at a time. These calls take your own windows only: another extension's id, or one nobody registered, is refused with a warning.
+
+Your component fills the window below the titlebar, at 960 × 640 or the whole app window when maximized, and manages its own padding and scrolling. Make its root a flex column (`flex min-h-0 flex-1 flex-col`) and give the part that scrolls `min-h-0 flex-1 overflow-y-auto`; content that simply runs long scrolls as a whole. A throw while it renders shows a crash notice inside the window instead of taking the app down.
+
+With `maximizable`, a Maximize button sits beside the close button and a titlebar double-click toggles it. Each window remembers whether it was maximized until Safelight restarts.
+
+Re-registering an id replaces the window, and an open one shows the new content. `api.unregisterWindow(id)` removes one you registered and closes it if open; another extension's id is refused with a warning. Disabling your extension removes its windows the same way. A window opens in the app window that asked for it: a pop-out module window shows its own.
 
 ## Layouts (`registerLayout`)
 

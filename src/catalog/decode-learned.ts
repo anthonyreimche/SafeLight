@@ -23,24 +23,29 @@ export type DecodeLearned = Partial<
     | "baselineExposure"
     | "baselineShadows"
     | "cameraMatchVersion"
+    | "cameraMatchDecoders"
   >
 >;
 
-/** Whether the photo has its camera match from the current version. An older
- *  one is learned again: the first held only an exposure, which left Active
- *  D-Lighting shots too bright in the highlights, and read the scene down a
- *  few columns of some frame widths. */
-export function hasCameraMatch(photo: CatalogPhoto): boolean {
-  return photo.exif?.cameraMatchVersion === CAMERA_MATCH_VERSION;
+/** Whether the photo has its camera match from the current version, learned
+ *  from the decoders that read it now (`signature`: image-decoders.ts
+ *  chainSignature). An older one is learned again: the first held only an
+ *  exposure, which left Active D-Lighting shots too bright in the highlights,
+ *  and read the scene down a few columns of some frame widths. So is one
+ *  learned from other decoders, whose frames differ from these. */
+export function hasCameraMatch(photo: CatalogPhoto, signature: string): boolean {
+  return photo.exif?.cameraMatchVersion === CAMERA_MATCH_VERSION && (photo.exif.cameraMatchDecoders ?? "") === signature;
 }
 
-/** A camera match as the photo keeps it: null for both when the decode found
- *  no usable match, so the maker table applies and it isn't sought again. */
-export function learnedMatch(match: CameraMatch | undefined): DecodeLearned {
+/** A camera match as the photo keeps it, learned from the decoders
+ *  `signature` names: null for both when the decode found no usable match, so
+ *  the maker table applies and it isn't sought again. */
+export function learnedMatch(match: CameraMatch | undefined, photo: CatalogPhoto, signature: string): DecodeLearned {
   return {
     baselineExposure: match?.exposure ?? null,
     baselineShadows: match?.shadows ?? null,
     cameraMatchVersion: CAMERA_MATCH_VERSION,
+    ...(signature || photo.exif?.cameraMatchDecoders !== undefined ? { cameraMatchDecoders: signature || undefined } : {}),
   };
 }
 

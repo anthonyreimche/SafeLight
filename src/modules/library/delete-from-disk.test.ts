@@ -29,6 +29,8 @@ vi.mock("@/project/native-fs", () => ({
 
 vi.mock("@/raw/raw-cache", () => ({
   deleteCachedPreview: h.deleteCachedPreview,
+  DECODER_ID: "libraw",
+  decoderMarkerId: () => "libraw",
   rawCacheKey: (relPath: string, fileSize: number, rotation = 0) =>
     `${relPath}|${fileSize}|${rotation}`,
 }));
@@ -142,7 +144,7 @@ describe("deletePhotosFromDisk", () => {
   it("purges the photo's raw-cache entry", async () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF", { rotation: 90 })];
     await deletePhotosFromDisk(["a"]);
-    expect(h.deleteCachedPreview).toHaveBeenCalledWith("a.NEF|25000000|90");
+    expect(h.deleteCachedPreview).toHaveBeenCalledWith("a.NEF|25000000|90", ["libraw"]);
   });
 
   it("removes trashed photos from the catalogue in batches as it goes, each once", async () => {

@@ -136,6 +136,11 @@ export interface DevelopState extends ViewSlice, MaskSlice {
    *  and redo show the step before or after. Does nothing for the step shown, an
    *  index outside the history or not a whole number, or while `editError` is set. */
   goToHistory: (index: number) => void;
+  /** Put the open photo's edit back to `edit` exactly, as one undoable step
+   *  named `label`: its settings, the process version it was made at and only
+   *  the extension values it holds. Settings an older edit lacks take their
+   *  defaults. Does nothing with no photo open or while `editError` is set. */
+  restoreEdit: (edit: Pick<EditSnapshot, "params" | "paramBag">, label: string) => Promise<void>;
   reset: () => Promise<void>;
   /** Move the open photo from the older processing to the current one, as one
    *  undoable step that keeps every other setting. Does nothing with no photo
@@ -215,7 +220,7 @@ function moveHistory(
 // With `live` (the look on screen, for a step on the same photo) every field and
 // mask that matches it stays the live object, so the renderer sees only what the
 // step changed: its sync diffs by identity, and a new masks array re-bakes them all.
-function lookOf(snapshot: EditSnapshot, live?: Look): Look {
+function lookOf(snapshot: Pick<EditSnapshot, "params" | "paramBag">, live?: Look): Look {
   const params = normalizeParams(snapshot.params);
   const paramBag = normalizeParamBag(snapshot.paramBag);
   if (!live) return { params, paramBag };
@@ -782,6 +787,18 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
 
   goToHistory(index) {
     moveHistory(get, set, index);
+  },
+
+  async restoreEdit(edit, label) {
+    if (!get().photoId || get().editError) return;
+    noteDiscreteChange();
+    set((s) => ({
+      ...lookOf(edit, s),
+      previewParams: null,
+      previewParamBag: null,
+      discreteEdits: s.discreteEdits + 1,
+    }));
+    await get().commitEdit(label);
   },
 
   async resetParams(keys, label) {

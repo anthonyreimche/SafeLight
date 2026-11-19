@@ -22,6 +22,16 @@ export interface RawFloatImage {
   sourceHeight?: number;
   turned?: number;           // clockwise degrees DecodeRequest.turn baked into `data` and its size
   entry?: EncodedEntry;      // with DecodeRequest.cacheEdge: the develop-preview cache entry for `data`
+  /** The decoder that made it, by the id its markers are kept under
+   *  (raw-cache.ts decoderMarkerId). Set only when an extension's decoder is
+   *  among the file's decoders: libraw's alone marks as DECODER_ID. */
+  decoder?: string;
+  /** Decoders tried before it that found nothing usable, by marker id. */
+  unsupportedBy?: string[];
+  /** The decoders the file was decoded by (image-decoders.ts chainSignature),
+   *  set only when an extension's leads them: a caller that keyed the photo
+   *  under other decoders keeps the frame but stores nothing it learned from it. */
+  signature?: string;
 }
 
 /**
@@ -44,4 +54,8 @@ export interface DecodeFailure {
    *  is running elsewhere or ran out of time. Nothing is wrong with the file,
    *  so nothing should stand in for its decode. */
   passedOver?: boolean;
+  /** The decoders that found nothing usable in the file, by marker id
+   *  (raw-cache.ts decoderMarkerId). Set only when an extension's decoder is
+   *  among the file's decoders; with libraw's alone, `unsupported` says it. */
+  unsupportedBy?: string[];
 }

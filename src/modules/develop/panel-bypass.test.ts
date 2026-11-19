@@ -89,6 +89,74 @@ describe("a panel that declares owns", () => {
   });
 });
 
+// One extension can run many panels off the same stage (a filter store whose
+// filters each get a panel), so a panel can name the bag keys its own effect
+// lives in and the eye hides only those.
+describe("a panel that declares ownsBag", () => {
+  const stage = { id: "gmic.f", extensionId: "gmic" } as RegisteredProcessingStage;
+  const withBagPanels = (...panels: RegisteredPanel[]) => ({
+    ...withPanels(...panels),
+    processingStages: { [stage.id]: stage },
+  });
+  const bagPanel = (id: string, ownsBag: readonly string[], owns?: RegisteredPanel["owns"]): RegisteredPanel => ({
+    ...panel(id, "gmic", owns),
+    ownsBag,
+  });
+  const bag = {
+    "gmic.f.abc.amount": 5,
+    "gmic.f.abc.mode": 2,
+    "gmic.f.abcd.amount": 3,
+    "gmic.f.def.amount": 7,
+    "gmic.f.order": ["abc", "def"],
+  };
+
+  it("drops only the keys under its prefixes and exact keys", () => {
+    const state = withBagPanels(bagPanel("gmic.abc", ["gmic.f.abc.", "gmic.f.order"]), bagPanel("gmic.def", ["gmic.f.def."]));
+    expect(bypassParamBag(bag, { "gmic.abc": true }, state)).toEqual({
+      "gmic.f.abcd.amount": 3,
+      "gmic.f.def.amount": 7,
+    });
+  });
+
+  it("leaves the bag alone while its eye isn't held", () => {
+    const state = withBagPanels(bagPanel("gmic.abc", ["gmic.f.abc."]));
+    expect(bypassParamBag(bag, { "gmic.abc": false }, state)).toBe(bag);
+  });
+
+  it("drops only its own keys from the extension's view values drawn over the bag", () => {
+    const state = withBagPanels(bagPanel("gmic.abc", ["gmic.f.abc."]));
+    const shown = { ...bag, "gmic.f.abc.highlight": 1, "gmic.f.def.highlight": 1 };
+    expect(bypassParamBag(shown, { "gmic.abc": true }, state)).toEqual({
+      "gmic.f.abcd.amount": 3,
+      "gmic.f.def.amount": 7,
+      "gmic.f.order": ["abc", "def"],
+      "gmic.f.def.highlight": 1,
+    });
+  });
+
+  it("previews both off when it also declares owns", () => {
+    const state = withBagPanels(bagPanel("gmic.abc", ["gmic.f.abc."], ["exposure"]));
+    const held = { "gmic.abc": true };
+    expect(applyPanelBypass(edited, held, state).exposure).toBe(DEFAULT_DEVELOP_PARAMS.exposure);
+    expect(bypassParamBag(bag, held, state)).toEqual({
+      "gmic.f.abcd.amount": 3,
+      "gmic.f.def.amount": 7,
+      "gmic.f.order": ["abc", "def"],
+    });
+  });
+
+  it("can be previewed off without a stage of its extension's", () => {
+    expect(panelIsPreviewable("gmic.abc", withPanels(bagPanel("gmic.abc", ["gmic.f.abc."])))).toBe(true);
+    expect(panelIsPreviewable("gmic.none", withPanels(bagPanel("gmic.none", [])))).toBe(false);
+  });
+
+  it("an empty list owns nothing, even beside its extension's stages: no eye, nothing held off", () => {
+    const state = withBagPanels(bagPanel("gmic.store", []));
+    expect(panelIsPreviewable("gmic.store", state)).toBe(false);
+    expect(bypassParamBag(bag, { "gmic.store": true }, state)).toBe(bag);
+  });
+});
+
 describe("an Essential's panel that doesn't declare owns", () => {
   it("resets the built-in list's params, noise reduction with Detail's sharpening", () => {
     const state = withPanels(panel("core.detail", "safelight.detail"));

@@ -10,8 +10,7 @@
 
 import type { CatalogPhoto } from "./types";
 import { isRawFile } from "@/raw/raw-preview";
-import { decodeRawToFloat } from "@/raw/decode";
-import type { DecodeRequest } from "@/raw/decode-pool";
+import { decodeRawToFloat, type RawDecodeRequest } from "@/raw/decode";
 import { encodeFrameLuma } from "@/raw/frame-bridge";
 import { NATIVE_FRAME_MAX_PIXELS } from "@/raw/native-frame";
 import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
@@ -53,8 +52,16 @@ export async function decodeNativeFrame(
   }
   if (signal.aborted) return RETRY;
 
-  const turn = manualRotation(photo.rotation ?? 0, photo.exif?.orientation);
-  const request: DecodeRequest = { background, signal, ...(turn ? { turn } : {}) };
+  const orientation = photo.exif?.orientation;
+  const turn = manualRotation(photo.rotation ?? 0, orientation);
+  const asShotMultipliers = photo.exif?.asShotMultipliers;
+  const request: RawDecodeRequest = {
+    background,
+    signal,
+    ...(turn ? { turn } : {}),
+    ...(orientation !== undefined ? { orientation } : {}),
+    ...(asShotMultipliers ? { asShotMultipliers } : {}),
+  };
   try {
     const f = await decodeRawToFloat(file, request, photo.relPath);
     if (signal.aborted) return RETRY;

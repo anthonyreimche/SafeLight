@@ -38,6 +38,10 @@ export interface CatalogStorage {
    *  undefined when it holds none. A write that changes only part of a record
    *  builds on this, not on a copy taken earlier. */
   heldPhoto?(photoId: string): CatalogPhoto | undefined;
+  /** The edit state this copy holds for a photo, as it stands now: getEditState
+   *  without the wait, for a read over the whole catalogue. A storage that has it
+   *  calls heldEditsChanged whenever what it holds changes. */
+  heldEditState?(photoId: string): EditState | undefined;
   /** Read a photo's grid preview (JPEG), or null when it has none and none can be
    *  built. By default the storage keeps what it read, to tell later whether a put
    *  carries a new preview; `hold: false` is for a caller that reads many previews
@@ -75,10 +79,27 @@ const empty: CatalogStorage = {
 
 let active: CatalogStorage = empty;
 
+const heldEditsListeners = new Set<(storage: CatalogStorage) => void>();
+
+/** Hear that the edit states a storage holds changed: through its own writes,
+ *  another window's, or by its becoming the storage this window shows. Returns
+ *  the unsubscribe. */
+export function onHeldEditsChanged(listener: (storage: CatalogStorage) => void): () => void {
+  heldEditsListeners.add(listener);
+  return () => void heldEditsListeners.delete(listener);
+}
+
+/** Tell the listeners that the edit states `storage` holds changed. */
+export function heldEditsChanged(storage: CatalogStorage): void {
+  for (const listener of [...heldEditsListeners]) listener(storage);
+}
+
 export function setCatalogStorage(s: CatalogStorage | null): void {
   const next = s ?? empty;
-  if (next !== active) active.close?.();
+  if (next === active) return;
+  active.close?.();
   active = next;
+  heldEditsChanged(next);
 }
 
 export function catalogStorage(): CatalogStorage {

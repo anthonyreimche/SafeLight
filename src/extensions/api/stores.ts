@@ -114,6 +114,12 @@ export interface DevelopState {
    *  outside `history` or not a whole number, or while `editError` is set.
    *  Safelight 3.2.5 and later. */
   goToHistory: (index: number) => void;
+  /** Put the open photo's edit back to `edit` exactly, as one undoable step
+   *  named `label`: its settings, the process version it was made at and only
+   *  the extension values it holds. Settings an older edit lacks take their
+   *  defaults. Does nothing with no photo open, while `editError` is set, or
+   *  when the photo already shows `edit`. Safelight 3.2.6 and later. */
+  restoreEdit: (edit: Pick<EditSnapshot, "params" | "paramBag">, label: string) => Promise<void>;
   reset: () => Promise<void>;
   /** Move the open photo from the older processing to the current one, as one
    *  undoable step that keeps every other setting. */
@@ -121,9 +127,11 @@ export interface DevelopState {
   canUndo: () => boolean;
   canRedo: () => boolean;
 
-  /** Per-panel preview-off, keyed by panel id: the renderer leaves a bypassed
-   *  panel's contribution out without touching the edit. Never persisted. */
-  bypassedPanels: Record<string, boolean>;
+  /** Panels whose preview-off eye is held now, by panel id: the live view
+   *  leaves a held panel's contribution out without touching the edit. Read it
+   *  to leave a held-off effect out of a preview you render yourself; change it
+   *  only through setPanelBypass. Never persisted. */
+  readonly bypassedPanels: Readonly<Record<string, boolean>>;
   setPanelBypass: (panelId: string, on: boolean) => void;
   togglePanelBypass: (panelId: string) => void;
   showClipping: ClippingMask;
@@ -266,6 +274,7 @@ export interface CatalogState {
 export type FlagFilter = "any" | "pick" | "reject";
 export type LabelFilter = "any" | ColorLabel;
 export type RatingOp = "lt" | "lte" | "gt" | "gte" | "eq" | "neq";
+export type EditedFilter = "any" | "edited" | "unedited";
 
 export interface LibraryFilter {
   /** Stars threshold, compared via ratingOp. */
@@ -275,6 +284,9 @@ export interface LibraryFilter {
   label: LabelFilter;
   /** A photo must carry all of these. */
   keywords: string[];
+  /** Only photos with an edit, or only those without (never edited, or every
+   *  step undone). */
+  edited: EditedFilter;
 }
 
 export interface UIState {
@@ -400,11 +412,20 @@ export interface AppSettings {
   defaultSortDirection: SortDirection;
   confirmRemovePhotos: boolean;
   showSubfolderPhotos: boolean;
+  /** Show each photo's file type (NEF, JPG) on its grid and Filmstrip thumbnail. */
+  thumbnailFileType: boolean;
+  /** Mark the grid and Filmstrip thumbnails of photos with an edit. */
+  thumbnailEdited: boolean;
 
   // Previews
   previewSource: PreviewSource;
   thumbMaxEdge: 320 | 640 | 960;
   persistPreviews: boolean;
+  /** Each format's decoders in the order they're tried, by format id ("jpeg",
+   *  "heif", a RAW format's extension such as "nef"): Preferences ▸ File
+   *  formats. A format left out tries Safelight's own decoder first. Since
+   *  3.2.6. */
+  decoderOrder: Record<string, string[]>;
   /** Where a project's .safelight working folder lives: beside the photos, or
    *  under externalCatalogDir. */
   catalogLocation: "in-folder" | "external";

@@ -57,7 +57,8 @@ vi.mock("@/raw/decode", () => ({
 
 vi.mock("@/raw/accept-decode", () => ({ acceptDecode: async () => h.verdict }));
 
-vi.mock("@/raw/raw-preview", () => ({
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async (file: File, bytes?: ArrayBuffer) => {
     if (!bytes) await file.arrayBuffer();
     return null;

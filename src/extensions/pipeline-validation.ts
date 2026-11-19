@@ -8,7 +8,16 @@
 // keys, and derive's results bind straight to uniforms, so both are checked
 // before anything reaches a shader.
 
-import type { GlslType, PipelineContribution, TransformDerive, UniformDeclaration, UniformValue } from "./types";
+import { transformPrepassStage } from "@/rendering/webgl/transform-prepass";
+import { checkStageContract } from "./stage-validation";
+import type {
+  GlslType,
+  PipelineContribution,
+  TransformDerive,
+  TransformPrepass,
+  UniformDeclaration,
+  UniformValue,
+} from "./types";
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/;
 
@@ -76,5 +85,24 @@ export function pipelineContractError(c: PipelineContribution): string | null {
     const error = declarationsError(uniforms, `${at}: derive.uniforms`, DERIVED_TYPES);
     if (error) return error;
   }
+  if (c.prepass !== undefined) return prepassError(c, c.prepass, at, Boolean(glsl));
   return null;
+}
+
+// The names the pre-pass's result sampler takes under the transform's namespace.
+const RESULT_NAMES = new Set(["stageResult", "stageResultLayer"]);
+
+function prepassError(c: PipelineContribution, given: TransformPrepass, at: string, hasGlsl: boolean): string | null {
+  // Extensions are plain JavaScript, so the shape is checked before it is trusted.
+  const prepass: unknown = given;
+  if (typeof prepass !== "object" || prepass === null) return `${at}: prepass must be { passes, dormantWhen? }`;
+  if (!hasGlsl) return `${at}: prepass needs glsl to read its result`;
+  const passes: unknown = (prepass as Record<string, unknown>).passes;
+  if (!Array.isArray(passes) || passes.length === 0) return `${at}: prepass.passes must list at least one pass`;
+  const keys = [...(c.params ?? []), ...(c.derive?.uniforms ?? [])].map((u) => u.key);
+  const taken = keys.find((k) => RESULT_NAMES.has(k));
+  if (taken) return `${at}: "${taken}" names the pre-pass's result, so a transform with one can't use it as a key`;
+  // The renderer runs the passes as a stage of their own, so they answer to a stage's contract.
+  const check = checkStageContract(transformPrepassStage(c.id, given));
+  return check.error ? `${at}: prepass: ${check.error.replace(/^stage "[^"]*": /, "")}` : null;
 }
