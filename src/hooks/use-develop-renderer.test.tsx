@@ -894,8 +894,10 @@ describe("useDevelopRenderer drawing the stored preview first", () => {
     useDevelopStore.setState(loaded("next", edit(0.5), edit(1.5)));
     const { worker } = await open(photo({ previewEdit: SHOWS_EDIT }));
     await answerRenders(worker);
-    expect(drawn).toHaveLength(1);
-    expect(drawn[0]).not.toBe(decoded[0]);
+    // The mask overlay's first post rides a real-time animation frame, which may land
+    // after the upload and ask for one more render: check what is drawn, not how often.
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn).not.toContain(decoded[0]);
     expect(status?.tier).toBe("final");
   });
 });
