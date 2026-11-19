@@ -382,7 +382,9 @@ describe("run", () => {
   it("rejects a program that can't start", async () => {
     const dir = tempDir();
     const file = path.join(dir, process.platform === "win32" ? "broken.exe" : "broken");
-    fs.writeFileSync(file, "not a program");
+    // A file without a #! line runs under sh on Linux (execvp's ENOEXEC fallback), so
+    // there it names an interpreter that isn't there.
+    fs.writeFileSync(file, process.platform === "win32" ? "not a program" : "#!/nonexistent/safelight-test-interpreter\n");
     fs.chmodSync(file, 0o755);
     const r = rig({ picked: file });
     const token = (await r.access.pick(eventOf(), "gmic", {}))!.token;

@@ -10,14 +10,17 @@ afterEach(async () => {
   temp = "";
 });
 
-const REPO = "D:\\Repos\\Safe Light";
+// A repo path of the platform the shims are made on, which the script resolves there.
+const WINDOWS = process.platform === "win32";
+const REPO = WINDOWS ? "D:\\Repos\\Safe Light" : "/repos/Safe Light";
+const ELSEWHERE = WINDOWS ? "D:\\Elsewhere" : "/elsewhere";
 
 describe("install-safelight-command", () => {
   it("builds three shims that run the repo's bundle under node, each carrying the marker", () => {
     const files = shimFiles(REPO);
     expect(Object.keys(files).sort()).toEqual(["safelight", "safelight.cmd", "safelight.ps1"]);
     for (const content of Object.values(files)) expect(content).toContain(MARKER);
-    expect(files["safelight.cmd"]).toContain(`node "${REPO}\\dist-cli\\slu.mjs" %*`);
+    expect(files["safelight.cmd"]).toContain(`node "${join(REPO, "dist-cli", "slu.mjs")}" %*`);
     expect(files["safelight.cmd"]).toContain("\r\n");
     expect(files["safelight.ps1"]).toContain("$args");
     expect(files["safelight.ps1"]).toContain("exit $LASTEXITCODE");
@@ -37,9 +40,9 @@ describe("install-safelight-command", () => {
   it("replaces its own shims on a second run", async () => {
     temp = await mkdtemp(join(tmpdir(), "slu-shims-"));
     installShims({ prefix: temp, repo: REPO });
-    const result = installShims({ prefix: temp, repo: "D:\\Elsewhere" });
+    const result = installShims({ prefix: temp, repo: ELSEWHERE });
     expect(result.refused).toBeNull();
-    expect(await readFile(join(temp, "safelight.ps1"), "utf8")).toContain("D:\\Elsewhere");
+    expect(await readFile(join(temp, "safelight.ps1"), "utf8")).toContain(ELSEWHERE);
   });
 
   it("refuses, and writes nothing, when a safelight file isn't ours", async () => {

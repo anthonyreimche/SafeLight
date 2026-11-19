@@ -190,7 +190,9 @@ describe("the set open finds", () => {
     fs.writeFileSync(outside, "x");
     const r = await slu(["probe", outside]);
     expect(r.code).toBe(2);
-    expect(r.err).toContain("isn't imported");
-    expect(r.err).toContain("safelight import");
+    // A long temp path (macOS) wraps the message at the terminal's width.
+    const said = r.err.replace(/\s+/g, " ");
+    expect(said).toContain("isn't imported");
+    expect(said).toContain("safelight import");
   });
 });
