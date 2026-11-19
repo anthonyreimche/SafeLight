@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import { parseArgs } from "./args";
-import { buildSelectRequest, createPhotoSelector, isEdited, parseRating, stdinPhotoPaths } from "./select";
+import { applyWorkingSet, buildSelectRequest, createPhotoSelector, isEdited, missingError, parseRating, stdinPhotoPaths } from "./select";
 import {
   CliError,
   type CliEnv,
@@ -12,6 +12,7 @@ import {
   type ProjectRef,
   type ProjectService,
   type SelectRequest,
+  type WorkingSet,
   type WriteSession,
 } from "./types";
 
@@ -40,9 +41,11 @@ function fakeProjects(projects: FakeProject[]) {
     project: refOf(p),
     photos: () => p.photos,
     photoByRelPath: (r: string) => p.photos.find((x) => x.relPath === r),
+    previewFile: () => null,
     edit: async (id: string) => p.edits?.[id],
     putEdits: async () => {},
     putPhotos: async () => {},
+    removePhotos: async () => {},
     close: async () => { closed.push(p.root); },
   });
   const service: ProjectService = {
@@ -79,7 +82,7 @@ describe("photo selection", () => {
       await mkdir(join(dir, f, ".."), { recursive: true });
       await writeFile(join(dir, f), "x");
     }
-    env = { cwd: join(dir, "shoot"), userData: dir, appRoot: dir, appVersion: "0", platform: "linux", isTTY: { stdin: false, stdout: false, stderr: false }, env: {} };
+    env = { cwd: join(dir, "shoot"), userData: dir, appRoot: dir, electronBinary: null, appVersion: "0", platform: "linux", isTTY: { stdin: false, stdout: false, stderr: false }, env: {} };
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
@@ -279,6 +282,56 @@ describe("request building", () => {
     expect(bad(["photos", "--flag", "star"])).toThrow(CliError);
     expect(bad(["photos", "--label", "pink"])).toThrow(CliError);
     expect(bad(["photos", "--edited", "--unedited"])).toThrow(CliError);
+  });
+
+  describe("the working set", () => {
+    const working: WorkingSet = { paths: ["/p/a.ARW", "/p/b.ARW", "/p/c.ARW"], index: 1, root: "/p" };
+    const base = (over: Partial<SelectRequest> = {}): SelectRequest => ({
+      specs: [], recursive: false, all: false, projectOverride: null, filters: {}, stdinPaths: [], ...over,
+    });
+
+    it("takes @ as the current photo and @all as every open one", () => {
+      expect(applyWorkingSet(base({ specs: ["@"] }), working).specs).toEqual(["/p/b.ARW"]);
+      expect(applyWorkingSet(base({ specs: ["@all"] }), working).specs).toEqual(working.paths);
+      expect(applyWorkingSet(base({ specs: ["x.ARW", "@"] }), working).specs).toEqual(["x.ARW", "/p/b.ARW"]);
+    });
+
+    it("gives the current photo when nothing is named", () => {
+      expect(applyWorkingSet(base(), working).specs).toEqual(["/p/b.ARW"]);
+      expect(applyWorkingSet(base({ filters: { flag: "pick" } }), working).specs).toEqual(["/p/b.ARW"]);
+    });
+
+    it("leaves a request alone that names photos, reads stdin, or says --all", () => {
+      expect(applyWorkingSet(base({ specs: ["x.ARW"] }), working).specs).toEqual(["x.ARW"]);
+      expect(applyWorkingSet(base({ stdinPaths: ["s.ARW"] }), working).specs).toEqual([]);
+      expect(applyWorkingSet(base({ all: true }), working).specs).toEqual([]);
+    });
+
+    it("changes nothing with no set open, except that @ has no photo to mean", () => {
+      const plain = base({ specs: ["a.ARW"] });
+      expect(applyWorkingSet(plain, undefined)).toBe(plain);
+      expect(applyWorkingSet(base(), undefined).specs).toEqual([]);
+      expect(() => applyWorkingSet(base({ specs: ["@"] }), undefined)).toThrow(CliError);
+      expect(() => applyWorkingSet(base({ specs: ["@all"] }), { paths: [], index: 0, root: "/p" })).toThrow(CliError);
+    });
+
+    it("leaves @ alone in the request the photos and ls verbs build", () => {
+      const args = parseArgs(["photos", "@"], null);
+      expect(buildSelectRequest(args, args.positionals, []).specs).toEqual(["@"]);
+    });
+  });
+
+  describe("a photo that isn't imported", () => {
+    it("says so, and names the command that fixes it", () => {
+      const error = missingError({ spec: "DSC_0500.NEF", reason: "not-in-catalogue" });
+      expect(error.code).toBe(2);
+      expect(error.message).toBe("DSC_0500.NEF isn't imported.");
+      expect(error.hint).toBe("safelight import DSC_0500.NEF");
+    });
+
+    it("quotes a name with spaces in the fix", () => {
+      expect(missingError({ spec: "my photo.NEF", reason: "not-in-catalogue" }).hint).toBe('safelight import "my photo.NEF"');
+    });
   });
 
   it("splits stdin into trimmed non-empty lines", () => {

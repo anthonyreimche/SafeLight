@@ -339,6 +339,28 @@ export interface NativeSocketsBridge {
   revoke(id: string, url: string): Promise<void>;
 }
 
+/** Native programs the person allowed an extension to run (api.programs).
+ *  Privileged so core, not the page, names the asking extension, and so only
+ *  core hears what a program prints. The answers are read as untrusted
+ *  (src/extensions/programs.ts checks them). */
+export interface NativeProgramsBridge {
+  pick(id: string, options: { title?: string; replacing: string | null }): Promise<unknown>;
+  locate(id: string, name: string): Promise<unknown>;
+  list(id: string): Promise<unknown[]>;
+  forget(id: string, token: string): Promise<void>;
+  /** Resolves once the program has stopped. `stream` asks for its output as
+   *  `onOutput` events tagged with `runId`. */
+  run(
+    id: string,
+    runId: string,
+    token: string,
+    args: string[],
+    options: { files?: Record<string, Uint8Array>; outputs?: string[]; timeoutMs?: number; stream: boolean },
+  ): Promise<unknown>;
+  cancel(runId: string): Promise<void>;
+  onOutput(cb: (event: { runId: unknown; stream: unknown; text: unknown }) => void): () => void;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
   fs: NativeFsBridge;
@@ -363,6 +385,8 @@ export interface PrivilegedBridge {
   secrets?: NativeSecretsBridge;
   /** Optional: absent in older Electron builds. */
   sockets?: NativeSocketsBridge;
+  /** Optional: absent in older Electron builds. */
+  programs?: NativeProgramsBridge;
 }
 
 declare global {

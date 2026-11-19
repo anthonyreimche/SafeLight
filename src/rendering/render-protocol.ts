@@ -279,6 +279,11 @@ export type WorkerResponse =
   // Render `seq` had nothing to draw with or from: no renderer, or no source yet for
   // the photo the develop view moved to.
   | { type: "frameSkipped"; seq: number }
+  // The live renderer's program: the stages in it, in the order written (mask
+  // copies as "{stageId}@{n}"), and those it was built without while dormant.
+  // Posted ahead of the first frame a renderer draws and again whenever either
+  // changes, not on every frame.
+  | { type: "programStatus"; programStages: string[]; dormant: string[] }
   // The live view has been still with a zoomed window the held detail gain doesn't
   // serve: the cut it wants of the native frame, answered with setDetailGain.
   | ({ type: "detailWanted" } & DetailRequest)

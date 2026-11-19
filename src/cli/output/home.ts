@@ -8,6 +8,7 @@
 // screen. Everything else is the terminal's own foreground, faint or amber.
 
 import { flowChunks, truncateEnd, truncateStart, wrapText } from "./format";
+import { LOGO_ART, LOGO_ART_WIDTH, paintLogoRow } from "./logo/art";
 import { createPalette, glyphsFor, sgr } from "./palette";
 import type { Style } from "./palette";
 import type { HomeStatus, OutputOptions, PromptState, ReplNoteKind } from "./types";
@@ -16,44 +17,16 @@ import { COMMAND } from "../types";
 const MIN_WIDTH = 40;
 /** Past this the screen stops widening, so a path never runs the width of a wide window. */
 const MAX_WIDTH = 96;
-const COMPACT_BELOW = 60;
 const MARGIN = "  ";
+/** The logo needs its own width, its margin and a cell to spare. */
+const LOGO_FROM = LOGO_ART_WIDTH + MARGIN.length + 1;
 const GAP = "    ";
 const LABEL_COLUMN = 12;
 const NAME_LIMIT = 24;
 const TYPED_LIMIT = 32;
 
-type Tone = "lit" | "shade" | "base";
-type Art = readonly (readonly [text: string, tone: Tone])[];
-
-// Half blocks only: every console font has them, and two to a cell they make
-// square pixels, so the globe stays round.
-const BULB: Art = [
-  ["  ▄▄████▄▄", "lit"],
-  ["▄██████████▄", "lit"],
-  ["████████████", "lit"],
-  ["▀██████████▀", "lit"],
-  [" ▀████████▀", "shade"],
-  ["   ▀████▀", "shade"],
-  ["    ████", "base"],
-  ["     ▀▀", "base"],
-];
-
-const BULB_ASCII: Art = [
-  ["  .-\"\"\"\"-.", "lit"],
-  [" /        \\", "lit"],
-  ["|          |", "lit"],
-  [" \\        /", "lit"],
-  ["  '.    .'", "shade"],
-  ["   |====|", "base"],
-  ["   |====|", "base"],
-  ["    '=='", "base"],
-];
-
-const BULB_WIDTH = 12;
-
-// The logo's #f3223f and a darker turn of it for the underside. Without 24-bit
-// colour the same two steps come from the 256-colour cube.
+// The logo's #f3223f for the globe. Without 24-bit colour it comes from the
+// 256-colour cube.
 const RED = { lit: "38;2;243;34;63", shade: "38;2;196;26;50" };
 const RED_256 = { lit: "38;5;196", shade: "38;5;160" };
 
@@ -72,13 +45,10 @@ function lookFor(opts: OutputOptions): Look {
   };
 }
 
-function bulbRows(look: Look): string[] {
-  const art = look.glyphs === glyphsFor(true) ? BULB : BULB_ASCII;
-  return art.map(([text, tone]) => {
-    const ink = text.trimStart();
-    const painted = tone === "base" ? look.palette.dim(ink) : look.red(ink, tone);
-    return " ".repeat(text.length - ink.length) + painted + " ".repeat(BULB_WIDTH - text.length);
-  });
+function logoRows(look: Look): string[] {
+  const { palette, red } = look;
+  const paint = { globe: (text: string) => red(text), shade: (text: string) => red(text, "shade"), stroke: palette.heading, caption: palette.dim };
+  return LOGO_ART.map((row) => paintLogoRow(row, (part, text) => paint[part](text)));
 }
 
 const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
@@ -150,10 +120,12 @@ const NO_PROJECT: readonly Starter[] = [
   ["help", "every command"],
 ];
 
-function starters(status: HomeStatus, look: Look, indent: string, described: boolean): string[] {
+/** The starter commands, each with what it does where `describe` and there is room for the widest. */
+function starters(status: HomeStatus, look: Look, indent: string, describe: boolean): string[] {
   const { palette } = look;
   const list = status.project ? IN_A_PROJECT : NO_PROJECT;
   const column = Math.max(...list.map(([command]) => command.length)) + GAP.length;
+  const described = describe && indent.length + 2 + column + Math.max(...list.map(([, does]) => does.length)) <= look.width;
   return [
     indent + palette.dim("Try"),
     ...list.map(([command, does]) => `${indent}  ${described ? command.padEnd(column) + palette.dim(does) : command}`),
@@ -173,7 +145,7 @@ export function formatHome(status: HomeStatus, opts: OutputOptions): string {
   const edition = palette.dim(`Unplugged ${status.version}`);
   const section = (lines: readonly string[]): string[] => (lines.length > 0 ? [...lines, ""] : []);
 
-  if (opts.width < COMPACT_BELOW) {
+  if (opts.width < LOGO_FROM) {
     const lamp = look.red(opts.unicode ? "●" : "(o)");
     return finish([
       "",
@@ -187,15 +159,13 @@ export function formatHome(status: HomeStatus, opts: OutputOptions): string {
     ]);
   }
 
-  const beside = MARGIN.length + BULB_WIDTH + GAP.length;
-  const text = ["", title, edition, "", ...statusLines(statusRows(status, look, width - beside - LABEL_COLUMN), look)];
-  const bulb = bulbRows(look);
-  const banner = Array.from({ length: Math.max(bulb.length, text.length) }, (_, i) =>
-    MARGIN + (bulb[i] ?? " ".repeat(BULB_WIDTH)) + GAP + (text[i] ?? ""));
-
   return finish([
     "",
-    ...banner,
+    ...logoRows(look).map((row) => MARGIN + row),
+    "",
+    `${MARGIN}${title} ${edition}`,
+    "",
+    ...statusLines(statusRows(status, look, width - MARGIN.length - LABEL_COLUMN), look).map((line) => MARGIN + line),
     "",
     ...section(warnings(status, look, MARGIN)),
     ...starters(status, look, MARGIN, true),
@@ -203,12 +173,26 @@ export function formatHome(status: HomeStatus, opts: OutputOptions): string {
   ]);
 }
 
-/** The prompt: the project's name, faint, and an amber "›". While a command runs it all goes faint. */
+/** "3 photos", or "DSC_0412 2/3" with the place left off when it is the only one open. */
+export function openText(open: NonNullable<PromptState["open"]>): string {
+  if (open.name === undefined) return `${open.of} ${open.of === 1 ? "photo" : "photos"}`;
+  return open.of > 1 && open.at !== undefined ? `${open.name} ${open.at}/${open.of}` : open.name;
+}
+
+/**
+ * The prompt: the project's name, faint, and an amber "›". Inside the project
+ * it carries the folder, with photos open the working set, and "read only"
+ * while Safelight has the project. While a command runs it all goes faint.
+ */
 export function formatPrompt(state: PromptState, opts: OutputOptions): string {
   const { palette, glyphs } = lookFor(opts);
-  const name = truncateEnd(glyphs.fold(state.projectName ?? COMMAND), NAME_LIMIT, glyphs);
+  const mark = opts.unicode ? "›" : ">";
+  const where = truncateEnd(glyphs.fold(state.projectName ?? COMMAND), NAME_LIMIT, glyphs)
+    + (state.folder ? `/${truncateStart(glyphs.fold(state.folder), NAME_LIMIT, glyphs)}` : "");
+  const name = [where, state.open ? `${mark} ${glyphs.fold(openText(state.open))}` : "", state.readOnly ? "(read only)" : ""]
+    .filter((part) => part !== "").join(" ");
   if (state.busy) return `${palette.dim(`${name} ${glyphs.ellipsis}`)} `;
-  return `${palette.dim(name)} ${palette.accent(opts.unicode ? "›" : ">")} `;
+  return `${palette.dim(name)} ${palette.accent(mark)} `;
 }
 
 /** One-line notices at the prompt, without a newline. `text` is the line typed, for "unknown". */

@@ -274,13 +274,13 @@ describe("a catalogue the open recovered", () => {
   });
 
   it.each([
-    [{ ".heic": 12 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
-    [{ ".heic": 1 }, "1 HEIC file was skipped — HEIC isn't supported yet."],
-    [{ ".heic": 7, ".heif": 5 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
+    [{ ".jxl": 12 }, "12 JXL files were skipped — JXL isn't supported yet."],
+    [{ ".jxl": 1 }, "1 JXL file was skipped — JXL isn't supported yet."],
     [
-      { ".heic": 3, ".gif": 2 },
-      "3 HEIC files were skipped — HEIC isn't supported yet. 2 GIF files were skipped — GIF isn't supported yet.",
+      { ".jxl": 3, ".gif": 2 },
+      "3 JXL files were skipped — JXL isn't supported yet. 2 GIF files were skipped — GIF isn't supported yet.",
     ],
+    [{ ".heic": 4, ".heif": 1 }, null],
   ])("says which unsupported image formats it skipped (%j)", async (skipped, notice) => {
     h.open.mockResolvedValue(opened({ skipped }));
 

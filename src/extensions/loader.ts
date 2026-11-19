@@ -52,6 +52,7 @@ import {
 } from "./instance";
 import { keptVersion, setKept } from "./pins";
 import { useRunningPlugins } from "./running-plugins";
+import { noteCommandPermission } from "./command-permissions";
 
 export { useRunningPlugins };
 
@@ -459,6 +460,7 @@ async function loadPlugin(manifest: ExtensionManifest, ahead?: BundleAhead): Pro
   if (refusal) throw new Error(refusal);
   const { id } = manifest;
   if (isInstanceLive(id)) return;
+  noteCommandPermission(manifest);
   const url = bundleUrl(manifest);
   await startInstance({
     id,

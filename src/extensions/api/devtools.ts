@@ -148,3 +148,70 @@ export interface WebGLInfo {
   /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
   colorBufferFloat: boolean;
 }
+
+/** A value that can be read now, watched, or used as a React hook. */
+export interface DevtoolsObservable<T> {
+  get(): T;
+  subscribe(listener: () => void): () => void;
+  use(): T;
+}
+
+export interface DevExtensionInfo {
+  id: string;
+  name: string;
+  version: string;
+  source: "builtin" | "installed" | "dev";
+  /** An instance of it is live in this window. */
+  running: boolean;
+  /** Not in the turned-off list. */
+  enabled: boolean;
+  /** Why it failed to start, while that stands. */
+  failure: { reason: string; message: string } | null;
+  /** 1 while one of its callbacks has thrown and been guarded, else 0. */
+  callbackFailures: number;
+  /** A dev-folder copy's load error. */
+  devError: string | null;
+}
+
+/** Every extension this window knows of: running, turned off, failed to start
+ *  or sitting in the dev folder. */
+export interface DevtoolsExtensions extends DevtoolsObservable<readonly DevExtensionInfo[]> {
+  /** Reload a dev-folder extension from disk. */
+  reloadDev(id: string): Promise<void>;
+}
+
+/** What this window's live develop view last drew. */
+export interface LiveRenderStatus {
+  /** Date.now() of the last live frame written. A frame that changes nothing
+   *  but its time is written at most once a second. */
+  at: number;
+  photoId: string | null;
+  processVersion: ProcessVersion;
+  /** Stage ids in the live program, program order; mask copies as `id@n`. */
+  programStages: readonly string[];
+  /** Stages (and copies) the live renderer has built without since it
+   *  started: no frame has needed them. */
+  dormant: readonly string[];
+  /** The last frame's overflowedStages. */
+  overflowed: readonly string[];
+  /** The request-to-answer time of the last render the view asked for, ms. */
+  frameMs: number | null;
+  /** The last renderError, while no later frame has succeeded. */
+  lastError: { at: number; message: string } | null;
+}
+
+export interface StageFailureInfo {
+  log: string;
+  /** The log is the GPU's crash notice, not a compile or link error. */
+  crashed: boolean;
+}
+
+export interface DevtoolsRender {
+  /** This window's live develop view; null with none since launch. */
+  live: DevtoolsObservable<LiveRenderStatus | null>;
+  /** Standing failures, by stage id. */
+  stageFailures: DevtoolsObservable<Readonly<Record<string, StageFailureInfo>>>;
+  /** The values this window's live view last drew for the stage's uniforms,
+   *  by uniform key, derived values included; null with no live view. */
+  liveValues(stageId: string): Readonly<Record<string, unknown>> | null;
+}

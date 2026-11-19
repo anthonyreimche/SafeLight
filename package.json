@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "3.2.5",
+  "version": "3.2.6",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -91,6 +91,7 @@
       "electron/ipc/fs.cjs",
       "electron/ipc/index.cjs",
       "electron/ipc/net.cjs",
+      "electron/ipc/programs.cjs",
       "electron/ipc/secrets.cjs",
       "electron/ipc/sockets.cjs",
       "electron/ipc/window.cjs",
@@ -103,6 +104,7 @@
       "electron/photo-types.json",
       "electron/plugin-files.cjs",
       "electron/plugin-releases.cjs",
+      "electron/program-access.cjs",
       "electron/registry-cache.cjs",
       "electron/registry-entry.cjs",
       "electron/remote-json-cache.cjs",
@@ -170,7 +172,10 @@
             "ppm",
             "pgm",
             "pbm",
-            "pnm"
+            "pnm",
+            "heic",
+            "heif",
+            "hif"
           ],
           "name": "Photo",
           "role": "Editor",
@@ -263,6 +268,8 @@
         "image/x-portable-graymap",
         "image/x-portable-bitmap",
         "image/x-portable-anymap",
+        "image/heic",
+        "image/heif",
         "image/x-nikon-nef",
         "image/x-nikon-nrw",
         "image/x-canon-cr2",
@@ -367,6 +374,7 @@
     }
   },
   "dependencies": {
+    "libheif-js": "1.23.5",
     "utif2": "^4.1.0"
   }
 }

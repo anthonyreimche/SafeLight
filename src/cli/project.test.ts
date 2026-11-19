@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createNodeFsBridge } from "./node-fs";
-import { createProjectService } from "./project";
+import type { CatalogPhoto } from "@/catalog/types";
+import { createProjectService, previewFileFor } from "./project";
 import type { CliEnv } from "./types";
 
 let base: string;
@@ -13,7 +14,7 @@ let service: ReturnType<typeof createProjectService>;
 
 function env(): CliEnv {
   return {
-    cwd: base, userData, appRoot: base, appVersion: "0", platform: process.platform,
+    cwd: base, userData, appRoot: base, electronBinary: null, appVersion: "0", platform: process.platform,
     isTTY: { stdin: false, stdout: false, stderr: false }, env: {},
   };
 }
@@ -75,5 +76,28 @@ describe("find", () => {
   it("is null when no catalogue holds the path", async () => {
     mkdirSync(join(base, "bare"));
     expect(await service.find(join(base, "bare", "a.ARW"))).toBeNull();
+  });
+});
+
+describe("previewFileFor", () => {
+  const photo = (over: Partial<CatalogPhoto> = {}): CatalogPhoto => ({ id: "p1", rotation: 0, ...over }) as CatalogPhoto;
+  const working = (): string => join(base, ".safelight");
+
+  it("is the app's cached grid preview when it is on disk", () => {
+    mkdirSync(join(working(), "previews"), { recursive: true });
+    writeFileSync(join(working(), "previews", "p1.jpg"), "jpeg");
+    expect(previewFileFor(working(), photo())).toBe(join(working(), "previews", "p1.jpg"));
+  });
+
+  it("is null when the app never stored one", () => {
+    mkdirSync(working(), { recursive: true });
+    expect(previewFileFor(working(), photo())).toBeNull();
+  });
+
+  it("is null when the photo was turned after its preview was made", () => {
+    mkdirSync(join(working(), "previews"), { recursive: true });
+    writeFileSync(join(working(), "previews", "p1.jpg"), "jpeg");
+    expect(previewFileFor(working(), photo({ rotation: 90, previewRotation: 0 }))).toBeNull();
+    expect(previewFileFor(working(), photo({ rotation: 90, previewRotation: 90 }))).not.toBeNull();
   });
 });

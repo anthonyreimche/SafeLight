@@ -25,8 +25,12 @@ import type {
   SliderIconContribution,
   SlotContribution,
   StylesheetContribution,
+  ThumbnailBadgeContribution,
   ThemeContribution,
+  TopBarButtonContribution,
+  WindowContribution,
 } from "./contributions";
+import type { CommandContribution } from "./commands";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -79,10 +83,24 @@ export interface RegisteredPanelHeaderAccessory
 export interface RegisteredLibrarySort extends LibrarySortContribution {
   extensionId: string;
 }
+export interface RegisteredThumbnailBadge extends ThumbnailBadgeContribution {
+  extensionId: string;
+}
 export interface RegisteredStylesheet extends StylesheetContribution {
   extensionId: string;
 }
 export interface RegisteredModule extends ModuleContribution {
+  extensionId: string;
+}
+export interface RegisteredTopBarButton extends TopBarButtonContribution {
+  extensionId: string;
+}
+export interface RegisteredWindow extends WindowContribution {
+  extensionId: string;
+}
+/** A console command as the registry holds it, keyed by its name (`id`). */
+export interface RegisteredCommandEntry extends CommandContribution {
+  id: string;
   extensionId: string;
 }
 
@@ -110,11 +128,21 @@ export interface RegistryState {
   panelHeaderAccessories: Record<string, RegisteredPanelHeaderAccessory>;
   /** Keyed by contribution id. Extra Library sort orders. */
   librarySorts: Record<string, RegisteredLibrarySort>;
+  /** Keyed by contribution id. Badges drawn on grid and Filmstrip thumbnails. */
+  thumbnailBadges: Record<string, RegisteredThumbnailBadge>;
   /** Keyed by contribution id, in registration order. CSS applied to every
    *  window after the core styles. */
   stylesheets: Record<string, RegisteredStylesheet>;
   /** Keyed by module id. Top-level modules, Library and Develop among them. */
   modules: Record<string, RegisteredModule>;
+  /** Keyed by command name. Console commands (api.commands). */
+  commands: Record<string, RegisteredCommandEntry>;
+  /** Keyed by contribution id. Icon buttons in the main window's top bar.
+   *  Needs Safelight 3.2.6. */
+  topBarButtons: Record<string, RegisteredTopBarButton>;
+  /** Keyed by contribution id. Window-style pop-ups (api.registerWindow).
+   *  Needs Safelight 3.2.6. */
+  windows: Record<string, RegisteredWindow>;
 }
 
 /** A stage uniform another extension contributed, as api.params lists it. */

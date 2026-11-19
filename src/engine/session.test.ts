@@ -56,8 +56,8 @@ function editOf(id: string, params: Partial<DevelopParams>, paramBag: Record<str
   };
 }
 
-/** A project whose storage counts every write. */
-function fakeProject(photos: CatalogPhoto[], edits: EditState[]) {
+/** A project whose storage counts every write, and whose previews are `previews`. */
+function fakeProject(photos: CatalogPhoto[], edits: EditState[], previews: Record<string, Blob> = {}) {
   const writes = {
     putPhoto: vi.fn(async () => {}),
     putPhotos: vi.fn(async () => {}),
@@ -72,7 +72,8 @@ function fakeProject(photos: CatalogPhoto[], edits: EditState[]) {
     getEditState: async (id) => edits.find((e) => e.photoId === id),
     close: vi.fn(),
   };
-  const openProject = vi.fn(async () => ({ photos, storage }));
+  const readPreview = vi.fn(async (id: string) => previews[id] ?? null);
+  const openProject = vi.fn(async () => ({ photos, storage, readPreview }));
   const wrote = () => Object.values(writes).reduce((n, fn) => n + fn.mock.calls.length, 0);
   return { storage, openProject, wrote };
 }
@@ -222,6 +223,33 @@ describe("a preview", () => {
     expect(project.wrote()).toBe(0);
   });
 
+  it("draws only the region asked, at the size asked, and the whole photo again without one", async () => {
+    const project = fakeProject([photo("a")], []);
+    const { bridge, called } = fakeBridge();
+    const engine = session({ openProject: project.openProject, bridge: () => bridge });
+    const req = { id: 1, type: "preview" as const, project: PROJECT, photoId: "a", width: 800, height: 600, encoding: "png" as const };
+
+    await engine.preview({ ...req, region: { x: 0.25, y: 0.5, w: 0.5, h: 0.25 } }, recordingOut().out);
+    await engine.preview(req, recordingOut().out);
+
+    expect(called("setViewport")).toEqual([[{ x: 0.25, y: 0.5, w: 0.5, h: 0.25 }, 800, 600], [null]]);
+  });
+
+  it("reads the project again when the catalogue's stamp changed since it read it, and not otherwise", async () => {
+    const project = fakeProject([photo("a")], []);
+    const { bridge } = fakeBridge();
+    const engine = session({ openProject: project.openProject, bridge: () => bridge });
+    const req = { id: 1, type: "preview" as const, project: PROJECT, photoId: "a", width: 40, height: 20, encoding: "png" as const };
+
+    await engine.preview({ ...req, catalogue: "1:10" }, recordingOut().out);
+    await engine.preview({ ...req, catalogue: "1:10" }, recordingOut().out);
+    await engine.preview(req, recordingOut().out);
+    await engine.preview({ ...req, catalogue: "2:12" }, recordingOut().out);
+
+    expect(project.openProject).toHaveBeenCalledTimes(2);
+    expect(project.storage.close).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the last frame when the first put its prepasses off", async () => {
     const project = fakeProject([photo("a")], []);
     const { bridge, frames } = fakeBridge(1);
@@ -254,6 +282,79 @@ describe("a preview", () => {
 
     await expect(engine.preview({ ...req, photoId: "a" }, recordingOut().out)).rejects.toMatchObject({ code: "decode" });
     await expect(engine.preview({ ...req, photoId: "zz" }, recordingOut().out)).rejects.toMatchObject({ code: "project" });
+  });
+});
+
+describe("what the engine opens", () => {
+  it("opens a project to read its records only, and never to write them", () => {
+    expect(READ_RECORDS).toEqual({ recordsOnly: true, readOnly: true });
+  });
+
+  it("reads the project again, read-only, after an import wrote it", async () => {
+    const project = fakeProject([photo("a")], []);
+    const { bridge } = fakeBridge();
+    const importProject = vi.fn(async () => {
+      expect(useCatalogStore.getState().photos).toEqual([]);
+    });
+    const engine = session({ openProject: project.openProject, bridge: () => bridge, importProject });
+    const req = { id: 1, type: "preview" as const, project: PROJECT, photoId: "a", width: 40, height: 20, encoding: "png" as const };
+    const signal = new AbortController().signal;
+
+    await engine.preview(req, recordingOut().out, signal);
+    await engine.import({ id: 2, type: "import", project: { root: PROJECT.root }, scope: { kind: "all" }, metadata: true, keepBackup: true }, recordingOut().out, signal);
+    await engine.preview(req, recordingOut().out, signal);
+
+    expect(importProject).toHaveBeenCalledTimes(1);
+    expect(project.storage.close).toHaveBeenCalled();
+    expect(project.openProject.mock.calls).toEqual([
+      [PROJECT.root, READ_RECORDS],
+      [PROJECT.root, READ_RECORDS],
+    ]);
+  });
+});
+
+describe("thumbs", () => {
+  const jpeg = (n: number) => new Blob([new Uint8Array([n])], { type: "image/jpeg" });
+
+  it("sends each photo's stored preview as a frame, fitted to the edge asked, and says which photos have none", async () => {
+    const project = fakeProject([photo("a"), photo("b"), photo("c")], [], { a: jpeg(1), c: jpeg(3) });
+    const decoded: Blob[] = [];
+    const decodePreview = vi.fn(async (blob: Blob) => {
+      decoded.push(blob);
+      return fakeBitmap(300, 200);
+    });
+    const engine = session({ openProject: project.openProject, decodePreview });
+    const { out, sent } = recordingOut();
+
+    await engine.thumbs({ id: 4, type: "thumbs", project: PROJECT, photoIds: ["a", "b", "zz", "c"], edge: 96, encoding: "rgba" }, out, new AbortController().signal);
+
+    expect(project.openProject).toHaveBeenCalledWith(PROJECT.root, READ_RECORDS);
+    expect(decoded).toEqual([jpeg(1), jpeg(3)]);
+    expect(sent).toEqual([
+      { id: 4, type: "frame", frame: 1, width: 96, height: 96, encoding: "rgba", photoId: "a" },
+      { frame: 1, bytes: new Uint8Array([96, 96]) },
+      { id: 4, type: "error", code: "decode", message: "b.ARW has no preview yet.", photoId: "b" },
+      { id: 4, type: "error", code: "project", message: "This photo isn't in the catalogue.", photoId: "zz" },
+      { id: 4, type: "frame", frame: 2, width: 96, height: 96, encoding: "rgba", photoId: "c" },
+      { frame: 2, bytes: new Uint8Array([96, 96]) },
+    ]);
+    expect(project.wrote()).toBe(0);
+  });
+
+  it("stops at a cancel, after the frame it was on", async () => {
+    const project = fakeProject([photo("a"), photo("b")], [], { a: jpeg(1), b: jpeg(2) });
+    const stop = new AbortController();
+    const decodePreview = vi.fn(async () => {
+      stop.abort();
+      return fakeBitmap(10, 10);
+    });
+    const engine = session({ openProject: project.openProject, decodePreview });
+    const { out, events } = recordingOut();
+
+    await engine.thumbs({ id: 1, type: "thumbs", project: PROJECT, photoIds: ["a", "b"], edge: 32, encoding: "png" }, out, stop.signal);
+
+    expect(decodePreview).toHaveBeenCalledTimes(1);
+    expect(events().map((e) => e.type === "frame" && e.photoId)).toEqual(["a"]);
   });
 });
 
@@ -326,6 +427,7 @@ describe("an export", () => {
       out,
     );
 
+    expect(project.openProject).toHaveBeenCalledWith(PROJECT.root, READ_RECORDS);
     expect(renderPhotos.mock.calls[0][0].map((p) => p.id)).toEqual(["a", "b"]);
     expect(renderPhotos.mock.calls[0][1]).toMatchObject({ format: "image/png", pngBitDepth: 8, delivery: "folder" });
     expect(looks).toEqual({ a: 1, b: 0 });

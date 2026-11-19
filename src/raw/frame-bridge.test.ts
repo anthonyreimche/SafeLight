@@ -8,7 +8,16 @@
 // browser.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildFrame, handleFrameRequest, lumaHalves, toSrgb8, type FrameJob, type FrameRequest } from "./frame-job";
+import {
+  buildFrame,
+  buildLinearFrame,
+  handleFrameRequest,
+  lumaHalves,
+  toSrgb8,
+  type FrameJob,
+  type FrameRequest,
+  type LinearFrameJob,
+} from "./frame-job";
 import { answerFrameRequest, linearizeCodes, type ProfileJob } from "./profile-frame";
 
 class FakeWorker {
@@ -393,5 +402,41 @@ describe("encodeFrameLuma", () => {
     gone.abort();
 
     await expect(encodeFrameLuma(values(), { signal: gone.signal })).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("finishLinearFrame", () => {
+  const linear = (): LinearFrameJob => ({
+    pixels: Float32Array.from({ length: 6 * 4 }, (_, i) => (i === 5 ? NaN : i / 9)),
+    width: 3,
+    height: 2,
+    turn: 90,
+    cacheEdge: 2,
+  });
+
+  it("builds in the worker as buildLinearFrame does inline, handing the frame over", async () => {
+    const { finishLinearFrame } = await load();
+    const job = linear();
+
+    const out = await finishLinearFrame(job);
+
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(out).toEqual(buildLinearFrame(linear()));
+    expect(job.pixels.buffer.byteLength).toBe(0);
+  });
+
+  it("builds inline where there is no Worker", async () => {
+    vi.stubGlobal("Worker", undefined);
+    const { finishLinearFrame } = await load();
+
+    expect(await finishLinearFrame(linear())).toEqual(buildLinearFrame(linear()));
+  });
+
+  it("refuses a frame whose decode was abandoned before it was asked for", async () => {
+    const { finishLinearFrame, isAbandoned } = await load();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(finishLinearFrame(linear(), { signal: controller.signal })).rejects.toSatisfy(isAbandoned);
   });
 });

@@ -10,12 +10,14 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { enginePipePath, listenForEngine } from "../src/cli/engine-pipe";
 import { WireDecoder, encodeWire as protocolEncodeWire } from "../src/engine/protocol";
 import { SHARED_SETTINGS_FILE } from "../src/state/shared-settings";
 import { chromiumSwitches } from "./chromium-switches.cjs";
@@ -60,7 +62,29 @@ function wireSink() {
   return { stream, out, events };
 }
 
+/** The CLI's end of the engine's socket, decoding what arrives as engine wire. */
+function wireFrom(socket: Socket) {
+  const decoder = new WireDecoder();
+  const out: Array<{ kind: 0 | 1; payload: Uint8Array }> = [];
+  socket.on("data", (chunk: Buffer) => void out.push(...decoder.push(new Uint8Array(chunk))));
+  const events = () => out.filter((m) => m.kind === 0).map((m) => JSON.parse(Buffer.from(m.payload).toString("utf8")));
+  return { socket, out, events };
+}
+
+/** A connected local socket pair, as the CLI and the engine hold it. */
+async function socketPair() {
+  const listening = await listenForEngine(enginePipePath());
+  const engineSide = connect(listening.path);
+  const cliSide = await listening.connection;
+  return { engineSide, cliSide };
+}
+
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+const waitFor = async (check: () => boolean) => {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(check()).toBe(true);
+};
 
 describe("wire encoding", () => {
   it("matches the protocol's encoder", () => {
@@ -156,6 +180,40 @@ describe("createRelay", () => {
     expect(sink.events()).toEqual([{ id: 0, type: "ready", protocol: 1 }]);
     expect(Array.from(sink.out[1].payload)).toEqual([2, 0, 0, 0, 255, 0]);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("relays both ways over one local socket, and ends when the CLI closes it", async () => {
+    const { engineSide, cliSide } = await socketPair();
+    const port = new FakePort();
+    const end = vi.fn();
+    createRelay({ input: engineSide, output: engineSide, port, end });
+    const cli = wireFrom(cliSide);
+
+    cliSide.write('{"id":1,"type":"preview","photoId":"a"}\n');
+    await waitFor(() => port.posted.length === 1);
+    expect(port.posted).toEqual([{ id: 1, type: "preview", photoId: "a" }]);
+
+    port.emit("message", { data: { id: 1, type: "frame", frame: 4 } } satisfies Message);
+    port.emit("message", { data: { frame: 4, bytes: new Uint8Array([1, 2]) } } satisfies Message);
+    await waitFor(() => cli.out.length === 2);
+    expect(cli.events()).toEqual([{ id: 1, type: "frame", frame: 4 }]);
+    expect(Array.from(cli.out[1].payload)).toEqual([4, 0, 0, 0, 1, 2]);
+
+    cliSide.end();
+    await waitFor(() => end.mock.calls.length > 0);
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+
+  // The page can still post its last events while stop() is ending the socket.
+  it("drops what the page sends once its side of the socket has ended", async () => {
+    const { port, sink } = relay();
+    const errors: Error[] = [];
+    sink.stream.on("error", (e: Error) => errors.push(e));
+    sink.stream.end();
+    port.emit("message", { data: { id: 1, type: "done" } } satisfies Message);
+    await tick();
+    expect(errors).toEqual([]);
+    expect(sink.out).toEqual([]);
   });
 });
 
@@ -298,7 +356,7 @@ function fakeElectron(appUserData: string) {
   return { electron, app, appEvents, ready, switches, paths, windows, handlers, ports, exits, dialog, shell };
 }
 
-function fakeProcess(env: Record<string, string | undefined>) {
+function fakeProcess(env: Record<string, string | undefined>, args: string[]) {
   const stdin = new PassThrough();
   const sink = wireSink();
   const stderr: string[] = [];
@@ -306,6 +364,7 @@ function fakeProcess(env: Record<string, string | undefined>) {
   return {
     proc: {
       env,
+      argv: ["safelight.exe", "/app", "--engine", "--slu-protocol=2", ...args],
       platform: process.platform,
       execPath: "safelight.exe",
       stdin,
@@ -344,23 +403,24 @@ describe("run", () => {
     writeFileSync(backendFile(), `${CHOSEN}\nchosen\n`);
     writeFileSync(join(appUserData, SHARED_SETTINGS_FILE), JSON.stringify(mirror));
   });
+  const sockets: Socket[] = [];
   afterEach(() => {
+    for (const socket of sockets.splice(0)) socket.destroy();
     vi.restoreAllMocks();
     rmSync(root, { recursive: true, force: true });
   });
 
+  /** Starts engine mode the way the CLI does: listening first, its socket on the command line. */
   async function start(env: Record<string, string | undefined> = { SLU_USER_DATA: appUserData }) {
     const fx = fakeElectron(appUserData);
-    const p = fakeProcess(env);
+    const listening = await listenForEngine(enginePipePath());
+    const p = fakeProcess(env, [`--slu-pipe=${listening.path}`]);
     const con = fakeConsole();
     const started = run({ electron: fx.electron, proc: p.proc, con, dist, preload: "/x/preload.cjs" });
-    return { fx, p, con, started };
+    const socket = await listening.connection;
+    sockets.push(socket);
+    return { fx, p, con, started, cli: wireFrom(socket) };
   }
-
-  const waitFor = async (check: () => boolean) => {
-    for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(check()).toBe(true);
-  };
 
   it("moves to its own profile under the app's userData before ready, on the app's backend and switches", async () => {
     const { fx, started } = await start({});
@@ -394,7 +454,7 @@ describe("run", () => {
   });
 
   it("opens one hidden, unthrottled window on the engine page and hands it the port and the mirror", async () => {
-    const { fx, p, started } = await start();
+    const { fx, p, started, cli } = await start();
     fx.ready();
     await started;
     expect(fx.windows).toHaveLength(1);
@@ -410,15 +470,40 @@ describe("run", () => {
     expect(win.webContents.sent).toEqual([["engine:port", null, [fx.ports.port2]]]);
     expect(fx.ports.port1.posted).toEqual([{ mirror }]);
 
-    p.stdin.write('{"id":1,"type":"preview","photoId":"p","width":4,"height":4,"encoding":"png"}\n');
-    await tick();
+    cli.socket.write('{"id":1,"type":"preview","photoId":"p","width":4,"height":4,"encoding":"png"}\n');
+    await waitFor(() => fx.ports.port1.posted.length > 1);
     expect(fx.ports.port1.posted[1]).toMatchObject({ id: 1, type: "preview" });
     fx.ports.port1.emit("message", { data: { id: 1, type: "done" } });
-    expect(p.sink.events()).toEqual([{ id: 1, type: "done" }]);
+    await waitFor(() => cli.out.length > 0);
+    expect(cli.events()).toEqual([{ id: 1, type: "done" }]);
+    expect(p.sink.out).toEqual([]);
 
-    p.stdin.end();
+    cli.socket.end();
     await waitFor(() => fx.exits.length > 0);
     expect(fx.exits).toEqual([0]);
+  });
+
+  it("stops with exit 0 when the CLI's connection closes before the page has loaded", async () => {
+    const { fx, started, cli } = await start();
+    fx.ready();
+    await started;
+    cli.socket.destroy();
+    await waitFor(() => fx.exits.length > 0);
+    expect(fx.exits).toEqual([0]);
+  });
+
+  it("refuses to start without a socket to talk on, saying so on stderr only", async () => {
+    const fx = fakeElectron(appUserData);
+    const p = fakeProcess({ SLU_USER_DATA: appUserData }, []);
+    const con = fakeConsole();
+    const started = run({ electron: fx.electron, proc: p.proc, con, dist, preload: "/x/preload.cjs" });
+    fx.ready();
+    await started;
+    await waitFor(() => fx.exits.length > 0);
+    expect(fx.exits).toEqual([3]);
+    expect(fx.windows).toEqual([]);
+    expect(con.error).toHaveBeenCalledWith(expect.stringContaining("--slu-pipe"));
+    expect(p.sink.out).toEqual([]);
   });
 
   it("answers privileged channels for the engine page only, and never writes the app's backend cache", async () => {
@@ -494,11 +579,13 @@ describe("run", () => {
 
   it("reports a missing engine page and exits 3 without opening a window", async () => {
     rmSync(join(dist, "engine.html"));
-    const { fx, p, started } = await start();
+    const { fx, p, started, cli } = await start();
     fx.ready();
     await started;
     expect(fx.windows).toEqual([]);
-    expect(p.sink.events()).toEqual([
+    await waitFor(() => cli.out.length > 0);
+    expect(p.sink.out).toEqual([]);
+    expect(cli.events()).toEqual([
       { id: 0, type: "error", code: "internal", message: "This copy of Safelight has no engine page." },
     ]);
     await waitFor(() => fx.exits.length > 0);
@@ -506,14 +593,17 @@ describe("run", () => {
   });
 
   it("reports the graphics process dying and exits 3, without a probe relaunch", async () => {
-    const { fx, p, started } = await start();
+    const { fx, p, started, cli } = await start();
     fx.ready();
     await started;
     fx.appEvents.emit("child-process-gone", {}, { type: "Utility", reason: "crashed" });
-    expect(p.sink.events()).toEqual([]);
+    await tick();
+    expect(cli.out).toEqual([]);
     fx.appEvents.emit("child-process-gone", {}, { type: "GPU", reason: "crashed" });
     fx.appEvents.emit("child-process-gone", {}, { type: "GPU", reason: "crashed" });
-    expect(p.sink.events()).toEqual([
+    await waitFor(() => cli.out.length > 0);
+    expect(p.sink.out).toEqual([]);
+    expect(cli.events()).toEqual([
       { id: 0, type: "error", code: "render", message: "The graphics process stopped (crashed)." },
     ]);
     await waitFor(() => fx.exits.length > 0);
@@ -523,7 +613,7 @@ describe("run", () => {
   });
 
   it("keeps the window on its page: no navigation, no window.open", async () => {
-    const { fx, p, started } = await start();
+    const { fx, p, started, cli } = await start();
     fx.ready();
     await started;
     const [win] = fx.windows;
@@ -532,7 +622,9 @@ describe("run", () => {
     expect(event.preventDefault).toHaveBeenCalled();
     expect(win.webContents.setWindowOpenHandler.mock.calls[0][0]({ url: "https://x" })).toEqual({ action: "deny" });
     win.webContents.emit("did-navigate", {}, "app://bundle/index.html");
-    expect(p.sink.events()[0]).toMatchObject({ type: "error", code: "internal" });
+    await waitFor(() => cli.out.length > 0);
+    expect(p.sink.out).toEqual([]);
+    expect(cli.events()[0]).toMatchObject({ type: "error", code: "internal" });
   });
 });
 

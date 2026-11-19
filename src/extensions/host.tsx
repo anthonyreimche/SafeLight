@@ -23,6 +23,8 @@ import {
   registerGridMenuItem,
   registerLayout,
   registerLibrarySort,
+  registerThumbnailBadge,
+  unregisterThumbnailBadge,
   registerModule,
   registerPanel,
   registerPanelHeaderAccessory,
@@ -38,7 +40,16 @@ import {
   registerStylesheet,
   unregisterStylesheet,
   registerTheme,
+  registerTopBarButton,
+  registerWindow,
+  unregisterPanel,
+  unregisterTopBarButton,
+  unregisterWindow,
+  openWindow,
+  closeWindow,
+  toggleWindow,
 } from "./registry";
+import { isWindowOpen, useWindowOpen } from "./window-store";
 import { initStylesheets } from "./stylesheets";
 import { initStagePrewarm, prewarmExtension } from "./dock/prewarm";
 import {
@@ -126,10 +137,13 @@ import { isPlainObject } from "@/project/fs";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
 import { importFiles } from "@/modules/library/import-files";
 import { librarySourcesAPI } from "./library-sources-api";
+import { registerImageDecoder, unregisterImageDecoder, useDecoders } from "@/catalog/image-decoders";
 import { keptDirectoriesAPI } from "./kept-directories";
 import { networkAPI } from "./network";
 import { secretsAPI } from "./secrets";
 import { socketsAPI } from "./sockets";
+import { commandsAPI } from "./commands";
+import { programsAPI } from "./programs";
 import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
 import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -147,6 +161,8 @@ import { useTitleBarOverlay } from "@/ui/window-chrome";
 import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
 import { initDevFolder, teardownDevFolder } from "./devtools/dev-folder";
 import { DevFolderControls } from "./devtools/DevFolderControls";
+import { devtoolsExtensions } from "./devtools/extension-status";
+import { devtoolsRender } from "@/rendering/render-bridge/devtools-render";
 import {
   PIPELINE_VERSIONS,
   useOpenProcessVersion,
@@ -208,10 +224,12 @@ import { probeCanvas } from "@/modules/develop/canvas-probe";
 import { autoAdjust } from "@/hooks/use-auto-adjust";
 import { PickerIcon } from "@/ui/components/PickerIcon";
 import { AutoButton } from "@/ui/components/AutoButton";
+import { ThumbnailBadge } from "@/ui/components/ThumbnailBadge";
 import { Slot } from "./Slot";
 import { useActivePhoto } from "@/state/use-active-photo";
 import { photoDisplayName } from "@/catalog/copy-name";
 import { stackOf } from "@/catalog/stacks";
+import { editedAt, useEditedAt } from "@/catalog/edit-times";
 import { openExtensions } from "@/ui/components/extensions-dialog-store";
 import { openingAnotherPhoto, useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -268,6 +286,8 @@ function devtoolsAPI(): DevtoolsAPI {
     appVersion: readAppVersion,
     electron: window.safelightNative?.devtools,
     native: nativeDetails(),
+    extensions: devtoolsExtensions,
+    render: devtoolsRender,
   };
 }
 
@@ -315,6 +335,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     extensionId,
     react: React,
     registerPanel: (c) => registerPanel(extensionId, c),
+    unregisterPanel: (id) => {
+      if (unregisterPanel(extensionId, id)) useDevelopStore.getState().setPanelBypass(id, false);
+    },
     registerTheme: (c) => registerTheme(extensionId, c),
     registerLayout: (c) => registerLayout(extensionId, c),
     registerModule: (c) => registerModule(extensionId, c),
@@ -358,9 +381,22 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       registerPanelHeaderAccessory(extensionId, c),
     registerCursor: (c) => registerCursor(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
+    registerThumbnailBadge: (c) => registerThumbnailBadge(extensionId, c),
+    unregisterThumbnailBadge: (id) => unregisterThumbnailBadge(extensionId, id),
     registerGridMenuItem: (c) => registerGridMenuItem(extensionId, c),
     registerStylesheet: (c) => registerStylesheet(extensionId, c),
     unregisterStylesheet: (id) => unregisterStylesheet(extensionId, id),
+    registerTopBarButton: (c) => registerTopBarButton(extensionId, c),
+    unregisterTopBarButton: (id) => unregisterTopBarButton(extensionId, id),
+    registerWindow: (c) => registerWindow(extensionId, c),
+    unregisterWindow: (id) => unregisterWindow(extensionId, id),
+    windows: {
+      open: (id) => openWindow(extensionId, id),
+      close: (id) => closeWindow(extensionId, id),
+      toggle: (id) => toggleWindow(extensionId, id),
+      isOpen: isWindowOpen,
+      useOpen: useWindowOpen,
+    },
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
@@ -392,6 +428,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       AssessmentToggle,
       PickerIcon,
       AutoButton,
+      ThumbnailBadge,
     },
     ui: {
       ...uiKit,
@@ -567,6 +604,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         await setInputProfiles(ids, token);
       },
       stackOf: (id) => stackOf(useCatalogStore.getState().photos, id),
+      editedAt,
+      useEditedAt,
       photoDisplayName,
       exportPhotoData,
       gridSize: { min: GRID_SIZE_MIN, max: GRID_SIZE_MAX, step: GRID_SIZE_STEP },
@@ -583,10 +622,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       pathOf: nativePathOf,
       reveal: revealNativePath,
     },
-    library: { importFiles, ...librarySourcesAPI(extensionId) },
+    library: {
+      importFiles,
+      ...librarySourcesAPI(extensionId),
+      registerDecoder: (decoder) => registerImageDecoder(extensionId, decoder),
+      unregisterDecoder: (id) => unregisterImageDecoder(extensionId, id),
+      useDecoders,
+    },
     network: networkAPI(extensionId),
     secrets: secretsAPI(extensionId),
     sockets: socketsAPI(extensionId),
+    programs: programsAPI(extensionId),
     presets: {
       useImporters: usePresetImporters,
       describeBag: describePresetBag,
@@ -612,6 +658,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     titleBar: { useOverlay: useTitleBarOverlay },
     devtools: extensionId === DEVTOOLS_EXTENSION_ID ? devtoolsAPI() : undefined,
     variables: variableRegistry().scoped(extensionId),
+    commands: commandsAPI(extensionId),
   };
 }
 

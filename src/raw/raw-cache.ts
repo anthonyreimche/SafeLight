@@ -8,7 +8,9 @@
 // worker can't reach the folder) so subsequent Develop opens load fast instead
 // of re-running libraw (~50ms vs 3-8s).
 //
-// Cache key = relPath + fileSize + baked rotation. Derived entirely from the
+// Cache key = relPath + fileSize + baked rotation, and the decoders that read
+// the file when an extension's leads them (image-decoders.ts chainSignature).
+// Derived entirely from the
 // catalogue record so the prefetch skip-check needs no getFile (which reads the
 // whole RAW off disk in Electron). A size-changing edit misses automatically; an
 // in-place edit that preserves byte size (e.g. EXIF/metadata rewrite) keeps the
@@ -30,6 +32,7 @@
 // so the main thread is never blocked.
 
 import { getSettings } from "@/state/settings-store";
+import type { ChainEntry } from "@/catalog/image-decoders";
 import type { CachedPreview, EncodedEntry } from "./cache-encode";
 import {
   setCacheDirOnWorker,
@@ -47,13 +50,17 @@ import {
 // The version prefix is the cache contract: bump it whenever the float decode
 // or the stored encoding changes (v6: half-float entries that keep headroom and
 // negatives; v5: libraw output linearized, white point restored, Fujifilm
-// exposure bias applied).
+// exposure bias applied). `signature`: image-decoders.ts chainSignature for the
+// file's format, "" while libraw leads, so the keys libraw's decodes were
+// always kept under stay as they were.
 export function rawCacheKey(
   relPath: string,
   fileSize: number,
   rotation = 0,
+  signature = "",
 ): string {
-  return `v6:${relPath}:${fileSize}:${rotation}`;
+  const key = `v6:${relPath}:${fileSize}:${rotation}`;
+  return signature ? `${key}:${signature}` : key;
 }
 
 // ─── Decode markers ──────────────────────────────────────────────────────────
@@ -63,10 +70,20 @@ export function rawCacheKey(
 // leaves every older marker unread, so each marked photo is tried once more.
 export const DECODER_ID = "libraw-0.22.1+1";
 
+/** The id `entry`'s markers are kept under: DECODER_ID for libraw, an
+ *  extension's decoder's id and version for one of an extension's, so its next
+ *  version tries each marked photo again. */
+export function decoderMarkerId(entry: ChainEntry): string {
+  return "decoder" in entry ? `${entry.id}@${entry.version}` : DECODER_ID;
+}
+
 // A RAW the decoder can't use would be decoded again on every Develop open and
 // every "Cache all" pass. A marker beside its cache entry keeps the verdict:
 // "unsupported" (nothing usable: Develop shows the camera's preview at once) or
 // "suspicious" (shown but never cached: only the background pass skips it).
+// Each decoder keeps its own, under the key the photo's cache entry has while
+// libraw leads (rawCacheKey with no signature); `decoder` is its marker id and
+// libraw's by default.
 export type DecodeMarker = "unsupported" | "suspicious";
 const MARKERS: readonly DecodeMarker[] = ["unsupported", "suspicious"];
 
@@ -96,20 +113,19 @@ function confirms(text: string): boolean {
   return session !== SESSION && !(Number(at) >= LOADED_AT);
 }
 
-function markerKey(cacheKey: string, marker: DecodeMarker, strikes: Strikes): string {
-  return `${marker}@${DECODER_ID}#${strikes}:${cacheKey}`;
+function markerKey(cacheKey: string, marker: DecodeMarker, strikes: Strikes, decoder = DECODER_ID): string {
+  return `${marker}@${decoder}#${strikes}:${cacheKey}`;
 }
 
 /** The key of the photo's final marker of that kind, the one lookups honour. */
-export function decodeMarkerKey(cacheKey: string, marker: DecodeMarker): string {
-  return markerKey(cacheKey, marker, 2);
+export function decodeMarkerKey(cacheKey: string, marker: DecodeMarker, decoder = DECODER_ID): string {
+  return markerKey(cacheKey, marker, 2, decoder);
 }
 
-function markerKeysOf(cacheKey: string): string[] {
-  return MARKERS.flatMap((marker) => [
-    markerKey(cacheKey, marker, 1),
-    markerKey(cacheKey, marker, 2),
-  ]);
+function markerKeysOf(cacheKey: string, decoders: readonly string[] = [DECODER_ID]): string[] {
+  return decoders.flatMap((decoder) =>
+    MARKERS.flatMap((marker) => [markerKey(cacheKey, marker, 1, decoder), markerKey(cacheKey, marker, 2, decoder)]),
+  );
 }
 
 /** The cache key a current final marker stands for, or null for any other key. */
@@ -192,6 +208,8 @@ export async function cachedKeys(): Promise<Set<string>> {
  * the cache in bulk needs to know. A write left undone because the cache is
  * off or the project changed is not a failure. `entry`: the entry the decode
  * already built from `data`, off the main thread (see workerWriteCachedPreview).
+ * `verdicts`: whose markers the accepted decode clears, and the key they are
+ * kept under; libraw's under `key` when not given.
  */
 export async function writeCachedPreview(
   key: string,
@@ -200,16 +218,20 @@ export async function writeCachedPreview(
   height: number,
   begunIn: number,
   entry?: EncodedEntry,
+  verdicts?: { markerKey: string; decoder?: string },
 ): Promise<boolean> {
   if (!getSettings().rawCacheEnabled) return true;
   // Checked in the same synchronous step that queues the write, so a folder
   // change made after the check is queued, and reaches the worker, after it.
   if (begunIn !== generation) return true;
+  const cleared = verdicts
+    ? markerKeysOf(verdicts.markerKey, [verdicts.decoder ?? DECODER_ID])
+    : markerKeysOf(key);
   try {
     // An accepted decode outranks any verdict struck against the photo before.
     const [stored] = await Promise.all([
       workerWriteCachedPreview(key, data, width, height, getSettings().rawCacheMaxEdge, entry),
-      ...markerKeysOf(key).map((k) => workerDeleteCachedPreview(k)),
+      ...cleared.map((k) => workerDeleteCachedPreview(k)),
     ]);
     return stored;
   } catch {
@@ -218,17 +240,18 @@ export async function writeCachedPreview(
   }
 }
 
-/** One strike against the photo: a definitive failure of this kind. */
+/** One strike against the photo by `decoder`: a definitive failure of this kind. */
 export async function markDecode(
   cacheKey: string,
   marker: DecodeMarker,
   begunIn: number,
+  decoder = DECODER_ID,
 ): Promise<void> {
   if (!getSettings().rawCacheEnabled) return;
   // As for writeCachedPreview: a decode begun in another project marks nothing.
   if (begunIn !== generation) return;
-  const tentative = markerKey(cacheKey, marker, 1);
-  const final = markerKey(cacheKey, marker, 2);
+  const tentative = markerKey(cacheKey, marker, 1, decoder);
+  const final = markerKey(cacheKey, marker, 2, decoder);
   try {
     const [finalBy, firstBy] = await Promise.all([
       workerReadMarker(final),
@@ -249,14 +272,15 @@ export async function markDecode(
   }
 }
 
-/** Whether the photo carries a final marker of that kind. */
+/** Whether the photo carries a final marker of that kind from `decoder`. */
 export async function hasDecodeMarker(
   cacheKey: string,
   marker: DecodeMarker,
+  decoder = DECODER_ID,
 ): Promise<boolean> {
   if (!getSettings().rawCacheEnabled) return false;
   try {
-    return (await workerReadMarker(decodeMarkerKey(cacheKey, marker))) !== null;
+    return (await workerReadMarker(decodeMarkerKey(cacheKey, marker, decoder))) !== null;
   } catch {
     return false;
   }
@@ -264,8 +288,8 @@ export async function hasDecodeMarker(
 
 // The photo's markers go with its preview: whatever makes the preview stale
 // (Reimport, the file leaving the disk) makes the decoder's verdict stale too.
-export async function deleteCachedPreview(key: string): Promise<void> {
-  const keys = [key, ...markerKeysOf(key)];
+export async function deleteCachedPreview(key: string, decoders?: readonly string[]): Promise<void> {
+  const keys = [key, ...markerKeysOf(key, decoders)];
   await Promise.all(keys.map((k) => workerDeleteCachedPreview(k).catch(() => {})));
 }
 

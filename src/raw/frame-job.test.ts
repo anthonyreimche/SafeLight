@@ -14,11 +14,13 @@ import { halfBits, halfToFloatTable } from "./half-float";
 import {
   SRGB_FROM_ACES,
   buildFrame,
+  buildLinearFrame,
   handleFrameRequest,
   linearOfCode,
   lumaHalves,
   toSrgb8,
   type FrameJob,
+  type LinearFrameJob,
 } from "./frame-job";
 
 /** The conversion as the adapter ran it inline, before it moved off the main thread. */
@@ -250,5 +252,87 @@ describe("handleFrameRequest luma", () => {
     const { reply } = handleFrameRequest({ id: 6, op: "luma", data: null as never });
 
     expect(reply).toEqual({ id: 6, op: "error", message: expect.any(String) });
+  });
+});
+
+describe("buildLinearFrame", () => {
+  /** A 3×2 linear RGBA frame, as an extension's decoder answers one. */
+  const linear = (over: Partial<LinearFrameJob> = {}): LinearFrameJob => ({
+    pixels: Float32Array.from({ length: 3 * 2 * 4 }, (_, i) => (i % 4 === 3 ? 1 : -0.5 + i / 7)),
+    width: 3,
+    height: 2,
+    turn: 0,
+    ...over,
+  });
+
+  it("keeps the values as they are, headroom and negatives included", () => {
+    const out = buildLinearFrame(linear());
+
+    expect(out.data).toEqual(linear().pixels);
+    expect([out.width, out.height]).toEqual([3, 2]);
+  });
+
+  for (const turn of [90, 180, 270]) {
+    it(`turns the frame ${turn} degrees exactly as rotating the finished frame does`, () => {
+      const rotated = rotateFloatRGBA(linear().pixels, 3, 2, turn);
+
+      const out = buildLinearFrame(linear({ turn }));
+
+      expect(out.data).toEqual(rotated.data);
+      expect([out.width, out.height]).toEqual([rotated.width, rotated.height]);
+    });
+  }
+
+  it("makes NaN and infinite channels 0 and every alpha 1", () => {
+    const pixels = Float32Array.from([NaN, Infinity, -Infinity, 0.3, 0.2, 2.5, -0.1, NaN]);
+
+    const out = buildLinearFrame({ pixels, width: 2, height: 1, turn: 0 });
+
+    expect([...out.data]).toEqual([0, 0, 0, 1, 0.2, 2.5, -0.1, 1].map(Math.fround));
+  });
+
+  it("builds the cache entry from the turned frame", () => {
+    const turned = rotateFloatRGBA(linear().pixels, 3, 2, 90);
+
+    const out = buildLinearFrame(linear({ turn: 90, cacheEdge: 2 }));
+
+    expect(out.entry).toEqual(encodeCacheEntry(turned.data, turned.width, turned.height, 2));
+  });
+
+  it("builds no entry unless asked", () => {
+    expect(buildLinearFrame(linear()).entry).toBeUndefined();
+  });
+
+  it("works in the buffer it was handed when the frame isn't turned", () => {
+    const job = linear();
+
+    expect(buildLinearFrame(job).data.buffer).toBe(job.pixels.buffer);
+  });
+});
+
+describe("handleFrameRequest linear", () => {
+  it("answers the frame buildLinearFrame gives and moves its buffers", () => {
+    const job = (): LinearFrameJob => ({
+      pixels: Float32Array.from({ length: 16 }, (_, i) => i / 16),
+      width: 2,
+      height: 2,
+      turn: 270,
+      cacheEdge: 2,
+    });
+
+    const { reply, transfer } = handleFrameRequest({ id: 9, op: "linear", job: job() });
+
+    if (reply.op !== "linear") throw new Error("no frame");
+    expect(reply.id).toBe(9);
+    expect(reply.result).toEqual(buildLinearFrame(job()));
+    expect(transfer).toContain(reply.result.data.buffer);
+    expect(transfer).toContain(reply.result.entry?.preview.data.buffer);
+    expect(transfer).toContain(reply.result.entry?.sample.data.buffer);
+  });
+
+  it("answers a failure with its message", () => {
+    const { reply } = handleFrameRequest({ id: 4, op: "linear", job: { pixels: null as never, width: 1, height: 1, turn: 0 } });
+
+    expect(reply).toEqual({ id: 4, op: "error", message: expect.any(String) });
   });
 });

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
 
 import type { StoredPhoto } from "@/catalog/types";
+import type { EngineRequest } from "@/engine/protocol";
 import { appendStoredSnapshots, storedSnapshotTargets } from "@/catalog/stored-edit";
 import { setCatalogStorage } from "@/catalog/storage";
 import { nativeDirectoryHandle } from "@/project/native-fs";
@@ -24,6 +25,7 @@ import { ProjectStorage, type ProjectStorageDeps } from "@/project/project-stora
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { installNodeHost } from "./host";
+import type { EngineClient } from "./engine-client";
 import { main, type MainIO } from "./main";
 import { createNodeFsBridge } from "./node-fs";
 
@@ -77,7 +79,7 @@ function sink(): NodeJS.WriteStream {
   return Object.assign(new Writable({ write: (_c, _e, done) => done() }), { isTTY: false }) as unknown as NodeJS.WriteStream;
 }
 
-async function slu(argv: string[], cwd: string): Promise<number> {
+async function slu(argv: string[], cwd: string, services: MainIO["services"] = {}): Promise<number> {
   const io: MainIO = {
     stdout: sink(),
     stderr: sink(),
@@ -88,6 +90,7 @@ async function slu(argv: string[], cwd: string): Promise<number> {
     home: temp,
     moduleFile: path.join(temp, "safelight.mjs"),
     onInterrupt: () => () => {},
+    services,
   };
   return main(argv, io);
 }
@@ -156,5 +159,29 @@ describe("safelight and the app write the same catalogue", () => {
     await vi.waitFor(async () => expect((await app.getEditState("a"))?.currentIndex).toBe(0));
     await closeApp(app);
     expect(catalogText(viaSlu)).toBe(catalogText(viaApp));
+  });
+
+  // The records themselves are compared in Chromium, where the decoders run: engine/import.browser.test.ts
+  // imports a folder with runImport and opens its twin as the GUI does. Node's part is to send that run's
+  // exact request and to touch nothing in the project itself, which this pins.
+  it("for import: Node asks the engine for the GUI's open of the folder, and writes nothing itself", async () => {
+    const folder = path.join(temp, "shoot");
+    fs.mkdirSync(folder);
+    fs.writeFileSync(path.join(folder, "a.jpg"), "A");
+    fs.writeFileSync(path.join(folder, "b.dng"), "B");
+    const requests: EngineRequest[] = [];
+    const engine: EngineClient = {
+      async *request(req) {
+        requests.push(req);
+        expect(fs.existsSync(path.join(folder, ".safelight"))).toBe(false);
+        yield { id: req.id, type: "done" };
+      },
+      shutdown: async () => {},
+    };
+    await slu(["import"], folder, { engine: () => engine });
+    expect(requests).toEqual([
+      { id: expect.any(Number), type: "import", project: { root: folder }, scope: { kind: "all" }, metadata: true, keepBackup: true },
+    ]);
+    expect(fs.readdirSync(folder).sort()).toEqual(["a.jpg", "b.dng"]);
   });
 });

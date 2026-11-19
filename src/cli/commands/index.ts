@@ -11,6 +11,11 @@ import { toolsCommand } from "./tools";
 import { getCommand } from "./get";
 import { historyCommand } from "./history";
 import { previewCommand } from "./preview";
+import { viewCommand } from "./view";
+import { lsCommand } from "./ls";
+import { importCommand } from "./import";
+import { openCommand } from "./open";
+import { forgetCommand } from "./forget";
 import { setCommand } from "./set";
 import { addCommand } from "./add";
 import { removeCommand } from "./remove";
@@ -26,6 +31,8 @@ import { savePresetCommand } from "./save-preset";
 import { rateCommand } from "./rate";
 import { flagCommand } from "./flag";
 import { labelCommand } from "./label";
+import { rotateCommand } from "./rotate";
+import { keywordsCommand } from "./keywords";
 import { exportPhotosCommand } from "./export";
 import { searchCommand } from "./search";
 import { installCommand } from "./install";
@@ -39,7 +46,8 @@ import { versionCommand } from "./version";
 import { helpCommand } from "./help";
 
 export const COMMANDS: CommandSpec[] = [
-  photosCommand, toolsCommand, getCommand, historyCommand, previewCommand,
+  photosCommand, toolsCommand, getCommand, historyCommand, previewCommand, viewCommand,
+  lsCommand, importCommand, openCommand, rotateCommand, keywordsCommand, forgetCommand,
   setCommand, addCommand, removeCommand, resetCommand, autoCommand, undoCommand, redoCommand,
   copyCommand, pasteCommand, presetsCommand, applyCommand, savePresetCommand,
   rateCommand, flagCommand, labelCommand,
@@ -52,3 +60,4 @@ export const COMMANDS: CommandSpec[] = [
 export const NOT_IN_THIS_RELEASE: ReadonlySet<string> = new Set([autoCommand.verb, savePresetCommand.verb]);
 
 export { findCommand } from "../args";
+export { extensionVerbs, withExtensionVerbs } from "./extension-verbs";

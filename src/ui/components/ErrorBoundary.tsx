@@ -13,6 +13,9 @@ interface ErrorBoundaryProps {
   what: string;
   /** Classes for the notice that replaces the crashed subtree. */
   className: string;
+  /** For a spot too small for the notice, such as a thumbnail badge: a "!" with
+   *  the notice as its tooltip, without the Report this link. */
+  compact?: boolean;
   children: ReactNode;
 }
 
@@ -66,6 +69,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, { error: unknow
     });
   };
   render() {
+    if (this.state.error && this.props.compact) {
+      return (
+        <div className={this.props.className} title={`${this.props.what} crashed: ${messageOf(this.state.error)}`}>
+          !
+        </div>
+      );
+    }
     if (this.state.error) {
       return (
         <div className={this.props.className}>

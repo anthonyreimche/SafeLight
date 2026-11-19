@@ -62,6 +62,7 @@ function harness(userData: string, photos: CatalogPhoto[], missing: Missing[] = 
     preview: { show: async () => {} },
     out: {
       resultLine: (r: { photo: string; step?: number }) => `${r.photo} step ${r.step ?? "-"}`,
+      result: (r: { photo: string; step?: number }) => { lines.push(`${r.photo} step ${r.step ?? "-"}`); },
       summary: (s: { photos: number }) => `${s.photos} photos`,
       print: (t: string) => { lines.push(t); },
       json: () => {},
@@ -143,6 +144,51 @@ describe("copy then paste", () => {
     const some = harness(userData, [photo("b")], [{ spec: "x.ARW", reason: "not-in-catalogue" }]);
     expect((await pasteCommand.run(some.ctx, parse(pasteCommand, ["b.ARW", "x.ARW"]))).code).toBe(6);
     expect(some.warnings[0]).toContain("x.ARW");
+  });
+
+  it("says a photo outside the catalogue isn't imported, and how to import it", async () => {
+    const src = harness(userData, [photo("a")]);
+    src.edits.set("a", editedState("a", 0.7));
+    await copyCommand.run(src.ctx, parse(copyCommand, ["a.ARW"]));
+    const hints: (string | undefined)[] = [];
+    const h = harness(userData, [photo("b")], [{ spec: "x.ARW", reason: "not-in-catalogue" }]);
+    (h.ctx.out as { warn: unknown }).warn = (p: { message: string; hint?: string }) => { h.warnings.push(p.message); hints.push(p.hint); };
+    await pasteCommand.run(h.ctx, parse(pasteCommand, ["b.ARW", "x.ARW"]));
+    expect(h.warnings).toEqual(["x.ARW isn't imported."]);
+    expect(hints).toEqual(["safelight import x.ARW"]);
+  });
+});
+
+describe("with photos open at the prompt", () => {
+  const open = { paths: ["/p/day/a.ARW", "/p/day/b.ARW"], index: 1, root: "/p" };
+
+  it("copy and paste name no photo and act on the current one; @ and @all name it and the set", async () => {
+    const h = harness(userData, [photo("b")]);
+    h.edits.set("b", editedState("b", 0.7));
+    h.ctx.working = open;
+    const read = vi.spyOn(h.ctx.select, "read");
+    const write = vi.spyOn(h.ctx.select, "write");
+    expect((await copyCommand.run(h.ctx, parse(copyCommand, []))).code).toBe(0);
+    expect(read.mock.calls[0][0]).toMatchObject({ specs: ["/p/day/b.ARW"] });
+    await pasteCommand.run(h.ctx, parse(pasteCommand, []));
+    expect(write.mock.calls[0][0]).toMatchObject({ specs: ["/p/day/b.ARW"] });
+    await pasteCommand.run(h.ctx, parse(pasteCommand, ["@all", "--from", "@"]));
+    expect(read.mock.calls[1][0]).toMatchObject({ specs: ["/p/day/b.ARW"] });
+    expect(write.mock.calls[1][0]).toMatchObject({ specs: ["/p/day/a.ARW", "/p/day/b.ARW"] });
+  });
+
+  it("apply takes the preset name alone and acts on the current photo", async () => {
+    stored = JSON.stringify([{ id: "p1", name: "Warm", params: { exposure: 0.3 } }]);
+    const h = harness(userData, [photo("b")]);
+    h.ctx.working = open;
+    const write = vi.spyOn(h.ctx.select, "write");
+    await applyCommand.run(h.ctx, parse(applyCommand, ["Warm"]));
+    expect(write.mock.calls[0][0]).toMatchObject({ specs: ["/p/day/b.ARW"] });
+  });
+
+  it("refuses @ with no photo open", async () => {
+    const h = harness(userData, [photo("b")]);
+    await expect(copyCommand.run(h.ctx, parse(copyCommand, ["@"]))).rejects.toMatchObject({ code: 1 });
   });
 });
 

@@ -169,6 +169,9 @@ export interface ExifData {
   // The camera match version (raw/camera-match.ts) the two above were learned
   // by; a photo matched by an older one is matched again.
   cameraMatchVersion?: number;
+  // The decoders they were learned from (image-decoders.ts chainSignature),
+  // unset for libraw's; a photo decoded by others since is matched again.
+  cameraMatchDecoders?: string;
   gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
   gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
   gpsAltitude?: number;  // metres above sea level
@@ -190,7 +193,9 @@ export interface EditSnapshot {
   paramBag?: Record<string, unknown>;
 }
 
-export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';
+/** dateEdited: when the photo's edit last changed (catalog/edit-times), the
+ *  never-edited counting as oldest. */
+export type SortField = 'dateImported' | 'dateCreated' | 'dateEdited' | 'filename' | 'rating';
 export type SortDirection = 'asc' | 'desc';
 export type ViewMode = 'grid' | 'list';
 /** A top-level module id: "library", "develop", or one an extension registered

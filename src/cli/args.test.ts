@@ -162,4 +162,59 @@ describe("parseArgs", () => {
   it("refuses a value on a switch that takes none", () => {
     expect(usageError(() => parseArgs(["export", "--try=yes"], spec)).code).toBe(1);
   });
+
+  it("reads a negative number as a word, not an option", () => {
+    const rotate = { ...spec, verb: "rotate", options: [...PHOTO_OPTIONS] };
+    expect(parseArgs(["rotate", "a.ARW", "-90"], rotate).positionals).toEqual(["a.ARW", "-90"]);
+    expect(parseArgs(["rotate", "a.ARW", "-90"], null).positionals).toEqual(["a.ARW", "-90"]);
+    expect(parseArgs(["rotate", "a.ARW", "-1.5"], rotate).positionals).toEqual(["a.ARW", "-1.5"]);
+    expect(parseArgs(["export", "--quality", "-5"], spec).options.quality).toBe(-5);
+  });
+});
+
+describe("parseArgs for a verb that takes its words raw", () => {
+  const gmic: CommandSpec = {
+    verb: "gmic",
+    group: "Extensions",
+    summary: "",
+    usage: "",
+    examples: [],
+    writes: false,
+    rawArgs: true,
+    options: [...PHOTO_OPTIONS],
+    run: async () => ({ code: 0 }),
+  };
+
+  it("keeps every word after the verb as it is, up to --, and takes photos after it", () => {
+    const a = parseArgs(["--json", "gmic", "-v", "-1", "-blur", "3", "--blur", "--json", "x=1", "--", "@all", "b.ARW"], gmic);
+    expect(a.verb).toBe("gmic");
+    expect(a.positionals).toEqual(["-v", "-1", "-blur", "3", "--blur", "--json", "x=1"]);
+    expect(a.assignments).toEqual([]);
+    expect(a.afterDashDash).toEqual(["@all", "b.ARW"]);
+    expect(a.options).toEqual({ json: true });
+  });
+
+  it("does the same before the verb is known, when told which verbs take their words raw", () => {
+    const a = parseArgs(["gmic", "-qv", "-rating", "--project", "--", "@"], null, (word) => word === "gmic");
+    expect(a.positionals).toEqual(["-qv", "-rating", "--project"]);
+    expect(a.afterDashDash).toEqual(["@"]);
+    expect(a.options).toEqual({});
+  });
+
+  it("takes the global and photo options before the verb", () => {
+    const a = parseArgs(["--project", "../shoot", "--all", "-q", "--wait=5", "--rating", "3+", "gmic", "blur", "3"], gmic);
+    expect(a.options).toEqual({ project: "../shoot", all: true, quiet: true, wait: "5", rating: "3+" });
+    expect(a.positionals).toEqual(["blur", "3"]);
+  });
+
+  it("refuses an unknown option, and a cluster of switches, before the verb", () => {
+    expect(usageError(() => parseArgs(["--output", "x", "gmic"], gmic)).message).toMatch(/--output/);
+    expect(usageError(() => parseArgs(["-qv", "gmic"], gmic)).message).toMatch(/-qv/);
+  });
+
+  it("gives no words for the verb alone", () => {
+    const a = parseArgs(["gmic"], gmic);
+    expect(a.positionals).toEqual([]);
+    expect(a.afterDashDash).toEqual([]);
+  });
 });

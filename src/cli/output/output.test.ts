@@ -107,6 +107,7 @@ const TOOLS: ToolRow[] = [
 
 const GROUPED: Record<HelpGroup, string[]> = {
   Look: ["photos", "tools", "get", "history", "preview"],
+  Library: [],
   Edit: ["set", "add", "remove", "reset", "auto", "undo", "redo"],
   Share: ["copy", "paste", "presets", "apply", "save-preset"],
   Organize: ["rate", "flag", "label"],

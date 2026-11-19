@@ -27,7 +27,10 @@ vi.mock("@/raw/decode", () => ({
 }));
 
 vi.mock("@/raw/accept-decode", () => ({ acceptDecode: async () => ({ use: true, cache: true }) }));
-vi.mock("@/raw/raw-preview", () => ({ extractRawPreview: async () => null }));
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
+  extractRawPreview: async () => null,
+}));
 
 vi.mock("@/raw/raw-cache", () => ({
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { Writable } from "node:stream";
 import { formatHome, formatPrompt, formatReplNote, resolveOutputOptions } from "./index";
 import type { HomeStatus, OutputOptions } from "./index";
+import { LOGO_ART, LOGO_ART_WIDTH } from "./logo/art";
 import { stripStyle, visibleWidth } from "./palette";
 
 interface Look { colour?: boolean; unicode?: boolean; trueColour?: boolean }
@@ -51,18 +52,22 @@ const BRAND_SHADE = "\x1b[38;2;196;26;50m";
 const RED = "\x1b[38;5;196m";
 const RED_SHADE = "\x1b[38;5;160m";
 
+const LOGO_LINES = LOGO_ART.map((row) => (row === "" ? "" : `  ${row}`));
+/** One column short of the logo, its margin and a cell to spare. */
+const NARROW = LOGO_ART_WIDTH + 2;
+
 describe("formatHome", () => {
-  it("sets the bulb beside the title and status at 80 columns", () => {
+  it("draws the logo exactly as drawn, then the title and status at 80 columns", () => {
     expect(formatHome(IN_PROJECT, at(80))).toBe(screen(
       "",
-      "    ▄▄████▄▄",
-      "  ▄██████████▄    Safelight",
-      "  ████████████    Unplugged 3.3.0",
-      "  ▀██████████▀",
-      "   ▀████████▀     Project     Iceland 2026 · 412 photos · 87 edited",
-      String.raw`     ▀████▀       Folder      …os\2026\Iceland 2026\Day 3 glacier lagoon\selects`,
-      "      ████        Graphics    d3d11",
-      "       ▀▀         Extensions  14 installed · 2 updates",
+      ...LOGO_LINES,
+      "",
+      "  Safelight Unplugged 3.3.0",
+      "",
+      "  Project     Iceland 2026 · 412 photos · 87 edited",
+      String.raw`  Folder      D:\Photos\2026\Iceland 2026\Day 3 glacier lagoon\selects`,
+      "  Graphics    d3d11",
+      "  Extensions  14 installed · 2 updates",
       "",
       "  Try",
       "    photos                       list this project's photos",
@@ -74,40 +79,29 @@ describe("formatHome", () => {
     ));
   });
 
-  it("draws the bulb in ASCII where Unicode won't arrive", () => {
-    expect(formatHome(IN_PROJECT, at(80, { unicode: false }))).toBe(screen(
-      "",
-      "    .-\"\"\"\"-.",
-      "   /        \\     Safelight",
-      "  |          |    Unplugged 3.3.0",
-      "   \\        /",
-      "    '.    .'      Project     Iceland 2026 - 412 photos - 87 edited",
-      String.raw`     |====|       Folder      ...\2026\Iceland 2026\Day 3 glacier lagoon\selects`,
-      "     |====|       Graphics    d3d11",
-      "      '=='        Extensions  14 installed - 2 updates",
-      "",
-      "  Try",
-      "    photos                       list this project's photos",
-      "    tools <photo>                a photo's tools and values",
-      "    set <photo> exposure=+0.5    change a value",
-      "    help                         every command",
-      "    exit to leave",
-      "",
-    ));
+  it("draws the same logo where Unicode won't arrive: it is ASCII already", () => {
+    const text = formatHome(IN_PROJECT, at(80, { unicode: false }));
+    expect(text.split("\n").slice(1, 1 + LOGO_LINES.length)).toEqual(LOGO_LINES);
+    expect(text).toMatch(/^[\x20-\x7e\n]*$/);
   });
 
-  it("gives a long folder its room at 120 columns and nothing else moves", () => {
-    const wide = formatHome(IN_PROJECT, at(120));
-    expect(wide.split("\n")[6]).toBe(String.raw`     ▀████▀       Folder      D:\Photos\2026\Iceland 2026\Day 3 glacier lagoon\selects`);
-    const narrowLines = formatHome(IN_PROJECT, at(80)).split("\n");
-    expect(wide.split("\n").filter((_, i) => i !== 6)).toEqual(narrowLines.filter((_, i) => i !== 6));
-
-    expect(formatHome(IN_PROJECT, at(120, { unicode: false })).split("\n")[6])
-      .toBe(String.raw`     |====|       Folder      D:\Photos\2026\Iceland 2026\Day 3 glacier lagoon\selects`);
+  it("shortens a long folder from the left to fit, and nothing else moves", () => {
+    const deep = { ...IN_PROJECT, cwd: `${ROOT}\\${"deeper\\".repeat(12)}selects` };
+    const folderAt = LOGO_LINES.length + 5;
+    const narrow = formatHome(deep, at(80)).split("\n");
+    expect(narrow[folderAt]).toMatch(/^ {2}Folder {6}….*\\selects$/);
+    expect(visibleWidth(narrow[folderAt])).toBeLessThanOrEqual(80);
+    const wide = formatHome(deep, at(120)).split("\n");
+    expect(wide.filter((_, i) => i !== folderAt)).toEqual(narrow.filter((_, i) => i !== folderAt));
   });
 
-  it("stacks under a one-line lamp below 60 columns", () => {
-    expect(formatHome(IN_PROJECT, at(40))).toBe(screen(
+  it("leaves the logo out where it doesn't fit", () => {
+    expect(formatHome(IN_PROJECT, at(LOGO_ART_WIDTH + 3))).toContain(LOGO_LINES[0]);
+    expect(formatHome(IN_PROJECT, at(LOGO_ART_WIDTH + 2)).split("\n")[1]).toBe("● Safelight Unplugged 3.3.0");
+  });
+
+  it("stacks under a one-line lamp where the logo doesn't fit", () => {
+    expect(formatHome(IN_PROJECT, at(NARROW))).toBe(screen(
       "",
       "● Safelight Unplugged 3.3.0",
       "",
@@ -125,7 +119,7 @@ describe("formatHome", () => {
       "  exit to leave",
       "",
     ));
-    expect(formatHome(IN_PROJECT, at(40, { unicode: false }))).toBe(screen(
+    expect(formatHome(IN_PROJECT, at(NARROW, { unicode: false }))).toBe(screen(
       "",
       "(o) Safelight Unplugged 3.3.0",
       "",
@@ -148,14 +142,14 @@ describe("formatHome", () => {
   it("says where to go when the folder is in no project, and that the app hasn't shared its settings", () => {
     expect(formatHome(NOWHERE, at(80))).toBe(screen(
       "",
-      "    ▄▄████▄▄",
-      "  ▄██████████▄    Safelight",
-      "  ████████████    Unplugged 3.3.0",
-      "  ▀██████████▀",
-      "   ▀████████▀     Project     no project here: cd into a folder Safelight opened",
-      String.raw`     ▀████▀       Folder      C:\Users\sam`,
-      "      ████        Graphics    not known yet",
-      "       ▀▀         Extensions  0 installed",
+      ...LOGO_LINES,
+      "",
+      "  Safelight Unplugged 3.3.0",
+      "",
+      "  Project     no project here: cd into a folder Safelight opened",
+      String.raw`  Folder      C:\Users\sam`,
+      "  Graphics    not known yet",
+      "  Extensions  0 installed",
       "",
       "  ! Safelight hasn't shared its settings yet. Open the app once, then come back.",
       "",
@@ -166,7 +160,7 @@ describe("formatHome", () => {
       "    exit to leave",
       "",
     ));
-    expect(formatHome(NOWHERE, at(40, { unicode: false }))).toBe(screen(
+    expect(formatHome(NOWHERE, at(NARROW, { unicode: false }))).toBe(screen(
       "",
       "(o) Safelight Unplugged 3.3.0",
       "",
@@ -192,7 +186,7 @@ describe("formatHome", () => {
   it("warns when Safelight has the project open", () => {
     const text = formatHome({ ...IN_PROJECT, guiHasProjectOpen: true, extensions: { installed: 1, updates: 0 } }, at(80));
     expect(text).toContain([
-      "       ▀▀         Extensions  1 installed · up to date",
+      "  Extensions  1 installed · up to date",
       "",
       "  ! Safelight has this project open, so changes here will be refused. Close it",
       "    there to edit.",
@@ -208,34 +202,23 @@ describe("formatHome", () => {
     expect(text).toContain("3 installed · 1 update\n");
   });
 
-  it("paints the bulb in the brand red with 24-bit colour: red for the globe only, amber for the update", () => {
-    expect(formatHome(IN_PROJECT, at(80, { colour: true, trueColour: true }))).toBe(screen(
-      "",
-      `    ${BRAND}▄▄████▄▄${FG}`,
-      `  ${BRAND}▄██████████▄${FG}    ${B}Safelight${N}`,
-      `  ${BRAND}████████████${FG}    ${D}Unplugged 3.3.0${N}`,
-      `  ${BRAND}▀██████████▀${FG}`,
-      `   ${BRAND_SHADE}▀████████▀${FG}     ${D}Project${N}     Iceland 2026${D} · ${N}${D}412 photos${N}${D} · ${N}${D}87 edited${N}`,
-      String.raw`     ${BRAND_SHADE}▀████▀${FG}       ${D}Folder${N}      ${D}…os\2026\Iceland 2026\Day 3 glacier lagoon\selects${N}`,
-      `      ${D}████${N}        ${D}Graphics${N}    d3d11`,
-      `       ${D}▀▀${N}         ${D}Extensions${N}  14 installed${D} · ${N}${AMBER}2 updates${FG}`,
-      "",
-      `  ${D}Try${N}`,
-      `    photos                       ${D}list this project's photos${N}`,
-      `    tools <photo>                ${D}a photo's tools and values${N}`,
-      `    set <photo> exposure=+0.5    ${D}change a value${N}`,
-      `    help                         ${D}every command${N}`,
-      `    exit ${D}to leave${N}`,
-      "",
-    ));
+  it("paints the globe in the brand red with its shade, the lettering and base bold and the caption dim, with amber only for the update", () => {
+    const text = formatHome(IN_PROJECT, at(80, { colour: true, trueColour: true }));
+    expect(text).toContain(`${BRAND}---${FG}${BRAND_SHADE}..........${FG}`);
+    expect(text).toContain(`${B}##+######${N}`);
+    expect(text).toContain(`${B}/___/\\_,_/_/${N}`);
+    expect(text).toContain(`${D}u${N} ${D}n${N}`);
+    expect(text).toContain(`${AMBER}2 updates${FG}`);
+    const belowLogo = text.split("\n").slice(1 + LOGO_LINES.length).join("\n");
+    expect(belowLogo).not.toContain(BRAND);
+    expect(belowLogo).not.toContain(BRAND_SHADE);
   });
 
   it("falls back to the 256-colour reds", () => {
     const text = formatHome(IN_PROJECT, at(80, { colour: true }));
-    expect(text).toContain(`  ${RED}████████████${FG}`);
-    expect(text).toContain(`   ${RED_SHADE}▀████████▀${FG}`);
+    expect(text).toContain(`${RED}---${FG}${RED_SHADE}..........${FG}`);
     expect(text).not.toContain("38;2;");
-    expect(formatHome(IN_PROJECT, at(40, { colour: true })).split("\n")[1])
+    expect(formatHome(IN_PROJECT, at(NARROW, { colour: true })).split("\n")[1])
       .toBe(`${RED}●${FG} ${B}Safelight${N} ${D}Unplugged 3.3.0${N}`);
   });
 
@@ -264,13 +247,6 @@ describe("formatHome", () => {
     }
   });
 
-  it("keeps the bulb within 9 rows and 16 columns", () => {
-    for (const unicode of [true, false]) {
-      const rows = formatHome(IN_PROJECT, at(80, { unicode })).split("\n").slice(1, 9).map((line) => line.slice(2, 14));
-      expect(rows.every((row) => row.trim() !== "")).toBe(true);
-      expect(formatHome(IN_PROJECT, at(80, { unicode })).split("\n")[9]).toBe("");
-    }
-  });
 });
 
 describe("formatPrompt", () => {

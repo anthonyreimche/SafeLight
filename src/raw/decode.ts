@@ -4,14 +4,19 @@
 // be preserved in derived versions.
 
 // RAW decode orchestrator. Decodes a RAW file to a full-precision linear float
-// image (decodeRawToFloat) or an 8-bit bitmap (decodeRawToBitmap), choosing the
-// best available path:
+// image (decodeRawToFloat) or an 8-bit bitmap (decodeRawToBitmap). The float
+// decode walks the decoders the person ordered for the file's format
+// (catalog/image-decoders.ts), and the first to give an image wins:
 //
-//   1. libraw (handles everything, best colour science): the bundled
-//      libraw-wasm for the float image, a registered build for the bitmap
-//   2. the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG)
-//   3. no image: the float decode says why (DecodeFailure), the bitmap decode
-//      answers null, and the caller falls back to the embedded JPEG preview
+//   - core's: libraw (handles everything, best colour science), and behind it
+//     the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG);
+//   - an extension's (api.library.registerDecoder): its linear frame is
+//     finished as libraw's is, off the main thread (frame-job.ts).
+//
+// When none gives one the float decode says why (DecodeFailure) and the caller
+// falls back to the embedded JPEG preview. The bitmap decode is the in-house
+// decoder alone, and leaves a file an extension's decoder leads for to the
+// float decode.
 //
 // Compressed sensor data (e.g. Nikon NEF lossless) needs libraw; without it the
 // preview is shown, so RAW files always display.
@@ -32,22 +37,51 @@ import {
   type DevelopOptions,
 } from "./pixels";
 import { MAX_DECODE_PIXELS } from "./decode-limits";
-import { getLibRaw } from "./libraw";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
+import { finishLinearFrame, isAbandoned } from "./frame-bridge";
+import type { BuiltFrame } from "./frame-job";
+import { decoderMarkerId } from "./raw-cache";
+import {
+  chainSignature,
+  decoderChain,
+  formatOf,
+  runExtensionDecoder,
+  type ChainEntry,
+  type ExtensionChainEntry,
+} from "@/catalog/image-decoders";
+import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
+import type { DecodedImageResult } from "@/extensions/api/library";
 import type { DecodeRequest } from "./decode-pool";
 import type { DecodeFailure, RawFloatImage } from "./decode-result";
 
 export type { DecodeFailure, RawFloatImage };
 
+/** What a float decode is asked: libraw's request, and what the file's other
+ *  decoders take besides. */
+export interface RawDecodeRequest extends DecodeRequest {
+  /** The photo's as-shot white balance multipliers, green at 1, when known:
+   *  an extension's decoder balances the frame by them. */
+  asShotMultipliers?: readonly [number, number, number];
+  /** The photo's EXIF orientation tag, when it has one: an extension's frame
+   *  that isn't upright is turned upright by it along with `turn`, so the frame
+   *  and its cache entry come out as libraw's do. */
+  orientation?: number;
+  /** Decoders whose final verdict on the file is "unsupported", by marker id
+   *  (raw-cache.ts decoderMarkerId): the decode passes them by. */
+  ruledOut?: ReadonlySet<string>;
+}
+
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
 
-// A file libraw gave no answer for holds a decoder for the whole time limit,
-// so background work (the "Cache all" pass, the preview repair, Develop's
-// prefetch) tries it once a session. It also leaves a file alone while a decode
-// of it is under way, which fills the cache itself. A photo the user opens is
-// always decoded. A file is told apart by its path (its name when the caller
-// gives none), size and modification time. Only the latest unanswered files
-// are kept; one that later decodes is forgotten.
+// A file a decoder gave no answer for holds that decoder for its whole time
+// limit, so background work (the "Cache all" pass, the preview repair,
+// Develop's prefetch) asks that decoder about it once a session; the file's
+// other decoders are still asked. Background work also leaves a file alone
+// while any decode of it is under way, which fills the cache itself. A photo
+// the user opens is always decoded. A file is told apart by its path (its name
+// when the caller gives none), size and modification time, and a decoder's
+// answers by the file and the decoder (answerKey). Only the latest unanswered
+// ones are kept; one that later decodes is forgotten.
 const UNANSWERED_LIMIT = 256;
 const decoding = new Map<string, number>();
 const unanswered = new Set<string>();
@@ -59,7 +93,9 @@ type Decoded = RawFloatImage | DecodeFailure;
 // abandons the prefetch); libraw can't be stopped, so the decode would end for
 // nobody. A photo opened meanwhile takes it over instead of decoding the file
 // again from the start. Only a decode nobody waits for is taken over: its
-// frame's buffers go to one caller.
+// frame's buffers go to one caller. An extension's decoder is stopped when its
+// caller leaves, so a decode taken over then answers "aborted" and the photo
+// decodes for itself.
 interface Flight {
   /** What was asked of the decode, as far as its frame depends on it. */
   asked: string;
@@ -72,8 +108,15 @@ const flights = new Map<string, Flight>();
 
 const ABORTED: DecodeFailure = { failure: "aborted" };
 
-function askedOf(request: DecodeRequest | undefined): string {
-  return [request?.targetEdge ?? 0, request?.turn ?? 0, request?.cacheEdge ?? 0].join(":");
+const LIBRAW: ChainEntry = { id: "libraw", owner: "core", label: "Built-in" };
+
+/** What a decode by `chain` is asked, as far as its frame depends on it: an
+ *  extension's decoder among the chain's makes it depend on the decoders and
+ *  the photo's orientation too. */
+function askedOf(request: RawDecodeRequest | undefined, chain: RawChain): string {
+  const asked = [request?.targetEdge ?? 0, request?.turn ?? 0, request?.cacheEdge ?? 0].join(":");
+  if (!chain.entries.some(isExtension)) return asked;
+  return `${asked}:${orientationToRotation(request?.orientation)}:${chain.signature}`;
 }
 
 /** Whether nobody waits on a decode any more: its caller has left, and no other
@@ -86,9 +129,9 @@ function abandoned(request: DecodeRequest | undefined): boolean {
 
 /** The decode of file `id` that `request` takes over, if one is running for
  *  nobody and makes the frame it asks for: its answer, once it has one. */
-function takeOver(id: string, request: DecodeRequest | undefined): Promise<Decoded> | null {
+function takeOver(id: string, request: RawDecodeRequest | undefined, chain: RawChain): Promise<Decoded> | null {
   const flight = flights.get(id);
-  if (!flight?.signal?.aborted || flight.asked !== askedOf(request)) return null;
+  if (!flight?.signal?.aborted || flight.asked !== askedOf(request, chain)) return null;
   if (flight.heir && !flight.heir.signal?.aborted) return null;
   flight.heir?.answer(ABORTED);
   return new Promise((answer) => {
@@ -102,39 +145,69 @@ function fileId(file: Blob, path?: string): string | undefined {
     : undefined;
 }
 
-function markUnanswered(id: string): void {
-  unanswered.delete(id);
-  unanswered.add(id);
+const isExtension = (entry: ChainEntry): entry is ExtensionChainEntry => "decoder" in entry;
+
+/** How the answers of `entry` on file `id` are remembered: libraw's under the
+ *  file's id alone. */
+function answerKey(id: string, entry: ChainEntry): string {
+  return isExtension(entry) ? `${id}|${decoderMarkerId(entry)}` : id;
+}
+
+function markUnanswered(key: string): void {
+  unanswered.delete(key);
+  unanswered.add(key);
   if (unanswered.size > UNANSWERED_LIMIT) {
     const oldest = unanswered.values().next().value;
     if (oldest !== undefined) unanswered.delete(oldest);
   }
 }
 
+/** The decoders that read a RAW, in the person's order, and their signature
+ *  (image-decoders.ts chainSignature): "" while libraw leads. */
+interface RawChain {
+  entries: readonly ChainEntry[];
+  signature: string;
+}
+
+/** The decoders that read the RAW named `name`; libraw alone for a name no RAW
+ *  format claims. */
+function rawChain(name: string): RawChain {
+  const format = formatOf(name);
+  const entries = format?.raw ? decoderChain(format.id) : [];
+  if (!format?.raw || entries.length === 0) return { entries: [LIBRAW], signature: "" };
+  return { entries, signature: chainSignature(format.id) };
+}
+
 // Decode to a full-precision LINEAR float image, for the high-bit-depth editing
-// pipeline. libraw handles every compression; the in-house fallback only
-// uncompressed CFA. When neither yields an image, the caller falls back to the
-// camera's embedded preview. `bytes`: the file's, for a caller that goes on
-// using them, either read already or read by the function given, which is
-// called only once the decode goes ahead; they are left intact.
+// pipeline, by the file's decoders in turn (see the header). When none yields
+// an image, the caller falls back to the camera's embedded preview. `path`: the
+// photo's, which names its format and tells files apart. `bytes`: the file's,
+// for a caller that goes on using them, either read already or read by the
+// function given, which is called only once libraw's decode goes ahead; they
+// are left intact.
 export async function decodeRawToFloat(
   file: Blob,
-  request?: DecodeRequest,
+  request?: RawDecodeRequest,
   path?: string,
   bytes?: ArrayBuffer | (() => Promise<ArrayBuffer>),
 ): Promise<RawFloatImage | DecodeFailure> {
   if (request?.signal?.aborted) return { failure: "aborted" };
+  const name = path ?? (file instanceof File ? file.name : "");
+  const chain = rawChain(name);
+  const ruledOut = request?.ruledOut;
+  const tried = ruledOut ? chain.entries.filter((entry) => !ruledOut.has(decoderMarkerId(entry))) : chain.entries;
+  const decoders = { tried, extended: chain.entries.some(isExtension), signature: chain.signature };
   const id = fileId(file, path);
-  if (id === undefined) return decodeFloat(file, request, undefined, bytes);
+  if (id === undefined) return decodeFloat(file, name, decoders, request, undefined, bytes);
   if (request?.background) {
-    const reason = unanswered.has(id)
+    const reason = tried.length > 0 && tried.every((entry) => unanswered.has(answerKey(id, entry)))
       ? "no answer earlier this session"
       : decoding.has(id)
         ? "being decoded already"
         : undefined;
     if (reason) return { failure: "transient", reason, passedOver: true };
   } else {
-    const taken = takeOver(id, request);
+    const taken = takeOver(id, request, chain);
     if (taken) {
       const decoded = await taken;
       // A decode still waiting for a decoder when its caller left has left the
@@ -143,12 +216,12 @@ export async function decodeRawToFloat(
       if (!dropped || request?.signal?.aborted) return decoded;
     }
   }
-  const flight: Flight = { asked: askedOf(request), signal: request?.signal, heir: null };
+  const flight: Flight = { asked: askedOf(request, chain), signal: request?.signal, heir: null };
   // Of two decodes of one file begun side by side, the first is the one to take over.
   if (!flights.has(id)) flights.set(id, flight);
   decoding.set(id, (decoding.get(id) ?? 0) + 1);
   try {
-    const decoded = await decodeFloat(file, { ...request, heir: () => flight.heir }, id, bytes);
+    const decoded = await decodeFloat(file, name, decoders, { ...request, heir: () => flight.heir }, id, bytes);
     if (!flight.heir) return decoded;
     flight.heir.answer(flight.heir.signal?.aborted ? ABORTED : decoded);
     return ABORTED;
@@ -160,11 +233,64 @@ export async function decodeRawToFloat(
   }
 }
 
+/** The file by the decoders `tried`. While libraw's is the file's only
+ *  decoder the answer is libraw's as it gave it; once an extension's is among
+ *  them (`extended`), an image names the decoder that made it and the chain's
+ *  `signature`, and a failure each decoder that found nothing usable. */
 async function decodeFloat(
   file: Blob,
-  request?: DecodeRequest,
-  id?: string,
-  bytes?: ArrayBuffer | (() => Promise<ArrayBuffer>),
+  name: string,
+  { tried: chain, extended, signature }: { tried: readonly ChainEntry[]; extended: boolean; signature: string },
+  request: RawDecodeRequest | undefined,
+  id: string | undefined,
+  bytes: ArrayBuffer | (() => Promise<ArrayBuffer>) | undefined,
+): Promise<RawFloatImage | DecodeFailure> {
+  if (chain.length === 0) {
+    return { failure: "unsupported", reason: "every decoder has failed on this file before", unsupportedBy: [] };
+  }
+  if (!extended) return decodeWithLibRaw(file, request, id, bytes);
+  const unsupportedBy: string[] = [];
+  const failures: DecodeFailure[] = [];
+  let skipped = false;
+  for (const entry of chain) {
+    const key = id === undefined ? undefined : answerKey(id, entry);
+    if (request?.background && key !== undefined && unanswered.has(key)) {
+      skipped = true;
+      continue;
+    }
+    const decoded = isExtension(entry)
+      ? await decodeWithExtension(entry, file, name, request, key)
+      : await decodeWithLibRaw(file, request, id, bytes);
+    const decoder = decoderMarkerId(entry);
+    if (!("failure" in decoded)) {
+      return {
+        ...decoded,
+        decoder,
+        ...(unsupportedBy.length > 0 ? { unsupportedBy } : {}),
+        ...(signature ? { signature } : {}),
+      };
+    }
+    if (decoded.failure === "aborted" || abandoned(request)) return ABORTED;
+    if (decoded.failure === "unsupported") unsupportedBy.push(decoder);
+    failures.push(decoded);
+  }
+  // A decoder passed by for having given no answer may still answer later.
+  const unsupported = !skipped && failures.every((f) => f.failure === "unsupported");
+  const reason = failures.flatMap((f) => (f.reason ? [f.reason] : [])).join("; ");
+  return {
+    failure: unsupported ? "unsupported" : "transient",
+    ...(reason ? { reason } : {}),
+    ...(failures.some((f) => f.timedOut) ? { timedOut: true } : {}),
+    ...(unsupported && failures.some((f) => f.tooLarge) ? { tooLarge: true } : {}),
+    unsupportedBy,
+  };
+}
+
+async function decodeWithLibRaw(
+  file: Blob,
+  request: DecodeRequest | undefined,
+  id: string | undefined,
+  bytes: ArrayBuffer | (() => Promise<ArrayBuffer>) | undefined,
 ): Promise<RawFloatImage | DecodeFailure> {
   let buffer: ArrayBuffer;
   try {
@@ -202,6 +328,88 @@ async function decodeFloat(
   }
 }
 
+type LinearImage = Extract<DecodedImageResult, { kind: "linear" }>;
+
+const positive = (v: unknown): v is number => typeof v === "number" && v > 0 && Number.isFinite(v);
+
+/** What an extension's decoder reported of the photo, as far as it is usable. */
+function reportedOf(image: LinearImage): Pick<RawFloatImage, "asShotMultipliers" | "colorTemperature" | "rawExposureBias"> {
+  const m = image.asShotMultipliers;
+  const bias = image.rawExposureBias;
+  return {
+    ...(Array.isArray(m) && m.length === 3 && m.every(positive) ? { asShotMultipliers: [m[0], m[1], m[2]] } : {}),
+    ...(positive(image.colorTemperature) ? { colorTemperature: image.colorTemperature } : {}),
+    ...(typeof bias === "number" && Number.isFinite(bias) && bias !== 0 ? { rawExposureBias: bias } : {}),
+  };
+}
+
+const frameSide = (v: unknown, decoded: number): number => (Number.isInteger(v) && positive(v) ? v : decoded);
+
+/** The file by an extension's decoder: its frame finished as libraw's is, and
+ *  what it reported of the photo. `key`: how its answers on the file are
+ *  remembered (answerKey). A decoder that answers nothing, throws, or answers
+ *  an image core can't use has found nothing usable in the file. */
+async function decodeWithExtension(
+  entry: ExtensionChainEntry,
+  file: Blob,
+  name: string,
+  request: RawDecodeRequest | undefined,
+  key: string | undefined,
+): Promise<RawFloatImage | DecodeFailure> {
+  const outcome = await runExtensionDecoder(entry, file, {
+    name,
+    ...(request?.targetEdge ? { targetEdge: request.targetEdge } : {}),
+    // The cache entry's centre sample and a frame read at native resolution
+    // need the whole frame.
+    fullSize: !request?.targetEdge || request.cacheEdge !== undefined,
+    ...(request?.asShotMultipliers ? { asShotMultipliers: request.asShotMultipliers } : {}),
+    background: request?.background ?? false,
+    ...(request?.signal ? { signal: request.signal } : {}),
+  });
+  if (!outcome.ok) {
+    if (outcome.aborted) return ABORTED;
+    if (!outcome.timedOut) return { failure: "unsupported", reason: outcome.reason };
+    if (key !== undefined) markUnanswered(key);
+    return { failure: "transient", reason: outcome.reason, timedOut: true };
+  }
+  if (key !== undefined) unanswered.delete(key);
+  const { image } = outcome;
+  if (image.kind !== "linear") return { failure: "unsupported", reason: `${entry.label} answered 8-bit pixels` };
+  const turn = request?.turn ? normalizeRotation(request.turn) : 0;
+  // A frame left as the sensor lay is turned upright here, as libraw's is.
+  const uprights = image.oriented !== true && request?.orientation !== undefined;
+  const upright = uprights ? orientationToRotation(request?.orientation) : 0;
+  let built: BuiltFrame;
+  try {
+    built = await finishLinearFrame(
+      {
+        pixels: image.data,
+        width: image.width,
+        height: image.height,
+        turn: normalizeRotation(upright + turn),
+        cacheEdge: request?.cacheEdge,
+      },
+      { background: request?.background, signal: request?.signal },
+    );
+  } catch (e) {
+    if (isAbandoned(e)) return ABORTED;
+    return { failure: "transient", reason: `${entry.label}: the frame couldn't be finished (${describeError(e)})` };
+  }
+  const sourceWidth = frameSide(image.sourceWidth, image.width);
+  const sourceHeight = frameSide(image.sourceHeight, image.height);
+  const reduced = sourceWidth > image.width || sourceHeight > image.height;
+  return {
+    data: built.data,
+    width: built.width,
+    height: built.height,
+    oriented: image.oriented === true || uprights,
+    ...reportedOf(image),
+    ...(reduced ? { halfSize: true, sourceWidth, sourceHeight } : {}),
+    ...(turn ? { turned: turn } : {}),
+    ...(built.entry ? { entry: built.entry } : {}),
+  };
+}
+
 const describeError = (e: unknown): string =>
   e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 
@@ -214,11 +422,16 @@ function isTiffStream(buffer: ArrayBuffer): boolean {
   return view.getUint16(2, order === 0x4949) === 42;
 }
 
-/** `bytes`: the file's, read already by the caller, as decodeRawToFloat takes them. */
+/** The in-house decode of uncompressed CFA data (sensor-native orientation),
+ *  or null: for a file it can't take, and for one an extension's decoder leads
+ *  for, which the float decode reads. `bytes`: the file's, read already by the
+ *  caller, as decodeRawToFloat takes them. */
 export async function decodeRawToBitmap(
   file: Blob,
   bytes?: ArrayBuffer,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
+  const [head] = rawChain(file instanceof File ? file.name : "").entries;
+  if (head && isExtension(head)) return null;
   let buffer: ArrayBuffer;
   try {
     buffer = bytes ?? (await file.arrayBuffer());
@@ -226,21 +439,6 @@ export async function decodeRawToBitmap(
     return null;
   }
 
-  // 1. Prefer a real libraw build if one is registered.
-  const lib = await getLibRaw();
-  if (lib) {
-    try {
-      const d = await lib.decode(buffer);
-      if (d && d.rgba.length >= d.width * d.height * 4) {
-        const bitmap = await rgbaToBitmap(d.rgba, d.width, d.height);
-        return { bitmap, oriented: true };
-      }
-    } catch {
-      // fall through to the in-house path
-    }
-  }
-
-  // 2. In-house decode of uncompressed CFA data (sensor-native orientation).
   try {
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
@@ -251,8 +449,6 @@ export async function decodeRawToBitmap(
   } catch {
     // not a TIFF stream we understand
   }
-
-  // 3. Let the caller fall back to the embedded preview.
   return null;
 }
 
@@ -419,7 +615,7 @@ async function rgbaToBitmap(
   height: number,
 ): Promise<ImageBitmap> {
   // Allocate an ArrayBuffer-backed ImageData and copy in, so any source buffer
-  // type (in-house result, or a libraw view into WASM memory) is accepted.
+  // type is accepted.
   const image = new ImageData(width, height);
   image.data.set(rgba.subarray(0, image.data.length));
   return createImageBitmap(image);

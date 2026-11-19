@@ -6,6 +6,7 @@
 // Finds the project a photo belongs to and opens its catalogue for reading or,
 // under the writer lock, for writing (cli-plumbing §1.3-1.4).
 
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
@@ -24,17 +25,14 @@ import {
 const CATALOG_FILE = "catalog.json";
 const LOCK_POLL_MS = 200;
 
-/** A drive or volume root, a network share, or a home folder: the same places the
- *  app refuses to make a project of (`holdsTooMuch` in project-store.ts). */
-function holdsTooMuch(dir: string): boolean {
+/** What a drive or volume root, a network share or a home folder is: the places the app
+ *  refuses to make a project of (`holdsTooMuch` in project-store.ts). Null for any other folder. */
+export function tooBroad(dir: string): "drive" | "share" | "home" | null {
   const p = dir.replace(/\\/g, "/").replace(/(?!^)\/+/g, "/").replace(/\/$/, "");
-  return (
-    /^([A-Za-z]:)?$/.test(p) ||
-    /^\/\/[^/]+\/[^/]+$/.test(p) ||
-    /^([A-Za-z]:)?\/(home|Users)\/[^/]+$/i.test(p) ||
-    /^\/(Volumes|mnt)\/[^/]+$/.test(p) ||
-    /^\/(run\/)?media\/[^/]+\/[^/]+$/.test(p)
-  );
+  if (/^([A-Za-z]:)?$/.test(p) || /^\/(Volumes|mnt)\/[^/]+$/.test(p) || /^\/(run\/)?media\/[^/]+\/[^/]+$/.test(p)) return "drive";
+  if (/^\/\/[^/]+\/[^/]+$/.test(p)) return "share";
+  if (/^([A-Za-z]:)?\/(home|Users)\/[^/]+$/i.test(p)) return "home";
+  return null;
 }
 
 /** The name key a photo's relPath is matched by: forward slashes, NFC, and folded
@@ -52,6 +50,15 @@ const NO_IMPORT: ProjectStorageDeps = {
   persistPreviews: () => false,
   emitPhotoImport: async () => null,
 };
+
+/** The grid preview the app stored for a photo (previews/<id>.jpg), or null when there is none or the
+ *  photo was turned since it was made. It is JPEG, and shows what the grid shows. */
+export function previewFileFor(workingDir: string, photo: Pick<CatalogPhoto, "id" | "rotation" | "previewRotation">): string | null {
+  const turn = photo.rotation ?? 0;
+  if ((photo.previewRotation ?? turn) !== turn) return null;
+  const file = path.join(workingDir, "previews", `${photo.id}.jpg`);
+  return existsSync(file) ? file : null;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -85,6 +92,10 @@ class Session implements WriteSession {
     return this.byRelPath.get(relKey(relPath, this.foldCase));
   }
 
+  previewFile(photo: CatalogPhoto): string | null {
+    return previewFileFor(this.project.workingDir, photo);
+  }
+
   edit(photoId: string): Promise<EditState | undefined> {
     return this.storage.getEditState(photoId);
   }
@@ -95,6 +106,10 @@ class Session implements WriteSession {
 
   async putPhotos(photos: CatalogPhoto[]): Promise<void> {
     await this.storage.putPhotos(photos);
+  }
+
+  async removePhotos(ids: string[]): Promise<void> {
+    await this.storage.deletePhotos(ids);
   }
 
   /** Writes what was stored, then waits until the storage is done with the file
@@ -166,7 +181,7 @@ export function createProjectService(env: CliEnv, bridge: NativeFsBridge): Proje
       const isFolder = await stat(dir).then((s) => s.isDirectory(), () => false);
       if (!isFolder) dir = path.dirname(dir);
       for (;;) {
-        if (!holdsTooMuch(dir)) {
+        if (tooBroad(dir) === null) {
           const project = await projectAt(dir);
           if (project) return project;
         }

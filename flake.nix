@@ -93,6 +93,7 @@
                 "image/png"
                 "image/tiff"
                 "image/webp"
+                "image/heic"
                 "image/x-adobe-dng"
                 "image/x-nikon-nef"
                 "image/x-canon-cr2"

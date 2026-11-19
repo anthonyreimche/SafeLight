@@ -20,6 +20,7 @@ import {
   addUserLayout,
   applyDockLayout,
   initDockLayouts,
+  reopenClosedDockPanel,
   toggleDockPanel,
   toggleDockPanelFloating,
   toggleDockSide,
@@ -38,6 +39,7 @@ import {
   registerPanel,
   registerPanelHeaderAccessory,
   unregisterExtension,
+  unregisterPanel,
   useRegistry,
 } from "./registry";
 import { registerEssentialModules } from "@/test/essential-modules.test-support";
@@ -660,6 +662,144 @@ describe("reopening a panel", () => {
     expect(rails()).toEqual([
       { id: expect.any(String), side: "bottom", width: 280, height: 112, panels: ["ext.strip"] },
     ]);
+    close();
+  });
+});
+
+describe("reopening the last closed panel", () => {
+  const seed = (layout: object) => localStorage.setItem(LAYOUT_KEY, JSON.stringify({ floating: {}, zOrder: [], collapsed: {}, ...layout }));
+
+  async function closeFromHeader(view: { container: HTMLElement }, title: string) {
+    const button = view.container.querySelector(`button[aria-label="Close ${title} panel"]`)!;
+    await userEvent.click(button);
+  }
+
+  beforeEach(() => useDockStore.setState({ closed: [] }));
+
+  it("puts a panel closed from its header back at its place in the rail", async () => {
+    for (const id of ["x.a", "x.b", "x.c"]) panel(id);
+    seed({ rails: [{ id: "right-1", side: "right", width: 300, panels: ["x.a", "x.b", "x.c"] }] });
+    const { close, view } = boot();
+
+    await closeFromHeader(view, "x.b");
+    expect(rails()[0].panels).toEqual(["x.a", "x.c"]);
+
+    act(() => void reopenClosedDockPanel());
+    expect(rails()).toEqual([{ id: "right-1", side: "right", width: 300, panels: ["x.a", "x.b", "x.c"] }]);
+    close();
+  });
+
+  it("rebuilds the rail it was alone in, at the same width and position", async () => {
+    panel("x.a");
+    panel("x.b");
+    seed({
+      rails: [
+        { id: "left-1", side: "left", width: 320, panels: ["x.a"] },
+        { id: "left-2", side: "left", width: 260, panels: ["x.b"] },
+      ],
+    });
+    const { close, view } = boot();
+
+    await closeFromHeader(view, "x.a");
+    act(() => void reopenClosedDockPanel());
+    expect(rails().map((r) => [r.side, r.width, r.panels])).toEqual([
+      ["left", 320, ["x.a"]],
+      ["left", 260, ["x.b"]],
+    ]);
+    close();
+  });
+
+  it("puts a floating window back where it was", async () => {
+    panel("x.f");
+    seed({ rails: [], floating: { "x.f": { x: 140, y: 90, width: 360 } }, zOrder: ["x.f"] });
+    const { close, view } = boot();
+
+    await closeFromHeader(view, "x.f");
+    expect(useDockStore.getState().open).toEqual([]);
+    act(() => void reopenClosedDockPanel());
+    expect(useDockStore.getState().floating).toEqual({ "x.f": { x: 140, y: 90, width: 360 } });
+    expect(useDockStore.getState().zOrder).toEqual(["x.f"]);
+    close();
+  });
+
+  it("reopens the most recent close first, then the one before", () => {
+    panel("x.a");
+    panel("x.b");
+    seed({ rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a", "x.b"] }] });
+    const { close } = boot();
+
+    act(() => toggleDockPanelFloating("x.a"));
+    act(() => toggleDockPanelFloating("x.b"));
+    let reopened: string | null = null;
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBe("x.b");
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBe("x.a");
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBeNull();
+    expect(rails()[0].panels).toEqual(["x.a", "x.b"]);
+    close();
+  });
+
+  it("records a panel an extension closes through togglePanel", () => {
+    panel("x.a", { defaultDock: { module: "develop", direction: "right" } });
+    const { close } = boot();
+
+    act(() => toggleDockPanel("x.a"));
+    expect(useDockStore.getState().open).toEqual([]);
+    act(() => void reopenClosedDockPanel());
+    expect(useDockStore.getState().open).toEqual(["x.a"]);
+    close();
+  });
+
+  it("skips a panel that is open again or whose extension is gone", () => {
+    panel("x.a");
+    panel("x.b");
+    registerPanel("other-ext", { id: "x.gone", title: "x.gone", component: Empty });
+    seed({ rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a", "x.b", "x.gone"] }] });
+    const { close } = boot();
+
+    act(() => toggleDockPanelFloating("x.a"));
+    act(() => toggleDockPanelFloating("x.b"));
+    act(() => toggleDockPanelFloating("x.gone"));
+    act(() => unregisterExtension("other-ext"));
+    act(() => toggleDockPanelFloating("x.b"));
+
+    let reopened: string | null = null;
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBe("x.a");
+    close();
+  });
+
+  it("only reopens panels closed in the current module", () => {
+    panel("x.a");
+    seed({ rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a"] }] });
+    let session = boot();
+    act(() => toggleDockPanelFloating("x.a"));
+    session.close();
+
+    session = boot("library");
+    let reopened: string | null = "";
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBeNull();
+    session.close();
+
+    session = boot();
+    act(() => void (reopened = reopenClosedDockPanel()));
+    expect(reopened).toBe("x.a");
+    session.close();
+  });
+
+  it("shows the side it reopens on when that side is hidden", () => {
+    panel("x.a");
+    panel("x.b");
+    seed({ rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a", "x.b"] }] });
+    const { close } = boot();
+
+    act(() => toggleDockPanelFloating("x.a"));
+    act(() => toggleDockSide("right"));
+    act(() => void reopenClosedDockPanel());
+    expect(useDockStore.getState().hidden.right).toBe(false);
     close();
   });
 });
@@ -1525,5 +1665,29 @@ describe("hiding panels", () => {
       floating: false,
     });
     next.close();
+  });
+});
+
+// A panel its extension unregisters is treated as one whose extension is off:
+// the layout keeps its place, and registering it again puts it back there.
+describe("a panel its extension unregisters", () => {
+  it("keeps its place in the layout, shown as a disabled extension's panel is, until it is registered again", async () => {
+    panel("x.a");
+    panel("x.f");
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({ rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a", "x.f"] }], floating: {}, zOrder: [], collapsed: {} }),
+    );
+    const { close, view } = boot();
+
+    act(() => unregisterPanel("test-ext", "x.f"));
+    expect(rails()[0].panels).toEqual(["x.a", "x.f"]);
+    expect(view.getByText("Panel “x.f” is disabled or not installed.")).toBeTruthy();
+    await flushSave();
+    expect(saved().rails[0].panels).toEqual(["x.a", "x.f"]);
+
+    act(() => registerPanel("test-ext", { id: "x.f", title: "x.f", component: () => <p>filter body</p> }));
+    expect(view.getByText("filter body")).toBeTruthy();
+    close();
   });
 });

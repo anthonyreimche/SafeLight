@@ -4,7 +4,10 @@ import {
   detectGraphicsMode,
   encodeForTerminal,
   encodePng,
+  encodeItermJpeg,
+  encodeSixel,
   parseProbeReply,
+  speaksIterm,
   supportsTrueColour,
   type TerminalImage,
 } from "./terminal-image";
@@ -12,7 +15,7 @@ import type { CliEnv } from "./types";
 
 function env(vars: Record<string, string> = {}, over: Partial<CliEnv> = {}): CliEnv {
   return {
-    cwd: "/w", userData: "/u", appRoot: "/app", appVersion: "3.3.0", platform: "linux",
+    cwd: "/w", userData: "/u", appRoot: "/app", electronBinary: null, appVersion: "3.3.0", platform: "linux",
     isTTY: { stdin: true, stdout: true, stderr: true },
     env: vars,
     ...over,
@@ -86,6 +89,27 @@ describe("iTerm2 encoder", () => {
   });
 });
 
+describe("iTerm2 JPEG passthrough", () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9]);
+
+  it("sends the file's own bytes at a width in cells", () => {
+    expect(text(encodeItermJpeg(jpeg, 28, env()))).toBe(
+      "\x1b]1337;File=inline=1;size=6;width=28;preserveAspectRatio=1:/9j/4P/Z\x07\n",
+    );
+  });
+
+  it("wraps for tmux", () => {
+    expect(text(encodeItermJpeg(jpeg, 28, env({ TMUX: "x" }))).startsWith("\x1bPtmux;\x1b\x1b]1337;")).toBe(true);
+  });
+
+  it("is spoken only where the environment says iTerm2 or VS Code, never guessed", () => {
+    expect(speaksIterm(env({ TERM_PROGRAM: "iTerm.app" }))).toBe(true);
+    expect(speaksIterm(env({ TERM_PROGRAM: "vscode" }))).toBe(true);
+    expect(speaksIterm(env({ KITTY_WINDOW_ID: "1" }))).toBe(false);
+    expect(speaksIterm(env())).toBe(false);
+  });
+});
+
 describe("encodePng", () => {
   it("writes chunks whose pixels inflate back to the input", () => {
     const png = encodePng(2, 2, RGBA);
@@ -121,9 +145,23 @@ describe("mode detection", () => {
     expect((await detectGraphicsMode(env(vars), undefined, never)).mode).toBe(mode);
   });
 
-  it("never probes on Windows and falls to blocks", async () => {
-    const result = await detectGraphicsMode(env({ WT_SESSION: "x" }, { platform: "win32" }), undefined, never);
-    expect(result.mode).toBe("blocks");
+  it("never probes on Windows without Windows Terminal, or without a terminal on stdin", async () => {
+    expect((await detectGraphicsMode(env({}, { platform: "win32" }), undefined, never)).mode).toBe("blocks");
+    const piped = env({ WT_SESSION: "x" }, { platform: "win32", isTTY: { stdin: false, stdout: true, stderr: true } });
+    expect((await detectGraphicsMode(piped, undefined, never)).mode).toBe("blocks");
+  });
+
+  it("asks Windows Terminal with DA1 and uses sixel when it says 4", async () => {
+    const win = env({ WT_SESSION: "x" }, { platform: "win32" });
+    expect((await detectGraphicsMode(win, undefined, async () => "\x1b[?61;4;6;7c")).mode).toBe("sixel");
+    expect((await detectGraphicsMode(win, undefined, async () => "\x1b[?61;6;7c")).mode).toBe("blocks");
+    expect((await detectGraphicsMode(win, undefined, async () => null)).mode).toBe("blocks");
+  });
+
+  it("prefers kitty over sixel when both answer, and --graphics sixel overrides", async () => {
+    const both = async () => "\x1b_Gi=31;OK\x1b\\\x1b[?62;4c";
+    expect((await detectGraphicsMode(env(), undefined, both)).mode).toBe("kitty");
+    expect((await detectGraphicsMode(env(), "sixel", never)).mode).toBe("sixel");
   });
 
   it("probes on Unix with 150 ms, 500 ms over SSH", async () => {
@@ -140,10 +178,96 @@ describe("mode detection", () => {
   });
 });
 
+/** A reader for the sixel stream, so the encoder is checked by what a terminal would draw. */
+function drawSixel(stream: string, width: number, height: number): { rgba: Uint8Array; colours: number } {
+  const body = /^\x1bP[\d;]*q([\s\S]*)\x1b\\/.exec(stream.trimEnd())?.[1] ?? "";
+  const palette = new Map<number, [number, number, number]>();
+  const rgba = new Uint8Array(width * height * 4);
+  let current = 0;
+  let x = 0;
+  let band = 0;
+  const paint = (bits: number, times: number) => {
+    for (let k = 0; k < times; k++, x++) {
+      for (let bit = 0; bit < 6; bit++) {
+        const y = band * 6 + bit;
+        if (!(bits & (1 << bit)) || y >= height || x >= width) continue;
+        const [r, g, b] = palette.get(current) ?? [0, 0, 0];
+        rgba.set([r, g, b, 255], (y * width + x) * 4);
+      }
+    }
+  };
+  const token = /#(\d+);2;(\d+);(\d+);(\d+)|#(\d+)|!(\d+)(.)|(\$)|(-)|([?-~])|"[\d;]*/g;
+  for (const m of body.matchAll(token)) {
+    if (m[1] !== undefined) palette.set(Number(m[1]), [Math.round(Number(m[2]) * 2.55), Math.round(Number(m[3]) * 2.55), Math.round(Number(m[4]) * 2.55)]);
+    else if (m[5] !== undefined) current = Number(m[5]);
+    else if (m[6] !== undefined) paint(m[7].charCodeAt(0) - 63, Number(m[6]));
+    else if (m[8]) x = 0;
+    else if (m[9]) { x = 0; band++; }
+    else if (m[10]) paint(m[10].charCodeAt(0) - 63, 1);
+  }
+  return { rgba, colours: palette.size };
+}
+
+describe("sixel encoder", () => {
+  const sixel = (width: number, height: number, bytes: Uint8Array) =>
+    text(encodeForTerminal("sixel", { width, height, encoding: "rgba", bytes }, env()));
+
+  it("gives golden bytes for a 2x2 image", () => {
+    expect(sixel(2, 2, RGBA)).toBe(
+      "\x1bP0;1;0q\"1;1;2;2#0;2;100;0;0#1;2;0;100;0#2;2;0;0;100#3;2;100;100;100#0@$#1?@$#2A$#3?A\x1b\\\n",
+    );
+  });
+
+  it("run-length encodes columns of the same sixel and ends each band with a dash", () => {
+    const red = new Uint8Array(8 * 7 * 4);
+    for (let i = 0; i < red.length; i += 4) red.set([255, 0, 0, 255], i);
+    expect(sixel(8, 7, red)).toBe("\x1bP0;1;0q\"1;1;8;7#0;2;100;0;0#0!8~-#0!8@\x1b\\\n");
+  });
+
+  it("leaves transparent pixels undrawn", () => {
+    const px = new Uint8Array([255, 0, 0, 255, 9, 9, 9, 0, 255, 0, 0, 255]);
+    expect(sixel(3, 1, px)).toBe("\x1bP0;1;0q\"1;1;3;1#0;2;100;0;0#0@?@\x1b\\\n");
+  });
+
+  it("keeps at most 256 colours and draws a gradient close to the original", () => {
+    const w = 64;
+    const h = 40;
+    const px = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) px.set([x * 4, y * 6, ((x + y) * 2) % 256, 255], (y * w + x) * 4);
+    }
+    const drawn = drawSixel(sixel(w, h, px), w, h);
+    expect(drawn.colours).toBeLessThanOrEqual(256);
+    expect(drawn.colours).toBeGreaterThan(64);
+    let worst = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      worst = Math.max(worst, Math.abs(px[i] - drawn.rgba[i]), Math.abs(px[i + 1] - drawn.rgba[i + 1]), Math.abs(px[i + 2] - drawn.rgba[i + 2]));
+    }
+    expect(worst).toBeLessThan(40);
+  });
+
+  it("quantizes a 640x400 preview in well under a second", () => {
+    const px = new Uint8Array(640 * 400 * 4);
+    for (let i = 0; i < px.length; i += 4) {
+      const p = i / 4;
+      px.set([(p * 7) % 256, ((p * 13) >> 3) % 256, ((p * 31) >> 6) % 256, 255], i);
+    }
+    const started = performance.now();
+    sixel(640, 400, px);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("refuses PNG bytes", () => {
+    expect(() => encodeSixel({ width: 1, height: 1, encoding: "png", bytes: new Uint8Array(1) })).toThrow();
+  });
+});
+
 describe("probe reply and colour", () => {
   it("parses the kitty answer and the cell size", () => {
-    expect(parseProbeReply("\x1b_Gi=31;OK\x1b\\\x1b[6;16;8t\x1b[?1c")).toEqual({ kitty: true, cell: { width: 8, height: 16 } });
-    expect(parseProbeReply("\x1b[?1c")).toEqual({ kitty: false, cell: undefined });
+    expect(parseProbeReply("\x1b_Gi=31;OK\x1b\\\x1b[6;16;8t\x1b[?1c")).toEqual({ kitty: true, sixel: false, cell: { width: 8, height: 16 } });
+    expect(parseProbeReply("\x1b[?1c")).toEqual({ kitty: false, sixel: false, cell: undefined });
+    expect(parseProbeReply("\x1b[?62;4;22c").sixel).toBe(true);
+    expect(parseProbeReply("\x1b[?62;14c").sixel).toBe(false);
   });
 
   it("knows true colour from COLORTERM and Windows Terminal", () => {

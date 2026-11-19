@@ -57,6 +57,7 @@ const IMAGE_EXTENSIONS = [
   "webp",
   "heic",
   "heif",
+  "hif",
   "avif",
   "gif",
   "bmp",

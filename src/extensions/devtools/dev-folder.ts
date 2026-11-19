@@ -24,9 +24,10 @@
 import { create } from "zustand";
 import type { ExtensionManifest, ExtensionModule } from "../types";
 import { DEVTOOLS_EXTENSION_ID, manifestIdRefusal } from "../official-extensions";
-import { startInstance, stopInstances } from "../instance";
+import { isBeingReplaced, startInstance, stopInstances } from "../instance";
 import { restoreDisplacedPlugins } from "../loader";
 import { privilegedDevtools, privilegedFs } from "@/native/privileged";
+import { noteCommandPermission } from "../command-permissions";
 import {
   getExtSetting,
   onExtSettingChange,
@@ -119,11 +120,13 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   }
 
   const { id } = manifest;
+  noteCommandPermission(manifest);
   const bundlePath = join(dir, manifest.main);
   await startInstance({
     id,
     source: "dev",
     name: manifest.name,
+    version: manifest.version,
     bundle: bundlePath,
     read: async (signal) => {
       const bundle = await fs.read(bundlePath);
@@ -303,9 +306,12 @@ export function initDevFolder(): void {
 }
 
 /** Unload every dev extension and stop watching. Called from deactivate() when
- *  the Developer Tools extension is disabled. */
+ *  the Developer Tools extension is disabled. Not when Developer Tools is only
+ *  being replaced by its own copy from the folder: that copy takes the loader
+ *  over, and a teardown would restart the installed copy, whose scan loads the
+ *  folder copy again, round and round. */
 export function teardownDevFolder(): void {
-  if (!started) return;
+  if (!started || isBeingReplaced(DEVTOOLS_EXTENSION_ID)) return;
   started = false;
   unsubscribe?.();
   unsubscribe = null;

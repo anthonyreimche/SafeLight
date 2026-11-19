@@ -4,7 +4,7 @@ REM  Safelight Unplugged (safelight) - build the command-line release from this 
 REM  Output: dist\            the app bundle, including engine.html (export/preview)
 REM          dist-cli\slu.mjs the safelight commands
 REM  Run:    scripts\safelight.cmd help
-REM  safelight runs on this repo's Electron, so nothing is packaged or installed yet.
+REM  safelight runs from this repo on Node 22+; the engine is this repo's Electron.
 REM ==========================================================================
 setlocal
 cd /d "%~dp0.."
@@ -49,31 +49,31 @@ call "scripts\safelight.cmd" version
 if errorlevel 1 goto :fail
 
 echo.
-echo [5/5] Setting up the safelight command...
-set "SAFELIGHT_SCRIPTS=%CD%\scripts"
-echo     Add "%SAFELIGHT_SCRIPTS%" to your PATH so "safelight" works in any new terminal? [Y/N]
+echo [5/5] Install the safelight command...
+echo     Put "safelight" where every terminal can find it, including ones already open? [Y/N]
 choice /c YN /n /m "    "
-if errorlevel 2 goto :skip_path
-REM User PATH only, through the .NET calls: setx cuts PATH off at 1024 characters.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$dir = $env:SAFELIGHT_SCRIPTS.TrimEnd('\'); $user = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not $user) { $user = '' }; $known = @($user -split ';' | Where-Object { $_.TrimEnd('\') -ieq $dir }); if ($known.Count -gt 0) { Write-Host '    Already on your PATH.' } else { $joined = (($user.TrimEnd(';') + ';' + $dir)).TrimStart(';'); [Environment]::SetEnvironmentVariable('Path', $joined, 'User'); Write-Host '    Added to your PATH.' }"
+if errorlevel 2 goto :skip_install
+node -p "parseInt(process.versions.node)>=22" 2>nul | findstr /x "true" >nul
 if errorlevel 1 (
-  echo     Could not change your PATH. Run scripts\safelight.cmd instead.
-  goto :done
+  echo     safelight needs Node 22 or newer on PATH, so the command was not installed.
+  goto :skip_install
 )
-echo     Open a new terminal and type: safelight
+node "build-scripts\install-safelight-command.mjs" "%CD%"
+if errorlevel 1 goto :skip_install
+REM Earlier versions added this repo's scripts folder to the user PATH. User scope only, exact match; setx would cut PATH off at 1024 characters.
+set "SAFELIGHT_SCRIPTS=%CD%\scripts"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$dir = $env:SAFELIGHT_SCRIPTS.TrimEnd('\'); $user = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($user) { $parts = @($user -split ';'); $kept = @($parts | Where-Object { $_.TrimEnd('\') -ine $dir }); if ($kept.Count -ne $parts.Count) { [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User'); Write-Host '    Removed the old scripts folder from your PATH.' } }"
 goto :done
 
-:skip_path
+:skip_install
 echo     Skipped. Run scripts\safelight.cmd instead.
 
 :done
 echo.
 echo ==========================================================================
-echo  DONE. Try these in a new terminal:
+echo  DONE. Type safelight in any terminal.
 echo    safelight help
 echo    safelight doctor
-echo  Until you open a new terminal, run scripts\safelight.cmd from this repo,
-echo  or .\safelight.cmd from the scripts folder in PowerShell.
 echo  Open the new Safelight build once first, so safelight can read its settings.
 echo  Guide: docs\user\unplugged.md
 echo ==========================================================================

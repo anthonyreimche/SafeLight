@@ -51,6 +51,9 @@ export interface Float16Source {
    *  curve, camera baseline or highlight reconstruction, has no sample, and
    *  is capped to the render edge like a live decode. */
   displayReferred?: true;
+  /** An HDR (PQ or HLG) photo whose codes are shown as SDR ones: Develop says
+   *  so in its corner. */
+  hdrShownAsSdr?: true;
 }
 
 /** The centre of the frame, up to SOURCE_SAMPLE_EDGE on each side (a side

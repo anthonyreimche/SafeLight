@@ -228,8 +228,6 @@ function leaveCatalog(): void {
 /** Photo formats a folder may hold that the importer can't read, by file extension.
  *  Other skipped files (notes, sidecars) are not photos and go unmentioned. */
 const UNSUPPORTED_FORMATS: Record<string, string> = {
-  ".heic": "HEIC",
-  ".heif": "HEIC",
   ".jxl": "JXL",
   ".gif": "GIF",
   ".bmp": "BMP",

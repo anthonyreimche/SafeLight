@@ -58,6 +58,9 @@ export class RenderMailbox {
   private owed: WaitingRender | null = null;
   // How long, in ms, the worker took over each of its last answers.
   private times: number[] = [];
+  /** How long the worker took over the last render it answered, from its post (or
+   *  from `ready`, for one posted before it); null before one has been timed. */
+  lastAnswerMs: number | null = null;
   private backstop: ReturnType<typeof setTimeout> | null = null;
   // When the backstop last sent a render. Not the worker speaking, so it times the
   // backstop alone and not the worker's other requests.
@@ -260,7 +263,8 @@ export class RenderMailbox {
   }
 
   private noteTime(since: number) {
-    this.times.push(performance.now() - since);
+    this.lastAnswerMs = performance.now() - since;
+    this.times.push(this.lastAnswerMs);
     if (this.times.length > RENDER_TIMES_KEPT) this.times.shift();
   }
 
@@ -309,5 +313,6 @@ export class RenderMailbox {
     this.overdue = null;
     this.owed = null;
     this.silentBackstops = 0;
+    this.lastAnswerMs = null;
   }
 }

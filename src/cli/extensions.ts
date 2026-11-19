@@ -53,11 +53,14 @@ export interface Manifest {
   id: string;
   name: string;
   version: string;
+  description?: string;
   repository?: string;
-  permissions?: { network?: string[]; userOrigins?: boolean; userSockets?: boolean };
+  permissions?: { network?: string[]; userOrigins?: boolean; userSockets?: boolean; programs?: boolean; commands?: boolean };
+  /** The console commands it offers as verbs, unchecked: commands/extension-verbs.ts reads them. */
+  commands?: unknown;
 }
 
-interface CatalogueItem { fullName: string; name?: string; categories?: string[] }
+interface CatalogueItem { fullName: string; name?: string; description?: string | null; categories?: string[] }
 interface Vocabulary { categories: { slug: string; label: string }[] }
 interface Kit { id: string; repos: string[] }
 
@@ -150,6 +153,8 @@ function permissionLines(m: Manifest): string[] {
     ...(p.network ?? []).map((origin) => `reach ${origin}`),
     ...(p.userOrigins ? ["reach web addresses you type in"] : []),
     ...(p.userSockets ? ["open live connections to addresses you type in"] : []),
+    ...(p.programs ? ["run a program on this computer that you choose"] : []),
+    ...(p.commands ? ["run other extensions' commands"] : []),
   ];
 }
 
@@ -252,6 +257,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
       trust: declaredBanned ? "banned" : trustOf(list, repo, m.version),
       repo,
       permissions: permissionLines(m),
+      ...(m.description && { description: m.description }),
     };
   }
 
@@ -364,6 +370,7 @@ export function createExtensionService(env: CliEnv, fetchImpl: typeof fetch = gl
           trust: trustOf(list, item.fullName, remote?.version ?? null),
           repo: item.fullName,
           installName: row ? stripPrefix(row.id) : repoName(item.fullName).toLowerCase(),
+          ...(item.description && { description: item.description }),
         };
       }));
     });

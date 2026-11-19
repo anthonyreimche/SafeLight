@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
+import { formatOf, missingLeadOwners, onDecodersChanged, useDecoders } from "@/catalog/image-decoders";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import {
   convertedTargetEdge,
@@ -42,6 +43,7 @@ import {
   prefetchNeighbors,
   previewReason,
   refreshHeldSource,
+  shownAsSdr,
 } from "./develop-sources";
 import { storedPicture, type DevelopPicture } from "./use-develop-picture";
 
@@ -74,11 +76,15 @@ export interface PhotoLoadArgs {
   setCantShow: Dispatch<SetStateAction<string | null>>;
   /** Why the load settled on a preview for good (previewReason), for the label. */
   setSettledReason: Dispatch<SetStateAction<string | null>>;
-  setOverflowedStages: Dispatch<SetStateAction<readonly string[]>>;
+  /** What the corner says of the photo's own pixels when nothing else is
+   *  said: an HDR photo shown as SDR. */
+  setSourceNotice: Dispatch<SetStateAction<string | null>>;
   /** Draws the source just handed over (sent, or bound from the GPU cache) with the
    *  photo's edit. */
   drawSourceRef: RefObject<(bridge: RenderBridge, photo: CatalogPhoto) => void>;
 }
+
+const HDR_SHOWN_AS_SDR = "HDR shown as SDR";
 
 export function useDevelopPhotoLoad({
   photo,
@@ -92,7 +98,7 @@ export function useDevelopPhotoLoad({
   setLoading,
   setCantShow,
   setSettledReason,
-  setOverflowedStages,
+  setSourceNotice,
   drawSourceRef,
 }: PhotoLoadArgs): {
   /** Checks an edited stored preview standing in for the photo; `bitmap` is a fresh draw
@@ -101,8 +107,10 @@ export function useDevelopPhotoLoad({
 } {
   const { present, clearPicture, isShowing, beginPhoto } = picture;
   // A non-RAW photo's source key follows the input profile resolver's revision,
-  // so the view renders, and loads the photo again, as it moves.
+  // and any photo's follows its format's decoders, so the view renders, and
+  // loads the photo again, as either moves.
   useSyncExternalStore(onInputProfilesChanged, inputProfileRevision);
+  useDecoders();
   const sourceKey = photo ? photoSourceKey(photo) : undefined;
 
   // A library source's photo keeps its kept original while it is open here.
@@ -165,7 +173,7 @@ export function useDevelopPhotoLoad({
     sentGenRef.current = null;
     setCantShow(null);
     setSettledReason(null);
-    setOverflowedStages(NO_STAGES);
+    setSourceNotice(null);
     editedPreviewRef.current = null;
     bridge.clearSource();
     useDevelopStore.getState().setHistogram(null);
@@ -203,10 +211,12 @@ export function useDevelopPhotoLoad({
       // open as sRGB and be kept on the GPU under the key it had before. Only the
       // extension that held the resolver last is waited for, so a photo never
       // waits when none is installed; once one has registered none is to come.
+      const format = formatOf(photo.filename);
       const expected = expectedInputProfileOwner();
-      if (!isRawFile({ name: photo.filename } as File) && inputProfileOwner() === null && expected && awaited(expected)) {
-        return true;
-      }
+      const readsCodes = !isRawFile({ name: photo.filename } as File) && format?.core !== "heif";
+      if (readsCodes && inputProfileOwner() === null && expected && awaited(expected)) return true;
+      // Likewise a decoder the person put first for the photo's format.
+      if (format && missingLeadOwners(format.id).some(awaited)) return true;
       const asShot = photo.exif.colorTemperature ?? st.asShotTemperature;
       return missingAdjustments(st.params, (id) => !awaited(id), asShot).length > 0;
     };
@@ -223,6 +233,7 @@ export function useDevelopPhotoLoad({
           useDisabledExtensions.subscribe(check),
           useInstalledPlugins.subscribe(check),
           onInputProfilesChanged(check),
+          onDecodersChanged(check),
         ];
         const cap = setTimeout(() => stopEssentials(), ESSENTIALS_WAIT_MS);
         stopEssentials = () => {
@@ -323,6 +334,7 @@ export function useDevelopPhotoLoad({
         const kept = keptPreview(bridge, key);
         finalGenRef.current = kept === undefined ? bridge.sourceGen : null;
         setSettledReason(previewReason(kept));
+        setSourceNotice(shownAsSdr(key) ? HDR_SHOWN_AS_SDR : null);
         syncAsShotTemp();
         drawSourceRef.current(bridge, photo);
         refreshHeldSource(bridge, photo, key, openPhotoIdRef);
@@ -379,6 +391,7 @@ export function useDevelopPhotoLoad({
         return;
       }
       const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
+      setSourceNotice(image.kind === "float16" && image.hdrShownAsSdr ? HDR_SHOWN_AS_SDR : null);
       const stands = standsForPhoto(image);
       const settled = stands
         ? { key, preview: isPreview(image) }

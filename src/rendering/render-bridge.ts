@@ -45,7 +45,9 @@ import {
   subscribeCrashes,
 } from "./gpu-crash-guard";
 import { stageSignature } from "./webgl/stage-injection";
+import { clearLiveOverflowed, noteLiveFrame, noteProgramStatus, noteRenderError, resetLiveStatus } from "./render-bridge/live-status";
 import { useRegistry } from "@/extensions/registry";
+import { stageKeys } from "./webgl/mask-stage-instances";
 import { privilegedGpu } from "@/native/privileged";
 
 export type { RendererAvailability } from "./render-bridge/transport";
@@ -149,6 +151,9 @@ export class RenderBridge {
   private sourcesBound = 0;
   // The source number clearSource was called at: its pixels may still be on their way.
   private pixelsClearedGen: number | null = null;
+  // Set by clearSource until the next source is handed over: the frames that arrive
+  // meanwhile are the last photo's, and the live status leaves them out.
+  private sourceCleared = false;
   // The ids of the stages last posted, to tell when the set loses one.
   private postedStageIds: ReadonlySet<string> = new Set();
   /** The live photo's stage bag, as the Develop view last set it. */
@@ -203,6 +208,12 @@ export class RenderBridge {
     return this.transport.availability;
   }
 
+  /** Only the shared bridge serves the Develop view: others, made for a test, have no
+   *  live view to report. */
+  private get servesLiveView(): boolean {
+    return this === singleton;
+  }
+
   private handleMessage(msg: WorkerAnswer) {
     const requests = this.requests;
     switch (msg.type) {
@@ -214,6 +225,11 @@ export class RenderBridge {
         if (!this.onFrame) {
           msg.bitmap.close();
           break;
+        }
+        // A frame numbered below the source last handed over is the last photo's, still
+        // in flight; a bindSource hit counts in the worker before it is answered here.
+        if (this.servesLiveView && !this.sourceCleared && msg.sourceGen >= this.sourcesBound) {
+          noteLiveFrame({ overflowed: msg.overflowedStages ?? [], frameMs: this.mailbox.lastAnswerMs });
         }
         // Drawn even when the mailbox no longer waits for it (given up on, or from
         // before a re-init): it is still newer than what the view shows.
@@ -246,8 +262,12 @@ export class RenderBridge {
       case "frameSkipped":
         this.mailbox.answered(msg.seq);
         break;
+      case "programStatus":
+        if (this.servesLiveView) noteProgramStatus({ programStages: msg.programStages, dormant: msg.dormant });
+        break;
       case "renderError":
         this.mailbox.answered(msg.seq);
+        if (this.servesLiveView) noteRenderError(msg.message);
         this.onRenderError?.();
         this.onError?.(`render failed: ${msg.message}`);
         break;
@@ -279,7 +299,10 @@ export class RenderBridge {
         this.onError?.(`thumbnail render failed: ${msg.message}`);
         break;
       case "sourceBound":
-        if (msg.hit) this.sourcesBound++;
+        if (msg.hit) {
+          this.sourcesBound++;
+          this.sourceCleared = false;
+        }
         requests.answer(requests.sourceBound, msg.reqId, msg.hit);
         break;
       case "hasSource":
@@ -373,6 +396,8 @@ export class RenderBridge {
    *  no histogram until that photo's source is set or bound. */
   clearSource() {
     this.pixelsClearedGen = this.sourcesBound;
+    this.sourceCleared = true;
+    if (this.servesLiveView) clearLiveOverflowed();
     setSourcePixels(new Uint8ClampedArray(0), 0, 0);
     this.post({ cmd: "clearSource" });
   }
@@ -396,6 +421,7 @@ export class RenderBridge {
       transfer,
     );
     this.sourcesBound++;
+    this.sourceCleared = false;
   }
 
   // ------------------------------------------------------------------
@@ -426,7 +452,10 @@ export class RenderBridge {
       { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, bind },
       transfer,
     );
-    if (bind && target === "main") this.sourcesBound++;
+    if (bind && target === "main") {
+      this.sourcesBound++;
+      this.sourceCleared = false;
+    }
   }
 
   /** Is a source already resident in the given renderer's cache? */
@@ -567,6 +596,20 @@ export class RenderBridge {
     this.paramSync.setLiveBag(bag);
     this.liveStageBag = bag;
     noteLiveStageBag(bag, own);
+  }
+
+  /** The values the live photo's frames draw `stageId`'s uniforms with, by uniform
+   *  key: the bag's, with the values the stage derives from the params over them. */
+  liveStageValues(stageId: string): Record<string, unknown> {
+    const held = { ...this.liveStageBag, ...this.paramSync.derived };
+    const prefix = `${stageId}.`;
+    const stage = useRegistry.getState().processingStages[stageId];
+    const keys = stage
+      ? stageKeys(stage)
+      : Object.keys(held).filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length));
+    const values: Record<string, unknown> = {};
+    for (const key of keys) if (held[prefix + key] !== undefined) values[key] = held[prefix + key];
+    return values;
   }
 
   /** The live bag with `patch` over it, for a measurement of the live photo. */
@@ -722,9 +765,12 @@ export class RenderBridge {
   /** Draw a frame of the state the worker holds. While one is in flight only the
    *  newest request waits, asking for every histogram the requests it replaced asked
    *  for, and goes once the worker answers. Messages that set state still go at once,
-   *  so the worker has them before the render that waits. */
+   *  so the worker has them before the render that waits. The stage textures set
+   *  since the last frame go first too: a bag naming a variant set in the same
+   *  task would otherwise draw it with no data, as black. */
   render(wantHistogram = false, wantExtended = false) {
     flushStageSync();
+    flushStageTextures();
     this.mailbox.render(wantHistogram, wantExtended);
   }
 
@@ -942,6 +988,12 @@ export function getRenderBridge(): RenderBridge {
   return singleton;
 }
 
+/** The shared bridge, or null before anything has asked for it: reading it is
+ *  never a reason to start the render worker. */
+export function peekRenderBridge(): RenderBridge | null {
+  return singleton;
+}
+
 /** Pass a prewarm hint to the shared bridge, if there is one: a hint is never a
  *  reason to start the render worker. */
 export function hintStages(stageIds: string[]): void {
@@ -953,4 +1005,5 @@ export function disposeRenderBridge() {
   unwireBrushTips();
   singleton?.dispose();
   singleton = null;
+  resetLiveStatus();
 }

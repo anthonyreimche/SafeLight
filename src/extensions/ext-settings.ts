@@ -105,6 +105,24 @@ export function deleteExtensionSettings(id: string): void {
   parsed.delete(id);
 }
 
+/** Replace everything extension `id` has stored with `raw`, the text of its
+ *  stored entry (null: nothing stored), and tell its listeners which values
+ *  changed: the engine takes the app's settings this way before it runs one
+ *  of the extension's commands. */
+export function replaceExtSettings(id: string, raw: string | null): void {
+  const prev = valuesFor(id);
+  try {
+    if (raw === null) localStorage.removeItem(storageKey(id));
+    else localStorage.setItem(storageKey(id), raw);
+  } catch {}
+  parsed.delete(id);
+  const next = load(id);
+  useExtSettings.setState({ [id]: next });
+  for (const k of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    if (next[k] !== prev[k]) notify(id, k, next[k]);
+  }
+}
+
 /** Follow changes made in other windows. Call once at boot. */
 export function initExtSettings(): void {
   window.addEventListener("storage", (e) => {

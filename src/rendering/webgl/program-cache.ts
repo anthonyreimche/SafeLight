@@ -8,6 +8,7 @@
 
 import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
 import { BUILTIN_RESOLVED } from "./builtin-pipeline";
+import { PREPASS_BUILTIN } from "./transform-prepass";
 import { created } from "./gl-resources";
 import {
   buildFragmentShader,
@@ -311,7 +312,7 @@ export class ProgramCache {
       if (!p.glsl) throw err; // built-in must compile
       // Said only once the built-in builds: when it doesn't either, the stages are
       // at fault, not the transform.
-      const fallback = this.entryFor(BUILTIN_RESOLVED, built, variant, stageIds, exit);
+      const fallback = this.entryFor(p.prepass ? PREPASS_BUILTIN : BUILTIN_RESOLVED, built, variant, stageIds, exit);
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
       return fallback;
     }
@@ -465,7 +466,7 @@ export function submitProgram(
   fsSrc: string,
   name = "a program",
 ): SubmittedProgram {
-  const vs = submitShader(gl, gl.VERTEX_SHADER, vsSrc);
+  const vs = submitShader(gl, gl.VERTEX_SHADER, withHighpSamplers(vsSrc));
   const fs = submitShader(gl, gl.FRAGMENT_SHADER, withHighpSamplers(fsSrc));
   const program = created(gl.createProgram());
   gl.attachShader(program, vs);
@@ -525,7 +526,9 @@ export function createProgram(
 // A fragment sampler2D is lowp by default, which drivers that lower lowp to fp16
 // (Mesa's Asahi, freedreno, panfrost behind ANGLE) honour, clipping HDR values
 // read through it. Added here rather than in the sources: the version 1 text and
-// the program reference hashes are frozen.
+// the program reference hashes are frozen. The vertex program gets it as well: a
+// pass with a region declares the same samplers there, and Mesa's linker refuses
+// a uniform whose precision differs between the two programs, used or not.
 function withHighpSamplers(src: string): string {
   if (/\bprecision\s+\w+\s+sampler2D\s*;/.test(src)) return src;
   return src.replace(/^(#version[^\n]*\n)/, "$1precision highp sampler2D;\n");

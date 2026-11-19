@@ -117,6 +117,9 @@ const { FakeRenderer } = vi.hoisted(() => {
     probes: { u: number; v: number; point: ProbePoint }[] = [];
     /** The stages the last render left without a prepass unit. */
     overflowedStages: string[] = [];
+    /** The stages of the program in use, and the ones it was built without. */
+    programStages: string[] = [];
+    dormantStages: string[] = [];
     /** Whether the last render put off a mask copy's prepass. */
     prepassPending = false;
     /** The window setViewport holds, which each render draws. */
@@ -496,7 +499,11 @@ interface SelfStub {
   postMessage: (msg: WorkerResponse, transfer?: Transferable[]) => void;
 }
 
+/** What the worker posted other than programStatus, which comes ahead of a frame. */
 let posted: WorkerResponse[];
+/** Each programStatus, and everything posted in the order it was. */
+let statuses: WorkerResponse[];
+let everything: WorkerResponse[];
 /** The transfer list of each posted message, empty when it had none. */
 let transferred: Transferable[][];
 let selfStub: SelfStub;
@@ -526,10 +533,17 @@ beforeEach(async () => {
   encodings = [];
   encodeError = null;
   posted = [];
+  statuses = [];
+  everything = [];
   transferred = [];
   selfStub = {
     onmessage: null,
     postMessage: (msg, transfer = []) => {
+      everything.push(msg);
+      if (msg.type === "programStatus") {
+        statuses.push(msg);
+        return;
+      }
       posted.push(msg);
       transferred.push(transfer);
     },
@@ -1022,6 +1036,74 @@ describe("render-worker frames", () => {
     expect(posted).toEqual([
       expect.objectContaining({ type: "frame", seq: 9, overflowedStages: ["ext.equaliser.rings"] }),
     ]);
+  });
+
+  describe("the program's status", () => {
+    const status = () => statuses;
+    const clear = () => {
+      posted = [];
+      statuses = [];
+      everything = [];
+    };
+
+    it("says which stages the program holds and which it was built without, ahead of the frame", () => {
+      send(INIT);
+      const renderer = FakeRenderer.instances[0];
+      renderer.programStages = ["core.denoise", "acme.grain", "acme.grain@0"];
+      renderer.dormantStages = ["acme.dust"];
+      clear();
+      send({ cmd: "render", seq: 1 });
+      expect(everything.map((m) => m.type)).toEqual(["programStatus", "frame"]);
+      expect(status()).toEqual([
+        { type: "programStatus", programStages: ["core.denoise", "acme.grain", "acme.grain@0"], dormant: ["acme.dust"] },
+      ]);
+    });
+
+    it("says nothing more while the program and its dormant stages stay as they were", () => {
+      send(INIT);
+      FakeRenderer.instances[0].programStages = ["acme.grain"];
+      clear();
+      send({ cmd: "render", seq: 1 });
+      send({ cmd: "render", seq: 2 });
+      send({ cmd: "render", seq: 3 });
+      expect(status()).toHaveLength(1);
+    });
+
+    it("says it again when the stages or the dormant set change", () => {
+      send(INIT);
+      const renderer = FakeRenderer.instances[0];
+      renderer.programStages = ["acme.grain"];
+      renderer.dormantStages = ["acme.dust"];
+      clear();
+      send({ cmd: "render", seq: 1 });
+      renderer.dormantStages = [];
+      renderer.programStages = ["acme.grain", "acme.dust"];
+      send({ cmd: "render", seq: 2 });
+      renderer.programStages = ["acme.dust"];
+      send({ cmd: "render", seq: 3 });
+      expect(status().map((m) => m.type === "programStatus" && m.programStages)).toEqual([
+        ["acme.grain"],
+        ["acme.grain", "acme.dust"],
+        ["acme.dust"],
+      ]);
+    });
+
+    it("says it afresh for a new renderer", () => {
+      send(INIT);
+      send({ cmd: "render", seq: 1 });
+      send(INIT);
+      clear();
+      send({ cmd: "render", seq: 2 });
+      expect(status()).toHaveLength(1);
+    });
+
+    it("says nothing for a render that draws no frame", () => {
+      send(INIT);
+      send({ cmd: "clearSource" });
+      clear();
+      send({ cmd: "render", seq: 1 });
+      expect(status()).toHaveLength(0);
+    });
   });
 
   it("says when the render put off a mask copy's prepass, and only then", () => {

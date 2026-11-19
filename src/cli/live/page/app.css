@@ -1,0 +1,544 @@
+/* Safelight — founded and principally authored by Anthony Reimche.
+   Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+   attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+   be preserved in derived versions. */
+
+/* The live view wears the app's default theme, "Safelight Neutral" (the
+   tokens in src/index.css), so the surround a photo sits on here is the one it
+   sits on in Develop. Keep the two in sync. */
+
+/* The page's policy loads no font files, so the interface font is used only
+   where it is installed; the size-adjust matches the app's. */
+@font-face {
+  font-family: "Safelight Interface";
+  src: local("Afacad"), local("Afacad Regular");
+  font-weight: 400 700;
+  size-adjust: 120%;
+}
+
+:root {
+  --surface-0: #525252;
+  --surface-1: #5e5e5e;
+  --surface-2: #686868;
+  --surface-3: #747474;
+  --surface-4: #828282;
+  --border: #3b3b3b;
+  --border-subtle: #4a4a4a;
+  --text-primary: #f4f4f4;
+  --text-secondary: #d0d0d0;
+  --text-muted: #9c9c9c;
+  --accent: #2e2e2e;
+  --accent-hover: #3c3c3c;
+  --rating: #f5c542;
+  --label-red: #e74c3c;
+  --label-yellow: #f39c12;
+  --label-green: #27ae60;
+  --label-blue: #3498db;
+  --label-purple: #9b59b6;
+  --lamp: #f3223f;
+  --ember: #5a0c18;
+  --amber: #f5a524;
+  --panel-width: 288px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-4) transparent;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: "Safelight Interface", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+h2,
+h3,
+p,
+ol,
+dl,
+dd {
+  margin: 0;
+  padding: 0;
+  font: inherit;
+}
+
+ol {
+  list-style: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: -2px;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--panel-width);
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "stage panel"
+    "strip panel"
+    "status status";
+  height: 100%;
+}
+
+.shell.is-panel-closed {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "stage"
+    "strip"
+    "status";
+}
+
+/* The stage: the surround and the photo, nothing else. */
+
+.stage {
+  grid-area: stage;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-0);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.stage.is-dragging {
+  cursor: grabbing;
+}
+
+.frames {
+  position: absolute;
+  inset: 0;
+}
+
+.frame {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
+}
+
+.frames.is-magnified .frame {
+  image-rendering: pixelated;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.5);
+  color: var(--text-primary);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The working set, where Develop keeps its filmstrip. */
+
+.strip {
+  grid-area: strip;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.strip-names {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.strip-name {
+  flex: none;
+  padding: 2px 8px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.strip-name[aria-current] {
+  border-bottom-color: var(--amber);
+  color: var(--text-primary);
+}
+
+.strip-count {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* The side panel. */
+
+.panel {
+  grid-area: panel;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.section {
+  flex: none;
+  padding: 0 12px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.section-grow {
+  display: flex;
+  flex: 1 1 96px;
+  flex-direction: column;
+  min-height: 96px;
+}
+
+.heading {
+  padding: 8px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.photo-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.photo-path {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.photo-meta,
+.photo-marks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.rating {
+  letter-spacing: 1px;
+}
+
+.rating-on {
+  color: var(--rating);
+}
+
+.rating-off {
+  color: var(--surface-4);
+}
+
+.flag[data-flag="reject"] {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.label-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.label[data-label="red"] .label-dot { background: var(--label-red); }
+.label[data-label="yellow"] .label-dot { background: var(--label-yellow); }
+.label[data-label="green"] .label-dot { background: var(--label-green); }
+.label[data-label="blue"] .label-dot { background: var(--label-blue); }
+.label[data-label="purple"] .label-dot { background: var(--label-purple); }
+
+.quiet {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tool {
+  margin: 8px 0 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool:first-child {
+  margin-top: 0;
+}
+
+.value {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  font-size: 11px;
+}
+
+.value-label {
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.value-display {
+  grid-column: 3;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The terminal's slider bar: a thin track, a tick at the default, and a heavy
+   amber run from the default out to the thumb, so its length is how far the
+   value was moved. */
+
+.bar {
+  position: relative;
+  height: 12px;
+}
+
+.bar::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--surface-4);
+}
+
+.bar-fill {
+  position: absolute;
+  top: calc(50% - 1px);
+  height: 3px;
+  border-radius: 1px;
+  background: var(--amber);
+}
+
+.bar-tick {
+  position: absolute;
+  top: calc(50% - 3px);
+  width: 1px;
+  height: 7px;
+  background: var(--text-secondary);
+}
+
+.bar-thumb {
+  position: absolute;
+  top: calc(50% - 3px);
+  width: 7px;
+  height: 7px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.step {
+  overflow: hidden;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step[aria-current] {
+  border-left-color: var(--amber);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Steps after the current one have been undone. */
+.step[aria-current] ~ .step {
+  color: var(--text-muted);
+}
+
+.keys {
+  display: grid;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.keys > div {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  align-items: baseline;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: center;
+}
+
+/* The status line. */
+
+.status {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px 3px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell[data-tone="live"] .status-text {
+  color: var(--text-primary);
+}
+
+.shell[data-tone="stopped"] .status-text::before {
+  content: "! ";
+  color: var(--lamp);
+  font-weight: 700;
+}
+
+.status-project {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.status-space {
+  flex: 1;
+}
+
+.zoom {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.button {
+  flex: none;
+  min-width: 28px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--accent-hover);
+}
+
+.button[aria-pressed="true"],
+.button[aria-expanded="true"] {
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+/* The lamp: an ember at rest, lit and breathing while a render runs long. */
+
+.lamp {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ember);
+  transition: background-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.lamp.is-working {
+  background: var(--lamp);
+  box-shadow: 0 0 6px 1px rgb(243 34 63 / 0.55);
+  animation: lamp-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes lamp-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lamp,
+  .lamp.is-working {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .shell {
+    --panel-width: min(288px, 80vw);
+  }
+
+  .status-project,
+  .zoom {
+    display: none;
+  }
+}

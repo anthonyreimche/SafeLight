@@ -61,6 +61,16 @@ describe("engine wire", () => {
     expect([...msg.payload]).toEqual([5, 6]);
   });
 
+  // Electron on Windows writes a bare CRLF to a piped stdout as it starts.
+  it("skips line breaks between messages", () => {
+    const done = json({ id: 1, type: "done" });
+    const decoder = new WireDecoder();
+    expect(decoder.push(new Uint8Array([0x0d, 0x0a]))).toEqual([]);
+    const got = decoder.push(concat(done, new Uint8Array([0x0a]), done));
+    expect(got).toHaveLength(2);
+    expect(got.every((m) => m.kind === WIRE_JSON)).toBe(true);
+  });
+
   it("rejects an unknown kind", () => {
     const decoder = new WireDecoder();
     expect(() => decoder.push(new Uint8Array([9, 0, 0, 0, 0]))).toThrow(/kind/);

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en-CA" data-live-view>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Safelight · Live view</title>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <div class="shell" id="shell">
+      <main class="stage" id="stage" tabindex="0" aria-label="Photo">
+        <div class="frames" id="frames"></div>
+        <p class="empty" id="empty" hidden>No photo is open. Open one at the safelight prompt.</p>
+        <p class="badge" id="before-badge" hidden>Before</p>
+      </main>
+
+      <nav class="strip" id="strip" aria-label="Working set" hidden>
+        <button type="button" class="button" id="set-prev" aria-label="Previous photo" title="Previous photo (←)">‹</button>
+        <ol class="strip-names" id="set-names"></ol>
+        <span class="strip-count" id="set-count"></span>
+        <button type="button" class="button" id="set-next" aria-label="Next photo" title="Next photo (→)">›</button>
+      </nav>
+
+      <aside class="panel" id="panel" aria-label="Photo details">
+        <section class="section" aria-labelledby="photo-heading">
+          <h2 class="heading" id="photo-heading">Photo</h2>
+          <p class="photo-name" id="photo-name">No photo</p>
+          <p class="photo-path" id="photo-path"></p>
+          <p class="photo-meta">
+            <span id="photo-step"></span>
+            <span id="photo-size"></span>
+          </p>
+          <p class="photo-marks">
+            <span class="rating" id="photo-rating" role="img" aria-label="No rating"></span>
+            <span class="flag" id="photo-flag"></span>
+            <span class="label" id="photo-label"></span>
+          </p>
+        </section>
+
+        <section class="section" aria-labelledby="values-heading">
+          <h2 class="heading" id="values-heading">Changed</h2>
+          <div id="values"></div>
+        </section>
+
+        <section class="section section-grow" aria-labelledby="history-heading">
+          <h2 class="heading" id="history-heading">History</h2>
+          <ol class="history" id="history"></ol>
+        </section>
+
+        <section class="section" aria-labelledby="keys-heading">
+          <h2 class="heading" id="keys-heading">Keys</h2>
+          <dl class="keys">
+            <div><dt><kbd>\</kbd></dt><dd>Hold for before</dd></div>
+            <div><dt><kbd>F</kbd></dt><dd>Fit</dd></div>
+            <div><dt><kbd>1</kbd></dt><dd>100%</dd></div>
+            <div><dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom</dd></div>
+            <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous, next</dd></div>
+          </dl>
+        </section>
+      </aside>
+
+      <footer class="status">
+        <span class="lamp" id="lamp" aria-hidden="true"></span>
+        <span class="status-text" id="status-text" role="status" aria-live="polite">Connecting to safelight…</span>
+        <span class="status-project" id="project-name"></span>
+        <span class="status-space"></span>
+        <span class="zoom" id="zoom" aria-live="off"></span>
+        <button type="button" class="button" id="zoom-fit" title="Fit (F)">Fit</button>
+        <button type="button" class="button" id="zoom-actual" title="100% (1)">100%</button>
+        <button type="button" class="button" id="panel-toggle" aria-controls="panel" aria-expanded="true" title="Show or hide the details">Details</button>
+      </footer>
+    </div>
+  </body>
+</html>

@@ -12,11 +12,13 @@ import type {
   ColorLabel,
   SortDirection,
 } from "@/catalog/types";
+import { editedAt } from "@/catalog/edit-times";
 import { getSettings } from "@/state/settings-store";
 
 export type FlagFilter = "any" | "pick" | "reject";
 export type LabelFilter = "any" | ColorLabel;
 export type RatingOp = "lt" | "lte" | "gt" | "gte" | "eq" | "neq";
+export type EditedFilter = "any" | "edited" | "unedited";
 
 export interface LibraryFilter {
   rating: number; // stars threshold, compared via ratingOp
@@ -24,6 +26,7 @@ export interface LibraryFilter {
   flag: FlagFilter;
   label: LabelFilter;
   keywords: string[]; // photo must contain ALL of these keywords (AND)
+  edited: EditedFilter; // whether the photo has an edit (see catalog/edit-times)
 }
 
 export const NO_FILTER: LibraryFilter = {
@@ -32,6 +35,7 @@ export const NO_FILTER: LibraryFilter = {
   flag: "any",
   label: "any",
   keywords: [],
+  edited: "any",
 };
 
 // The rating filter is inert at "≥ 0" (matches everything); any other operator
@@ -50,7 +54,19 @@ function ratingMatches(rating: number, op: RatingOp, threshold: number): boolean
 }
 
 export function isFilterActive(f: LibraryFilter): boolean {
-  return ratingFilterActive(f) || f.flag !== "any" || f.label !== "any" || f.keywords.length > 0;
+  return (
+    ratingFilterActive(f) ||
+    f.flag !== "any" ||
+    f.label !== "any" ||
+    f.keywords.length > 0 ||
+    f.edited !== "any"
+  );
+}
+
+/** Whether the order reads edit times, which are no photo field: a change to one
+ *  is told by subscribeEditTimes, not by the catalogue. */
+export function readsEditTimes(f: LibraryFilter, sortField: string): boolean {
+  return f.edited !== "any" || sortField === "dateEdited";
 }
 
 function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
@@ -65,6 +81,8 @@ function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
     const lower = photo.keywords.map((k) => k.toLowerCase());
     if (!f.keywords.every((k) => lower.includes(k.toLowerCase()))) return false;
   }
+  if (f.edited !== "any" && (editedAt(photo.id) !== undefined) !== (f.edited === "edited"))
+    return false;
   return true;
 }
 
@@ -78,6 +96,8 @@ function sortValue(p: CatalogPhoto, field: string): number | string {
       return p.rating;
     case "dateCreated":
       return p.dateCreated;
+    case "dateEdited":
+      return editedAt(p.id) ?? 0;
     case "dateImported":
     default:
       return p.dateImported;
@@ -99,7 +119,8 @@ function inFolder(p: CatalogPhoto, folder: string, subfolders: boolean): boolean
 }
 
 /** The photo fields visibleOrder reads for a built-in filter, sort and folder scope
- *  (no extension filter or sort): while none of them changes, nor does the order. */
+ *  (no extension filter or sort): while none of them changes, nor does the order,
+ *  unless it reads edit times (readsEditTimes). */
 export function orderFieldsRead(
   filter: LibraryFilter,
   sortField: string,

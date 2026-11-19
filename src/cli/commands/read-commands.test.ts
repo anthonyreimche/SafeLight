@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendStep } from "@/catalog/edit-steps";
 import { freshParams } from "@/catalog/normalize";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
@@ -79,13 +82,15 @@ interface Recorded {
   json: unknown[];
   errors: { message: string; hint?: string }[];
   infos: string[];
+  raw: Uint8Array[];
   tables: { photos: PhotoRow[][]; tools: ToolRow[][]; headers: unknown[]; history: unknown[]; summaries: unknown[] };
 }
 
-function fakeOut(): { out: Output; rec: Recorded } {
-  const rec: Recorded = { printed: [], json: [], errors: [], infos: [], tables: { photos: [], tools: [], headers: [], history: [], summaries: [] } };
+function fakeOut(width = 80): { out: Output; rec: Recorded } {
+  const rec: Recorded = { printed: [], json: [], errors: [], infos: [], raw: [], tables: { photos: [], tools: [], headers: [], history: [], summaries: [] } };
   const out = {
-    options: { colour: { stdout: false, stderr: false }, unicode: true, width: 80, verbosity: "normal" },
+    options: { colour: { stdout: false, stderr: false }, unicode: true, width, verbosity: "normal" },
+    writeRaw: (b: Uint8Array) => void rec.raw.push(b),
     photoTable: (rows: PhotoRow[]) => (rec.tables.photos.push(rows), "PHOTOS"),
     toolTable: (rows: ToolRow[]) => (rec.tables.tools.push(rows), "TOOLS"),
     photoHeader: (h: unknown) => (rec.tables.headers.push(h), "HEADER"),
@@ -106,10 +111,13 @@ interface Setup {
   changed?: string[];
   json?: boolean;
   stdin?: string;
+  width?: number;
+  terminal?: Record<string, string>;
+  previewFile?: string | null;
 }
 
 function context(setup: Setup) {
-  const { out, rec } = fakeOut();
+  const { out, rec } = fakeOut(setup.width);
   const requests: SelectRequest[] = [];
   const closed = { n: 0 };
   const photos = setup.photos ?? [];
@@ -117,10 +125,12 @@ function context(setup: Setup) {
     project,
     photos: () => photos,
     photoByRelPath: (r) => photos.find((p) => p.relPath === r),
+    previewFile: () => setup.previewFile ?? null,
     edit: async (id) => setup.edits?.[id],
     close: async () => {},
   };
   const ctx = {
+    env: { isTTY: { stdin: true, stdout: setup.terminal !== undefined, stderr: true }, env: setup.terminal ?? {} },
     out,
     json: setup.json ?? false,
     values: fakeValues(new Set(setup.changed ?? [])),
@@ -226,6 +236,34 @@ describe("safelight tools", () => {
   it("shows an extension the edit uses without --all, and hides a missing tool with nothing in it", async () => {
     const used = await run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW")], changed: ["local-contrast.detail"] });
     expect(used.rec.tables.tools[0].map((t) => t.tool)).toEqual(["Basic", "White Balance", "Local Contrast"]);
+  });
+
+  describe("the stored picture", () => {
+    let dir: string;
+    let file: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "slu-tools-"));
+      file = join(dir, "a.jpg");
+      writeFileSync(file, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+    const iterm = { TERM_PROGRAM: "iTerm.app" };
+
+    it("shows the app's cached preview between the header and the values in iTerm2", async () => {
+      const r = await run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW")], width: 120, terminal: iterm, previewFile: file });
+      expect(r.rec.raw).toHaveLength(1);
+      expect(new TextDecoder().decode(r.rec.raw[0])).toContain("]1337;File=inline=1;size=4;width=28");
+      expect(r.rec.printed.slice(0, 2)).toEqual(["HEADER", "TOOLS"]);
+    });
+
+    it("shows nothing elsewhere, with no stored preview, or under --json", async () => {
+      const kitty = await run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW")], width: 120, terminal: { KITTY_WINDOW_ID: "1" }, previewFile: file });
+      expect(kitty.rec.raw).toEqual([]);
+      const none = await run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW")], width: 120, terminal: iterm });
+      expect(none.rec.raw).toEqual([]);
+      const json = await run(toolsCommand, ["a.ARW"], { photos: [photo("a.ARW")], width: 120, terminal: iterm, previewFile: file, json: true });
+      expect(json.rec.raw).toEqual([]);
+    });
   });
 
   it("gives the tools and values as JSON", async () => {

@@ -361,6 +361,7 @@ describe("matchAction", () => {
 
   it("binds the app commands", () => {
     expect(matchAction(key("o", { ctrl: true }), ["General"])).toBe("app.openFolder");
+    expect(matchAction(key("T", { ctrl: true, shift: true }), ["General"])).toBe("panels.reopenClosed");
     expect(matchAction(key("F2"), ["Library"])).toBe("photo.rename");
     expect(matchAction(key("r", { ctrl: true }), ["Library"])).toBe("photo.reveal");
   });

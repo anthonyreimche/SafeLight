@@ -58,7 +58,7 @@ export interface MaskInstances {
 const NONE: Omit<MaskInstances, "stages"> = { slots: new Map(), bag: {}, sig: "" };
 
 /** The param keys a stage reads, inline and in its passes. */
-function stageKeys(s: ProcessingStageContribution): string[] {
+export function stageKeys(s: ProcessingStageContribution): string[] {
   const passKeys = (s.passes ?? []).flatMap((p) => (p.uniforms ?? []).map((u) => u.key));
   return [...s.uniforms.map((u) => u.key), ...passKeys];
 }

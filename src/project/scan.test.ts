@@ -220,17 +220,17 @@ describe("scanProject", () => {
     const { skipped } = await scanProject(
       asRoot(
         dir("root", [
-          file("a.heic"),
+          file("a.jxl"),
           file("b.jpg"),
-          file("c.HEIC"),
+          file("c.JXL"),
           file("README"),
-          file("a.heic.safelight.json"),
-          dir("sub", [file("d.heif"), file(".hidden.heic")]),
+          file("a.jxl.safelight.json"),
+          dir("sub", [file("d.gif"), file(".hidden.jxl")]),
         ]),
       ),
       isSupportedName,
     );
-    expect(skipped).toEqual({ ".heic": 2, ".heif": 1, "(none)": 1 });
+    expect(skipped).toEqual({ ".jxl": 2, ".gif": 1, "(none)": 1 });
   });
 
   describe("over the desktop bridge", () => {

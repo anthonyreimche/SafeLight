@@ -53,6 +53,7 @@ const showPerformance = () => {
 
 const LIGHT: Partial<AppSettings> = {
   developMaxEdge: 2560,
+  developDynamicDetail: false,
   gpuSourceCacheBytes: 256 * 1024 * 1024,
   developPrefetchNeighbors: false,
   liveHistogram: false,
@@ -63,27 +64,26 @@ describe("Preferences ▸ Performance on integrated graphics", () => {
     const user = userEvent.setup();
     showPerformance();
     for (const label of ["2560 px", "3072 px", "4096 px", "6144 px", "8192 px"]) {
-      expect(screen.getByRole("button", { name: label, pressed: label === "4096 px" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: label, pressed: false })).toBeTruthy();
     }
     await user.click(screen.getByRole("button", { name: "3072 px" }));
     expect(useSettings.getState().developMaxEdge).toBe(3072);
   });
 
-  it("offers Dynamic, and choosing a size afterwards turns it off", async () => {
+  it("starts on Dynamic, choosing a size turns it off and choosing it again turns it back on", async () => {
     const user = userEvent.setup();
     showPerformance();
-    expect(screen.getByRole("button", { name: "Dynamic", pressed: false })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Dynamic", pressed: true })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "3072 px" }));
+    expect(useSettings.getState()).toMatchObject({ developDynamicDetail: false, developMaxEdge: 3072 });
     await user.click(screen.getByRole("button", { name: "Dynamic" }));
     expect(useSettings.getState()).toMatchObject({ developDynamicDetail: true, developMaxEdge: 4096 });
     expect(screen.getByRole("button", { name: "Dynamic", pressed: true })).toBeTruthy();
     expect(screen.getByRole("button", { name: "4096 px", pressed: false })).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "3072 px" }));
-    expect(useSettings.getState()).toMatchObject({ developDynamicDetail: false, developMaxEdge: 3072 });
   });
 
   it("turns Dynamic off with the integrated graphics button", async () => {
     const user = userEvent.setup();
-    updateSettings({ developDynamicDetail: true });
     showPerformance();
     await user.click(screen.getByRole("button", { name: "Use integrated graphics settings" }));
     expect(useSettings.getState()).toMatchObject({ developDynamicDetail: false, developMaxEdge: 2560 });

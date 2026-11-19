@@ -13,10 +13,12 @@
 
 import {
   handleFrameRequest,
+  type BuiltFrame,
   type FrameJob,
   type FrameReply,
   type FrameRequest,
   type FrameResult,
+  type LinearFrameJob,
 } from "./frame-job";
 import { answerFrameRequest, type HalfFrame, type ProfileJob } from "./profile-frame";
 
@@ -202,6 +204,17 @@ export async function finishFrame(job: FrameJob, priority?: FramePriority): Prom
   const error = failure(reply);
   if (error) throw error;
   if (reply.op !== "build") throw new Error("the frame worker answered another request");
+  return reply.result;
+}
+
+/** An extension decoder's linear frame, cleaned and turned upright, with its
+ *  cache entry when asked for (frame-job.ts buildLinearFrame): built off the
+ *  main thread. The job's floats are handed to the worker, not copied. */
+export async function finishLinearFrame(job: LinearFrameJob, priority?: FramePriority): Promise<BuiltFrame> {
+  const reply = await submit((id) => ({ id, op: "linear", job }), [job.pixels.buffer], priority);
+  const error = failure(reply);
+  if (error) throw error;
+  if (reply.op !== "linear") throw new Error("the frame worker answered another request");
   return reply.result;
 }
 

@@ -18,6 +18,8 @@ import {
 } from "./shaders";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isBuiltInStage, writesRawNames } from "./builtin-stage";
+import { isCrashed } from "../gpu-crash-guard";
+import { isTransformPrepass, prepassStageOf } from "./transform-prepass";
 import {
   EXPORT_TARGETS,
   drawExport,
@@ -554,6 +556,16 @@ export class WebGLRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
   private stageSource: () => StageSet = () => NO_STAGES;
+  // The stage set with the drawing transform's pre-pass (stageList).
+  private stageListMemo: {
+    source: StageSet;
+    pipeline: ResolvedPipeline;
+    stage: ProcessingStageContribution | null;
+    list: StageSet;
+  } | null = null;
+  // The ids of the transform pre-passes this renderer has drawn with: their
+  // programs stay cached while the photo switches transforms (currentStageIds).
+  private readonly prepassIds = new Set<string>();
   // The stages that patch the source and the last text of each one's values (patchOf).
   private patchMemo: {
     source: StageSet;
@@ -603,6 +615,8 @@ export class WebGLRenderer {
   private readonly drawnPrograms = new WeakMap<WebGLProgram, Set<string>>();
   // The ids of the stages the program in use was built from.
   private programStageIds: ReadonlySet<string> = new Set();
+  // The same stages, copies by their own ids, in the order the program writes them.
+  private programStageList: readonly string[] = [];
 
   // The GPU-resident source cache (source-cache.ts).
   private readonly sources: SourceCache;
@@ -713,6 +727,12 @@ export class WebGLRenderer {
     return this.prepass.copiesPutOff;
   }
 
+  /** The stages the program in use holds, in the order it writes them, each mask
+   *  copy by its own id ("{stageId}@{n}"). */
+  get programStages(): readonly string[] {
+    return this.programStageList;
+  }
+
   /** The stages, each mask copy after its stage, the program in use was built
    *  without because they were dormant (skipDormantStages). */
   get dormantStages(): readonly string[] {
@@ -820,7 +840,7 @@ export class WebGLRenderer {
    *  whether one does this frame, any of its `active` counts above zero, and
    *  a signature of every value they bind, their atlases by their bakes. */
   private patchOf(bag: Record<string, unknown>): { active: boolean; sig: string } {
-    const source = this.stageSource();
+    const source = this.stageList();
     let memo = this.patchMemo;
     if (memo?.source !== source) {
       memo = { source, stages: this.currentStages().filter((s) => s.patch && writesRawNames(s)), sigs: new Map() };
@@ -1751,7 +1771,7 @@ export class WebGLRenderer {
    *  frame, rather than out of render(). */
   prepareProgram(processVersion: number): void {
     const variant = shaderVariantFor(processVersion, this.newestVersion);
-    this.developEntry(this.pipeline, variant, undefined);
+    this.developEntry(this.drawingPipeline(variant), variant, undefined);
   }
 
   /** The program prepareProgram would build, built without holding the thread
@@ -1763,7 +1783,7 @@ export class WebGLRenderer {
   prepareProgramAsync(processVersion: number): Promise<void> {
     const variant = shaderVariantFor(processVersion, this.newestVersion);
     const stages = this.stageInjection(variant);
-    return this.programs.whenBuilt(this.pipeline, stages.built, variant, stages.ids);
+    return this.programs.whenBuilt(this.drawingPipeline(variant), stages.built, variant, stages.ids);
   }
 
   /** The develop program with every stage in and no mask copies, which a frame
@@ -1777,7 +1797,7 @@ export class WebGLRenderer {
     const variant = shaderVariantFor(processVersion, this.newestVersion);
     const stages = this.stagesFor(variant);
     const built = buildStageInjection(stages, variant, this.samplerBudget);
-    return this.programs.whenBuilt(this.pipeline, built, variant, new Set(stages.map((s) => s.id)));
+    return this.programs.whenBuilt(this.drawingPipeline(variant), built, variant, new Set(stages.map((s) => s.id)));
   }
 
   /** Build the stock develop program for a process version: the built-in transform
@@ -1816,7 +1836,7 @@ export class WebGLRenderer {
     if (hinted.size > 0) {
       for (const id of hinted) this.wakeGroups.set(id, hinted);
       const woken = this.stageInjection(variant, true, hinted);
-      this.programs.submit(this.pipeline, woken.built, variant, woken.ids);
+      this.programs.submit(this.drawingPipeline(variant), woken.built, variant, woken.ids);
       prepass = woken.built.prepass;
     }
     const passes = prepass.filter((s) => stageIds.includes(s.stageId) && (this.drawsViewStages || !s.viewOnly));
@@ -1879,7 +1899,7 @@ export class WebGLRenderer {
   }
 
   private stageKeys(): ReadonlyMap<string, string> {
-    const source = this.stageSource();
+    const source = this.stageList();
     if (this.keysMemo?.source === source) return this.keysMemo.keys;
     const keys = new Map<string, string>();
     for (const s of this.currentStages()) if (!isBuiltInStage(s)) keys.set(s.id, stageKey(s));
@@ -1931,13 +1951,51 @@ export class WebGLRenderer {
     for (const key of stages) this.drawnStages.add(`${key}|${cost}`);
   }
 
-  private currentStages(): readonly ProcessingStageContribution[] {
+  /** The stages this renderer draws: the set it was handed, and the pre-pass
+   *  of the transform it draws with (transform-prepass.ts). The same object
+   *  until either changes, which the memos built from it key on. */
+  private stageList(): StageSet {
     const source = this.stageSource();
+    const pipeline = this.pipeline;
+    const m = this.stageListMemo;
+    if (m && m.source === source && m.pipeline === pipeline && (!m.stage || !isCrashed(m.stage))) return m.list;
+    // A pre-pass the GPU crash guard blames stays out, as a blamed extension
+    // stage does (withoutCrashed); the frame then draws with the built-in.
+    const made = prepassStageOf(pipeline);
+    const stage = made && !isCrashed(made) ? made : null;
+    if (stage) this.prepassIds.add(stage.id);
+    // A pipeline resolved again under the same signature keeps the same stage, and the set its identity.
+    const list =
+      m && m.source === source && m.stage === stage
+        ? m.list
+        : stage
+          ? [...(Array.isArray(source) ? source : Object.values(source)), stage]
+          : source;
+    this.stageListMemo = { source, pipeline, stage, list };
+    return list;
+  }
+
+  private currentStages(): readonly ProcessingStageContribution[] {
+    const source = this.stageList();
     return Array.isArray(source) ? source : Object.values(source);
   }
 
+  /** The ids of the stages in the set, and of every transform pre-pass this
+   *  renderer has drawn with: a photo switching transforms is not the set
+   *  shrinking, and keeps the other transform's programs. */
   private currentStageIds(): ReadonlySet<string> {
-    return new Set(this.currentStages().map((s) => s.id));
+    return new Set([...this.currentStages().map((s) => s.id), ...this.prepassIds]);
+  }
+
+  /** The pipeline frames of `variant` draw with: the photo's transform, or the
+   *  built-in while its pre-pass is out of the stage set (quarantined, or
+   *  blamed for a GPU crash), as its GLSL would read a result nothing made. */
+  private drawingPipeline(variant: ShaderVariant = this.variant): ResolvedPipeline {
+    const p = this.pipeline;
+    const stage = prepassStageOf(p);
+    if (!stage) return p;
+    const quarantined = this.quarantined.get(stage.id)?.has(`${stageSignature(stage)}|${variantKey(variant)}`) ?? false;
+    return quarantined || isCrashed(stage) ? BUILTIN_RESOLVED : p;
   }
 
   /** A set that lost a stage may now fit what the GPU's limits refused, so what
@@ -2006,6 +2064,12 @@ export class WebGLRenderer {
       const signed = this.quarantined.get(stage.id) ?? new Set<string>();
       signed.add(`${signature}|${vk}`);
       this.quarantined.set(stage.id, signed);
+      // A transform's pre-pass belongs to no extension stage: like a transform
+      // that fails to build, the photo draws with the built-in (drawingPipeline).
+      if (isTransformPrepass(stage)) {
+        console.error(`[pipeline] "${stage.id}" pre-pass can't be built; using built-in until it changes:`, log);
+        continue;
+      }
       console.error(`[renderer] stage "${stage.id}" can't be built; drawing without it until it changes:`, log);
       this.onStageQuarantined?.({ stageId: stage.id, signature, log });
     }
@@ -2069,7 +2133,7 @@ export class WebGLRenderer {
 
   // `hinted`: stages taken as awake without waking them (prewarmStages).
   private stageInjection(variant: ShaderVariant, withCopies = true, hinted?: ReadonlySet<string>): ProgramStages {
-    const source = this.stageSource();
+    const source = this.stageList();
     let memo = this.injectionMemo;
     if (memo?.source !== source) {
       this.retryQuarantineIfShrunk();
@@ -2126,6 +2190,18 @@ export class WebGLRenderer {
     return { stages: stages.filter((s) => !dormant.includes(s.id)), dormant };
   }
 
+  /** Whether a stage that asks for the plain source (plainSource) is at work
+   *  on `bag`: the photo then renders without the baseline tone, the camera
+   *  baseline and channel reconstruction. A stage whose dormantWhen doesn't
+   *  resolve to a rule is never judged at work. */
+  private plainSourceWanted(bag: Record<string, unknown>): boolean {
+    return this.currentStages().some((s) => {
+      if (s.plainSource !== true) return false;
+      const rule = dormantRule(s);
+      return rule !== null && !isDormant(rule, bag);
+    });
+  }
+
   private wake(stageId: string): void {
     this.awake.add(stageId);
     for (const id of this.wakeGroups.get(stageId) ?? []) this.awake.add(id);
@@ -2135,7 +2211,7 @@ export class WebGLRenderer {
    *  copies' ids stay out of currentStageIds(): a program is released when a
    *  stage leaves, not when a photo has fewer masks using it. */
   private maskCopies(variant: ShaderVariant = this.variant): MaskInstances {
-    const source = this.stageSource();
+    const source = this.stageList();
     const masks = this.params?.masks ?? [];
     const m = this.copiesMemo;
     if (m && m.source === source && m.masks === masks && m.variant === variant) return m.copies;
@@ -2157,16 +2233,18 @@ export class WebGLRenderer {
   }
 
   private syncPipeline() {
-    const p = this.pipeline;
     const variant = this.params
       ? shaderVariantFor(this.params.processVersion, this.newestVersion)
       : this.variant;
+    const p = this.drawingPipeline(variant);
     const stages = this.stageInjection(variant);
     let built = stages.built;
     // A mask probe's frame stops where the mask components read `lin`, a scene
-    // measurement where the display transform takes it.
+    // measurement where the display transform takes it, a decode measurement
+    // where the decode and noise-reduction stages leave it.
+    const measure = this.redirect?.measure;
     const exit: ProgramExit | undefined =
-      this.redirect?.probe?.point === "mask" ? "mask" : this.redirect?.measure === "scene" ? "scene" : undefined;
+      this.redirect?.probe?.point === "mask" ? "mask" : measure === "scene" || measure === "decode" ? measure : undefined;
     const unchanged =
       p.sig === this.pipelineSig &&
       built.sig === this.stageSig &&
@@ -2194,6 +2272,7 @@ export class WebGLRenderer {
     this.droppedCopies = chosen.dropped;
     this.dormantIds = chosen.stages.dormant;
     this.programStageIds = chosen.stages.ids;
+    this.programStageList = chosen.stages.built.steps.flatMap((step) => (step.kind === "stage" ? [step.stageId] : []));
     this.programs.setCurrent(e);
     // A stage-set change invalidates the pass programs and prepass results of
     // the stages it changed (stageSetChanged), and every split. No process
@@ -2282,7 +2361,8 @@ export class WebGLRenderer {
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
     // A replacement pipeline that brings its own look (AgX, ACES, …) can drop
     // the default RAW base curve and, separately, the core tone shoulder.
-    const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase;
+    const plain = this.plainSourceWanted(this.frameBag());
+    const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase && !plain;
     gl.uniform1i(u.uApplyBaseCurve, baseCurve ? 1 : 0);
     gl.uniform1f(u.uBaselineGain, this.baselineGain);
     gl.uniform1f(u.uBaselineShadows, this.baselineShadows / 100);
@@ -2321,8 +2401,9 @@ export class WebGLRenderer {
     gl.uniform1f(u.uColorNRSmooth, p.colorNRSmoothness);
     gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
     // A display-referred source's highlights were rendered, not clipped by a
-    // sensor: nothing to reconstruct.
-    gl.uniform1f(u.uClipThreshold, this.linear && !this.displayReferred ? 0.98 : 0.0);
+    // sensor: nothing to reconstruct. A stage asking for the plain source reads
+    // the sensor's values as they are, clipped channels included.
+    gl.uniform1f(u.uClipThreshold, this.linear && !this.displayReferred && !plain ? 0.98 : 0.0);
 
     const vp = this.redirect?.probe?.roi ?? this.roi;
     gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
@@ -2503,7 +2584,8 @@ export class WebGLRenderer {
    *  "pre-output" it is the signed `c` the output stage receives, at "output"
    *  what the output stage makes of it: sRGB as long as no export output space
    *  is set, which holds for the worker's live and thumb renderers. At "scene"
-   *  it is the scene-linear `lin` the display transform receives. A
+   *  it is the scene-linear `lin` the display transform receives, and at
+   *  "decode" the linear `lin` the decode and noise-reduction stages leave. A
    *  measurement, like an export frame: without the view's overlays, the
    *  screen's space, the monitor profile or the proof. Null with no source,
    *  without float render targets, or when a target can't be allocated or
@@ -2796,7 +2878,7 @@ export class WebGLRenderer {
       splitToken,
       w,
       h,
-      baseCurve: this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
+      baseCurve: this.applyBaseCurve && !this.pipelineSkipBase && !this.plainSourceWanted(bag) ? 1 : 0,
       bag,
       copySlots: this.maskCopies().slots,
       units: this.prepassUnitPool(),

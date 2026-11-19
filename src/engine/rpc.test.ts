@@ -41,10 +41,19 @@ function handlers(over: Partial<EngineHandlers> = {}): EngineHandlers {
   return {
     export: async () => {},
     preview: async () => {},
+    import: async () => {},
+    thumbs: async () => {},
+    command: async () => {},
     shutdown: async () => {},
     ...over,
   };
 }
+
+const aborted = (signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
+  });
 
 describe("serveEngine", () => {
   it("answers one request at a time, in the order they came", async () => {
@@ -139,6 +148,55 @@ describe("serveEngine", () => {
     expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
   });
 
+  it("sends a lock failure with who holds the lock", async () => {
+    const heldBy = { app: "safelight" as const, pid: 4, host: "h", since: 1, refreshedAt: 2 };
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      import: async () => {
+        throw new EngineFailure("locked", "Safelight has this catalogue open.", heldBy);
+      },
+    }));
+    port.deliver({ id: 1, type: "import", project: { root: "/p" }, scope: { kind: "all" }, metadata: true, keepBackup: true });
+    await settle();
+    expect(port.events()).toEqual([{ id: 1, type: "error", code: "locked", message: "Safelight has this catalogue open.", heldBy }]);
+  });
+
+  it("takes import and thumbs requests to their handlers", async () => {
+    const seen: string[] = [];
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      import: async (req) => void seen.push(`${req.type} ${req.id}`),
+      thumbs: async (req) => void seen.push(`${req.type} ${req.id}`),
+    }));
+    port.deliver({ id: 1, type: "import", project: { root: "/p" }, scope: { kind: "all" }, metadata: false, keepBackup: true });
+    port.deliver({ id: 2, type: "thumbs", project: PROJECT, photoIds: ["a"], edge: 64, encoding: "rgba" });
+    await settle();
+    expect(seen).toEqual(["import 1", "thumbs 2"]);
+    expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
+  });
+
+  it("takes a command request to its handler, and ends it with the command's failure", async () => {
+    const seen: string[] = [];
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      command: async (req, out) => {
+        seen.push(`${req.extension} ${req.name} ${req.words.join(" ")}`);
+        out.emit({ id: req.id, type: "command-output", stream: "out", text: "hi" });
+        if (req.id === 2) throw new EngineFailure("command", "gmic didn't register gmac; is it on?");
+      },
+    }));
+    port.deliver({ id: 1, type: "command", extension: "gmic", name: "gmic", words: ["-blur", "3"], photoIds: [], settings: null });
+    port.deliver({ id: 2, type: "command", extension: "gmic", name: "gmac", words: [], photoIds: [], settings: "{}" });
+    await settle();
+    expect(seen).toEqual(["gmic gmic -blur 3", "gmic gmac "]);
+    expect(port.events()).toEqual([
+      { id: 1, type: "command-output", stream: "out", text: "hi" },
+      { id: 1, type: "done" },
+      { id: 2, type: "command-output", stream: "out", text: "hi" },
+      { id: 2, type: "error", code: "command", message: "gmic didn't register gmac; is it on?" },
+    ]);
+  });
+
   it("logs a message that isn't a request instead of failing", async () => {
     const port = fakeChannel();
     serveEngine(port.channel, handlers());
@@ -148,5 +206,83 @@ describe("serveEngine", () => {
     const events = port.events();
     expect(events).toHaveLength(2);
     expect(events.every((e) => e.type === "log" && e.level === "warn" && e.id === 0)).toBe(true);
+  });
+});
+
+describe("cancel", () => {
+  const cancel = (target: number) => ({ id: -target, type: "cancel", target });
+
+  it("aborts the running request's signal at once, while another waits behind it", async () => {
+    const signals = new Map<number, AbortSignal>();
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      preview: async (req, _out, signal) => {
+        signals.set(req.id, signal);
+        if (req.id === 1) await aborted(signal);
+      },
+    }));
+    port.deliver(preview(1));
+    port.deliver(preview(2));
+    await settle();
+    expect([...signals.keys()]).toEqual([1]);
+    port.deliver(cancel(1));
+    await settle();
+    expect(signals.get(1)?.aborted).toBe(true);
+    expect(signals.get(2)?.aborted).toBe(false);
+    expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
+  });
+
+  it("ends a request cancelled while it waits with done, without running it", async () => {
+    const ran: number[] = [];
+    let release = () => {};
+    const first = new Promise<void>((resolve) => (release = resolve));
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      preview: async (req) => {
+        ran.push(req.id);
+        if (req.id === 1) await first;
+      },
+    }));
+    port.deliver(preview(1));
+    port.deliver(preview(2));
+    port.deliver(cancel(2));
+    release();
+    await settle();
+    expect(ran).toEqual([1]);
+    expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
+  });
+
+  it("ignores a cancel for a request that has finished, or never came", async () => {
+    const signals: AbortSignal[] = [];
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      preview: async (_req, _out, signal) => void signals.push(signal),
+    }));
+    port.deliver(preview(1));
+    await settle();
+    port.deliver(cancel(1));
+    port.deliver(cancel(9));
+    port.deliver(preview(2));
+    await settle();
+    expect(signals.map((s) => s.aborted)).toEqual([false, false]);
+    expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
+  });
+
+  it("is served after a shutdown has closed the queue to new requests", async () => {
+    let signal: AbortSignal | null = null;
+    const port = fakeChannel();
+    serveEngine(port.channel, handlers({
+      import: async (_req, _out, s) => {
+        signal = s;
+        await aborted(s);
+      },
+    }));
+    port.deliver({ id: 1, type: "import", project: { root: "/p" }, scope: { kind: "all" }, metadata: true, keepBackup: true });
+    port.deliver({ id: 2, type: "shutdown" });
+    await settle();
+    port.deliver(cancel(1));
+    await settle();
+    expect(signal!.aborted).toBe(true);
+    expect(port.events().map((e) => [e.id, e.type])).toEqual([[1, "done"], [2, "done"]]);
   });
 });

@@ -23,7 +23,7 @@ export const copyCommand: CommandSpec = {
   writes: false,
   async run(ctx, args) {
     const specs = [...args.positionals, ...args.afterDashDash];
-    if (specs.length !== 1) throw new CliError(1, "copy takes one photo.", `${COMMAND} help copy shows how.`);
+    if (specs.length > 1) throw new CliError(1, "copy takes one photo.", `${COMMAND} help copy shows how.`);
     const tools = toolsOf(args.options.tools);
     const clip = await copyFromPhoto(ctx, args, specs[0], tools);
     await writeClipboard(ctx.env.userData, clip);

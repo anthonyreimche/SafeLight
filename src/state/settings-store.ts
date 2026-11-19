@@ -178,6 +178,10 @@ export interface AppSettings {
   /** When a folder is selected, also show photos in its subfolders. Off =
    *  only photos directly inside the selected folder. */
   showSubfolderPhotos: boolean;
+  /** Show each photo's file type (NEF, JPG) on its grid and Filmstrip thumbnail. */
+  thumbnailFileType: boolean;
+  /** Mark the grid and Filmstrip thumbnails of photos with an edit. */
+  thumbnailEdited: boolean;
 
   // ── Previews / thumbnails ──────────────────────────────────────────────
   /** How RAW grid previews are built on import (see PreviewSource). */
@@ -187,6 +191,9 @@ export interface AppSettings {
   /** Persist grid previews to <project>/.safelight/previews. Off = memory-only,
    *  rebuilt on demand each open (keeps the project folder small). */
   persistPreviews: boolean;
+  /** Each format's decoders in the order they're tried, by format id (see
+   *  image-decoders.ts). A format left out tries core's own decoder first. */
+  decoderOrder: Record<string, string[]>;
   /** Where a project's .safelight working dir (catalog/previews/cache) lives:
    *  - "in-folder": beside the photos, in <project>/.safelight. A read-only
    *    source (e.g. a memory card) that can't host one falls back to the separate
@@ -355,16 +362,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultSortDirection: "desc",
   confirmRemovePhotos: true,
   showSubfolderPhotos: false,
+  thumbnailFileType: false,
+  thumbnailEdited: true,
   previewSource: "auto",
   thumbMaxEdge: 640,
   persistPreviews: true,
+  decoderOrder: {},
   catalogLocation: "in-folder",
   externalCatalogDir: "",
   rawCacheEnabled: true,
   rawCachePrefetch: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
-  developDynamicDetail: false,
+  developDynamicDetail: true,
   gpuSourceCacheBytes: 512 * 1024 * 1024,
   developPrefetchNeighbors: true,
   highBitDepth: true,

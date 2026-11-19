@@ -7,6 +7,7 @@ import type { PrefSection } from "@/ui/preferences/section-model";
 import { aboutSection } from "./About";
 import { exportSection } from "./Export";
 import { extensionsSection } from "./Extensions";
+import { fileFormatsSection } from "./FileFormats";
 import { interfaceSection } from "./Interface";
 import { librarySection } from "./Library";
 import { performanceSection } from "./Performance";
@@ -22,6 +23,7 @@ export const CORE_SECTIONS: PrefSection[] = [
   interfaceSection,
   librarySection,
   previewsSection,
+  fileFormatsSection,
   renderingSection,
   performanceSection,
   exportSection,

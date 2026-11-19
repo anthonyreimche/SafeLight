@@ -110,6 +110,15 @@ Every shortcut is an action with an id, a label, a category (`"General"`, `"Deve
 - Actions scoped to a module fire only in that module, so the same combo can be reused in another module.
 - Add your own with [`registerKeybinding`](contributions.md#keyactioncontribution). Read live combos with `api.keybindings`.
 
+## Developer Tools (`api.devtools`)
+
+Only the Developer Tools extension (`safelight.devtools`) is handed `api.devtools`; for every other extension it is `undefined`. Besides the dev-folder loader, the Pipeline and Variables reads and the Chrome DevTools controls, it carries two read-only members, each optional, so feature-detect them. Needs Safelight 3.2.6.
+
+- **`extensions`** lists every extension this window knows of as `DevExtensionInfo`: its id, name, version, `source` (`"builtin"`, `"installed"` or `"dev"`), whether it is `running` and `enabled`, why it failed to start (`failure`), how many of its callbacks were guarded after throwing (`callbackFailures`) and a dev copy's load error (`devError`). The core is listed as "Safelight" with the app's version. Installed extensions that are turned off appear too, read from the extension host's install folder; the list refreshes on an install, update, rollback, uninstall or dev reload. Outside the desktop app it holds the running extensions and the dev folder. `reloadDev(id)` reloads a dev-folder extension from disk.
+- **`render`** reads the live render. `live` is the Develop view's `LiveRenderStatus` (the photo and process version, the stages in its program with mask copies as `id@n`, the stages it was built without while dormant, the stages the last frame was drawn without, the last render's time in ms, and the last render error until a frame succeeds), or `null` before the view has drawn. It is written only for the live Develop view, and at most once a second when only the time changed. `stageFailures` holds the stages the GPU refused or that took the driver down, by stage id; `crashed` is true for the latter. `liveValues(stageId)` returns the values the live view last drew the stage's uniforms with, by uniform key and derived values included, or `null` with no live view.
+
+`extensions`, `live` and `stageFailures` are each a `DevtoolsObservable`: `get()`, `subscribe(listener)` and a React hook `use()` that returns the same object until the value changes.
+
 ## Electron bridge (`window.safelightNative`)
 
 Present only in the desktop app. Feature-detect it, and its optional members, before use.

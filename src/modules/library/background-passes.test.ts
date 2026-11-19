@@ -104,6 +104,8 @@ vi.mock("@/raw/libraw-wasm-adapter", () => ({
 vi.mock("@/raw/decode-pool", () => ({ decodePoolSize: () => 3, warmDecodePool: async () => {} }));
 
 vi.mock("@/raw/raw-cache", () => ({
+  DECODER_ID: "libraw",
+  decoderMarkerId: () => "libraw",
   cachedKeys: async () => new Set<string>(),
   cacheListing: async () => ({ done: new Set<string>(), stale: new Set<string>() }),
   deleteCachedPreview: async (key: string) => void h.cacheDeletes.push(key),

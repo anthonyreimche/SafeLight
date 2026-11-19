@@ -73,6 +73,7 @@ setPreviewParams(params, paramBag?);
 commitEdit(label);               // one undo step, then saved
 resetParams(keys, label); undo; redo; reset; canUndo; canRedo;
 goToHistory(index);              // show history[index], one move (3.2.5)
+restoreEdit({ params, paramBag }, label); // put a saved edit back, one undo step (3.2.6)
 updateProcessing();              // version 1 to current, one undo step
 setShowClipping(mode); setPanelBypass(panelId, on);
 ```
@@ -86,7 +87,9 @@ setShowClipping(mode); setPanelBypass(panelId, on);
 - `reloadEdit` reads the open photo's edit back from the catalogue after something else wrote it. If a live change is still uncommitted, the change stays and only the history behind it is renewed.
 - If the open photo's stored edit can't be read, `loadEdit` still opens the photo, but with no history and `editError` set to the reason. Commits, undo and redo do nothing for it until it opens again (`reloadEdit` retries) or another photo opens.
 - `history` holds every step of the open photo's edit, oldest first: `history[0]` is the photo as opened before any edit, and each entry is the whole edit after that step, with the `label` it was committed under. A History list shows them and calls `goToHistory(i)`, which stores and announces the move once, like a single undo. Undo and redo are `goToHistory(historyIndex ∓ 1)`.
+- `restoreEdit` puts a saved edit back exactly, such as a snapshot an extension kept from `params` and `paramBag`: every setting, the process version it was made at, and only the extension values it holds. It is one undo step under your label, and nothing when the photo already shows that edit. Unlike `applyPreset`, it neither keeps the photo's process version nor merges the bag.
 - Commits build on the edit the catalogue holds, one at a time per photo, so steps another window stored are kept under yours.
+- `bypassedPanels` holds the panels whose preview-off eye is held now, by panel id. Read it to leave a held-off effect out of a preview you render yourself, as the G'MIC extension does for its filters; change it only through `setPanelBypass`.
 - Derive image aspect from `sourceSize`, not `photo.width/height`. It is `{0, 0}` until a frame is drawn. `fullWidth`/`fullHeight` are the decoded size before the upload cap; `native` is true while `api.develop.readSourceSample` has a sample (3.1.0).
 
 ### useUIStore
@@ -102,6 +105,8 @@ markDetached; markAttached;
 
 `setSort`, `setGridSize` and `stepGridSize` are saved and restored on the next launch.
 
+`filter.edited` is `"any"`, `"edited"` or `"unedited"`. A photo counts as edited while its history stands on a step after the original, so undoing every step makes it unedited again. `sortField: "dateEdited"` sorts by when that step was made, with photos never edited counting as the oldest (3.2.6).
+
 ### useSettings
 
 The user's preferences. The state is the settings object itself: `useSettings((s) => s.exportFormat)` or `useSettings.getState()`.
@@ -113,9 +118,9 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Interface | `uiScale`, `reduceMotion`, `uiFont`, `sliderJumpToCursor`, `dropdownWheelSelect`, `editingHighlights`, `colorOverrides` |
 | Canvas | `canvasSurroundOverride`, `canvasSurround`, `assessBorderPct`, `windowDim` |
 | Accessibility | `highContrast`, `strongFocus`, `largerText`, `largerControls`, `lowercaseHeadings`, `reduceTransparency`, `keyboardCanvasEditing`, `colorVisionFilter`, `syncOSAccessibility` |
-| Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos` |
+| Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos`, `thumbnailFileType`, `thumbnailEdited` |
 | Catalogue | `catalogLocation` (`"in-folder"` or `"external"`), `externalCatalogDir` |
-| Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge` |
+| Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge`, `decoderOrder` (3.2.6: each format's decoder ids in the order they're tried) |
 | Develop | `developMaxEdge`, `developDynamicDetail`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
 | Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportIfExists` (`"number"` or `"replace"`), `exportPresets` |
 | Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
@@ -151,7 +156,7 @@ adjustments: { list(); get(key); set(key, value) };
 captureFrame(params, opts?: { asShown?; paramBag? }): Promise<ImageBitmap>;
 captureFloatFrame(params, opts?: {                 // 3.1.0
   space?: StageSpace;                              // default linear Rec.709
-  point?: "pre-output" | "output" | "scene";       // default "pre-output"
+  point?: "pre-output" | "output" | "scene" | "decode"; // default "pre-output"
   paramBag?; maxEdge?: number;                     // default 1280 px
 }): Promise<FloatFrame | null>;  // { data: Float32Array; width; height; space; point }
 readSourceSample(): Promise<SourceSample | null>;  // 3.1.0
@@ -198,7 +203,7 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 - `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back. A tip may carry a `group` (a picker heading) and `brush`, the settings it was made for: `spacing`, `scatter`, `count`, `sizeJitter`, `angleJitter`, `flowJitter`, `angle`, `followStroke`. Core clamps them into range and stamps nothing by them; a painter loads them when the tip is picked (3.2.5).
 - `unregisterBrushTip` takes back one tip of your own, as when the person removes it from your library; strokes that name it stamp the round disc from then on (3.2.5).
 - `brushTips` and `useBrushTips` list every registered tip, whichever extension registered it, so a brush can offer another extension's tips in its picker (3.2.5).
-- `registerInputProfiles` lets one extension read non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) through their colour profiles. Each load of such a photo calls `resolve(photo, file)` with `{ id, filename, inputProfile }` and the original as a `Blob`. Answer an `InputTransform` (below) or `null`. Core then decodes the file's 8-bit codes without colour management, puts each channel through its `trc` table and the three through `toRec709`, and clamps nothing. Colour outside sRGB arrives as negative channels, as it does from a RAW. Develop, exports, headless renders and edited thumbnails use the result; the Library's plain grid previews stay the browser's.
+- `registerInputProfiles` lets one extension read non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) through their colour profiles. Each load of such a photo calls `resolve(photo, file)` with `{ id, filename, inputProfile }` and the original as a `Blob`. Answer an `InputTransform` (below) or `null`. Core then decodes the file's 8-bit codes without colour management, puts each channel through its `trc` table and the three through `toRec709`, and clamps nothing. Colour outside sRGB arrives as negative channels, as it does from a RAW. Develop, exports, headless renders and edited thumbnails use the result; the Library's plain grid previews stay the browser's. HEIF photos are read through their own colour information instead, and a photo an extension decoder reads (`api.library.registerDecoder`) isn't passed to the resolver (3.2.6).
   - `null`, a throw, an answer later than 3 s or an invalid transform leaves the photo to the browser's decode, which converts to sRGB as before. So does a decode or conversion that fails afterwards.
   - One extension holds the resolver. Another's is refused with a warning naming the holder. Registering again replaces your own, and it is dropped when your extension stops.
   - Safelight remembers the last extension that registered one. While the app starts, a non-RAW photo opened in Develop waits for that extension to register, for at most 3 s, if it is installed and turned on. Without one, no photo waits.
@@ -222,7 +227,7 @@ interface InputTransform {
 
 - `captureFrame` renders the open photo with any params, aligned to the view. By default it is a measurement frame: sRGB, without the clipping warning, mask overlay or sharpening preview. `asShown: true` keeps them, for drawing over the canvas.
 - A capture's params and `paramBag` never reach the live view or the histogram, Auto Tone, Auto White Balance or Upright. Use `paramBag` to render an auxiliary image (a gain map, a mask) aligned to the view.
-- `captureFloatFrame` returns RGBA floats, rows top-down. `"pre-output"` is the signed colour the output stage receives (clamped to [0, 1] on version 1 photos), `"output"` is sRGB in [0, 1], `"scene"` is what the display transform receives. It is `null` without float render targets, with no photo open, or when the GPU can't hold the frame.
+- `captureFloatFrame` returns RGBA floats, rows top-down. `"pre-output"` is the signed colour the output stage receives (clamped to [0, 1] on version 1 photos), `"output"` is sRGB in [0, 1], `"scene"` is what the display transform receives, and `"decode"` (3.2.6) is the linear colour the decode and noise-reduction stages leave, ahead of the built-in noise reduction, white balance and every later tool. It is `null` without float render targets, with no photo open, or when the GPU can't hold the frame.
 - `maxEdge: Infinity` gives the full view (about 180 MB at 4096 px, more on the GPU). A smaller frame is the full one averaged down, so ask for full size only when you need the detail.
 - `readSourceSample` gives up to 1024 px from the centre of the open RAW at native resolution: linear Rec.709, white balance applied, before every edit. It is `null` for bitmaps and until the RAW decodes; wait for `useDevelopStore` `sourceSize.native` to be true. Each call copies about 16 MB.
 
@@ -325,6 +330,8 @@ setStack(ids, opts?: { cover?: string }): Promise<void>; // 3.2.1: group as one 
 clearStack(ids): Promise<void>;                    // 3.2.1: take out of their stacks
 stackOf(id): { stackId; ids; cover } | null;       // 3.2.1
 setInputProfile(ids, token: string | null): Promise<void>; // 3.2.3: the resolver's owner only
+editedAt(id): number | undefined;                  // 3.2.6: when its edit last changed
+useEditedAt(id): number | undefined;               // 3.2.6: editedAt as a hook
 ```
 
 **Notes**
@@ -345,6 +352,8 @@ setInputProfile(ids, token: string | null): Promise<void>; // 3.2.3: the resolve
 - Stacking is catalogue data, like a rating: it syncs between windows and has no undo step.
 - `stackOf` gives a photo's stack among all photos, filters ignored, or `null`.
 - `api.ui.Thumbnail` and `PhotoListRow` draw the stack badge, so a surface built from them needs no change.
+
+**Edit times (3.2.6).** `editedAt` is when a photo's edit last changed, in ms since the epoch: the time of the step its history stands on. It is `undefined` for a photo never edited, or with every step undone, the same rule the Library's Edited filter uses. It is read from the edit history, so it follows undo, another window's edit and `safelight` commands. A grid filter or sort that calls it sets `readsEdits: true`, since `reads` can only name photo fields; the grid then filters again each time an edit is stored. `useEditedAt` draws again when the photo's edit time changes, for a [thumbnail badge](contributions.md#thumbnailbadgecontribution) or a panel.
 
 **Input profiles (3.2.3).** `setInputProfile` stores an opaque token on photos as `CatalogPhoto.inputProfile`, or with `null` clears it. Your resolver gets it back in `resolve`. Only the extension holding the input profile resolver (`api.develop.registerInputProfiles`) may call it; any other call is rejected.
 
@@ -404,9 +413,53 @@ A library source is a set of photos kept somewhere other than a folder on disk, 
 - **Read-only.** Nothing is written to the source. Folder and photo operations (new folder, rename, move, delete from disk) do nothing on a source project, and the Folders panel hides them.
 - **Keys.** The catalogue knows each photo by its `key` (kept as `CatalogPhoto.sourceKey`), not by its path: a photo moved to another folder or renamed on the source keeps its record, rating and edit, and a photo that takes a removed one's name never takes its record. Its cached RAW decode follows the key too, so a move keeps its cached decode and a photo that takes a removed one's path and size never opens with the other's. Keep keys stable from one listing to the next. A key in two folders is two photos.
 - **Names.** Folder and photo names are made plain (`/` becomes `-`, a leading `.` becomes `_`) and unique within their folder. Of folders or photos sharing a name, the lowest `key` keeps it and the rest add part of their key, so names don't depend on listing order; give folders a `key` for that (without one a second folder of a name gets ` (2)`).
-- **Items.** Give `size` when you know it (an original of another size is not kept), `width`/`height` (the upright frame: no preview is read at import to turn it by; without them a photo takes its preview's size when the grid first reads it, and its original's when that is first decoded), `exif` (with `orientation` when the file carries one: it turns the photo upright; fields of the wrong type, and those the RAW decode learns, are left out) and `taken`. A name Safelight can't import (a video, HEIC) is left out, as in a folder.
+- **Items.** Give `size` when you know it (an original of another size is not kept), `width`/`height` (the upright frame: no preview is read at import to turn it by; without them a photo takes its preview's size when the grid first reads it, and its original's when that is first decoded), `exif` (with `orientation` when the file carries one: it turns the photo upright; fields of the wrong type, and those the RAW decode learns, are left out) and `taken`. A name Safelight can't import (a video) is left out, as in a folder.
 - **Timeouts.** Core bounds `list` at 2 minutes and `readPreview` at 1 minute; bound `readOriginal` yourself by the file's size.
 - The last source project opened reopens at the next launch once its extension has registered the source (up to 15 seconds later; the launch doesn't wait for it), as a folder does, unless something else was opened meanwhile.
+
+### Decoders (3.2.6)
+
+```ts
+registerDecoder(decoder: ImageDecoderContribution): void;
+unregisterDecoder(id: string): void;
+useDecoders(): readonly ImageDecoderInfo[];   // React hook: { id, label, owner, formats }
+
+interface ImageDecoderContribution {
+  id: string;                     // unique among your own decoders
+  label: string;                  // shown in Preferences ▸ File formats
+  version?: string;               // default "1"; change it when your output changes
+  extensions: readonly string[];  // [".heic", ".heif"], [".cr3"]: formats Safelight already imports
+  decode(file: Blob, request: ImageDecodeRequest): Promise<DecodedImageResult | null>;
+}
+
+interface ImageDecodeRequest {
+  name: string;
+  targetEdge?: number;            // a hint: the long edge the caller needs
+  fullSize: boolean;              // RAW: a smaller answer is refused
+  asShotMultipliers?: readonly [number, number, number];   // RAW: balance by these
+  background: boolean;
+  signal: AbortSignal;
+}
+
+type DecodedImageResult =
+  | { kind: "rgba8"; width; height; data: Uint8ClampedArray; oriented: boolean;     // non-RAW, sRGB
+      sourceWidth?; sourceHeight? }
+  | { kind: "linear"; width; height; data: Float32Array; oriented: boolean;         // RGBA, linear Rec. 709
+      asShotMultipliers?; colorTemperature?; rawExposureBias?; sourceWidth?; sourceHeight? };
+```
+
+A decoder reads a format Safelight already imports, in place of Safelight's own or after it. Each format keeps its decoders in a list the person orders in **Preferences ▸ File formats**; a new decoder joins the end of each of its formats' lists, after Safelight's own, until the person moves it up.
+
+- **The chain.** A photo is decoded by the first decoder in its format's list that answers an image. Answering `null`, throwing, answering an image core can't use (the wrong size or kind, more than 2^28 pixels) or running past the time limit (60 s and 2 s a megabyte, counted from the start of your decode) passes the file to the next decoder, and only when every decoder has failed is the photo marked as failed. The `signal` is aborted when the time runs out or core no longer needs the answer.
+- **Scheduling.** Core runs one decode at a time per decoder, interactive requests (the photo open in Develop, an export) ahead of `background` ones (grid previews, the RAW cache). A decode past its time limit, or one core no longer needs, is abandoned with its `signal` aborted, and the next one starts, so stop promptly when it fires. `decode` runs in the window, so do the work in a Worker of your own and transfer the result back.
+- **What uses it.** Develop, exports, headless renders, edited thumbnails and grid previews. A RAW's embedded camera preview, its metadata (frame size, as-shot white balance at import) and the colour check of a decode against that preview stay Safelight's.
+- **Formats.** Only extensions Safelight imports are taken; others are left out with a warning, and a decoder left with none is refused. A file type Safelight doesn't import can't be added this way yet.
+- **Non-RAW answers.** `rgba8` is 8-bit sRGB. `linear` is linear light in Rec. 709 primaries at D65, display-referred (1 is the file's white), nothing clipped: colour past Rec. 709 as negative channels, as `registerInputProfiles` delivers it. Either way input profiles don't apply to your decode. A decode reduced to `targetEdge` gives the image's full `sourceWidth`/`sourceHeight`, so the catalogue records the photo's own size. A HEIF answer must be upright (`oriented: true`): its own rotation and mirror are authoritative.
+- **RAW answers.** Only `linear`, scene-referred as Safelight's own RAW decode is: the camera's black subtracted and its matrix applied, balanced at `request.asShotMultipliers` when given (else at the camera's, returned in `asShotMultipliers` and `colorTemperature`), scaled so the least amplified channel saturates at 1, nothing clipped, no tone curve, gamma, auto-brightening or baseline exposure (Safelight adds its own). Report a Fujifilm DR mode's `rawExposureBias` after making up for it. A reduced decode gives the frame's `sourceWidth`/`sourceHeight`; when `fullSize` is true it is refused.
+- **Orientation.** `oriented: true` says the pixels already stand as the photo's EXIF orientation shows it; with `false` core turns them.
+- **Ownership.** The array becomes core's: answer a whole array (a view into a larger buffer or into wasm memory is copied once) and don't touch it after.
+- **Kept decodes.** While a decoder of yours comes before Safelight's in a format's list, decodes core keeps across launches (the RAW cache, the GPU source cache) are filed under your decoder's id and `version`, so bump `version` whenever your output changes. With Safelight's decoder first, nothing changes for existing caches.
+- Registering an id you hold replaces it. Your decoders go when your extension stops, and Develop waits a few seconds at launch for a decoder the person put first; the person's order keeps their place for when they're back, unless they reset that format's order.
 
 ## `api.network` (3.2.4)
 
@@ -473,6 +526,72 @@ Live connections (WebSockets) to a server whose address the person types in, suc
 - One consent dialogue per extension at a time: a request made while yours is open answers `"not-allowed"` without asking.
 - In the browser build there is no dialogue: `wss://` addresses answer `"allowed"` and the page's own policy decides.
 - Keep what you send sealed if the server isn't yours alone to read: the server sees everything a socket carries.
+
+## `api.programs` (3.2.6)
+
+```ts
+interface KeptProgram { token: string; path: string; name: string }
+pick(options?: { title?: string; replacing?: string | null }): Promise<KeptProgram | null>;
+locate(name: string): Promise<KeptProgram | null>;
+list(): Promise<KeptProgram[]>;
+forget(token: string): Promise<void>;
+run(token: string, args: string[], options?: ProgramRunOptions): Promise<ProgramRunResult>;
+```
+
+Runs one native program the person chose, such as the `gmic` command-line program for a G'MIC extension. Declare `"permissions": { "programs": true }` in `safelight.json`. You never name a program yourself: the person picks it, and you hold a token for it.
+
+- `pick` opens the system's file dialogue, then a second dialogue that names your extension and the full path and asks whether it may run it. It answers `null` if the person cancels or says no. `locate("gmic")` looks on `PATH` (and, on macOS and Linux, in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`) and asks the same question about what it finds. Call either from a click. On Windows only an `.exe` or `.com` is taken.
+- A yes is kept across launches until `forget`, the person's Forget on your extension's page in the Extensions window, or your extension being uninstalled; an update keeps it. `pick({ replacing })` takes the place of an earlier token and forgets it once the new one is kept. One consent dialogue per extension at a time: asking while yours is open answers `null`.
+- `run` starts the program directly, with no shell, so each item of `args` is one argument exactly as you wrote it. Core makes a fresh empty folder under the system's temporary folder, writes `files` into it, runs the program with that folder as its working directory, reads back `outputs`, and removes the folder, however the run ends. Several runs can go at once.
+- File names, in `files` and `outputs`, are plain: letters, digits, `.`, `_` and `-`, up to 128, no `.` or `..`, no trailing dot, no name Windows reserves (`con`, `nul`, `com1`…, with any extension), and no two that differ only by case. In `outputs`, a name ending in `*` takes every file whose name starts with the rest (`"out_*"`), within the folder only. A missing file is left out. At most 16 files and 1 GB come back, and more rejects the run.
+- At most 4096 arguments, each up to 32 KB, with no NUL.
+- `onOutput(stream, text)` gets what the program prints as it arrives, decoded as UTF-8 without cutting a character in half, a few times a second rather than once per line. `stdout` and `stderr` in the result keep the last 4 MB of each.
+- `signal` stops the program (and everything it started), and so does `timeoutMs` (10 minutes by default, 2 hours at most). A stopped run resolves with `killed: "cancelled"` or `"timeout"`, `exitCode: null` and no files. A program that runs and fails is a result, not a rejection: look at `exitCode`.
+- `run` rejects when the token isn't yours, your manifest stopped declaring `programs`, the file is gone, the program can't start, or a name, argument or output is refused. Outside the desktop app it rejects with `NotSupportedError`, and `pick` and `locate` answer `null`.
+- The program is an ordinary program with the person's own rights. It can read, change and delete their files, and the dialogue says so. Other extensions that run your extension's commands, such as Terminal, can use the program through you, and the dialogue says that too.
+- The program's environment is the app's, without `LD_LIBRARY_PATH`, `APPDIR`, `APPIMAGE` or anything starting `ELECTRON_`, so it doesn't load the app's own libraries.
+- Large files cross between the page and the main process in one message each way. Very large images (hundreds of megabytes) haven't been measured here.
+
+## `api.commands` (3.2.6)
+
+```ts
+register(c: CommandContribution): void;
+unregister(name: string): void;
+list(): RegisteredCommand[];
+subscribe(cb: () => void): () => void;
+run(name: string, options: CommandOutput & { words: string[]; photos: CatalogPhoto[]; signal?: AbortSignal }): Promise<{ result: unknown; saved: string[] }>;
+canSaveBeside(photo: CatalogPhoto): Promise<string | null>;
+saveBeside(photo: CatalogPhoto, data: Blob, suffix: string, ext: string): Promise<string>;
+// CommandContribution = { name, summary, usage: string[], examples?, subcommands?: { name, summary }[], run(ctx) }
+```
+
+A console verb your extension adds, such as `gmic` for a G'MIC extension. The Terminal extension's console runs it in the app, and the `safelight` command runs it from a terminal: `safelight gmic blur 3 -- @all`. One `run` function serves both; its context says which one called.
+
+- `name` is a lower-case letter, then 1 to 31 lower-case letters, digits or `-`. A `safelight` verb (`export`, `set`…), one of the prompt's own words (`cd`, `next`, `prev`, `close`, `home`, `clear`, `cls`, `exit`, `quit`, `open`) or a name another extension holds is refused with a warning. Registering a name you hold replaces it. Your commands go when your extension stops.
+- `run(ctx)` gets `ctx.words`, the words after the verb exactly as typed: nothing in them is read as an option, so `-blur` stays a word. `ctx.photos` are the photos it acts on (the Develop photo or the Library selection in the Terminal, the photos the command line chose in the CLI), and may be empty. `ctx.caller` is `"app"` or `"cli"`, and `ctx.from` the id of the extension that ran it, or `"cli"`.
+- Write with `ctx.print` (the output proper; under `--json` the CLI leaves it out), `ctx.info` and `ctx.warn` (notes), and `ctx.progress(text)`, whose `update(text, fraction?)` and `done(text?)` move and end the line. Give a script something to read with `ctx.result(value)`: plain JSON data, the last call wins.
+- Stop when `ctx.signal` aborts (Ctrl+C, the Terminal's stop). Throw to fail: the message is what the person sees, and `run` rejects with your error.
+- `ctx.saveBeside(photo, blob, suffix, ext)` keeps a result as a new photo in the photo's folder, named after it: `IMG_1-gmic.png`, then `IMG_1-gmic-2.png` and on to `-99` while a name is taken. Nothing is overwritten. `suffix` is 1 to 32 lower-case letters, digits or `-`, and `ext` a type of photo Safelight opens (`png`, `tif`, `jpg`…). It resolves with the new file's name. In the app the file is imported at once; under the CLI it is written now and imported when the command ends. Where it goes comes from the catalogue's record of the photo, never from the object you pass.
+- `ctx.canSaveBeside(photo)` answers `null` when a result can be saved there, else why not (the folder is read-only, the project is a library source, the browser build). Ask before long work.
+- `api.commands.canSaveBeside` and `api.commands.saveBeside` do the same for a panel of your own, outside any command: no permission needed.
+
+**Running another extension's command** (what the Terminal does) needs `"permissions": { "commands": true }` in your `safelight.json`; without it `run` rejects with a `NotAllowedError`. Pass the words, the photos and where the output goes. `run` resolves with the command's result and the names it saved, and rejects with the command's own error, or when nobody registered the name. `list` gives every extension's commands, by name; `subscribe` calls you when that list changes.
+
+**Offering it to the `safelight` command.** The CLI reads your manifest, not your running code, so declare each command there too:
+
+```json
+"commands": [
+  {
+    "name": "gmic",
+    "summary": "Runs G'MIC on photos.",
+    "usage": ["gmic <pipeline…>", "gmic filters [search]"],
+    "examples": ["gmic blur 3 -- @all"],
+    "subcommands": [{ "name": "filters", "summary": "Lists G'MIC's filters." }]
+  }
+]
+```
+
+Declared commands show in `safelight help`, complete at the prompt (the subcommands as the first word), and run as `safelight [options] <name> <words…> [-- photos…]`. Only the global and photo options before the name count; every word after it is yours. Naming no photo acts on the prompt's open photo, or on none. The engine starts your extension as the app would, with your settings as the app last saved them. A name the CLI already has, or one another extension declared first (by lower id), is left out, and `safelight doctor` says so. A command you register without declaring it still runs in the Terminal.
 
 ## `api.variables` (shared variables)
 

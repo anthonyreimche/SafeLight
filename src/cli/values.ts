@@ -45,6 +45,8 @@ function toolNames(tool: ToolRef): string[] {
   return [tool.id, shortId(tool.id), dashed, tool.name].map(norm);
 }
 
+const numberDefault = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
+
 const decimalsOf = (step: number | undefined, fallback: number): number => {
   if (step === undefined) return fallback;
   const text = String(step);
@@ -139,6 +141,7 @@ export function createValueService(
       ...(c.unit && { unit: c.unit }),
       ...(c.decimals !== undefined && { decimals: c.decimals }),
       ...(c.choices && { choices: c.choices }),
+      ...(c.kind === "number" && c.defaultFrom === undefined && { default: numberDefault(controlDefault(c, 0)) }),
     };
     infos.push(info);
     controlOf.set(info, c);
@@ -162,6 +165,7 @@ export function createValueService(
         ...(u.range && { min: u.range.min, max: u.range.max }),
         ...(u.range?.step !== undefined && { step: u.range.step }),
         ...(u.glslType !== "bool" && { decimals: decimalsOf(u.range?.step, u.glslType === "int" ? 0 : 2) }),
+        ...(u.glslType !== "bool" && { default: numberDefault(u.default) }),
       };
       infos.push(info);
       extensionValues.set(u.key, { info, fallback: u.default });

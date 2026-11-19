@@ -16,8 +16,10 @@ import type { StageSpace } from "@/extensions/types";
  *  receives, signed, before any display tool. The core shoulder has already
  *  compressed its highlights wherever it runs: always on version 1, and on
  *  version 2 and later unless the photo's display transform sets
- *  `skipToneShoulder`; elsewhere it is unclamped. */
-export type CapturePoint = "pre-output" | "output" | "scene";
+ *  `skipToneShoulder`; elsewhere it is unclamped. "decode": the linear colour
+ *  the decode and noise-reduction stages leave, ahead of the built-in noise
+ *  reduction, white balance and every later tool. */
+export type CapturePoint = "pre-output" | "output" | "scene" | "decode";
 
 export interface FloatCaptureOptions {
   /** Default DEFAULT_CAPTURE_SPACE. */

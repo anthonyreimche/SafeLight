@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DoctorItem, HelpScreen, VerbHelp } from "../output/types";
+import type { DoctorCheck, DoctorItem, HelpScreen, VerbHelp } from "../output/types";
 import { CliError, type CommandContext, type CommandOutcome, type ParsedArgs } from "../types";
 import { doctorCommand, doctorItems } from "./doctor";
 import { helpCommand } from "./help";
@@ -21,7 +21,7 @@ function fakeContext(json = false): { ctx: CommandContext; seen: Recorded } {
   const seen: Recorded = { printed: [] };
   const ctx = {
     env: {
-      cwd: userData, userData, appRoot: "D:\app", appVersion: "3.3.0", platform: process.platform,
+      cwd: userData, userData, appRoot: "D:\app", electronBinary: "D:\electron.exe", appVersion: "3.3.0", platform: process.platform,
       isTTY: { stdin: false, stdout: false, stderr: false }, env: {},
     },
     json,
@@ -60,6 +60,10 @@ describe("help", () => {
     );
   });
 
+  it("groups the library verbs together, in the order they're learnt", () => {
+    expect(COMMANDS.filter((c) => c.group === "Library").map((c) => c.verb)).toEqual(["ls", "import", "open", "rotate", "keywords", "forget"]);
+  });
+
   it("shows one verb's usage, options and examples, found by alias too", async () => {
     const { ctx, seen } = fakeContext();
     const set = COMMANDS.find((c) => c.verb === "set");
@@ -95,6 +99,14 @@ describe("doctor", () => {
     expect(by("Settings")).toMatchObject({ status: "warn", value: expect.stringContaining("open Safelight once") });
     expect(by("Terminal images")?.value).toContain("none");
     expect(by("Project")?.value).toContain("no catalogue");
+  });
+
+  it("shows the engine binary, and fails when there is none", async () => {
+    const { ctx } = fakeContext();
+    const by = async (c: typeof ctx) => (await doctorItems(c)).find((i) => i.label === "Engine");
+    expect(await by(ctx)).toMatchObject({ status: "info", value: expect.stringContaining("electron") });
+    const missing = { ...ctx, env: { ...ctx.env, electronBinary: null } };
+    expect(await by(missing)).toMatchObject({ status: "fail", value: expect.stringContaining("SAFELIGHT_ELECTRON") });
   });
 
   it("reports software rendering, a fresh mirror and a held project lock", async () => {
@@ -151,12 +163,85 @@ describe("doctor", () => {
     expect(items.find((i) => i.label === "Catalogue hooks")?.value).toContain("Hooks");
   });
 
-  it("prints through out.doctor, and gives JSON items", async () => {
+  it("gives a problem or a note a second line saying what to do", async () => {
+    const { ctx } = fakeContext();
+    const items = await doctorItems({ ...ctx, env: { ...ctx.env, electronBinary: null } });
+    const hint = (label: string) => items.find((i) => i.label === label)?.hint;
+    expect(hint("Engine")).toContain("SAFELIGHT_ELECTRON");
+    expect(hint("Graphics")).toContain("Open Safelight once");
+    expect(hint("Settings")).toContain("Open Safelight once");
+    expect(hint("Version")).toBeUndefined();
+
+    writeFileSync(join(userData, "gpu-backend"), "swiftshader\nrenderer-failed\n1 3\n3.3.0\n");
+    const soft = await doctorItems(fakeContext().ctx);
+    expect(soft.find((i) => i.label === "Graphics")?.hint).toBeDefined();
+  });
+
+  it("tells a terminal with only blocks where real pictures come from", async () => {
+    const { ctx } = fakeContext();
+    const wt = { ...ctx, env: { ...ctx.env, platform: "win32" as const, isTTY: { stdin: false, stdout: true, stderr: true }, env: { WT_SESSION: "1" } } };
+    const items = await doctorItems(wt);
+    const row = items.find((i) => i.label === "Terminal images");
+    expect(row?.value).toContain("blocks");
+    expect(row?.hint).toBe("Windows Terminal 1.22 or newer shows real pictures.");
+    const other = await doctorItems({ ...ctx, env: { ...wt.env, platform: "linux" as const, env: {} } });
+    expect(other.find((i) => i.label === "Terminal images")?.hint).toContain("--graphics");
+  });
+
+  it("asks a held project's owner to let go", async () => {
+    const working = join(userData, "shoot", ".safelight");
+    mkdirSync(working, { recursive: true });
+    const now = Date.now();
+    writeFileSync(join(working, "writer.lock"), JSON.stringify({ app: "safelight", pid: 7, host: "h", since: now, refreshedAt: now, token: "t" }));
+    const { ctx } = fakeContext();
+    (ctx.projects as { find: unknown }).find = async () => ({ root: join(userData, "shoot"), workingDir: working, location: "in-folder" });
+    const items = await doctorItems(ctx);
+    expect(items.find((i) => i.label === "Project")?.hint).toContain("--wait");
+  });
+
+  it("runs its checks through out.checklist, and gives JSON items", async () => {
     const { ctx, seen } = fakeContext();
-    await doctorCommand.run(ctx, args());
-    expect(seen.printed).toEqual(["DOCTOR"]);
+    let labels: string[] = [];
+    (ctx.out as { checklist: unknown }).checklist = async (checks: readonly DoctorCheck[]) => {
+      labels = checks.map((c) => c.label);
+      return (await Promise.all(checks.map((c) => c.run()))).flat();
+    };
+    expect((await doctorCommand.run(ctx, args())).code).toBe(0);
+    expect(seen.printed).toEqual([]);
+    expect(labels).toEqual(["Safelight", "Graphics", "Settings", "Extensions", "Terminal images", "Project", "Network"]);
     const json = fakeContext(true);
     const outcome = await doctorCommand.run(json.ctx, args());
     expect(outcome.json).toMatchObject({ slu: 1, items: expect.any(Array) });
+  });
+});
+
+describe("extension verbs in help and doctor", () => {
+  function install(id: string, commands: unknown): void {
+    const dir = join(userData, "plugins", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "safelight.json"), JSON.stringify({ id, name: id, version: "1.0.0", main: "index.js", commands }));
+  }
+  const gmic = { name: "gmic", summary: "Runs G'MIC.", usage: ["gmic <pipeline…>", "gmic filters [search]"] };
+
+  it("lists an installed extension's verbs on the help screen and explains one", async () => {
+    install("gmic", [gmic]);
+    const { ctx, seen } = fakeContext();
+    await helpCommand.run(ctx, args());
+    expect(seen.screen?.verbs).toContainEqual({ verb: "gmic", group: "Extensions", summary: "Runs G'MIC." });
+    await helpCommand.run(ctx, args("gmic"));
+    expect(seen.verb).toMatchObject({ verb: "gmic", usage: "gmic <pipeline…>\nsafelight gmic filters [search]" });
+    expect(seen.verb?.summary).toContain("photos come after --");
+  });
+
+  it("names a command that lost to a safelight verb or to another extension", async () => {
+    install("acme", [gmic, { name: "export", summary: "x", usage: ["export"] }]);
+    install("zed", [gmic]);
+    const items = await doctorItems(fakeContext().ctx);
+    const notes = items.filter((i) => i.label === "Extension commands");
+    expect(notes[0]).toMatchObject({ status: "info", value: "gmic" });
+    expect(notes.slice(1).map((i) => [i.status, i.value])).toEqual([
+      ["warn", "acme: export is one of safelight's own verbs; not offered"],
+      ["warn", "zed: gmic is acme's (acme); not offered"],
+    ]);
   });
 });

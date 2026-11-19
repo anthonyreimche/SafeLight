@@ -15,7 +15,7 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 // panel's contribution so the user can see the image without it. View-only and
 // momentary — it never touches the stored edit or history, so values survive.
 //
-// Two mechanisms cover every panel:
+// Three mechanisms cover every panel:
 //  • Owned params — the DevelopParams keys the panel declares
 //    (PanelContribution.owns), or for an Essential's panel that doesn't declare
 //    them yet, the keys listed below by panel id. They are reset to their
@@ -23,7 +23,10 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 //    sub-objects; arrays (masks, retouch) reset to []. The renderer re-derives
 //    all of its uniforms/textures from these each frame, so clearing them is a
 //    complete, side-effect-free bypass (no shader change).
-//  • Stage params — for every panel that owns no params. Its effect
+//  • Owned bag keys — the param-bag keys the panel declares
+//    (PanelContribution.ownsBag), for an extension whose stages serve several
+//    panels. `bypassParamBag` drops just those, exact or by "prefix.".
+//  • Stage params — for every panel that owns neither. Its effect
 //    comes from GPU processing stage(s); `bypassParamBag` drops the owning
 //    extension's stage params from the contributed bag, so the renderer binds
 //    each uniform's declared default (renderer.ts: `?? b.default`) — the
@@ -89,36 +92,41 @@ export function applyPanelBypass(
   return next;
 }
 
-// Return a copy of the contributed (extension stage) param bag with the stage
-// params of every bypassed panel that owns no DevelopParams removed, so the
-// renderer falls back to each uniform's declared default and each texture
-// value's empty one. Bypassing such a panel
-// neutralizes all of its extension's stages — the contribution model has no
-// panel↔stage link, so the owning extension is the finest grain available.
-// Returns the same object when no such panel is bypassed.
+/** Whether bag key `k` is one of `ownsBag`'s: an exact key, or under a
+ *  prefix ending in ".". */
+const inOwnsBag = (ownsBag: readonly string[], k: string): boolean =>
+  ownsBag.some((o) => k === o || (o.endsWith(".") && k.startsWith(o)));
+
+// Return a copy of the contributed (extension stage) param bag, view values
+// included, without what bypassed panels own there: the keys a panel's
+// `ownsBag` names, or, for a panel that owns neither DevelopParams nor bag
+// keys, every stage param of its extension, so the renderer falls back to each
+// uniform's declared default and each texture value's empty one. Returns the
+// same object when no bypassed panel owns anything in the bag.
 export function bypassParamBag(
   bag: Record<string, unknown>,
   bypassed: Record<string, boolean>,
   state: RegistryState = useRegistry.getState(),
 ): Record<string, unknown> {
-  const ids = Object.keys(bypassed).filter(
-    (id) => bypassed[id] && !panelOwnedParams(id, state)?.length,
-  );
-  if (ids.length === 0) return bag;
   const owners = new Set<string>();
-  for (const id of ids) {
-    const ext = state.panels[id]?.extensionId;
-    if (ext) owners.add(ext);
+  const ownedKeys: string[] = [];
+  for (const id of Object.keys(bypassed)) {
+    const panel = state.panels[id];
+    if (!bypassed[id] || !panel) continue;
+    if (panel.ownsBag) ownedKeys.push(...panel.ownsBag);
+    else if (!panelOwnedParams(id, state)?.length) owners.add(panel.extensionId);
   }
-  if (owners.size === 0) return bag;
+  if (owners.size === 0 && ownedKeys.length === 0) return bag;
   const descriptors = getAllDescriptors();
   const stagePrefixes = Object.values(state.processingStages)
     .filter((st) => owners.has(st.extensionId))
     .map((st) => `${st.id}.`);
-  const owned = (k: string): boolean => {
+  const ownedByExtension = (k: string): boolean => {
+    if (owners.size === 0) return false;
     const d = descriptors.get(k);
     return d ? owners.has(d.extensionId) : stagePrefixes.some((pre) => k.startsWith(pre));
   };
+  const owned = (k: string): boolean => inOwnsBag(ownedKeys, k) || ownedByExtension(k);
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(bag)) {
@@ -131,15 +139,17 @@ export function bypassParamBag(
   return changed ? next : bag;
 }
 
-// Whether a panel has something the renderer can preview off: owned params, or
-// an owning extension that registers at least one GPU processing stage. Panels
-// with no previewable effect (Histogram, Edit, Presets) return false so the eye
-// is hidden there.
+// Whether a panel has something the renderer can preview off: owned params or
+// bag keys, or an owning extension that registers at least one GPU processing
+// stage. Panels with no previewable effect (Histogram, Edit, Presets) return
+// false so the eye is hidden there.
 export function panelIsPreviewable(
   panelId: string,
   state: RegistryState,
 ): boolean {
   if (panelOwnedParams(panelId, state)?.length) return true;
+  const ownsBag = state.panels[panelId]?.ownsBag;
+  if (ownsBag) return ownsBag.length > 0;
   const ext = state.panels[panelId]?.extensionId;
   if (!ext) return false;
   return Object.values(state.processingStages).some(

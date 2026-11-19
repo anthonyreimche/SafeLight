@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { appRoot, cliEnv, guiUserData } from "./env";
+import { appRoot, cliEnv, electronBinary, guiUserData } from "./env";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..");
@@ -28,13 +28,13 @@ describe("guiUserData", () => {
     expect(guiUserData("darwin", {}, "/Users/ann")).toBe("/Users/ann/Library/Application Support/Safelight");
   });
 
-  it("follows XDG_CONFIG_HOME on Linux, else ~/.config", () => {
-    expect(guiUserData("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/ann")).toBe("/xdg/Safelight");
-    expect(guiUserData("linux", {}, "/home/ann")).toBe("/home/ann/.config/Safelight");
+  it("follows XDG_CONFIG_HOME on Linux, else ~/.config, in the lowercase folder the Linux app keeps", () => {
+    expect(guiUserData("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/ann")).toBe("/xdg/safelight");
+    expect(guiUserData("linux", {}, "/home/ann")).toBe("/home/ann/.config/safelight");
   });
 
   it("ignores a relative XDG_CONFIG_HOME, as the spec says", () => {
-    expect(guiUserData("linux", { XDG_CONFIG_HOME: "rel" }, "/home/ann")).toBe("/home/ann/.config/Safelight");
+    expect(guiUserData("linux", { XDG_CONFIG_HOME: "rel" }, "/home/ann")).toBe("/home/ann/.config/safelight");
   });
 
   it("uses SLU_USER_DATA when set", () => {
@@ -90,5 +90,26 @@ describe("cliEnv", () => {
       isTTY: { stdin: false, stdout: true, stderr: true },
     });
     expect(env.appVersion).toBe(__APP_VERSION__);
+  });
+});
+
+describe("electronBinary", () => {
+  const probe = (over: Partial<Parameters<typeof electronBinary>[3]> = {}) => ({
+    electronVersion: undefined, execPath: "/usr/bin/node", exists: () => true, ...over,
+  });
+
+  it("is the running binary when the CLI already runs inside Electron", () => {
+    expect(electronBinary("win32", { SAFELIGHT_ELECTRON: "X" }, "C:\\r", probe({ electronVersion: "40.0.0", execPath: "C:\\e.exe" }))).toBe("C:\\e.exe");
+  });
+
+  it("takes SAFELIGHT_ELECTRON next", () => {
+    expect(electronBinary("linux", { SAFELIGHT_ELECTRON: "/opt/electron" }, "/r", probe())).toBe("/opt/electron");
+  });
+
+  it("finds the repo's Electron per platform, and only if it exists", () => {
+    expect(electronBinary("win32", {}, "C:\\r", probe())).toBe("C:\\r\\node_modules\\electron\\dist\\electron.exe");
+    expect(electronBinary("darwin", {}, "/r", probe())).toBe("/r/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron");
+    expect(electronBinary("linux", {}, "/r", probe())).toBe("/r/node_modules/electron/dist/electron");
+    expect(electronBinary("linux", {}, "/r", probe({ exists: () => false }))).toBeNull();
   });
 });

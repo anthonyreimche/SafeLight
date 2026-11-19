@@ -60,6 +60,28 @@ export interface DockState {
   /** Live drag, rendered as a ghost chip + drop indicator. */
   drag: { id: string; x: number; y: number } | null;
   target: DropTarget | null;
+  /** Panels the person closed this session, oldest first, for Reopen closed
+   *  panel. Never saved: like a browser's closed tabs it ends with the window. */
+  closed: ClosedPanel[];
+}
+
+/** Where a panel sat when it was closed, so reopening puts it back there. */
+export interface ClosedPanel {
+  id: string;
+  module: AppModule;
+  place:
+    | {
+        kind: "rail";
+        railId: string;
+        side: RailState["side"];
+        /** Its position in the rail. */
+        index: number;
+        /** The rail's position among the side's rails, for rebuilding it. */
+        railIndex: number;
+        width: number;
+        height?: number;
+      }
+    | { kind: "float"; float: FloatState };
 }
 
 /** Drop indicator box in visual px (client coords). */
@@ -94,6 +116,7 @@ export const useDockStore = create<DockState>(() => ({
   open: [],
   drag: null,
   target: null,
+  closed: [],
 }));
 
 export const openList = (rails: RailState[], floating: Record<string, FloatState>) => [

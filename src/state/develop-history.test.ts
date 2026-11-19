@@ -22,6 +22,7 @@ import { broadcast } from "./broadcast";
 import { regenerateEditedThumbnail } from "./edited-thumbnail";
 import { useCatalogStore } from "./catalog-store";
 import { setCatalogStorage } from "@/catalog/storage";
+import { CURRENT_PROCESS_VERSION, DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
 import {
   installMemoryStorage,
   legacySnapshot,
@@ -175,5 +176,78 @@ describe("going to a step", () => {
     s().undo();
     expect(s().historyIndex).toBe(0);
     expect(s().canUndo()).toBe(false);
+  });
+});
+
+// A Snapshots panel puts a saved edit back as it was: every setting, the process
+// version it was made at and only the extension values it held, as one step.
+describe("restoring a saved edit", () => {
+  let saved: { params: DevelopParams; paramBag: Record<string, unknown> };
+
+  beforeEach(async () => {
+    await s().loadEdit(PHOTO_ID, 5000);
+    s().setParam("contrast", 10);
+    s().setDynParam("glow.amount", 0.4);
+    await s().commitEdit("Contrast");
+    saved = structuredClone({ params: s().params, paramBag: s().paramBag });
+    s().setParam("contrast", 40);
+    s().setParam("exposure", 1);
+    s().setDynParam("glow.amount", 0.9);
+    s().setDynParam("grain.size", 3);
+    await s().commitEdit("Exposure");
+    vi.mocked(broadcast).mockClear();
+  });
+
+  it("puts every setting and extension value back as one undoable step", async () => {
+    const singles = storage.singles.length;
+    await s().restoreEdit(saved, "Snapshot: First pass");
+
+    expect(s().params.contrast).toBe(10);
+    expect(s().params.exposure).toBe(saved.params.exposure);
+    expect(s().paramBag).toEqual({ "glow.amount": 0.4 });
+    expect(labels()).toEqual(["Original", "Contrast", "Exposure", "Snapshot: First pass"]);
+    expect(storage.singles).toHaveLength(singles + 1);
+
+    s().undo();
+    expect(s().params.contrast).toBe(40);
+    expect(s().paramBag).toEqual({ "glow.amount": 0.9, "grain.size": 3 });
+  });
+
+  it("takes the process version the edit was saved at", async () => {
+    const older = CURRENT_PROCESS_VERSION - 1;
+    await s().restoreEdit({ ...saved, params: { ...saved.params, processVersion: older } }, "Snapshot: Old");
+
+    expect(s().params.processVersion).toBe(older);
+  });
+
+  it("fills settings an older saved edit lacks with their defaults", async () => {
+    const { vignette: _dropped, ...partial } = saved.params;
+    await s().restoreEdit({ params: partial as DevelopParams }, "Snapshot: Old");
+
+    expect(s().params.vignette).toEqual(DEFAULT_DEVELOP_PARAMS.vignette);
+    expect(s().paramBag).toEqual({});
+  });
+
+  it("drops a preview being shown", async () => {
+    s().setPreviewParams({ ...s().params, contrast: 99 });
+    await s().restoreEdit(saved, "Snapshot: First pass");
+
+    expect(s().previewParams).toBeNull();
+    expect(s().previewParamBag).toBeNull();
+  });
+
+  it("adds nothing when the edit shown is already the saved one", async () => {
+    await s().restoreEdit(saved, "Snapshot: First pass");
+    await s().restoreEdit(saved, "Snapshot: First pass");
+
+    expect(labels()).toEqual(["Original", "Contrast", "Exposure", "Snapshot: First pass"]);
+  });
+
+  it("does nothing while the photo's stored edit couldn't be read", async () => {
+    useDevelopStore.setState({ editError: "Couldn't read the file." });
+    await s().restoreEdit(saved, "Snapshot: First pass");
+
+    expect(s().params.contrast).toBe(40);
+    expect(labels()).toHaveLength(3);
   });
 });

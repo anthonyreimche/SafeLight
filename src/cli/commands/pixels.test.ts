@@ -2,8 +2,8 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/photo";
 import type { EngineEvent, EngineRequest } from "@/engine/protocol";
-import type { EngineClient, EngineFrame } from "../engine-client";
-import type { Output } from "../output/types";
+import type { EngineClient, EngineFrame, RequestOptions } from "../engine-client";
+import type { Output, ProgressState } from "../output/types";
 import { parseArgs } from "../args";
 import {
   CliError,
@@ -27,7 +27,7 @@ function photo(id: string, relPath: string): CatalogPhoto {
 
 function selection(photos: CatalogPhoto[], missing: Selection<ReadSession>["missing"] = []): Selection<ReadSession> {
   return {
-    groups: photos.length ? [{ session: { project } as unknown as ReadSession, photos }] : [],
+    groups: photos.length ? [{ session: { project, edit: async () => undefined } as unknown as ReadSession, photos }] : [],
     missing,
     close: async () => {},
   };
@@ -36,38 +36,47 @@ function selection(photos: CatalogPhoto[], missing: Selection<ReadSession>["miss
 interface Harness {
   ctx: CommandContext;
   requests: EngineRequest[];
+  options: RequestOptions[];
+  selected: unknown[];
   printed: string[];
   raw: Uint8Array[];
   json: unknown[];
   errors: string[];
+  progress: Array<ProgressState | null>;
+  lamps: string[];
 }
 
 function harness(opts: {
   photos: CatalogPhoto[];
   missing?: Selection<ReadSession>["missing"];
-  events: (req: EngineRequest) => Array<EngineEvent | EngineFrame>;
+  /** Each a project of its own, after `photos`'s. */
+  more?: CatalogPhoto[][];
+  events: (req: EngineRequest, options: RequestOptions) => Array<EngineEvent | EngineFrame>;
   stdoutTTY?: boolean;
   json?: boolean;
   shown?: Array<{ assigns: number }>;
 }): Harness {
-  const h: Harness = { ctx: null as unknown as CommandContext, requests: [], printed: [], raw: [], json: [], errors: [] };
+  const h: Harness = { ctx: null as unknown as CommandContext, requests: [], options: [], printed: [], raw: [], json: [], errors: [], progress: [], lamps: [], selected: [] };
   const out = {
     options: { colour: { stdout: false, stderr: false }, unicode: true, width: 80, verbosity: "normal" },
     exported: (e: { path: string }) => `exported ${e.path}`,
-    summary: (s: { photos: number; failed: number }) => `${s.photos} photos, ${s.failed} failed`,
+    exportSummary: (s: { exported: number; failed: readonly unknown[] }) => `${s.exported + s.failed.length} photos, ${s.failed.length} failed`,
+    finished: (row: string) => h.printed.push(row),
     previewCaption: () => "caption",
     formatValue: (_i: unknown, v: unknown) => String(v),
     print: (t: string) => h.printed.push(t),
     json: (d: unknown) => h.json.push(d),
     warn: () => {},
     error: (p: { message: string }) => h.errors.push(p.message),
-    progress: () => {},
+    progress: (p: ProgressState | null) => h.progress.push(p),
+    working: <T,>(label: string, task: Promise<T>) => { h.lamps.push(label); return task; },
     writeRaw: (b: Uint8Array) => h.raw.push(b),
   } as unknown as Output;
   const engine: EngineClient = {
-    async *request(req) {
+    async *request(req, options = {}) {
       h.requests.push(req);
-      for (const item of opts.events(req)) yield item;
+      h.options.push(options);
+      for (const item of opts.events(req, options)) yield item;
     },
     shutdown: async () => {},
   };
@@ -82,7 +91,15 @@ function harness(opts: {
     strict: false,
     yes: false,
     waitSeconds: null,
-    select: { read: async () => selection(opts.photos, opts.missing), write: async () => { throw new Error("no"); } },
+    select: {
+      read: async (req: unknown) => {
+        h.selected.push(req);
+        const picked = selection(opts.photos, opts.missing);
+        const others = (opts.more ?? []).map((photos, i) => ({ session: { project: { ...project, root: `/q${i}` } } as unknown as ReadSession, photos }));
+        return { ...picked, groups: [...picked.groups, ...others] };
+      },
+      write: async () => { throw new Error("no"); },
+    },
     engine: () => engine,
     preview: { show: async (_p: unknown, _ph: unknown, o: { tryAssigns?: unknown[] }) => { opts.shown?.push({ assigns: o.tryAssigns?.length ?? 0 }); } },
     projects: { openRead: async () => ({ edit: async () => undefined, close: async () => {} }) },
@@ -155,6 +172,33 @@ describe("export command", () => {
     expect(h.printed).toEqual(["exported /o/a.jpg", "exported /o/b.jpg", "2 photos, 0 failed"]);
   });
 
+  it("reports each photo's state, size and time, with the folder, while it exports", async () => {
+    const h = harness({
+      photos: [photo("a", "a.ARW"), photo("b", "b.ARW"), photo("c", "c.ARW")],
+      events: (req) => [
+        { id: req.id, type: "exported", photoId: "a", path: "/o/a.jpg", width: 10, height: 5, colourSpace: "srgb", bytes: 99 },
+        { id: req.id, type: "progress", done: 1, total: 3, photoId: "a" },
+        { id: req.id, type: "error", code: "decode", message: "bad file", photoId: "b" },
+        { id: req.id, type: "progress", done: 2, total: 3, photoId: "b" },
+        { id: req.id, type: "exported", photoId: "c", path: "/o/c.jpg", width: 10, height: 5, colourSpace: "srgb", bytes: 7 },
+        { id: req.id, type: "progress", done: 3, total: 3, photoId: "c" },
+        done(req.id),
+      ],
+    });
+    await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["x", "-o", "/o"]));
+    expect(h.lamps).toEqual(["Starting the engine…"]);
+    const live = h.progress.filter((p): p is ProgressState => p !== null);
+    const last = live[live.length - 1];
+    expect(last).toMatchObject({ label: "Exporting", done: 3, total: 3, folder: resolve("/o") });
+    expect(typeof last.startedAt).toBe("number");
+    expect(last.items).toEqual([
+      { name: "a.jpg", state: "done", ms: expect.any(Number), bytes: 99 },
+      { name: "b.ARW", state: "failed", ms: expect.any(Number), error: "bad file" },
+      { name: "c.jpg", state: "done", ms: expect.any(Number), bytes: 7 },
+    ]);
+    expect(h.progress[h.progress.length - 1]).toBeNull();
+  });
+
   it("writes -o - frames to stdout and refuses a terminal", async () => {
     const events = (req: EngineRequest): Array<EngineEvent | EngineFrame> => [
       { id: req.id, type: "exported", photoId: "a", frame: 4, width: 1, height: 1, colourSpace: "srgb", bytes: 3 },
@@ -207,6 +251,33 @@ describe("export command", () => {
     expect(h.requests).toEqual([]);
   });
 
+  it("exports the open photo when none is named, and the set for @all", async () => {
+    const h = harness({ photos: [photo("a", "a.ARW")], events: (req) => [done(req.id)] });
+    h.ctx.working = { paths: ["/p/a.ARW", "/p/b.ARW"], index: 1, root: "/p" };
+    await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["-o", "/o"]));
+    await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["@all", "-o", "/o"]));
+    expect(h.selected).toMatchObject([{ specs: ["/p/b.ARW"] }, { specs: ["/p/a.ARW", "/p/b.ARW"] }]);
+  });
+
+  it("on Ctrl+C asks the engine to stop, starts no further project, says what it wrote and exits 130", async () => {
+    const stop = new AbortController();
+    const force = new AbortController();
+    const h = harness({
+      photos: [photo("a", "a.ARW"), photo("b", "b.ARW")],
+      more: [[photo("c", "c.ARW")]],
+      events: (req) => {
+        stop.abort();
+        return [{ id: req.id, type: "exported", photoId: "a", path: "/o/a.jpg", width: 1, height: 1, colourSpace: "srgb", bytes: 1 }, done(req.id)];
+      },
+    });
+    h.ctx.stops = { signal: stop.signal, force: force.signal };
+    const outcome = await exportPhotosCommand.run(h.ctx, parse(exportPhotosCommand, ["x", "-o", "/o"]));
+    expect(outcome.code).toBe(130);
+    expect(h.requests).toHaveLength(1);
+    expect(h.options[0]).toEqual({ signal: stop.signal, force: force.signal });
+    expect(h.printed).toEqual(["exported /o/a.jpg", "1 photos, 0 failed"]);
+  });
+
   it("exports the photos it can find, says what it can't, and exits 6", async () => {
     const h = harness({
       photos: [photo("a", "a.ARW")],
@@ -237,7 +308,7 @@ describe("preview command", () => {
     const two = harness({ photos: [photo("a", "a"), photo("b", "b")], events: () => [] });
     await expect(previewCommand.run(two.ctx, parse(previewCommand, ["a", "b"]))).rejects.toMatchObject({ code: 1 });
     const one = harness({ photos: [photo("a", "a")], events: () => [] });
-    await expect(previewCommand.run(one.ctx, parse(previewCommand, ["a", "--graphics", "sixel"]))).rejects.toMatchObject({ code: 1 });
+    await expect(previewCommand.run(one.ctx, parse(previewCommand, ["a", "--graphics", "gif"]))).rejects.toMatchObject({ code: 1 });
     const json = harness({ photos: [photo("a", "a")], events: () => [], json: true });
     await expect(previewCommand.run(json.ctx, parse(previewCommand, ["a"]))).rejects.toMatchObject({ code: 1 });
   });

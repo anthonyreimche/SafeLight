@@ -3,12 +3,13 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The per-pixel work of a libraw decode, kept apart from the adapter so it can
+// The per-pixel work of a RAW decode, kept apart from the decoders so it can
 // run in frame-worker.ts and, where there is no Worker, inline. Every loop over
 // a frame's pixels sits here, so the main thread never makes one: libraw's
 // samples become the linear sRGB float frame (already turned upright when asked),
 // the colour sanity check reads it, and the develop-preview cache entry is built
-// from it. Imports nothing that touches the DOM or React.
+// from it. An extension decoder's frame, linear already, is only cleaned and
+// turned before its entry is built. Imports nothing that touches the DOM or React.
 
 import { normalizeRotation } from "@/catalog/orient";
 import { encodeCacheEntry, type EncodedEntry } from "./cache-encode";
@@ -32,14 +33,32 @@ export interface FrameJob {
   cacheEdge?: number;
 }
 
-export type FrameResult =
-  | { rejected: string }
-  | { data: Float32Array<ArrayBuffer>; width: number; height: number; entry?: EncodedEntry };
+/** An extension decoder's RAW frame (api.library.registerDecoder): linear
+ *  Rec.709 RGBA, four floats to a pixel, as RawFloatImage holds it. */
+export interface LinearFrameJob {
+  pixels: Float32Array;
+  width: number;
+  height: number;
+  /** Clockwise degrees (a quarter-turn step) to bake into the frame. */
+  turn: number;
+  /** Also build the cache entry, with a preview of this long edge. */
+  cacheEdge?: number;
+}
+
+export interface BuiltFrame {
+  data: Float32Array<ArrayBuffer>;
+  width: number;
+  height: number;
+  entry?: EncodedEntry;
+}
+
+export type FrameResult = { rejected: string } | BuiltFrame;
 
 /** The requests answered as they arrive; a "profile" one decodes its file
  *  first, so profile-frame.ts answers it. */
 export type SyncFrameRequest =
   | { id: number; op: "build"; job: FrameJob }
+  | { id: number; op: "linear"; job: LinearFrameJob }
   | { id: number; op: "srgb8"; data: Float32Array }
   | { id: number; op: "luma"; data: Float32Array };
 
@@ -47,6 +66,7 @@ export type FrameRequest = SyncFrameRequest | { id: number; op: "profile"; job: 
 
 export type FrameReply =
   | { id: number; op: "build"; result: FrameResult }
+  | { id: number; op: "linear"; result: BuiltFrame }
   | { id: number; op: "srgb8"; bytes: Uint8ClampedArray<ArrayBuffer> }
   | { id: number; op: "luma"; data: Uint16Array<ArrayBuffer> }
   | { id: number; op: "profile"; frame: HalfFrame }
@@ -180,6 +200,42 @@ export function buildFrame(job: FrameJob): FrameResult {
   return { data, width: outWidth, height: outHeight, ...(entry ? { entry } : {}) };
 }
 
+/** An extension decoder's frame as libraw's comes out of buildFrame: turned,
+ *  every alpha 1, and a NaN or infinite channel 0, which the renderer and the
+ *  half-float cache entry can't take. An unturned frame keeps its buffer. */
+export function buildLinearFrame(job: LinearFrameJob): BuiltFrame {
+  const { pixels, width, height } = job;
+  const turn = normalizeRotation(job.turn);
+  const { base, dx, dy } = placement(width, height, turn);
+  const inPlace = turn === 0 && pixels.buffer instanceof ArrayBuffer;
+  const data = inPlace
+    ? new Float32Array(pixels.buffer, pixels.byteOffset, width * height * 4)
+    : new Float32Array(width * height * 4);
+  for (let y = 0, s = 0; y < height; y++) {
+    let o = base + y * dy;
+    for (let x = 0; x < width; x++, o += dx, s += 4) {
+      const r = pixels[s];
+      const g = pixels[s + 1];
+      const b = pixels[s + 2];
+      data[o] = r - r === 0 ? r : 0;
+      data[o + 1] = g - g === 0 ? g : 0;
+      data[o + 2] = b - b === 0 ? b : 0;
+      data[o + 3] = 1;
+    }
+  }
+  const swap = turn === 90 || turn === 270;
+  const outWidth = swap ? height : width;
+  const outHeight = swap ? width : height;
+  const entry = job.cacheEdge ? encodeCacheEntry(data, outWidth, outHeight, job.cacheEdge) : undefined;
+  return { data, width: outWidth, height: outHeight, ...(entry ? { entry } : {}) };
+}
+
+function frameBuffers(frame: BuiltFrame): Transferable[] {
+  return frame.entry
+    ? [frame.data.buffer, frame.entry.preview.data.buffer, frame.entry.sample.data.buffer]
+    : [frame.data.buffer];
+}
+
 /** Linear floats as 8-bit sRGB RGBA, clamped to [0, 1] first, for a thumbnail. */
 export function toSrgb8(data: Float32Array): Uint8ClampedArray<ArrayBuffer> {
   const out = new Uint8ClampedArray(data.length);
@@ -221,12 +277,12 @@ export function handleFrameRequest(req: SyncFrameRequest): { reply: FrameReply; 
       const data = lumaHalves(req.data);
       return { reply: { id: req.id, op: "luma", data }, transfer: [data.buffer] };
     }
-    const result = buildFrame(req.job);
-    const transfer: Transferable[] = [];
-    if (!("rejected" in result)) {
-      transfer.push(result.data.buffer);
-      if (result.entry) transfer.push(result.entry.preview.data.buffer, result.entry.sample.data.buffer);
+    if (req.op === "linear") {
+      const result = buildLinearFrame(req.job);
+      return { reply: { id: req.id, op: "linear", result }, transfer: frameBuffers(result) };
     }
+    const result = buildFrame(req.job);
+    const transfer = "rejected" in result ? [] : frameBuffers(result);
     return { reply: { id: req.id, op: "build", result }, transfer };
   } catch (e) {
     return {

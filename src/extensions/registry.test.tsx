@@ -37,11 +37,15 @@ import {
   registerSlot,
   registerStylesheet,
   registerTheme,
+  registerTopBarButton,
+  registerWindow,
   runGridFilterClears,
   unregisterExtension,
   unregisterProcessingStage,
   useRegistry,
 } from "./registry";
+import { useOpenWindow } from "./window-store";
+import { useDevelopStore } from "@/state/develop-store";
 import { getStageTextures, setStageTexture } from "@/rendering/render-bridge";
 import { CALLBACK_FAILURE_LIMIT, CATALOG_HOOK_TIMEOUT_MS, useCallbackFailures } from "./guard";
 import { getAllDescriptors, getParamDescriptor, setExtensionName, unregisterStageParams } from "./param-registry";
@@ -316,6 +320,240 @@ describe("registerPanel: owns", () => {
     registerPanel("acme", { id: "acme.tone", title: "Tone", component: View, owns });
     expect(useRegistry.getState().panels["acme.tone"].owns).toBeUndefined();
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("registerPanel: ownsBag", () => {
+  beforeEach(() => useRegistry.setState({ panels: {} }));
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the bag keys a panel owns and drops ones that aren't strings, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ownsBag = ["acme.f.abc.", 7, "acme.glow.amount"] as unknown as PanelContribution["ownsBag"];
+    registerPanel("acme", { id: "acme.f", title: "Filter", component: View, ownsBag });
+    expect(useRegistry.getState().panels["acme.f"].ownsBag).toEqual(["acme.f.abc.", "acme.glow.amount"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("ownsBag"));
+  });
+
+  it("drops an ownsBag that isn't a list, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ownsBag = "acme.f.abc." as unknown as PanelContribution["ownsBag"];
+    registerPanel("acme", { id: "acme.f", title: "Filter", component: View, ownsBag });
+    expect(useRegistry.getState().panels["acme.f"].ownsBag).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+// A filter an extension installs at runtime is its own panel, gone again when
+// the filter is uninstalled: the same as its extension being disabled, so a
+// layout keeps the id and the panel comes back where it was.
+describe("api.unregisterPanel", () => {
+  beforeEach(() => {
+    useRegistry.setState({ panels: {} });
+    useDevelopStore.setState({ bypassedPanels: {} });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    unregisterExtension("acme");
+    unregisterExtension("other");
+  });
+
+  it("removes the caller's panel and lets go of its held preview-off eye", () => {
+    const api = makeScopedAPI("acme");
+    api.registerPanel({ id: "acme.f", title: "Filter", component: View });
+    useDevelopStore.getState().setPanelBypass("acme.f", true);
+    api.unregisterPanel("acme.f");
+    expect(useRegistry.getState().panels["acme.f"]).toBeUndefined();
+    expect(useDevelopStore.getState().bypassedPanels).toEqual({});
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("refuses another extension's panel, with a warning", () => {
+    makeScopedAPI("acme").registerPanel({ id: "acme.f", title: "Filter", component: View });
+    useDevelopStore.getState().setPanelBypass("acme.f", true);
+    makeScopedAPI("other").unregisterPanel("acme.f");
+    expect(useRegistry.getState().panels["acme.f"]?.extensionId).toBe("acme");
+    expect(useDevelopStore.getState().bypassedPanels).toEqual({ "acme.f": true });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/other.*"acme\.f".*acme.*unregisterPanel ignored/));
+  });
+
+  it("does nothing for an id nobody registered", () => {
+    makeScopedAPI("acme").unregisterPanel("acme.none");
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("lets the panel be registered again", () => {
+    const api = makeScopedAPI("acme");
+    api.registerPanel({ id: "acme.f", title: "Filter", component: View });
+    api.unregisterPanel("acme.f");
+    api.registerPanel({ id: "acme.f", title: "Filter again", component: View });
+    expect(useRegistry.getState().panels["acme.f"]).toMatchObject({ extensionId: "acme", title: "Filter again" });
+  });
+});
+
+// Extension buttons sit beside the built-in icons in the top bar, each one the
+// extension's own until it unregisters it or the extension stops.
+describe("top-bar buttons", () => {
+  const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>';
+  const button = (id: string, extra: object = {}) => ({ id, label: id, svg: SVG, onClick: () => {}, ...extra });
+
+  beforeEach(() => {
+    useRegistry.setState({ topBarButtons: {} });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    unregisterExtension("acme");
+    unregisterExtension("other");
+  });
+
+  it("registers through the scoped API and replaces its own id", () => {
+    const api = makeScopedAPI("acme");
+    api.registerTopBarButton(button("acme.store"));
+    api.registerTopBarButton(button("acme.store", { label: "Store" }));
+    expect(useRegistry.getState().topBarButtons["acme.store"]).toMatchObject({ extensionId: "acme", label: "Store" });
+  });
+
+  it("removes its own button, and refuses another extension's with a warning", () => {
+    makeScopedAPI("acme").registerTopBarButton(button("acme.store"));
+    makeScopedAPI("other").unregisterTopBarButton("acme.store");
+    expect(useRegistry.getState().topBarButtons["acme.store"]).toBeDefined();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/other.*"acme\.store".*acme.*unregisterTopBarButton ignored/));
+    makeScopedAPI("acme").unregisterTopBarButton("acme.store");
+    expect(useRegistry.getState().topBarButtons["acme.store"]).toBeUndefined();
+  });
+
+  it("goes when its extension stops", () => {
+    makeScopedAPI("acme").registerTopBarButton(button("acme.store"));
+    unregisterExtension("acme");
+    expect(useRegistry.getState().topBarButtons).toEqual({});
+  });
+
+  it("refuses an icon that isn't inline svg markup, with a warning", () => {
+    const api = makeScopedAPI("acme");
+    api.registerTopBarButton(button("acme.remote", { svg: "https://example.com/icon.svg" }));
+    api.registerTopBarButton(button("acme.none", { svg: 42 }));
+    expect(useRegistry.getState().topBarButtons).toEqual({});
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("registerTopBarButton ignored"));
+  });
+
+  it("refuses a button without a click handler or a label, with a warning", () => {
+    const api = makeScopedAPI("acme");
+    api.registerTopBarButton(button("acme.dead", { onClick: undefined }));
+    api.registerTopBarButton(button("acme.nameless", { label: undefined }));
+    expect(useRegistry.getState().topBarButtons).toEqual({});
+    expect(console.warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("extension windows", () => {
+  const win = (id: string, extra: object = {}) => ({ id, title: id, component: View, ...extra });
+  const openId = () => useOpenWindow.getState().open;
+
+  beforeEach(() => {
+    useRegistry.setState({ windows: {} });
+    useOpenWindow.setState({ open: null, maximized: {} });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    unregisterExtension("acme");
+    unregisterExtension("other");
+  });
+
+  it("registers through the scoped API and replaces its own id", () => {
+    const api = makeScopedAPI("acme");
+    api.registerWindow(win("acme.store"));
+    api.registerWindow(win("acme.store", { title: "Filter store", maximizable: true }));
+    expect(useRegistry.getState().windows["acme.store"]).toMatchObject({
+      extensionId: "acme",
+      title: "Filter store",
+      maximizable: true,
+    });
+  });
+
+  it("refuses a window without a title or a component, with a warning", () => {
+    const api = makeScopedAPI("acme");
+    api.registerWindow(win("acme.untitled", { title: undefined }));
+    api.registerWindow(win("acme.empty", { component: undefined }));
+    expect(useRegistry.getState().windows).toEqual({});
+    expect(console.warn).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("registerWindow ignored"));
+  });
+
+  it("removes its own window, and refuses another extension's with a warning", () => {
+    makeScopedAPI("acme").registerWindow(win("acme.store"));
+    makeScopedAPI("other").unregisterWindow("acme.store");
+    expect(useRegistry.getState().windows["acme.store"]).toBeDefined();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/other.*"acme\.store".*acme.*unregisterWindow ignored/));
+    makeScopedAPI("acme").unregisterWindow("acme.store");
+    expect(useRegistry.getState().windows["acme.store"]).toBeUndefined();
+  });
+
+  it("opens, closes and toggles its own window", () => {
+    const api = makeScopedAPI("acme");
+    api.registerWindow(win("acme.store"));
+    api.windows.open("acme.store");
+    expect(openId()).toBe("acme.store");
+    expect(api.windows.isOpen("acme.store")).toBe(true);
+    api.windows.close("acme.store");
+    expect(api.windows.isOpen("acme.store")).toBe(false);
+    api.windows.toggle("acme.store");
+    expect(openId()).toBe("acme.store");
+    api.windows.toggle("acme.store");
+    expect(openId()).toBeNull();
+  });
+
+  it("keeps one extension window open at a time", () => {
+    const acme = makeScopedAPI("acme");
+    const other = makeScopedAPI("other");
+    acme.registerWindow(win("acme.store"));
+    other.registerWindow(win("other.tools"));
+    acme.windows.open("acme.store");
+    other.windows.open("other.tools");
+    expect(acme.windows.isOpen("acme.store")).toBe(false);
+    expect(other.windows.isOpen("other.tools")).toBe(true);
+  });
+
+  it("refuses to open or close another extension's window, with a warning", () => {
+    makeScopedAPI("acme").registerWindow(win("acme.store"));
+    const other = makeScopedAPI("other");
+    other.windows.open("acme.store");
+    other.windows.toggle("acme.store");
+    expect(openId()).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/other.*"acme\.store".*acme.*windows\.open ignored/));
+    makeScopedAPI("acme").windows.open("acme.store");
+    other.windows.close("acme.store");
+    expect(openId()).toBe("acme.store");
+  });
+
+  it("refuses to open a window nobody registered, with a warning", () => {
+    makeScopedAPI("acme").windows.open("acme.missing");
+    expect(openId()).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("windows.open ignored"));
+  });
+
+  it("closes the window when it is unregistered", () => {
+    const api = makeScopedAPI("acme");
+    api.registerWindow(win("acme.store"));
+    api.windows.open("acme.store");
+    api.unregisterWindow("acme.store");
+    expect(openId()).toBeNull();
+  });
+
+  it("goes, and closes if open, when its extension stops", () => {
+    makeScopedAPI("other").registerWindow(win("other.tools"));
+    const api = makeScopedAPI("acme");
+    api.registerWindow(win("acme.store"));
+    api.windows.open("acme.store");
+    unregisterExtension("acme");
+    expect(useRegistry.getState().windows["acme.store"]).toBeUndefined();
+    expect(openId()).toBeNull();
+
+    makeScopedAPI("other").windows.open("other.tools");
+    unregisterExtension("acme");
+    expect(openId()).toBe("other.tools");
   });
 });
 
@@ -728,6 +966,9 @@ describe("register*: contribution ids belong to their extension", () => {
     ["registerLibrarySort", "librarySorts", (o, id, tag) =>
       registerLibrarySort(o, { id, label: tag, compare: () => 0 })],
     ["registerStylesheet", "stylesheets", (o, id, tag) => registerStylesheet(o, { id, css: tag })],
+    ["registerTopBarButton", "topBarButtons", (o, id, tag) =>
+      registerTopBarButton(o, { id, label: tag, svg: "<svg></svg>", onClick: () => {} })],
+    ["registerWindow", "windows", (o, id, tag) => registerWindow(o, { id, title: tag, component: View })],
   ];
 
   beforeEach(() => {

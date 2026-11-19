@@ -39,6 +39,9 @@ export const PHOTO_OPTIONS: readonly OptionSpec[] = [
 /** Switches that may also carry a value (`--wait=30`). */
 const OPTIONAL_VALUE = new Set(["wait"]);
 
+// "-90" is a word (rotate's turn), never an option: no alias is a digit.
+const NEGATIVE_NUMBER = /^-\d+(\.\d+)?$/;
+
 // A key starts with a letter, so drive paths (C:\a=b) and ./a=b stay photos.
 const ASSIGNMENT = /^([A-Za-z][\w.-]*?)(\+=|-=|=)(.*)$/s;
 
@@ -54,8 +57,10 @@ function optionError(verb: string | null, flag: string, problem: string): CliErr
 
 /** Parses one command line. With `spec` null it only knows the global and
  *  photo options and lets other options pass as switches, so main can find the
- *  verb before it knows the verb's own options. */
-export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs {
+ *  verb before it knows the verb's own options; `rawVerb` names the verbs whose
+ *  words are their own (CommandSpec.rawArgs), which that first pass leaves
+ *  alone too. */
+export function parseArgs(input: string[], spec: CommandSpec | null, rawVerb?: (word: string) => boolean): ParsedArgs {
   const argv = [...input];
   const known = [...GLOBAL_OPTIONS, ...(spec ? spec.options : PHOTO_OPTIONS)];
   const byName = new Map<string, OptionSpec>();
@@ -71,7 +76,7 @@ export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
 
-    if (token !== "--" && /^-[A-Za-z]{2,}$/.test(token) && [...token.slice(1)].every((c) => byAlias.get(c)?.kind === "flag")) {
+    if (spec?.rawArgs !== true && token !== "--" && /^-[A-Za-z]{2,}$/.test(token) && [...token.slice(1)].every((c) => byAlias.get(c)?.kind === "flag")) {
       argv.splice(i, 1, ...[...token.slice(1)].map((c) => `-${c}`));
       i--;
       continue;
@@ -90,7 +95,7 @@ export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs
       continue;
     }
 
-    if (token.startsWith("-")) {
+    if (token.startsWith("-") && !NEGATIVE_NUMBER.test(token)) {
       const long = token.startsWith("--");
       const eq = long ? token.indexOf("=") : -1;
       const name = long ? token.slice(2, eq < 0 ? undefined : eq) : token.slice(1);
@@ -138,6 +143,12 @@ export function parseArgs(input: string[], spec: CommandSpec | null): ParsedArgs
 
     if (out.verb === null) {
       out.verb = token;
+      if (spec?.rawArgs === true || rawVerb?.(token) === true) {
+        const end = argv.indexOf("--", i + 1);
+        out.positionals.push(...argv.slice(i + 1, end < 0 ? undefined : end));
+        if (end >= 0) out.afterDashDash.push(...argv.slice(end + 1));
+        break;
+      }
       continue;
     }
     const assignment = parseAssignment(token);

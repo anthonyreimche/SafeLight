@@ -86,9 +86,10 @@ export const LINEAR_TO_SRGB_GLSL = `vec3 linearToSrgb(vec3 c) {
 }`;
 
 /** Where a probe-only program stops and hands back its working colour instead
- *  of the frame: "mask" at the scene-linear `lin` the mask components compare,
+ *  of the frame: "decode" at the linear `lin` the decode and noise-reduction
+ *  stages leave, "mask" at the scene-linear `lin` the mask components compare,
  *  "scene" at the `lin` the display transform receives. */
-export type ProgramExit = "mask" | "scene";
+export type ProgramExit = "decode" | "mask" | "scene";
 
 // Single-pass develop shader, assembled per process version. Most stages are
 // per-pixel point operations; clarity is a midtone-contrast approximation.
@@ -117,10 +118,11 @@ function fragmentShaderSource(v: ShaderVariant, splits = false, exit?: ProgramEx
     exit === "mask" ? `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(lin, 1.0); return; }` : "";
   // A scene measurement stops where the display transform takes `lin`, and
   // hands it over in the perceptual encoding every float frame is drawn in.
-  const sceneExit =
-    exit === "scene"
-      ? `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(slEncodePerceptual(lin), 1.0); return; }`
-      : "";
+  const measureExit = `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(slEncodePerceptual(lin), 1.0); return; }`;
+  const sceneExit = exit === "scene" ? measureExit : "";
+  // A decode measurement stops, the same way, after the contributed decode and
+  // noise-reduction stages, ahead of the built-in noise reduction.
+  const decodeExit = exit === "decode" ? measureExit : "";
   // Version 3 maps the signed colour into the target; earlier versions clip it.
   const output = v.signedOutput ? "slOutput(c)" : "encodeOutput(clamp(c, 0.0, 1.0))";
   // Nothing produces a fallback preview (load-image.ts declares the flag and
@@ -828,7 +830,7 @@ void main() {
 
   // Contributed noise-reduction stages (extension-owned), on scene-linear lin,
   // before exposure so denoising isn't amplified -- same rationale as core NR.
-  //__CONTRIBUTED_NOISE_REDUCTION__
+  //__CONTRIBUTED_NOISE_REDUCTION__${decodeExit}
 
   // Noise reduction, applied before exposure so it isn't amplified. Color NR
   // replaces chroma with a blurred (mip) version -- kills the rainbow speckle
@@ -1111,7 +1113,7 @@ export function buildFragmentShader(
   const pipeline =
     pipelineGlsl || (variant.fullInfo ? V2_DEFAULT_PIPELINE_GLSL : DEFAULT_PIPELINE_GLSL);
   const spaceHelpers =
-    variant.fullInfo || stages?.needsSpaceHelpers || exit === "scene" ? `${STAGE_SPACE_GLSL}\n` : "";
+    variant.fullInfo || stages?.needsSpaceHelpers || exit === "scene" || exit === "decode" ? `${STAGE_SPACE_GLSL}\n` : "";
   // Replacer functions: a replacement string would read $&, $$, $' and $` in
   // contributed GLSL (comments included) as patterns.
   return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0, exit)

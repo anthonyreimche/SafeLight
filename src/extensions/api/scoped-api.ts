@@ -29,6 +29,9 @@ import type {
   StageTextureData,
   StylesheetContribution,
   ThemeContribution,
+  ThumbnailBadgeContribution,
+  TopBarButtonContribution,
+  WindowContribution,
 } from "./contributions";
 import type { JSX, MemoExoticComponent } from "react";
 import type {
@@ -59,6 +62,8 @@ import type {
   ParamScope,
 } from "./develop";
 import type {
+  DevtoolsExtensions,
+  DevtoolsRender,
   ProcessVersion,
   PipelineRow,
   ScreenTarget,
@@ -77,6 +82,8 @@ import type {
 } from "./export";
 import type {
   CullingShortcutOptions,
+  ImageDecoderContribution,
+  ImageDecoderInfo,
   KeptDirectory,
   PhotoActions,
   PresetDiff,
@@ -99,8 +106,10 @@ import type {
   UIState,
 } from "./stores";
 import type { SharedVariablesAPI } from "./variables";
+import type { CommandsAPI } from "./commands";
 import type { NetworkAPI } from "./network";
 import type { SocketsAPI } from "./sockets";
+import type { ProgramsAPI } from "./programs";
 import type { SecretsAPI } from "./secrets";
 import type { LibrarySourceContribution, LibrarySourceEntry } from "./sources";
 import type { DevelopOverlayState } from "../develop-host";
@@ -111,6 +120,12 @@ export interface SafelightAPI {
   /** The app's React instance — plugins must use this, not their own copy. */
   react: typeof import("react");
   registerPanel(c: PanelContribution): void;
+  /** Remove a panel this extension registered (by id), e.g. one per installed
+   *  filter when that filter is uninstalled. It goes the way a disabled
+   *  extension's panel does: saved layouts keep its place, so registering it
+   *  again puts it back there, and a held preview-off eye on it lets go.
+   *  Another extension's id is refused with a warning. Needs Safelight 3.2.6. */
+  unregisterPanel(id: string): void;
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
   /** Register a top-level module (a tab beside Library and Develop). */
@@ -208,6 +223,11 @@ export interface SafelightAPI {
   registerCursor(c: CursorContribution): void;
   /** Add a sort order to the Library toolbar's sort dropdown. */
   registerLibrarySort(c: LibrarySortContribution): void;
+  /** Draw a badge in the corner of every Library grid and Filmstrip thumbnail
+   *  (see ThumbnailBadgeContribution). Re-registering the same id replaces it. */
+  registerThumbnailBadge(c: ThumbnailBadgeContribution): void;
+  /** Remove a thumbnail badge this extension registered (by id). */
+  unregisterThumbnailBadge(id: string): void;
   /** Append an action to the Library grid's right-click context menu. Core
    *  passes the targeted photo ids (the right-clicked photo, or the whole
    *  selection if it's part of one). Re-registering the same id replaces it. */
@@ -218,6 +238,32 @@ export interface SafelightAPI {
   registerStylesheet(c: StylesheetContribution): void;
   /** Remove a stylesheet this extension registered (by id). */
   unregisterStylesheet(id: string): void;
+  /** Add an icon button to the main window's top bar, beside the built-in
+   *  icons. Re-registering the same id replaces it. Needs Safelight 3.2.6. */
+  registerTopBarButton(c: TopBarButtonContribution): void;
+  /** Remove a top-bar button this extension registered (by id). Another
+   *  extension's id is refused with a warning. Needs Safelight 3.2.6. */
+  unregisterTopBarButton(id: string): void;
+  /** Register a window-style pop-up, opened with `windows.open`. Re-registering
+   *  the same id replaces it. Needs Safelight 3.2.6. */
+  registerWindow(c: WindowContribution): void;
+  /** Remove a window this extension registered (by id), closing it if open.
+   *  Another extension's id is refused with a warning. Needs Safelight 3.2.6. */
+  unregisterWindow(id: string): void;
+  /** Open and close this extension's windows (registerWindow). One extension
+   *  window is open at a time: opening one closes any other. Each window
+   *  remembers Maximize for the session. Needs Safelight 3.2.6. */
+  windows: {
+    /** Open a window this extension registered. Another extension's id, or one
+     *  nobody registered, is refused with a warning. */
+    open(id: string): void;
+    close(id: string): void;
+    toggle(id: string): void;
+    /** Whether window `id` is open now. Non-reactive. */
+    isOpen(id: string): boolean;
+    /** React hook: whether window `id` is open, re-rendering when that changes. */
+    useOpen(id: string): boolean;
+  };
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -282,6 +328,9 @@ export interface SafelightAPI {
     /** The small "Auto" button of the develop panels (Auto Tone, Auto White
      *  Balance). */
     AutoButton: typeof import("@/ui/components/AutoButton").AutoButton;
+    /** The small marker core draws on thumbnails (edited, the file type), for a badge
+     *  registered with registerThumbnailBadge. `title` is its tooltip. */
+    ThumbnailBadge: typeof import("@/ui/components/ThumbnailBadge").ThumbnailBadge;
   };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
@@ -471,7 +520,10 @@ export interface SafelightAPI {
      *  always on version 1, and on version 2 and later unless the photo's
      *  display transform sets `skipToneShoulder`; elsewhere it is unclamped.
      *  Needs a Safelight build with the scene point; older builds don't know
-     *  it. The frame is converted into `space`, default `{ encoding:
+     *  it. "decode" is the linear colour the decode and noise-reduction
+     *  stages leave, ahead of the built-in noise reduction, white balance and
+     *  every later tool: what a film negative inversion reads (Safelight
+     *  3.2.6). The frame is converted into `space`, default `{ encoding:
      *  "linear", primaries: "rec709" }`, on the GPU, pixel by pixel before
      *  any averaging. It is always a measurement: sRGB, unproofed, without
      *  the view's overlays. As with captureFrame, neither the params nor
@@ -879,6 +931,15 @@ export interface SafelightAPI {
      *  id, its members in catalogue order and its cover (the marked member with
      *  the lowest id, else the first member). Null for a photo in no stack. */
     stackOf(id: string): { stackId: string; ids: string[]; cover: string } | null;
+    /** When photo `id`'s edit last changed (ms since the epoch): the time of the
+     *  step its history stands on. Undefined for a photo never edited, or with
+     *  every step undone. Read from the history, so it follows undo and other
+     *  windows' edits. A grid filter or sort that calls it sets `readsEdits`.
+     *  Needs Safelight 3.2.6. */
+    editedAt(id: string): number | undefined;
+    /** editedAt as a React hook, for a thumbnail badge or a panel: draws again
+     *  when this photo's edit time changes. Needs Safelight 3.2.6. */
+    useEditedAt(id: string): number | undefined;
     /** The name a photo is shown by: its filename, with a virtual copy's
      *  name added ("IMG_0001_copy.NEF"). */
     photoDisplayName: typeof import("@/catalog/copy-name").photoDisplayName;
@@ -980,6 +1041,25 @@ export interface SafelightAPI {
      *  is read from the source again when it is next needed. Needs Safelight
      *  3.2.4. */
     clearKeptOriginals(id: string): Promise<{ removed: number; kept: number }>;
+    /** Offer a decoder for formats Safelight already imports: HEIC, a RAW
+     *  format, JPEG and so on (a file extension Safelight doesn't import is
+     *  left out, with a warning). It joins the end of each format's list in
+     *  Preferences ▸ File formats, after Safelight's own decoder, and is tried
+     *  in the order the person sets there: a decoder that answers null, throws,
+     *  answers an image core can't use or runs past its time limit (60 s and
+     *  2 s a megabyte) passes the file to the next. Decodes run one at a time
+     *  per decoder (one past its time limit is abandoned, its signal aborted),
+     *  so decode in a Worker of your own to keep the window responsive. Develop, exports, headless renders and grid previews use
+     *  the order; a RAW's camera preview and its metadata stay Safelight's.
+     *  See ImageDecoderContribution and DecodedImageResult for what an answer
+     *  must hold. Registering an id you hold replaces it. Dropped when the
+     *  extension stops. Needs Safelight 3.2.6. */
+    registerDecoder(decoder: ImageDecoderContribution): void;
+    /** Take back a decoder you registered. Needs Safelight 3.2.6. */
+    unregisterDecoder(id: string): void;
+    /** React hook: every decoder, Safelight's then extensions', with the
+     *  formats each reads. Needs Safelight 3.2.6. */
+    useDecoders(): readonly ImageDecoderInfo[];
   };
   /** Reach a server whose address the person typed in (the manifest declares
    *  `permissions.userOrigins`; Safelight 3.2.4), reach the origins the
@@ -993,6 +1073,10 @@ export interface SafelightAPI {
    *  typed in and allowed (the manifest declares `permissions.userSockets`):
    *  see SocketsAPI. Needs Safelight 3.2.5; absent on older builds. */
   sockets: SocketsAPI;
+  /** Run a native program the person chose, such as the `gmic` command-line
+   *  program (the manifest declares `permissions.programs`): see ProgramsAPI.
+   *  Needs Safelight 3.2.6; absent on older builds. */
+  programs: ProgramsAPI;
   /** Presets: the file formats and the descriptions the Presets panel and
    *  Copy Settings share. */
   presets: {
@@ -1094,12 +1178,22 @@ export interface SafelightAPI {
       gpuInfo?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["gpuInfo"];
       metrics?: NonNullable<NonNullable<Window["safelightNative"]>["diagnostics"]>["metrics"];
     };
+    /** Every extension this window knows of: running, turned off, failed to
+     *  start, or sitting in the dev folder. Absent before Safelight 3.2.6. */
+    extensions?: DevtoolsExtensions;
+    /** What the live Develop view last drew, the stages the GPU refused and the
+     *  values a stage was drawn with. Absent before Safelight 3.2.6. */
+    render?: DevtoolsRender;
   };
   /** Shared variables: named JSON values any extension can register, read,
    *  subscribe to and write, synced across windows. A set() from an extension
    *  that hasn't seen the current value is refused and reported; use update()
    *  for read-modify-write. See docs/dev/api/stores.md. */
   variables: SharedVariablesAPI;
+  /** Console commands: register a verb the Terminal and the `safelight` CLI
+   *  run, and run other extensions' verbs (with `permissions.commands`). See
+   *  CommandsAPI. Needs Safelight 3.2.6; absent on older builds. */
+  commands: CommandsAPI;
 }
 
 export interface ExtensionModule {

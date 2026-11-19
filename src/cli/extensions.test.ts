@@ -31,13 +31,14 @@ function tarball(root: string, files: Record<string, string>): Buffer {
   return zlib.gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)]));
 }
 
-interface Row { fullName: string; name?: string; version?: string }
+interface Row { fullName: string; name?: string; version?: string; description?: string }
 
 function registryJson(rows: Row[]) {
   return {
     extensions: rows.map((r) => ({
       fullName: r.fullName,
       name: r.name,
+      description: r.description,
       latest: { from: "branch", version: r.version ?? "1.0.0" },
     })),
   };
@@ -80,7 +81,7 @@ const fakeFetch = async (input: string | URL | Request): Promise<Response> => {
 
 function env(): CliEnv {
   return {
-    cwd: userData, userData, appRoot: userData, appVersion: "3.3.0", platform: process.platform,
+    cwd: userData, userData, appRoot: userData, electronBinary: null, appVersion: "3.3.0", platform: process.platform,
     isTTY: { stdin: false, stdout: false, stderr: false }, env: {},
   };
 }
@@ -123,12 +124,37 @@ describe("search", () => {
     expect(by["evil/acme-bad"].trust).toBe("banned");
   });
 
+  it("carries the registry's one-line description, and none when it has none", async () => {
+    world.rows = [
+      { fullName: "someone/acme-tool", name: "Acme Tool", description: "Lifts fine detail without halos." },
+      { fullName: "someone/acme-plain", name: "Acme Plain" },
+    ];
+    const hits = await service().search(["acme"]);
+    const by = Object.fromEntries(hits.map((h) => [h.repo, h]));
+    expect(by["someone/acme-tool"].description).toBe("Lifts fine detail without halos.");
+    expect(by["someone/acme-plain"].description).toBeUndefined();
+  });
+
   it("names the proxy when GitHub can't be reached", async () => {
     world.down = true;
     const failure = await service().search(["acme"]).catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(CliError);
     expect((failure as CliError).code).toBe(5);
     expect((failure as CliError).hint).toMatch(/HTTPS_PROXY/);
+  });
+});
+
+describe("installed", () => {
+  it("carries the manifest's description, and none when it names none", async () => {
+    const put = (id: string, manifest: string) => {
+      fs.mkdirSync(path.join(pluginsDir(), id), { recursive: true });
+      fs.writeFileSync(path.join(pluginsDir(), id, "safelight.json"), manifest);
+    };
+    put("acme.tool", manifestFor("acme.tool", { description: "Lifts fine detail." }));
+    put("acme.plain", manifestFor("acme.plain"));
+    const by = Object.fromEntries((await service().installed()).map((e) => [e.id, e]));
+    expect(by["acme.tool"].description).toBe("Lifts fine detail.");
+    expect(by["acme.plain"].description).toBeUndefined();
   });
 });
 

@@ -38,7 +38,7 @@ export interface LibrarySourceItem {
    *  photo is turned upright by it. Fields of another type than ExifData's are
    *  left out, and so are the ones the RAW decode learns (colorTemperature,
    *  asShotMultipliers, rawExposureBias, baselineExposure, baselineShadows,
-   *  cameraMatchVersion). */
+   *  cameraMatchVersion, cameraMatchDecoders). */
   exif?: ExifData;
   /** 0 to 5 stars, as the photo arrives in the catalogue. */
   rating?: number;

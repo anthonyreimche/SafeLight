@@ -7,6 +7,7 @@ import { currentLook } from "@/catalog/edit-steps";
 import type { StoredLook } from "@/catalog/stored-edit-look";
 import type { CatalogPhoto } from "@/catalog/types";
 import type { PhotoHeader, ToolRow, ValueRow } from "../output/types";
+import { cachedPicture } from "../preview";
 import { isEdited, selectOnePhoto } from "../select";
 import type { CommandContext, CommandSpec, ToolRef, ValueInfo } from "../types";
 import { asShotOf, photoName } from "./edit-shared";
@@ -141,6 +142,8 @@ export const toolsCommand: CommandSpec = {
       const header = photoHeaderOf(photo, look, isEdited(state));
       if (!ctx.json) {
         ctx.out.print(ctx.out.photoHeader(header));
+        const picture = await cachedPicture(ctx.env, ctx.out.options.width, session, photo);
+        if (picture) ctx.out.writeRaw(picture);
         ctx.out.print(ctx.out.toolTable(rows));
         if (args.options.all !== true) ctx.out.info(`${COMMAND} tools --all lists idle tools too.`);
       }

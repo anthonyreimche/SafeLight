@@ -17,8 +17,17 @@ import {
   prefersEmbeddedPreview,
   sensorNativeImage,
 } from "@/raw/raw-preview";
-import { decodeNetpbm, isNetpbmName } from "@/raw/netpbm";
-import { decodeTiff, isTiffName } from "@/raw/tiff-image";
+import { decodeNetpbm } from "@/raw/netpbm";
+import { decodeTiff } from "@/raw/tiff-image";
+import { convertPixelsThumb, decodeHeifThumb } from "@/raw/heif-bridge";
+import {
+  decoderChain,
+  formatOf,
+  isExtensionEntry,
+  runExtensionDecoder,
+  UNNAMED_FORMAT_DECODER,
+  type ChainEntry,
+} from "@/catalog/image-decoders";
 import { orientationToRotation, previewUprightRotation, rotateBitmap } from "@/catalog/orient";
 import { getSettings, type PreviewSource } from "@/state/settings-store";
 import type { ThumbTaskResult } from "./import-thumb-task";
@@ -26,8 +35,8 @@ import { processThumb } from "./import-thumb-pool";
 
 // Bake a linear Float32 RGBA buffer down to an 8-bit sRGB ImageBitmap. The
 // thumbnail fallback when a RAW has no embedded preview AND decodeRawToBitmap
-// can't handle its compression (no registered getLibRaw hook): the float path
-// (libraw-wasm) still decodes it, so we sRGB-encode that here rather than drop
+// can't handle its compression (it reads uncompressed CFA only): the float path
+// (the person's RAW decoders, libraw-wasm by default) still decodes it, so we sRGB-encode that here rather than drop
 // the file. HDR values above 1.0 are clamped. The encode runs in the frame
 // worker, which takes the buffer.
 async function floatToBitmap(
@@ -81,8 +90,9 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 //  - "auto" (default): use the embedded JPEG when it's already at least the
 //    thumbnail resolution, otherwise render the sensor for a sharper preview.
 //
-// The decode chain is decodeRawToBitmap (registered getLibRaw / in-house
-// uncompressed CFA) then the float decode (libraw-wasm, every compression) baked
+// The decode chain is decodeRawToBitmap (in-house uncompressed CFA, while
+// libraw leads the format's decoders) then the float decode (the format's
+// decoders in the person's order, libraw-wasm for every compression) baked
 // to sRGB. `oriented` is true when the returned pixels are already EXIF-upright,
 // so the caller must NOT rotate again. Camera embedded previews are oriented HERE
 // from the master RAW's EXIF Orientation (decoded sensor-native, then rotated via
@@ -327,27 +337,90 @@ export async function decodeImportBitmap(
     }
     return "failure" in f ? f : null;
   }
-  return largeDecodeSlot(file, () => decodeImageBitmap(file));
+  return largeDecodeSlot(file, () => decodeImageBitmap(file, request));
 }
 
-async function decodeImageBitmap(file: File): Promise<DecodedImport | null> {
-  if (isNetpbmName(file.name)) {
-    const bitmap = await decodeNetpbm(file);
-    return bitmap ? { bitmap, oriented: false } : null;
+/** The core decoders the import worker pool runs itself (import-thumb-task.ts). */
+const POOLED_DECODERS: ReadonlySet<string> = new Set(["browser", "tiff", "netpbm"]);
+
+/** Whether the worker pool may build `file`'s grid preview: a RAW's comes from
+ *  its embedded preview, any other file's only while the decoder leading its
+ *  format's chain is one the pool runs. */
+function pooled(file: File): boolean {
+  if (isRawFile(file)) return true;
+  const format = formatOf(file.name);
+  return format === null || POOLED_DECODERS.has(decoderChain(format.id)[0]?.id ?? "");
+}
+
+/** A non-RAW file through its format's decoders in the person's order, the
+ *  first image any of them gives. Core's own decode sensor-native (the caller
+ *  bakes EXIF orientation); the HEIF decoder and extension decoders answer at
+ *  the thumbnail size, with the full size they stand for. */
+async function decodeImageBitmap(file: File, request?: DecodeRequest): Promise<DecodedImport | null> {
+  const format = formatOf(file.name);
+  for (const entry of format ? decoderChain(format.id) : [UNNAMED_FORMAT_DECODER]) {
+    if (request?.signal?.aborted) return null;
+    const decoded = await decodeWith(entry, file, request);
+    if (decoded) return decoded;
   }
-  // TIFF: createImageBitmap can't decode it, so route through UTIF. Pixels come
-  // back sensor-native (oriented: false), so the caller bakes EXIF orientation.
-  if (isTiffName(file.name)) {
-    const bitmap = await decodeTiff(file);
-    return bitmap ? { bitmap, oriented: false } : null;
-  }
-  try {
-    const bitmap = await createImageBitmap(await sensorNativeImage(file), {
-      imageOrientation: "none",
+  return null;
+}
+
+async function decodeWith(
+  entry: ChainEntry,
+  file: File,
+  request: DecodeRequest | undefined,
+): Promise<DecodedImport | null> {
+  const background = request?.background ?? false;
+  const signal = request?.signal;
+  const maxEdge = getSettings().thumbMaxEdge;
+  if (isExtensionEntry(entry)) {
+    const outcome = await runExtensionDecoder(entry, file, {
+      name: file.name,
+      targetEdge: maxEdge,
+      fullSize: false,
+      background,
+      ...(signal ? { signal } : {}),
     });
-    return { bitmap, oriented: false };
-  } catch {
-    return null;
+    if (!outcome.ok) return null;
+    const { width, height, oriented, sourceWidth, sourceHeight } = outcome.image;
+    const full = (sourceWidth ?? 0) > width || (sourceHeight ?? 0) > height;
+    const thumb = await convertPixelsThumb(outcome.image, { maxEdge, background, ...(signal ? { signal } : {}) });
+    if (!thumb.ok) return null;
+    return {
+      bitmap: thumb.bitmap,
+      oriented,
+      sourceWidth: full ? (sourceWidth ?? width) : width,
+      sourceHeight: full ? (sourceHeight ?? height) : height,
+    };
+  }
+  switch (entry.id) {
+    case "heif": {
+      const thumb = await decodeHeifThumb(file, { maxEdge, background, ...(signal ? { signal } : {}) });
+      return thumb.ok
+        ? { bitmap: thumb.bitmap, oriented: true, sourceWidth: thumb.sourceWidth, sourceHeight: thumb.sourceHeight }
+        : null;
+    }
+    case "netpbm": {
+      const bitmap = await decodeNetpbm(file);
+      return bitmap ? { bitmap, oriented: false } : null;
+    }
+    case "tiff": {
+      // createImageBitmap can't decode TIFF, so UTIF does.
+      const bitmap = await decodeTiff(file);
+      return bitmap ? { bitmap, oriented: false } : null;
+    }
+    case "browser":
+      try {
+        const bitmap = await createImageBitmap(await sensorNativeImage(file), {
+          imageOrientation: "none",
+        });
+        return { bitmap, oriented: false };
+      } catch {
+        return null;
+      }
+    case "libraw":
+      return null;
   }
 }
 
@@ -372,8 +445,8 @@ export async function workerThumb(
 ): Promise<Extract<ThumbTaskResult, { ok: true }> | null> {
   const { previewSource, thumbMaxEdge } = getSettings();
   if (
-    isRawFile(file) &&
-    (previewSource === "rendered" || distrustsEmbeddedPreview(file))
+    !pooled(file) ||
+    (isRawFile(file) && (previewSource === "rendered" || distrustsEmbeddedPreview(file)))
   )
     return null;
   try {

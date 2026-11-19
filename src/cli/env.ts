@@ -5,17 +5,18 @@
 
 // Where `safelight` finds the app: its userData folder and its code.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { CliEnv } from "./types";
 
 type EnvVars = Readonly<Record<string, string | undefined>>;
 
-// Electron names userData after package.json productName, which electron-builder
-// writes from build.productName. A development run (`electron .`) has none, so
-// it uses the lowercase `name`; that only differs on case-sensitive Linux.
+// The folder Electron names userData after. The Windows and macOS builds use
+// productName; the Linux AppImage keeps it in lowercase `safelight` (checked on
+// the 3.2.2 and 3.2.5 releases), which differs there as paths are case-sensitive.
 const APP_NAME = "Safelight";
+const LINUX_APP_NAME = "safelight";
 
 /** The installed app's userData folder: SLU_USER_DATA when set, else the folder
  *  Electron picks for this app on the platform. */
@@ -31,7 +32,7 @@ export function guiUserData(
   }
   if (platform === "darwin") return paths.join(home, "Library", "Application Support", APP_NAME);
   const xdg = env.XDG_CONFIG_HOME;
-  return paths.join(xdg && paths.isAbsolute(xdg) ? xdg : paths.join(home, ".config"), APP_NAME);
+  return paths.join(xdg && paths.isAbsolute(xdg) ? xdg : paths.join(home, ".config"), LINUX_APP_NAME);
 }
 
 function isSafelightPackage(file: string): boolean {
@@ -54,6 +55,37 @@ export function appRoot(moduleFile: string): string {
   return path.join(path.dirname(path.dirname(moduleFile)), "app.asar");
 }
 
+export interface ElectronProbe {
+  /** process.versions.electron: set when the CLI itself runs inside Electron. */
+  electronVersion: string | undefined;
+  execPath: string;
+  exists: (file: string) => boolean;
+}
+
+const REAL_PROBE: ElectronProbe = {
+  electronVersion: process.versions.electron,
+  execPath: process.execPath,
+  exists: existsSync,
+};
+
+/** The Electron binary that runs the engine. The CLI itself may be plain Node, so
+ *  process.execPath is only the answer when it already is Electron. */
+export function electronBinary(
+  platform: NodeJS.Platform,
+  env: EnvVars,
+  root: string,
+  probe: ElectronProbe = REAL_PROBE,
+): string | null {
+  if (probe.electronVersion) return probe.execPath;
+  if (env.SAFELIGHT_ELECTRON) return env.SAFELIGHT_ELECTRON;
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const dist = paths.join(root, "node_modules", "electron", "dist");
+  const bin = platform === "win32" ? paths.join(dist, "electron.exe")
+    : platform === "darwin" ? paths.join(dist, "Electron.app", "Contents", "MacOS", "Electron")
+    : paths.join(dist, "electron");
+  return probe.exists(bin) ? bin : null;
+}
+
 export interface CliEnvSource {
   cwd: string;
   env: EnvVars;
@@ -65,10 +97,12 @@ export interface CliEnvSource {
 }
 
 export function cliEnv(src: CliEnvSource): CliEnv {
+  const root = appRoot(src.moduleFile);
   return {
     cwd: src.cwd,
     userData: guiUserData(src.platform, src.env, src.home),
-    appRoot: appRoot(src.moduleFile),
+    appRoot: root,
+    electronBinary: electronBinary(src.platform, src.env, root),
     appVersion: __APP_VERSION__,
     platform: src.platform,
     isTTY: src.isTTY,

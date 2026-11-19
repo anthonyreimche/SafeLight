@@ -24,6 +24,7 @@ import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
 import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { frameLocalPoint } from "@/ui/frame-point";
+import { holdTextSelection } from "@/ui/hold-text-selection";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 import {
@@ -668,6 +669,18 @@ function ViewportImageView({
   // Track drag picking state
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
+  // Lets text selection go again once the drag on the image ends.
+  const releaseSelection = useRef<(() => void) | null>(null);
+  const holdSelection = () => {
+    releaseSelection.current?.();
+    releaseSelection.current = holdTextSelection();
+  };
+  const letSelectionGo = () => {
+    releaseSelection.current?.();
+    releaseSelection.current = null;
+  };
+  useEffect(() => letSelectionGo, []);
+
   const onPointerDown = (e: ReactPointerEvent) => {
     // Drag picking mode (an extension's pick-drag tool). A held gesture key (Ctrl/⌘/Space) hands the
     // drag back to pan/zoom, so the picker no longer locks you out of panning a
@@ -682,6 +695,7 @@ function ViewportImageView({
         pickDragRef.current.active = true;
         onPickDrag.onDown(bx, by);
         frameRef.current?.setPointerCapture(e.pointerId);
+        holdSelection();
       }
       return;
     }
@@ -692,6 +706,7 @@ function ViewportImageView({
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return;
     frameRef.current?.setPointerCapture(e.pointerId);
+    holdSelection();
     // Store the down point in frame-local LAYOUT px so pan deltas stay in the
     // same space as the offset under any UI-scale zoom (see frame-point.ts).
     const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
@@ -748,6 +763,7 @@ function ViewportImageView({
   };
 
   const onPointerUp = (e: ReactPointerEvent) => {
+    letSelectionGo();
     // Drag picking mode
     if (pickDragRef.current.active) {
       pickDragRef.current.active = false;
@@ -770,6 +786,7 @@ function ViewportImageView({
   // up event, so clear all gesture state and hand the pick its up — otherwise
   // a stuck downRef pans on hover and the picker never releases.
   const onPointerCancel = () => {
+    letSelectionGo();
     if (pickDragRef.current.active) {
       pickDragRef.current.active = false;
       onPickDrag?.onUp();

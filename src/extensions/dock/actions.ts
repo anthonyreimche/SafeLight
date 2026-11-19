@@ -19,6 +19,8 @@ import {
   openList,
   scheduleSave,
   useDockStore,
+  type ClosedPanel,
+  type DockSide,
   type DockState,
   type RailState,
 } from "./store";
@@ -59,7 +61,7 @@ export function toggleDockPanel(id: string, at?: DockPanelPlacement): void {
       useDockStore.setState({ hidden: { ...s.hidden, [side]: false } });
       return;
     }
-    commit(without(id));
+    closeDockPanel(id);
     return;
   }
   // A closed panel with a default dock in the current module reopens there —
@@ -74,9 +76,7 @@ export function toggleDockPanel(id: string, at?: DockPanelPlacement): void {
     const rail = s.rails.find((r) => r.side === place.direction);
     if (rail) dropToRail(id, rail.id, rail.panels.length);
     else dropToNewRail(id, place.direction, 0, place);
-    if (useDockStore.getState().hidden[place.direction]) {
-      useDockStore.setState((st) => ({ hidden: { ...st.hidden, [place.direction]: false } }));
-    }
+    showSide(place.direction);
     return;
   }
   const n = Object.keys(s.floating).length;
@@ -113,7 +113,7 @@ function placementFor(at: DockPanelPlacement | undefined, bottomOk: boolean): Do
 export function toggleDockPanelFloating(id: string): void {
   const s = useDockStore.getState();
   if (s.open.includes(id)) {
-    commit(without(id));
+    closeDockPanel(id);
     return;
   }
   const n = Object.values(s.floating).filter((f) => f.centered).length;
@@ -124,6 +124,76 @@ export function toggleDockPanelFloating(id: string): void {
     },
     zOrder: [...s.zOrder, id],
   });
+}
+
+const CLOSED_LIMIT = 25;
+
+/** Close a panel, remembering where it sat for reopenClosedDockPanel. */
+export function closeDockPanel(id: string): void {
+  const s = useDockStore.getState();
+  const place = placeOf(s, id);
+  const closed =
+    place && s.module
+      ? [
+          ...s.closed.filter((c) => c.id !== id || c.module !== s.module),
+          { id, module: s.module, place },
+        ].slice(-CLOSED_LIMIT)
+      : s.closed;
+  commit({ ...without(id), closed });
+}
+
+function placeOf(s: DockState, id: string): ClosedPanel["place"] | null {
+  const float = s.floating[id];
+  if (float) return { kind: "float", float };
+  const rail = s.rails.find((r) => r.panels.includes(id));
+  if (!rail) return null;
+  return {
+    kind: "rail",
+    railId: rail.id,
+    side: rail.side,
+    index: rail.panels.indexOf(id),
+    railIndex: s.rails.filter((r) => r.side === rail.side).indexOf(rail),
+    width: rail.width,
+    ...(rail.height !== undefined ? { height: rail.height } : {}),
+  };
+}
+
+/** Reopen the current module's most recently closed panel where it sat. Panels
+ *  open again or no longer installed are passed over and forgotten. Returns the
+ *  reopened id, or null when there is none. */
+export function reopenClosedDockPanel(): string | null {
+  const { closed, module, open } = useDockStore.getState();
+  const panels = useRegistry.getState().panels;
+  const rest = [...closed];
+  for (let i = rest.length - 1; i >= 0; i--) {
+    const c = rest[i];
+    if (c.module !== module) continue;
+    rest.splice(i, 1);
+    if (!panels[c.id] || open.includes(c.id)) continue;
+    useDockStore.setState({ closed: rest });
+    restore(c);
+    return c.id;
+  }
+  useDockStore.setState({ closed: rest });
+  return null;
+}
+
+function restore({ id, place }: ClosedPanel): void {
+  const s = useDockStore.getState();
+  if (place.kind === "float") {
+    commit({ floating: { ...s.floating, [id]: place.float }, zOrder: [...s.zOrder, id] });
+    showSide("floating");
+    return;
+  }
+  const rail = s.rails.find((r) => r.id === place.railId);
+  if (rail) dropToRail(id, rail.id, Math.min(place.index, rail.panels.length));
+  else dropToNewRail(id, place.side, place.railIndex, place);
+  showSide(place.side);
+}
+
+function showSide(side: DockSide): void {
+  if (!useDockStore.getState().hidden[side]) return;
+  useDockStore.setState((st) => ({ hidden: { ...st.hidden, [side]: false } }));
 }
 
 /** Hides every panel while any side is showing, else shows them all. */
@@ -197,11 +267,13 @@ export function dropToRail(id: string, railId: string, index: number) {
   commit({ rails, floating, zOrder: s.zOrder.filter((p) => p !== id) });
 }
 
+/** `size.railId` names the new rail, so a rail rebuilt for a reopened panel
+ *  keeps the id that later reopens of its neighbours look for. */
 export function dropToNewRail(
   id: string,
   side: RailState["side"],
   index: number,
-  size?: { width?: number; height?: number },
+  size?: { width?: number; height?: number; railId?: string },
 ) {
   const s = useDockStore.getState();
   const rails = s.rails
@@ -211,7 +283,7 @@ export function dropToNewRail(
   delete floating[id];
   const def = size ?? useRegistry.getState().panels[id]?.defaultDock;
   const rail: RailState = {
-    id: `rail-${Date.now().toString(36)}`,
+    id: size?.railId ?? `rail-${Date.now().toString(36)}`,
     side,
     width: def?.width ?? 280,
     ...(side === "bottom" ? { height: def?.height ?? DEFAULT_BOTTOM } : {}),

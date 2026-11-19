@@ -110,3 +110,39 @@ describe("pipelineContractError", () => {
     ).toMatch(/glslType/);
   });
 });
+
+describe("a transform's pre-pass", () => {
+  const PASS = { glsl: "c *= k;", uniforms: [{ key: "k", glslType: "float" as const, default: 1 }] };
+
+  it("is accepted with passes, their uniforms and a dormantWhen over them", () => {
+    expect(pipelineContractError(base({ prepass: { passes: [PASS], dormantWhen: { k: 0 } } }))).toBeNull();
+  });
+
+  it("needs glsl to read its result", () => {
+    expect(pipelineContractError(base({ glsl: undefined, prepass: { passes: [PASS] } }))).toMatch(/prepass needs glsl/);
+  });
+
+  it("needs at least one pass", () => {
+    expect(pipelineContractError(base({ prepass: { passes: [] } }))).toMatch(/prepass\.passes/);
+    expect(pipelineContractError(base({ prepass: {} as never }))).toMatch(/prepass\.passes/);
+    expect(pipelineContractError(base({ prepass: "x" as never }))).toMatch(/prepass must be/);
+  });
+
+  it("checks its passes as a stage's", () => {
+    expect(pipelineContractError(base({ prepass: { passes: [{ glsl: "", channels: 5 as never }] } }))).toMatch(
+      /channels must be 3 or 4/,
+    );
+  });
+
+  it("refuses a dormantWhen key no pass declares", () => {
+    expect(pipelineContractError(base({ prepass: { passes: [PASS], dormantWhen: { gain: 0 } } }))).toMatch(/dormantWhen/);
+  });
+
+  it("refuses a param or derived key named like the pre-pass's result", () => {
+    expect(
+      pipelineContractError(
+        base({ params: [{ key: "stageResult", glslType: "float", default: 0 }], prepass: { passes: [PASS] } }),
+      ),
+    ).toMatch(/stageResult/);
+  });
+});

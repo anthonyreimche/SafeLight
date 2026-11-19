@@ -489,6 +489,12 @@ export function checkStageContract(
   if (keepsDetail !== undefined && typeof keepsDetail !== "boolean")
     return fail(`keepsDetail must be true or false, got ${formatValue(keepsDetail)}`);
 
+  const plainSource: unknown = c.plainSource;
+  if (plainSource !== undefined && typeof plainSource !== "boolean")
+    return fail(`plainSource must be true or false, got ${formatValue(plainSource)}`);
+  if (plainSource === true && c.dormantWhen === undefined)
+    return fail("plainSource needs dormantWhen: without it the stage would take the baseline off every photo");
+
   const mask: unknown = c.mask;
   if (mask !== undefined) {
     if (typeof mask !== "object" || mask === null || (mask as { maskable?: unknown }).maskable !== true) {

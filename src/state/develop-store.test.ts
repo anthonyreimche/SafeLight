@@ -1577,6 +1577,7 @@ describe("discrete edits", () => {
       return s().redo();
     }],
     ["goToHistory", () => s().goToHistory(0)],
+    ["restoreEdit", () => s().restoreEdit({ params: normalizeParams({ exposure: 2 }) }, "Snapshot: A")],
     ["applyPreset", () => s().applyPreset(normalizeParams({ exposure: 2 }))],
     ["resetParams", () => s().resetParams(["exposure"], "Reset Exposure")],
     ["reset", () => s().reset()],

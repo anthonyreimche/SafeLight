@@ -36,7 +36,7 @@ export const extensionsCommand: CommandSpec = {
       return { code: 0 };
     }
     ctx.out.print(ctx.out.extensionTable(installed.map((e) => ({
-      name: e.name, id: e.id, version: e.version, enabled: e.enabled, trust: e.trust, update: updates.get(e.id),
+      name: e.name, id: e.id, version: e.version, enabled: e.enabled, trust: e.trust, update: updates.get(e.id), description: e.description,
     }))));
     return { code: 0 };
   },

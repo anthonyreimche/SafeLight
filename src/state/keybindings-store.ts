@@ -38,6 +38,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "panels.toggleLeft", label: "Hide / show left panels", category: "General", def: "" },
   { id: "panels.toggleRight", label: "Hide / show right panels", category: "General", def: "" },
   { id: "panels.toggleBottom", label: "Hide / show bottom panels", category: "General", def: "" },
+  { id: "panels.reopenClosed", label: "Reopen closed panel", category: "General", def: "Ctrl+Shift+T" },
   { id: "view.fullscreen", label: "Fullscreen", category: "General", def: "F" },
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },

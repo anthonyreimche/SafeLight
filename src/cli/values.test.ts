@@ -180,6 +180,30 @@ describe("apply", () => {
   });
 });
 
+describe("slider defaults", () => {
+  it("gives a control's own default, so a bar can mark where it sits", () => {
+    const s = service();
+    expect(s.resolveKey("exposure").default).toBe(0);
+    expect(s.resolveKey("sharpening").default).toBe(25);
+    expect(s.resolveKey("sharpenRadius").default).toBe(1);
+  });
+
+  it("leaves temperature without one: its default is each photo's as-shot value", () => {
+    expect(service().resolveKey("temperature").default).toBeUndefined();
+  });
+
+  it("takes an extension number's default from its descriptor, and none for a switch or choice", () => {
+    const s = service();
+    expect(s.resolveKey("local-contrast.detail").default).toBe(1);
+    expect(s.resolveKey("local-contrast.on").default).toBeUndefined();
+    expect(s.values().filter((v) => v.kind === "choice").every((v) => v.default === undefined)).toBe(true);
+  });
+
+  it("leaves every slider linear: the panels' sliders are, so none carries a curve", () => {
+    expect(service().values().some((v) => v.position !== undefined)).toBe(false);
+  });
+});
+
 describe("read and isDefault", () => {
   it("reads core values and falls back to an extension uniform's default", () => {
     const s = service();

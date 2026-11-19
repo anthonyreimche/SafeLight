@@ -12,7 +12,7 @@ import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usesSignedOutput } from "@/catalog/types";
-import { toggleDockSide, toggleDockVisibility } from "@/extensions/dock";
+import { reopenClosedDockPanel, toggleDockSide, toggleDockVisibility } from "@/extensions/dock";
 import { hasModule } from "@/extensions/registry";
 import { guardCallback } from "@/extensions/guard";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
@@ -224,6 +224,9 @@ export function useKeyboardShortcuts() {
           break;
         case "panels.toggleBottom":
           toggleDockSide("bottom");
+          break;
+        case "panels.reopenClosed":
+          reopenClosedDockPanel();
           break;
         case "view.fullscreen":
           document.documentElement.requestFullscreen?.();

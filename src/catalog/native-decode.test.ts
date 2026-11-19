@@ -16,8 +16,10 @@ interface Request {
   background?: boolean;
   signal?: AbortSignal;
   turn?: number;
+  orientation?: number;
   cacheEdge?: number;
   targetEdge?: number;
+  asShotMultipliers?: readonly [number, number, number];
 }
 
 const h = vi.hoisted(() => ({
@@ -269,6 +271,18 @@ describe("decodeNativeFrame", () => {
       await decodeNativeFrame(photo({ rotation: 90, exif: { orientation: 6 } }), live);
 
       expect(h.decodes[0].request).not.toHaveProperty("turn");
+    });
+
+    it("hands on the photo's orientation, for a frame an extension's decoder leaves unturned", async () => {
+      await decodeNativeFrame(photo({ rotation: 90, exif: { orientation: 6 } }), live);
+
+      expect(h.decodes[0].request).toMatchObject({ orientation: 6 });
+    });
+
+    it("hands on the photo's as-shot white balance, for an extension's decoder", async () => {
+      await decodeNativeFrame(photo({ exif: { asShotMultipliers: [2, 1, 1.5] } }), live);
+
+      expect(h.decodes[0].request).toMatchObject({ asShotMultipliers: [2, 1, 1.5] });
     });
   });
 

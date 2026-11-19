@@ -12,7 +12,8 @@ import { appendStep, currentLook } from "@/catalog/edit-steps";
 import { defaultCopy, pasteLook, type PartialLook } from "@/catalog/paste-look";
 import { NEUTRAL_TEMPERATURE_K, type CatalogPhoto, type DevelopParams } from "@/catalog/types";
 import { readSharedSettings } from "../mirror";
-import { buildSelectRequest, stdinPathsOf } from "../select";
+import { showResult } from "./edit-shared";
+import { applyWorkingSet, buildSelectRequest, importFix, stdinPathsOf } from "../select";
 import {
   CliError,
   type CommandContext,
@@ -30,19 +31,19 @@ export const photoName = (photo: CatalogPhoto): string => basename(photo.relPath
 // ---- selecting photos -------------------------------------------------------
 
 export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs: string[]): Promise<SelectRequest> {
-  return buildSelectRequest(args, specs, await stdinPathsOf(ctx, args));
+  return applyWorkingSet(buildSelectRequest(args, specs, await stdinPathsOf(ctx, args)), ctx.working);
 }
 
 const MISSING_TEXT = {
   "not-found": `isn't a photo or folder ${COMMAND} can find.`,
-  "not-in-catalogue": `isn't in a Safelight catalogue, so ${COMMAND} won't edit it.`,
+  "not-in-catalogue": "isn't imported.",
   "no-match": "matched no photos.",
 } as const;
 
 function warnMissing(ctx: CommandContext, selection: Selection<ReadSession>): void {
   for (const m of selection.missing) {
-    const hint = m.reason === "not-in-catalogue" ? "Open its folder in Safelight first." : undefined;
-    ctx.out.warn({ message: `${m.spec} ${MISSING_TEXT[m.reason]}`, ...(hint ? { hint } : {}) });
+    const message = `${m.spec} ${MISSING_TEXT[m.reason]}`;
+    ctx.out.warn(m.reason === "not-in-catalogue" ? { message, hint: importFix(m.spec) } : { message });
   }
 }
 
@@ -109,27 +110,29 @@ export function restrictToTools(ctx: CommandContext, look: PartialLook, tools: s
   return { params, paramBag };
 }
 
-/** What `copy` and `paste --from` take from the one photo `spec` names. */
+/** What `copy` and `paste --from` take from the one photo `spec` names; with none, the open photo. */
 export async function copyFromPhoto(
   ctx: CommandContext,
   args: ParsedArgs,
-  spec: string,
+  spec: string | undefined,
   tools: string[] | undefined,
 ): Promise<ClipboardFile> {
-  const source: SelectRequest = {
-    specs: [spec],
+  const source = applyWorkingSet({
+    specs: spec === undefined ? [] : [spec],
     recursive: false,
     all: false,
     projectOverride: typeof args.options.project === "string" ? args.options.project : null,
     filters: {},
     stdinPaths: [],
-  };
+  }, ctx.working);
+  if (source.specs.length === 0) throw new CliError(1, "copy takes one photo.", `${COMMAND} help copy shows how.`);
   const selection = await ctx.select.read(source);
   try {
     warnMissing(ctx, selection);
     const photos = selection.groups.flatMap((g) => g.photos.map((photo) => ({ photo, session: g.session })));
     if (photos.length !== 1) {
-      throw new CliError(photos.length === 0 ? 2 : 1, photos.length === 0 ? `No photo to copy from "${spec}".` : `Copy from one photo; "${spec}" is ${photos.length}.`);
+      const named = source.specs.join(" ");
+      throw new CliError(photos.length === 0 ? 2 : 1, photos.length === 0 ? `No photo to copy from "${named}".` : `Copy from one photo; "${named}" is ${photos.length}.`);
     }
     const { photo, session } = photos[0];
     const look = currentLook(await session.edit(photo.id), photo.exif.colorTemperature ?? NEUTRAL_TEMPERATURE_K);
@@ -192,6 +195,7 @@ export async function writeLooks(
   const results: { photo: string; ok: boolean; step?: number; unchanged?: boolean; error?: string }[] = [];
   let previewTarget: { group: (typeof selection.groups)[number]; photo: CatalogPhoto } | undefined;
   let written = 0;
+  const single = selection.groups.reduce((n, g) => n + g.photos.length, 0) === 1;
   try {
     warnMissing(ctx, selection);
     for (const m of selection.missing) results.push({ photo: m.spec, ok: false, error: MISSING_TEXT[m.reason] });
@@ -205,13 +209,13 @@ export async function writeLooks(
         const next = pasteLook(base, partial);
         if (JSON.stringify(next) === JSON.stringify(base)) {
           results.push({ photo: name, ok: true, unchanged: true });
-          if (!ctx.json) ctx.out.print(ctx.out.resultLine({ photo: name, changes: [], note: "already matches" }));
+          if (!ctx.json) showResult(ctx, single, { photo: name, changes: [], note: "already matches" });
           continue;
         }
         const after = appendStep(state, { photoId: photo.id, asShot }, label, next, Date.now());
         states.push(after);
         results.push({ photo: name, ok: true, step: after.currentIndex });
-        if (!ctx.json) ctx.out.print(ctx.out.resultLine({ photo: name, changes: [{ label, value: "" }], step: after.currentIndex }));
+        if (!ctx.json) showResult(ctx, single, { photo: name, changes: [{ label, value: "" }], step: after.currentIndex });
         previewTarget = { group, photo };
       }
       if (states.length > 0) await group.session.putEdits(states);

@@ -6,12 +6,13 @@
 // What the verbs that write to photos share: choosing the photos, one write
 // session per command, per-photo failures, and the output lines.
 
+import path from "node:path";
 import { appendStep, currentLook, moveCursor } from "@/catalog/edit-steps";
 import type { StoredLook } from "@/catalog/stored-edit-look";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import { NEUTRAL_TEMPERATURE_K } from "@/catalog/types";
 import type { ResultLine } from "../output/types";
-import { buildSelectRequest, stdinPathsOf } from "../select";
+import { applyWorkingSet, buildSelectRequest, importFix, isEdited, stdinPathsOf } from "../select";
 import {
   CliError,
   type CommandContext,
@@ -29,7 +30,7 @@ export const photoName = (photo: CatalogPhoto): string => photo.relPath.split(/[
 
 /** The photo specs the command line names, given the positionals already taken as the command's own words. */
 export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs: string[]): Promise<SelectRequest> {
-  const request = buildSelectRequest(args, specs, await stdinPathsOf(ctx, args));
+  const request = applyWorkingSet(buildSelectRequest(args, specs, await stdinPathsOf(ctx, args)), ctx.working);
   if (request.specs.length === 0 && request.stdinPaths.length === 0 && !request.all) {
     throw new CliError(1, `Say which photos ${args.verb ?? "this"} should change.`, `${COMMAND} help ${args.verb ?? ""}`.trim() + " shows how.");
   }
@@ -39,7 +40,7 @@ export async function selectRequest(ctx: CommandContext, args: ParsedArgs, specs
 const MISSING_TEXT = {
   "not-found": (spec: string) => new CliError(2, `${spec} wasn't found.`),
   "not-in-catalogue": (spec: string) =>
-    new CliError(2, `${spec} isn't in a Safelight catalogue, so ${COMMAND} won't change it.`, "Open its folder in Safelight first."),
+    new CliError(2, `${spec} isn't imported, so ${COMMAND} won't change it.`, importFix(spec)),
   "no-match": (spec: string) => new CliError(2, `Nothing matches ${spec}.`),
 } as const;
 
@@ -47,6 +48,7 @@ export interface PhotoWork {
   photo: CatalogPhoto;
   state: EditState | undefined;
   asShot: number;
+  project: ProjectRef;
 }
 
 /** What one photo's handler decided. `edit` and `photo` are written after every photo has been worked out. */
@@ -60,6 +62,12 @@ export interface PhotoOutcome {
 }
 
 export type PhotoHandler = (work: PhotoWork) => PhotoOutcome;
+
+/** One photo's result can draw its sliders moving; with several photos each stays a plain line. */
+export function showResult(ctx: CommandContext, single: boolean, line: ResultLine): void {
+  if (single) ctx.out.result(line);
+  else ctx.out.print(ctx.out.resultLine(line));
+}
 
 interface Previewable { project: ProjectRef; photo: CatalogPhoto }
 
@@ -75,6 +83,7 @@ export async function runOnPhotos(
   const request = await selectRequest(ctx, args, specs);
   const selection = await ctx.select.write(request, ctx.waitSeconds);
   const results: Record<string, unknown>[] = [];
+  const single = selection.groups.reduce((n, g) => n + g.photos.length, 0) === 1;
   const missing = selection.missing.map((m) => MISSING_TEXT[m.reason](m.spec));
   const failures: CliError[] = [...missing];
   let done = 0;
@@ -88,7 +97,7 @@ export async function runOnPhotos(
       for (const photo of group.photos) {
         let outcome: PhotoOutcome;
         try {
-          outcome = handle({ photo, state: await group.session.edit(photo.id), asShot: asShotOf(photo) });
+          outcome = handle({ photo, state: await group.session.edit(photo.id), asShot: asShotOf(photo), project: group.session.project });
         } catch (e) {
           if (!(e instanceof CliError) || e.code === 1) throw e;
           failures.push(new CliError(e.code, `${photoName(photo)}: ${e.message}`, e.hint));
@@ -100,7 +109,7 @@ export async function runOnPhotos(
         if (outcome.skipped) skipped++;
         else done++;
         results.push({ photo: photo.relPath, ok: true, ...outcome.json });
-        if (!ctx.json) ctx.out.print(ctx.out.resultLine(outcome.line));
+        if (!ctx.json) showResult(ctx, single, outcome.line);
         last = { project: group.session.project, photo: outcome.photo ?? photo };
       }
       pending.push({ session: group.session, edits, photos });
@@ -132,17 +141,24 @@ async function write(session: WriteSession, edits: EditState[], photos: CatalogP
 
 const sameLook = (a: StoredLook, b: StoredLook): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/** The photo as a path from where the command ran, as it would be typed there. */
+function typedPath(ctx: CommandContext, project: ProjectRef, photo: CatalogPhoto): string {
+  return path.relative(ctx.env.cwd, path.resolve(project.root, ...photo.relPath.split("/")));
+}
+
 /** The outcome of appending `look` as one history step; skipped when it equals the photo's current look. */
 export function stepOutcome(
   ctx: CommandContext,
-  photo: CatalogPhoto,
-  state: EditState | undefined,
-  asShot: number,
+  { photo, state, asShot, project }: PhotoWork,
   look: StoredLook,
   label: string,
   changes: readonly ValueChange[],
 ): PhotoOutcome {
   const name = photoName(photo);
+  // The first step seeds "Original" with the as-shot white balance, which a pending RAW doesn't have yet.
+  if (photo.metadataPending && !isEdited(state)) {
+    throw new CliError(2, "its camera data hasn't been read yet, so its white balance isn't known.", importFix(typedPath(ctx, project, photo)));
+  }
   const json = {
     changes: changes.map((c) => ({ key: c.info.key, before: c.before, after: c.after })),
   };
@@ -153,7 +169,14 @@ export function stepOutcome(
   return {
     line: {
       photo: name,
-      changes: changes.map((c) => ({ label: c.info.label, value: ctx.out.formatValue(c.info, c.after) })),
+      changes: changes.map((c) => ({
+        label: c.info.label,
+        value: ctx.out.formatValue(c.info, c.after),
+        info: c.info,
+        before: c.before,
+        after: c.after,
+        clamped: c.clamped !== undefined,
+      })),
       step: edit.currentIndex,
       note: changes.length === 0 ? label : undefined,
     },

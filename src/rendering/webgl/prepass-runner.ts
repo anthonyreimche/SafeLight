@@ -656,12 +656,14 @@ export class PrepassRunner {
   // stage on every photo. A mask copy whose mask applies nothing (hidden, 0
   // opacity) is idle too. A stage that declares dormantWhen is active exactly
   // while that rule doesn't hold. A view-only stage is idle in a frame that
-  // doesn't draw it.
+  // doesn't draw it. A display transform's pre-pass runs whenever its
+  // transform draws.
   private active(stage: PrepassStage, frame: PrepassFrame): boolean {
     if (frame.copySlots.get(stage.stageId) === -1) return false;
     if (stage.viewOnly && !frame.viewStages) return false;
     const { bag } = frame;
     if (stage.dormant) return !isDormant(stage.dormant, bag);
+    if (stage.transformPrepass) return true;
     const prefix = stage.stageId + ".";
     for (const [k, v] of Object.entries(bag)) {
       if (!k.startsWith(prefix)) continue;

@@ -140,6 +140,7 @@ export function liveHandlers(ctx: WorkerContext): HandlersFor<LiveCmd> {
       let renderer: WebGLRenderer;
       try {
         state.canvas = new OffscreenCanvas(msg.width, msg.height);
+        state.postedProgram = null;
         watchContext(state.canvas, msg);
         created = new WebGLRenderer(state.canvas, {
           // The worker can't read the preference itself (settings-store uses

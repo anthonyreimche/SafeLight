@@ -44,11 +44,10 @@ import {
 } from "./store";
 import {
   bringToFront,
-  commit,
+  closeDockPanel,
   setFloatWidth,
   setRailHeight,
   setRailWidth,
-  without,
 } from "./actions";
 import { startHeaderDrag, startResize } from "./dnd";
 import { prewarmPanel } from "./prewarm";
@@ -169,7 +168,7 @@ function PanelHeader({ id }: { id: string }) {
         type="button"
         title="Close panel"
         aria-label={`Close ${title} panel`}
-        onClick={() => commit(without(id))}
+        onClick={() => closeDockPanel(id)}
         className="rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
       >
         ×

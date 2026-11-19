@@ -101,6 +101,10 @@ The eyedropper icon core's pickers show (3.2.0). It draws in the current text co
 
 The small Auto button of the develop panels (3.2.0): `onClick`, `disabled` and a `title` for its tooltip. Pair it with `api.develop.autoAdjust`.
 
+## `ThumbnailBadge`
+
+The small marker core draws on thumbnails, such as the edited pencil and the file type (3.2.6): `children` is its text or glyph, `title` its tooltip and the name a screen reader gives it. Use it in a [`ThumbnailBadgeContribution`](contributions.md#thumbnailbadgecontribution).
+
 ## `MaskScope`
 
 Binds its children to one mask (3.2.0): `<MaskScope maskId={id}>`. A mask sub-panel's component (`PanelContribution.mask`) drawn inside reads and writes that mask through `useMaskScope` and `useParamScope`. A masking panel draws each of a mask's sub-panels inside one; `api.develop.useMaskPanels` lists them.
@@ -287,6 +291,7 @@ Themes recolour, stylesheets reshape. A [`StylesheetContribution`](contributions
 | `.sl-slider` | Native `<input type="range">` (style its `::-webkit-slider-thumb` / `::-moz-range-thumb`) |
 | `input[type="checkbox"]`, `input[type="text"]`, `input[inputmode="decimal"]`, `input[type="number"]`, `textarea` | Native fields |
 | `.sl-floating-panel` | A dock panel floated over the workspace (3.2.2) |
+| `.sl-thumbnail-badge` | A `ThumbnailBadge` on a grid or Filmstrip thumbnail, core's edited pencil and file type, and extensions' badges (3.2.6) |
 
 ```css
 .sl-slider-thumb { display: block; width: 12px; height: 12px; border-radius: 50%;

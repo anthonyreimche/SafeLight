@@ -16,7 +16,7 @@ import { setExtensionName } from "./param-registry";
 import { BUILTIN_EXTENSIONS, type BuiltinExtension } from "./builtin";
 import { noteExtensionRunning } from "./extension-kinds";
 import { activateFenced, createLoadTracker } from "./guard";
-import { useRunningPlugins } from "./running-plugins";
+import { useRunningPlugins, type RunningInstance } from "./running-plugins";
 import { forgetStartFailure, recordStartFailure } from "./start-failures";
 import { mirrorExtensionDescriptors } from "./descriptor-mirror";
 
@@ -70,13 +70,17 @@ export function startBuiltin(ext: BuiltinExtension): void {
   }
   forgetStartFailure(ext.id);
   activeBuiltins.add(ext.id);
+  publishRunning();
   noteExtensionRunning(ext.id);
 }
 
 /** Stop a built-in, tearing down side effects (e.g. console patches), and sweep
  *  its contributions. */
 export function stopBuiltin(ext: BuiltinExtension): void {
-  if (activeBuiltins.delete(ext.id)) deactivateGuarded(ext.id, () => ext.deactivate?.());
+  if (activeBuiltins.delete(ext.id)) {
+    deactivateGuarded(ext.id, () => ext.deactivate?.());
+    publishRunning();
+  }
   unregisterExtension(ext.id);
 }
 
@@ -96,6 +100,8 @@ interface Started {
 
 interface Live extends Started {
   source: InstanceSource;
+  name: string;
+  version: string;
 }
 
 /** A bundle read and ready to import. */
@@ -129,10 +135,23 @@ const live = new Map<string, Live>();
 // Installed extensions a dev-folder copy of the same id stopped, to start again
 // once nothing holds the id.
 const displaced = new Set<string>();
+// The id a dev-folder copy is taking over while the running copy deactivates.
+let replacing: string | null = null;
 const loadTracked = createLoadTracker<Started>();
 
+// Every built-in is Safelight's own, so it is listed under the app's name and
+// version rather than the placeholder ones its entry carries.
 function publishRunning(): void {
-  useRunningPlugins.setState({ ids: [...live.keys()] });
+  const instances: RunningInstance[] = [
+    ...[...activeBuiltins].map((id): RunningInstance => ({
+      id,
+      source: "builtin",
+      name: "Safelight",
+      version: __APP_VERSION__,
+    })),
+    ...[...live].map(([id, { source, name, version }]): RunningInstance => ({ id, source, name, version })),
+  ];
+  useRunningPlugins.setState({ ids: [...live.keys()], instances });
 }
 
 /** Whether a bundle-loaded extension is running as `id`, from `source` when
@@ -141,6 +160,10 @@ export const isInstanceLive = (id: string, source?: InstanceSource): boolean => 
   const instance = live.get(id);
   return !!instance && (source === undefined || instance.source === source);
 };
+
+/** Whether `id` is deactivating only to be replaced by its dev-folder copy, so
+ *  whatever it would tear down for good is the copy's to keep. */
+export const isBeingReplaced = (id: string): boolean => replacing === id;
 
 /** The installed extensions a dev-folder copy stopped whose ids are free again,
  *  forgotten as they are handed over. */
@@ -158,7 +181,14 @@ export async function startInstance(start: InstanceStart): Promise<void> {
     // The developer's copy takes the id over; an installed one it stops is
     // started again when the dev copy unloads.
     if (isInstanceLive(id, "installed")) displaced.add(id);
-    if (isInstanceLive(id)) stopInstance(id);
+    if (isInstanceLive(id)) {
+      replacing = id;
+      try {
+        stopInstance(id);
+      } finally {
+        replacing = null;
+      }
+    }
   }
   let started: Started;
   try {
@@ -200,7 +230,7 @@ export async function startInstance(start: InstanceStart): Promise<void> {
     throw e;
   }
   forgetStartFailure(id);
-  live.set(id, { ...started, source });
+  live.set(id, { ...started, source, name: start.name ?? id, version: start.version ?? "" });
   publishRunning();
   if (source === "installed" && start.version) mirrorExtensionDescriptors(id, start.version, start.name ?? id);
 }

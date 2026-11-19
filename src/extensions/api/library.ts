@@ -90,3 +90,99 @@ export type PresetImportOutcome =
 export type KeptDirectory =
   | { folder: FileSystemDirectoryHandle }
   | { problem: "gone" | "unwritable" | "unknown" };
+
+/** What core asks of an image decoder (api.library.registerDecoder). */
+export interface ImageDecodeRequest {
+  /** The file's name, its extension included. */
+  name: string;
+  /** The long edge the caller needs, such as a grid thumbnail's. A hint: a
+   *  decoder may answer at any size from this up to the full size. */
+  targetEdge?: number;
+  /** For a RAW format: core keeps this decode as the photo's source at native
+   *  resolution, so an answer smaller than the frame is refused. */
+  fullSize: boolean;
+  /** For a RAW format, the white balance the photo is known to have been shot
+   *  at (green at 1). Balance by these when given, and by the camera's own
+   *  otherwise. */
+  asShotMultipliers?: readonly [number, number, number];
+  /** Work for a background pass (thumbnails, the cache) rather than a photo the
+   *  person is waiting on. Interactive requests run first. */
+  background: boolean;
+  /** Aborted when core no longer needs the answer or the decode ran out of
+   *  time. Stop work when it fires. */
+  signal: AbortSignal;
+}
+
+/** A decoder's image: RGBA rows from the top, `width` × `height`, four values
+ *  per pixel with the fourth ignored. `oriented` says the pixels already stand
+ *  as the photo's EXIF orientation shows it; with false, core turns them. A
+ *  HEIF image must be upright (its own rotation applied). The array must be
+ *  whole (not a view into a larger buffer, or core copies it) and becomes
+ *  core's: don't touch it after answering. */
+export type DecodedImageResult =
+  | {
+      /** 8-bit sRGB, for a non-RAW format only. */
+      kind: "rgba8";
+      width: number;
+      height: number;
+      data: Uint8ClampedArray;
+      oriented: boolean;
+      /** The image's full size when this decode is reduced (to `targetEdge`). */
+      sourceWidth?: number;
+      sourceHeight?: number;
+    }
+  | {
+      /** Linear light, Rec. 709 primaries at D65, nothing clipped: colour
+       *  outside Rec. 709 as negative channels, highlights above 1 kept. For a
+       *  non-RAW format the values are display-referred (1 is the file's
+       *  white). For a RAW format this is the only kind accepted: the camera's
+       *  black subtracted and its matrix applied, balanced at the as-shot
+       *  multipliers, scaled so the least amplified channel saturates at 1,
+       *  with no tone curve, gamma, auto-brightening or baseline exposure. */
+      kind: "linear";
+      width: number;
+      height: number;
+      data: Float32Array;
+      oriented: boolean;
+      /** RAW: the multipliers the image was balanced at, green at 1. */
+      asShotMultipliers?: [number, number, number];
+      /** RAW: the as-shot white balance in kelvin. */
+      colorTemperature?: number;
+      /** RAW: EV the sensor sat below the tagged ISO (Fujifilm DR modes),
+       *  already made up for in `data`. */
+      rawExposureBias?: number;
+      /** The image's full size when this decode is reduced (to `targetEdge`). */
+      sourceWidth?: number;
+      sourceHeight?: number;
+    };
+
+/** A decoder an extension offers for formats Safelight already reads (see
+ *  api.library.registerDecoder). */
+export interface ImageDecoderContribution {
+  /** Unique among your decoders. */
+  id: string;
+  /** Shown in Preferences ▸ File formats. */
+  label: string;
+  /** Change it when your decoder's output changes: decodes core keeps (the
+   *  RAW cache) are filed under it, so a new version decodes afresh. Default
+   *  "1". */
+  version?: string;
+  /** The file extensions it reads, such as [".heic", ".heif"] or [".cr3"]:
+   *  only extensions Safelight already imports. */
+  extensions: readonly string[];
+  /** The image in `file`, or null when this decoder can't read it (the next
+   *  decoder in the person's order is tried). */
+  decode(file: Blob, request: ImageDecodeRequest): Promise<DecodedImageResult | null>;
+}
+
+/** A decoder as Preferences lists it: core's or an extension's. */
+export interface ImageDecoderInfo {
+  /** Core's: "browser", "tiff", "netpbm", "heif", "libraw"; an extension's:
+   *  "<extension id>/<id>". */
+  id: string;
+  label: string;
+  /** "core", or the id of the extension that registered it. */
+  owner: string;
+  /** Ids of the formats it reads (see Preferences ▸ File formats). */
+  formats: readonly string[];
+}

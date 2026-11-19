@@ -223,7 +223,7 @@ describe("changedSettings", () => {
     const s = {
       ...DEFAULT_SETTINGS,
       developMaxEdge: 8192 as const,
-      developDynamicDetail: true,
+      developDynamicDetail: false,
       highBitDepth: false,
       gpuSourceCacheBytes: 1024 * 1024 * 1024,
       externalCatalogDir: "C:\\Users\\ann\\Catalogs",
@@ -231,7 +231,7 @@ describe("changedSettings", () => {
     };
     expect(changedSettings(s, DEFAULT_SETTINGS)).toEqual([
       "developMaxEdge 8192",
-      "developDynamicDetail on",
+      "developDynamicDetail off",
       "gpuSourceCacheBytes 1024 MB",
       "highBitDepth off",
     ]);

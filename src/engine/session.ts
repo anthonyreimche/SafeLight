@@ -4,12 +4,14 @@
 // be preserved in derived versions.
 
 // What the engine page does for `slu`: export through the export path and
-// preview through the live path, as the GUI draws each. The project's catalogue
-// is read and never written: `slu` in Node owns the edits, and the engine only
-// renders them (a `--try` look comes with the request). Nothing here commits a
-// step or redraws a thumbnail.
+// preview through the live path, as the GUI draws each, and grid previews as
+// stored. For these the project's catalogue is read and never written: `slu` in
+// Node owns the edits, and the engine only renders them (a `--try` look comes
+// with the request). Nothing here commits a step or redraws a thumbnail. The one
+// write is an import (import.ts), after which the catalogue is read again.
 
 import type { CatalogPhoto, EditState } from "@/catalog/types";
+import { photoDisplayName } from "@/catalog/copy-name";
 import { freshParams } from "@/catalog/types";
 import { historyCursor } from "@/catalog/history-cursor";
 import { convertedTargetEdge } from "@/catalog/input-profiles";
@@ -37,13 +39,22 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { showsEdit, standsForPhoto } from "@/state/fallback-rules";
 import { getSettings } from "@/state/settings-store";
-import type { ExportWireSettings, LookOverride, ProjectWire } from "./protocol";
-import { EngineFailure, type ExportRequest, type PreviewRequest, type RequestOut } from "./rpc";
+import type { CommandRunContext } from "@/extensions/api/commands";
+import { MAX_SAVE_TRIES, readOnlyFolder, saveExtension, saveName, saveRefusal } from "@/extensions/command-rules";
+import { canWriteFolder } from "@/extensions/commands";
+import { replaceExtSettings } from "@/extensions/ext-settings";
+import { registeredCommand } from "@/extensions/registry";
+import { folderSegments } from "@/project/entry-names";
+import type { ExportWireSettings, LookOverride, PreviewRegion, ProjectWire } from "./protocol";
+import { runImport } from "./import";
+import { EngineFailure, type CommandRequest, type ExportRequest, type ImportRequest, type PreviewRequest, type RequestOut, type ThumbsRequest } from "./rpc";
 
-/** The project as the engine reads it: its records, and the storage they came from. */
+/** The project as the engine reads it: its records, the storage they came from,
+ *  and each photo's grid preview as the Library shows it. */
 export interface OpenedRecords {
   photos: CatalogPhoto[];
   storage: CatalogStorage;
+  readPreview(photoId: string): Promise<Blob | null>;
 }
 
 export interface EncodedFrame { bytes: Uint8Array; width: number; height: number }
@@ -58,6 +69,10 @@ export interface SessionDeps {
   encodeFrame(bitmap: ImageBitmap, maxWidth: number, maxHeight: number, encoding: "png" | "rgba"): Promise<EncodedFrame>;
   exists(path: string): Promise<boolean>;
   writeFile(path: string, blob: Blob): Promise<void>;
+  /** Whether a file can be written into the folder at `dir` now. */
+  canWrite(dir: string): Promise<boolean>;
+  decodePreview(blob: Blob): Promise<ImageBitmap>;
+  importProject(req: ImportRequest, out: RequestOut, signal: AbortSignal): Promise<void>;
 }
 
 /** The engine never writes a project, and takes no lock: Node holds that. */
@@ -77,7 +92,14 @@ const openStorage: OpenStorage = ProjectStorage.open.bind(ProjectStorage);
 
 async function openProject(root: string, options: StorageOpenOptions): Promise<OpenedRecords> {
   const opened = await openStorage(nativeDirectoryHandle(root), storageDeps, undefined, undefined, undefined, undefined, options);
-  return { photos: opened.photos, storage: opened.storage };
+  const { storage } = opened;
+  return {
+    photos: opened.photos,
+    storage,
+    // The disk copy only: records read without a walk carry no file to build
+    // one from, so a photo with none, or turned since, has none here.
+    readPreview: (photoId) => storage.readPreview(photoId, { hold: false, build: false }),
+  };
 }
 
 /** `bitmap` scaled down to fit maxWidth × maxHeight (never up), as the
@@ -133,6 +155,9 @@ const DEFAULT_DEPS: SessionDeps = {
     await w.write(blob);
     await w.close();
   },
+  canWrite: canWriteFolder,
+  decodePreview: (blob) => createImageBitmap(blob),
+  importProject: (req, out, signal) => runImport(req, out, signal),
 };
 
 const FORMATS: Record<NonNullable<ExportWireSettings["format"]>, ExportFormat> = {
@@ -215,16 +240,32 @@ const NO_BYPASS: Record<string, boolean> = {};
 // Photos rendered per renderer: one call holds every blob it made until it returns.
 const EXPORT_BATCH = 8;
 
+/** How often a running command tells `slu` it is still at work. */
+export const COMMAND_HEARTBEAT_MS = 10_000;
+
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** `value` as it survives the trip to `slu` as JSON; undefined, a function or a
+ *  value JSON can't hold (a cycle) goes as null, with a warning. */
+function jsonValue(value: unknown, warn: (text: string) => void): unknown {
+  try {
+    const text = JSON.stringify(value);
+    if (text !== undefined) return JSON.parse(text);
+  } catch {}
+  warn("The command's result isn't plain JSON data, so it is left out.");
+  return null;
+}
+
 export class EngineSession {
   private readonly deps: SessionDeps;
-  private project: { wire: ProjectWire; records: OpenedRecords } | null = null;
+  private project: { wire: ProjectWire; records: OpenedRecords; catalogue: string | undefined } | null = null;
   private displaySet = false;
 
   constructor(deps: Partial<SessionDeps> = {}) {
     this.deps = { ...DEFAULT_DEPS, ...deps };
   }
 
-  async export(req: ExportRequest, out: RequestOut): Promise<void> {
+  async export(req: ExportRequest, out: RequestOut, signal?: AbortSignal): Promise<void> {
     await this.open(req.project, req.overrides);
     const settings = exportSettingsFor(req.settings);
     const { target } = req;
@@ -239,7 +280,7 @@ export class EngineSession {
     const used = new Set<string>();
     const total = req.photoIds.length;
     let done = total - photos.length;
-    for (let at = 0; at < photos.length; at += EXPORT_BATCH) {
+    for (let at = 0; at < photos.length && !signal?.aborted; at += EXPORT_BATCH) {
       const rendered = await this.deps.renderPhotos(photos.slice(at, at + EXPORT_BATCH), settings);
       for (const { photo, blob, width, height } of rendered) {
         if (!blob) {
@@ -257,15 +298,19 @@ export class EngineSession {
     }
   }
 
-  async preview(req: PreviewRequest, out: RequestOut): Promise<void> {
-    await this.open(req.project, req.overrides);
+  async preview(req: PreviewRequest, out: RequestOut, signal?: AbortSignal): Promise<void> {
+    await this.open(req.project, req.overrides, req.catalogue);
     const photo = this.photo(req.photoId);
     if (!photo) throw new EngineFailure("project", "This photo isn't in the catalogue.");
     const bridge = this.deps.bridge();
     await bridge.ready;
     if (bridge.availability === "failed") throw new EngineFailure("render", "The graphics renderer couldn't start.");
     const warn = (message: string) => out.emit({ id: 0, type: "log", level: "warn", message });
-    const frame = await this.drawLive(bridge, photo, warn);
+    const frame = await this.drawLive(bridge, photo, warn, req.region ? { region: req.region, width: req.width, height: req.height } : null);
+    if (signal?.aborted) {
+      frame.bitmap.close();
+      return;
+    }
     const encoded = await this.deps.encodeFrame(frame.bitmap, req.width, req.height, req.encoding);
     out.frame(encoded.bytes, (n) => ({
       id: req.id,
@@ -277,17 +322,166 @@ export class EngineSession {
     }));
   }
 
+  /** Each photo's stored grid preview, fitted inside edge × edge, as a frame
+   *  naming its photo. A photo without one is an error that names it. */
+  async thumbs(req: ThumbsRequest, out: RequestOut, signal?: AbortSignal): Promise<void> {
+    const records = await this.open(req.project, undefined);
+    for (const photoId of req.photoIds) {
+      if (signal?.aborted) return;
+      const photo = this.photo(photoId);
+      if (!photo) {
+        out.emit({ id: req.id, type: "error", code: "project", message: "This photo isn't in the catalogue.", photoId });
+        continue;
+      }
+      const blob = await records.readPreview(photoId);
+      if (!blob) {
+        out.emit({ id: req.id, type: "error", code: "decode", message: `${photo.filename} has no preview yet.`, photoId });
+        continue;
+      }
+      let encoded: EncodedFrame;
+      try {
+        encoded = await this.deps.encodeFrame(await this.deps.decodePreview(blob), req.edge, req.edge, req.encoding);
+      } catch {
+        out.emit({ id: req.id, type: "error", code: "decode", message: `The preview of ${photo.filename} can't be read.`, photoId });
+        continue;
+      }
+      out.frame(encoded.bytes, (frame) => ({
+        id: req.id,
+        type: "frame",
+        frame,
+        width: encoded.width,
+        height: encoded.height,
+        encoding: req.encoding,
+        photoId,
+      }));
+    }
+  }
+
+  /** Runs an extension's console command for `slu`. The extension's settings
+   *  become the app's (`req.settings`) first, as `slu` read them. A result the
+   *  command saves is written beside its photo, under a name nothing has yet,
+   *  and named in a "command-saved" event; `slu` imports it afterwards, as the
+   *  catalogue's writer. Where it goes comes from the catalogue's record of
+   *  the photo, never from the command. */
+  async command(req: CommandRequest, out: RequestOut, signal: AbortSignal): Promise<void> {
+    replaceExtSettings(req.extension, req.settings);
+    const photos: CatalogPhoto[] = [];
+    if (req.photoIds.length > 0) {
+      if (!req.project) throw new EngineFailure("project", "Photos came without their project.");
+      await this.open(req.project, undefined, req.catalogue);
+      for (const photoId of req.photoIds) {
+        const found = this.photo(photoId);
+        if (!found) throw new EngineFailure("project", "This photo isn't in the catalogue.");
+        photos.push(found);
+      }
+    }
+    const entry = registeredCommand(req.name);
+    if (!entry || entry.extensionId !== req.extension) {
+      throw new EngineFailure("command", `${req.extension} didn't register ${req.name}; is it on?`);
+    }
+
+    const root = req.project?.root ?? "";
+    const given = new Map(photos.map((p) => [p.id, p]));
+    const say = (stream: "out" | "info" | "warn") => (text: string) =>
+      out.emit({ id: req.id, type: "command-output", stream, text: String(text) });
+    const progressLine = (text: string, fraction?: number) =>
+      out.emit({
+        id: req.id,
+        type: "progress",
+        done: fraction === undefined ? 0 : Math.round(Math.min(1, Math.max(0, fraction)) * 100),
+        total: fraction === undefined ? 0 : 100,
+        text: String(text),
+      });
+    const place = (photo: CatalogPhoto): { photo: CatalogPhoto; dir: string; folder: string } | { problem: string } => {
+      const id: unknown = photo?.id;
+      const record = typeof id === "string" ? given.get(id) : undefined;
+      if (!record) return { problem: "This photo isn't one of the photos the command was given." };
+      const segments = folderSegments(record.folder);
+      if (segments === null) return { problem: "This photo's folder isn't one Safelight can save into." };
+      const folder = segments.join("/");
+      return { photo: record, dir: folder ? pathJoin(root, folder) : root, folder };
+    };
+    const answer: { result?: { value: unknown } } = {};
+    const ctx: CommandRunContext = {
+      words: [...req.words],
+      photos,
+      caller: "cli",
+      from: "cli",
+      signal,
+      print: say("out"),
+      info: say("info"),
+      warn: say("warn"),
+      progress: (text) => {
+        progressLine(text);
+        return {
+          update: (next, fraction) => progressLine(next, fraction),
+          done: (last) => {
+            out.emit({ id: req.id, type: "progress", done: 0, total: 0, text: "" });
+            if (last !== undefined) say("info")(last);
+          },
+        };
+      },
+      canSaveBeside: async (photo) => {
+        const placed = place(photo);
+        if ("problem" in placed) return placed.problem;
+        return (await this.deps.canWrite(placed.dir)) ? null : readOnlyFolder(placed.folder);
+      },
+      saveBeside: async (photo, data, suffix, ext) => {
+        const refusal = saveRefusal(suffix, ext);
+        if (refusal) throw new Error(refusal);
+        if (!(data instanceof Blob)) throw new Error("The data to save must be a Blob.");
+        const placed = place(photo);
+        if ("problem" in placed) throw new Error(placed.problem);
+        const type = saveExtension(ext) ?? "";
+        const shown = photoDisplayName(placed.photo);
+        for (let n = 1; n <= MAX_SAVE_TRIES; n++) {
+          const name = saveName(shown, suffix, type, n);
+          const path = pathJoin(placed.dir, name);
+          if (await this.deps.exists(path)) continue;
+          await this.deps.writeFile(path, data);
+          const relPath = placed.folder ? `${placed.folder}/${name}` : name;
+          out.emit({ id: req.id, type: "command-saved", photoId: placed.photo.id, relPath });
+          return name;
+        }
+        throw new Error(`Every name up to ${saveName(shown, suffix, type, MAX_SAVE_TRIES)} is in use.`);
+      },
+      result: (value) => {
+        answer.result = { value };
+      },
+    };
+
+    const heartbeat = setInterval(() => out.emit({ id: req.id, type: "progress", done: 0, total: 0 }), COMMAND_HEARTBEAT_MS);
+    try {
+      await entry.run(ctx);
+    } catch (e) {
+      throw new EngineFailure("command", errorText(e));
+    } finally {
+      clearInterval(heartbeat);
+    }
+    if (answer.result) out.emit({ id: req.id, type: "command-result", value: jsonValue(answer.result.value, say("warn")) });
+  }
+
+  /** Imports as the request asks (import.ts), holding no catalogue of its own
+   *  meanwhile: the next request reads the project again, as the import left it. */
+  async import(req: ImportRequest, out: RequestOut, signal: AbortSignal): Promise<void> {
+    await this.close();
+    useCatalogStore.getState().replaceCatalog([]);
+    await this.deps.importProject(req, out, signal);
+  }
+
   async close(): Promise<void> {
     setCatalogStorage(null);
     this.project?.records.storage.close?.();
     this.project = null;
   }
 
-  /** Reads the project once per engine run, and has the app read it through
-   *  readOnlyCatalog with this request's look. */
-  private async open(wire: ProjectWire, look: LookOverride | undefined): Promise<void> {
+  /** Reads the project once per engine run, or again when `catalogue` names a
+   *  stamp it wasn't read at, and has the app read it through readOnlyCatalog
+   *  with this request's look. */
+  private async open(wire: ProjectWire, look: LookOverride | undefined, catalogue?: string): Promise<OpenedRecords> {
     let project = this.project;
-    if (project?.wire.root !== wire.root || project.wire.workingDir !== wire.workingDir) {
+    const stale = catalogue !== undefined && project?.catalogue !== catalogue;
+    if (project?.wire.root !== wire.root || project.wire.workingDir !== wire.workingDir || stale) {
       await this.close();
       let records: OpenedRecords;
       try {
@@ -295,11 +489,12 @@ export class EngineSession {
       } catch (e) {
         throw new EngineFailure("project", `The catalogue of ${wire.root} can't be read: ${e instanceof Error ? e.message : String(e)}`);
       }
-      project = { wire, records };
+      project = { wire, records, catalogue };
       this.project = project;
       useCatalogStore.getState().replaceCatalog(await Promise.all(records.photos.map((p) => withHandles(wire.root, p))));
     }
     setCatalogStorage(readOnlyCatalog(project.records.storage, look));
+    return project.records;
   }
 
   private photo(photoId: string): CatalogPhoto | undefined {
@@ -361,7 +556,12 @@ export class EngineSession {
   /** Draws `photo` as the Develop view does when it opens one, and resolves
    *  with the last frame of it: a frame whose prepasses were put off is followed
    *  by another, and only the final one is followed by its histogram. */
-  private async drawLive(bridge: RenderBridge, photo: CatalogPhoto, warn: (message: string) => void): Promise<FrameResult> {
+  private async drawLive(
+    bridge: RenderBridge,
+    photo: CatalogPhoto,
+    warn: (message: string) => void,
+    window: { region: PreviewRegion; width: number; height: number } | null,
+  ): Promise<FrameResult> {
     if (!this.displaySet) {
       // The bytes go to a terminal, which shows sRGB, whatever screen this
       // hidden window is on.
@@ -370,7 +570,8 @@ export class EngineSession {
       this.displaySet = true;
     }
     bridge.clearSource();
-    bridge.setViewport(null);
+    if (window) bridge.setViewport(window.region, window.width, window.height);
+    else bridge.setViewport(null);
     const key = photoSourceKey(photo);
     const maxEdge = getSettings().developMaxEdge;
     if (await bridge.bindSource(key)) {

@@ -29,8 +29,8 @@ export const searchCommand: CommandSpec = {
       ctx.out.print(`Nothing found for "${args.positionals.join(" ")}".`);
       return { code: 0 };
     }
-    ctx.out.print(ctx.out.searchTable(hits.map(({ installName, name, version, category, trust }) =>
-      ({ installName, name, version, category, trust }))));
+    ctx.out.print(ctx.out.searchTable(hits.map(({ installName, name, version, category, trust, description }) =>
+      ({ installName, name, version, category, trust, description }))));
     if (hits.length >= SEARCH_LIMIT)
       ctx.out.warn({ message: `Showing the first ${SEARCH_LIMIT}.`, hint: "Add more words to narrow the search." });
     return { code: 0 };

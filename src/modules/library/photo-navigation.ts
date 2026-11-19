@@ -12,7 +12,14 @@ import { useMemo, useSyncExternalStore } from "react";
 import { fieldChanges, photoById, structureVersion, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { getSettings, useSettings } from "@/state/settings-store";
-import { orderFieldsRead, placeAmongShown, visibleOrder, type LibraryFilter } from "./visible-photos";
+import { editTimesVersion, subscribeEditTimes } from "@/catalog/edit-times";
+import {
+  orderFieldsRead,
+  placeAmongShown,
+  readsEditTimes,
+  visibleOrder,
+  type LibraryFilter,
+} from "./visible-photos";
 import {
   useGridFilters,
   useLibrarySorts,
@@ -47,6 +54,8 @@ interface Derived {
   reads: readonly string[] | null;
   /** fieldChanges(photos, reads) when `order` was derived. */
   changes: number;
+  /** editsRead() when `order` was derived. */
+  edits: number;
   order: number[];
   /** The photos `filtered` holds: `order` read against them. */
   photos: CatalogPhoto[];
@@ -92,6 +101,20 @@ function fieldsRead(
   return [...fields];
 }
 
+/** The edit times' version while the order reads them (the built-in filter or
+ *  sort, or an extension's that says so), else 0: an edit changes the order only
+ *  then. */
+function editsRead(
+  filter: LibraryFilter,
+  sortField: string,
+  filters: readonly RegisteredGridFilter[],
+  sort: RegisteredLibrarySort | undefined,
+): number {
+  const reads =
+    readsEditTimes(filter, sortField) || sort?.readsEdits === true || filters.some((g) => g.readsEdits === true);
+  return reads ? editTimesVersion() : 0;
+}
+
 function deriveVisible(
   photos: CatalogPhoto[],
   filter: LibraryFilter,
@@ -117,7 +140,8 @@ function deriveVisible(
   );
   const reads = fieldsRead(filter, sortField, folder, filters, sort);
   const changes = fieldChanges(photos, reads);
-  if (entry && entry.changes !== changes) {
+  const edits = editsRead(filter, sortField, filters, sort);
+  if (entry && (entry.changes !== changes || entry.edits !== edits)) {
     const stale = entry;
     derived = derived.filter((e) => e !== stale);
     entry = undefined;
@@ -145,6 +169,7 @@ function deriveVisible(
       sort,
       reads,
       changes,
+      edits,
       order,
       photos,
       filtered: order.map((i) => photos[i]),
@@ -188,6 +213,9 @@ function useVisible<T>(
   const gridFilters = useGridFilters();
   const librarySorts = useLibrarySorts();
   const sort = librarySorts.find((s) => s.id === sortField);
+  // Likewise for a stored edit, while the filter or sort reads edit times.
+  const readEdits = () => editsRead(filter, sortField, gridFilters, sort);
+  const edits = useSyncExternalStore(subscribeEditTimes, readEdits, readEdits);
   // Callers pass `without` as a literal; key the memo on its contents, not its identity.
   const without = options?.without;
   const withoutKey = without?.join("\0") ?? "";
@@ -206,7 +234,7 @@ function useVisible<T>(
         ),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [photos, filter, sortField, sortDirection, activeFolder, expandedStacks, showSubfolderPhotos, gridFilters, sort, withoutKey, pickKey],
+    [photos, filter, sortField, sortDirection, activeFolder, expandedStacks, showSubfolderPhotos, edits, gridFilters, sort, withoutKey, pickKey],
   );
 }
 
@@ -230,6 +258,7 @@ function subscribeToStacks(listener: () => void): () => void {
       useUIStore.subscribe(notify),
       useRegistry.subscribe(notify),
       useSettings.subscribe(notify),
+      subscribeEditTimes(notify),
     ];
     return () => detach.forEach((d) => d());
   })();

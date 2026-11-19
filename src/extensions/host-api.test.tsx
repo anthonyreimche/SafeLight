@@ -48,6 +48,9 @@ import { presetFields, summarizePreset } from "@/modules/develop/preset-summary"
 import { ACCESSIBILITY_ACTIVE_KEY, useKeyboardCanvasEditing } from "@/state/accessibility";
 import { useTitleBarOverlay } from "@/ui/window-chrome";
 import { DevFolderControls } from "./devtools/DevFolderControls";
+import { devtoolsExtensions } from "./devtools/extension-status";
+import { devtoolsRender } from "@/rendering/render-bridge/devtools-render";
+import { useRunningPlugins } from "./running-plugins";
 import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
 import { inputProfileOwner, inputProfileRevision } from "@/catalog/input-profiles";
 
@@ -459,6 +462,40 @@ describe("api.devtools", () => {
     expect(native?.platform).toBe("linux");
     expect(native?.gpuInfo).toBeUndefined();
     expect(native?.metrics).toBeUndefined();
+  });
+
+  it("hands over the joined extension list and the live render reads", () => {
+    const { extensions, render } = devtoolsAPI();
+    expect(extensions).toBe(devtoolsExtensions);
+    expect(render).toBe(devtoolsRender);
+  });
+
+  it("keeps the extension list's reference while it holds, as a hook too", () => {
+    const list = devtoolsAPI().extensions;
+    if (!list) throw new Error("no extensions member");
+    act(() =>
+      useRunningPlugins.setState({
+        instances: [{ id: "core", source: "builtin", name: "Safelight", version: "1.0.0" }],
+      }),
+    );
+    expect(list.get().map((e) => e.id)).toContain("core");
+    expect(list.get()).toBe(list.get());
+    const { result, rerender } = renderHook(() => list.use());
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
+  });
+
+  it("reads the render's status without a live view", () => {
+    const render = devtoolsAPI().render;
+    if (!render) throw new Error("no render member");
+    expect(render.live.get()).toBeNull();
+    expect(render.stageFailures.get()).toEqual({});
+    expect(render.liveValues("safelight.basic.tone")).toBeNull();
+    const { result, rerender } = renderHook(() => render.stageFailures.use());
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
   });
 
   it("inspects every extension's shared variables", () => {

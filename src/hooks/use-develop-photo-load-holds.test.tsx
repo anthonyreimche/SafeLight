@@ -66,7 +66,7 @@ function args(photo: CatalogPhoto): PhotoLoadArgs {
     setLoading: vi.fn(),
     setCantShow: vi.fn(),
     setSettledReason: vi.fn(),
-    setOverflowedStages: vi.fn(),
+    setSourceNotice: vi.fn(),
     drawSourceRef: { current: vi.fn() },
   };
 }
