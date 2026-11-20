@@ -14,7 +14,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { getSettings, useSettings } from "@/state/settings-store";
 import { trapTab } from "@/ui/focus-trap";
-import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
 interface ModalWindowProps {
   title: string;
@@ -25,8 +24,9 @@ interface ModalWindowProps {
   /** Override the surface box classes (size/border/etc). Defaults to the
    *  standard 960×640 window. Ignored while maximized. */
   boxClassName?: string;
-  /** Fill the whole app window instead of floating centred. Only meaningful
-   *  with onToggleMaximize; the caller owns (and may persist) the state. */
+  /** Fill the app below its top bar instead of floating centred. Only
+   *  meaningful with onToggleMaximize; the caller owns (and may persist) the
+   *  state. */
   maximized?: boolean;
   /** Shows a Maximize/Restore button beside the close × and makes a titlebar
    *  double-click toggle, like a desktop window. */
@@ -37,20 +37,18 @@ interface ModalWindowProps {
 const DEFAULT_BOX =
   "flex h-[640px] max-h-[90vh] w-[960px] max-w-[94vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl";
 
-const MAXIMIZED_BOX = "flex h-full w-full flex-col overflow-hidden bg-surface-1";
+const MAXIMIZED_BOX = "absolute inset-x-0 bottom-0 flex flex-col overflow-hidden bg-surface-1";
 
 // Layout height of the titlebar (its h-[38px] class).
 const TITLEBAR_PX = 38;
 
+// Layout height of the app's top bar (TopBar's, and the welcome screens', h-[38px]).
+// A maximized window starts below it, so the top bar stays the OS title bar with
+// the native window controls beside it, apart from the window's own Restore and ×.
+const TOP_BAR_PX = 38;
+
 const isControl = (target: EventTarget) =>
   !!(target as HTMLElement).closest("input,button,a,select,textarea");
-
-// Maximized, the titlebar covers the app's top bar and so becomes the OS title
-// bar: the native window controls take its colour while it is mounted.
-function TitleBarOverlay() {
-  useTitleBarOverlay("--color-surface-2");
-  return null;
-}
 
 // Diagonal arrows: outward to maximize, inward to restore.
 function MaximizeIcon({ maximized }: { maximized: boolean }) {
@@ -168,9 +166,11 @@ export function ModalWindow({
         onKeyDown={onBoxKeyDown}
         data-maximized={maximized || undefined}
         className={`sl-enter-pop ${maximized ? MAXIMIZED_BOX : (boxClassName ?? DEFAULT_BOX)} outline-none`}
-        style={{
-          transform: !maximized && (pos.x || pos.y) ? `translate(${pos.x}px, ${pos.y}px)` : undefined,
-        }}
+        style={
+          maximized
+            ? { top: TOP_BAR_PX }
+            : { transform: pos.x || pos.y ? `translate(${pos.x}px, ${pos.y}px)` : undefined }
+        }
       >
         <div
           className={`flex h-[38px] shrink-0 touch-none select-none items-center gap-3 border-b border-border bg-surface-2 px-3 ${
@@ -180,21 +180,17 @@ export function ModalWindow({
           onPointerMove={onTitleMove}
           onPointerUp={onTitleUp}
           onPointerCancel={onTitleCancel}
-          // Maximized, a double-click on the bar is the OS's (it maximizes the
-          // app window, as on the top bar); the button restores.
           onDoubleClick={(e) => {
             if (onToggleMaximize && !isControl(e.target)) onToggleMaximize();
           }}
-          style={maximized ? dragBarStyle : undefined}
         >
-          {maximized && <TitleBarOverlay />}
           <span
             id={titleId}
             className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary"
           >
             {title}
           </span>
-          <div className="ml-auto flex items-center gap-3" style={maximized ? noDragStyle : undefined}>
+          <div className="ml-auto flex items-center gap-3">
             {titlebar}
             {onToggleMaximize && (
               <button

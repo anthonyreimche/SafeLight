@@ -11,22 +11,41 @@ interface RatingProps {
 
 export function Rating({ value, onChange, size = "sm" }: RatingProps) {
   const starSize = size === "sm" ? "text-xs" : "text-sm";
+  const label = `Rating: ${value} of 5 stars`;
+
+  // Display-only stars are plain text, not disabled buttons: a disabled button
+  // swallows the click, and the tile beneath should still select.
+  if (!onChange) {
+    return (
+      <div className="flex gap-0.5" role="img" aria-label={label}>
+        {[1, 2, 3, 4, 5].map((star) => (
+          <span
+            key={star}
+            className={`flex h-5 w-5 items-center justify-center ${starSize} ${
+              star <= value ? "text-rating" : "text-text-muted"
+            }`}
+          >
+            {star <= value ? "★" : "☆"}
+          </span>
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex gap-0.5" role="group" aria-label={`Rating: ${value} of 5 stars`}>
+    <div className="flex gap-0.5" role="group" aria-label={label}>
       {[1, 2, 3, 4, 5].map((star) => (
         <button
           key={star}
           onClick={(e) => {
             e.stopPropagation();
-            onChange?.(value === star ? 0 : star);
+            onChange(value === star ? 0 : star);
           }}
           aria-label={`${star} star${star === 1 ? "" : "s"}`}
           aria-pressed={star <= value}
           className={`flex h-5 w-5 items-center justify-center transition-colors ${starSize} ${
             star <= value ? "text-rating" : "text-text-muted"
-          } ${onChange ? "cursor-pointer hover:text-rating" : "cursor-default"}`}
-          disabled={!onChange}
+          } cursor-pointer hover:text-rating`}
         >
           <span aria-hidden="true">{star <= value ? "★" : "☆"}</span>
         </button>

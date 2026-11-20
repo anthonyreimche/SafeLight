@@ -40,6 +40,10 @@ export interface ExtensionSearchResult {
   /** "owner/repo" extensions it pairs well with, linked both ways by the
    *  registry build. */
   worksWith?: string[];
+  /** Present when the registry lists the extension as discontinued. The store
+   *  keeps it off Browse, lists it last in searches, and offers its replacement
+   *  where it is installed. */
+  deprecated?: ExtensionDeprecation;
   /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
    *  the card's first paint (no github.com/owner.png redirect). */
   avatarUrl?: string | null;
@@ -48,7 +52,25 @@ export interface ExtensionSearchResult {
    *  the card can letterbox it instead of filling the frame. Present when served
    *  from a warm cache; the grid refreshes it via github.thumbnails on open. */
   thumbnail?: ExtensionThumbnail | null;
+  /** The versions the registry build read for it. Absent on live-search
+   *  results and older indexes; null when the registry row has none. */
+  versions?: RegistryVersions | null;
 }
+
+/** One version the registry build read: a release, or the default branch's
+ *  safelight.json when the extension publishes no releases. */
+export interface RegistryVersion {
+  version: string;
+  from: "release" | "branch";
+  tag?: string;
+  minAppVersion?: string;
+}
+
+/** An extension's latest version (and a newer pre-release), or why the
+ *  registry build couldn't read its releases. */
+export type RegistryVersions =
+  | { latest: RegistryVersion; prerelease?: RegistryVersion }
+  | { releaseError: string };
 
 /** A resolved browse-card thumbnail. `custom` distinguishes a purpose-made
  *  icon/social-preview (fills the card) from the avatar fallback (letterboxed). */
@@ -160,6 +182,21 @@ export interface ExtensionManifest {
    *  extension, for its help, completion and verbs. One the extension doesn't
    *  register when it runs fails with a message. Needs Safelight 3.2.6. */
   commands?: ManifestCommand[];
+  /** Ids of the extensions this one replaces. While it is installed and on,
+   *  Safelight turns each of them off once, if installed and on, and says so;
+   *  they stay installed, and one the person turns back on stays on. At most
+   *  16. Ids under `core` or `safelight` are ignored unless this is an official
+   *  extension. Needs Safelight 3.2.6. */
+  supersedes?: string[];
+}
+
+/** An extension the registry lists as discontinued: its manifest's
+ *  `deprecated` field, as the registry build last read it. */
+export interface ExtensionDeprecation {
+  /** "owner/repo" of the extension that replaces it, or null when it names none. */
+  replacedBy: string | null;
+  /** The author's word to the person, at most 140 characters, or null. */
+  message: string | null;
 }
 
 /** A console command as a manifest declares it (see CommandContribution). */

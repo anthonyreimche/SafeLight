@@ -91,6 +91,23 @@ describe("ExtensionCard", () => {
     );
   });
 
+  it("greys out Install for a version this build can't run, saying why", () => {
+    render(
+      <ExtensionCard
+        index={0}
+        result={result({ versions: { latest: { version: "2.0.0", from: "release", minAppVersion: "99.0.0" } } })}
+        thumb={null}
+        installing={false}
+        disabled={false}
+        onOpen={() => {}}
+        onInstall={() => {}}
+      />,
+    );
+    const install = screen.getByRole("button", { name: "Install" }) as HTMLButtonElement;
+    expect(install.disabled).toBe(true);
+    expect(install.title).toBe("Needs Safelight 99.0.0 or newer");
+  });
+
   it("sets its own text size, so a detail-page shelf matches the browse grid", () => {
     const { container } = render(
       <ExtensionCard

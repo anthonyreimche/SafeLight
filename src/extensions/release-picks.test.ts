@@ -7,8 +7,9 @@
 // spans, what a chosen release is blocked by, and when a choice is kept.
 
 import { describe, expect, it } from "vitest";
-import type { ExtensionRelease } from "./types";
+import type { ExtensionRelease, RegistryVersions } from "./types";
 import {
+  installBlock,
   keepAfterInstall,
   keepsVersion,
   latestFull,
@@ -106,6 +107,35 @@ describe("releaseBlock", () => {
   it("lets a good or unknown release through", () => {
     expect(releaseBlock("2.0.0", { version: "2.0.0", minAppVersion: "2.0.0" }, "3.0.0")).toBeNull();
     expect(releaseBlock("2.0.0", null, "3.0.0")).toBeNull();
+  });
+});
+
+describe("installBlock", () => {
+  const latest = (minAppVersion?: string): RegistryVersions => ({
+    latest: { version: "2.0.0", from: "release", tag: "v2.0.0", ...(minAppVersion ? { minAppVersion } : {}) },
+  });
+
+  it("blocks a latest version that needs a newer Safelight", () => {
+    expect(installBlock(latest("99.0.0"), "3.0.0")).toBe("Needs Safelight 99.0.0 or newer");
+  });
+
+  it("blocks a branch version that needs a newer Safelight", () => {
+    expect(installBlock({ latest: { version: "1.0.0", from: "branch", minAppVersion: "3.1.0" } }, "3.0.0")).toBe(
+      "Needs Safelight 3.1.0 or newer",
+    );
+  });
+
+  it("blocks a repo whose releases the registry couldn't read", () => {
+    expect(installBlock({ releaseError: "v1.3.0: safelight.json says 1.2.0" }, "3.0.0")).toBe(
+      "Can't be installed: v1.3.0: safelight.json says 1.2.0",
+    );
+  });
+
+  it("lets a version this build runs, or an unknown one, through", () => {
+    expect(installBlock(latest("3.0.0"), "3.0.0")).toBeNull();
+    expect(installBlock(latest(), "3.0.0")).toBeNull();
+    expect(installBlock(null, "3.0.0")).toBeNull();
+    expect(installBlock(undefined, "3.0.0")).toBeNull();
   });
 });
 

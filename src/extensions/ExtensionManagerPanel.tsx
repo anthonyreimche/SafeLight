@@ -76,6 +76,8 @@ import { keepAfterInstall } from "./release-picks";
 import { UpdateNotes } from "./ReleaseNotes";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
+import { DiscontinuedBar } from "./DiscontinuedBar";
+import { discontinuedFor, discontinuedLast, isDiscontinued } from "./discontinued";
 import {
   EXPANDED_GRID,
   ExtensionCard,
@@ -548,6 +550,22 @@ export function ExtensionManagerPanel() {
     installedRepos.has(r.fullName.toLowerCase());
   const enabled = (id: string) => !disabledIds.includes(id);
 
+  // The registry's discontinued marks, read from the whole catalogue.
+  const catalogList = catalog ?? results ?? [];
+  const isInstalledRepo = (repo: string) =>
+    list.some((m) => repoFor(m)?.toLowerCase() === repo.toLowerCase());
+  const discontinuedOf = (repo: string | null) => discontinuedFor(repo, catalogList, isInstalledRepo);
+  const installReplacement = (repo: string) =>
+    void install(
+      repo,
+      catalogList.find((r) => r.fullName.toLowerCase() === repo.toLowerCase()) ?? {
+        fullName: repo,
+        description: null,
+        stars: 0,
+        updatedAt: "",
+      },
+    );
+
   // Installed extensions with a newer version — drives the Updates tab. Needs a
   // known repo to update from (built-ins / custom imports without a source can't
   // be updated). One this build can't run, or one kept at an older version, is
@@ -579,7 +597,8 @@ export function ExtensionManagerPanel() {
   const openInfo = browse === "home" ? null : categoryInfo(browse, vocabulary);
   const browseKey = openInfo ? openInfo.slug : "home";
   const searched = !!query.trim();
-  const notInstalled = results?.filter((r) => !isInstalled(r)) ?? null;
+  // Discontinued extensions are found by a search only, and listed last.
+  const notInstalled = results?.filter((r) => !isInstalled(r) && !isDiscontinued(r)) ?? null;
   const offered = searched ? results : notInstalled;
   const inView = offered && openInfo ? inCategory(offered, browseKey, vocabulary) : offered;
   const filtered = onlyVerified
@@ -587,7 +606,8 @@ export function ExtensionManagerPanel() {
     : inView;
   const hiddenUnverified = inView && filtered ? inView.length - filtered.length : 0;
   const showOther = !!notInstalled && inCategory(notInstalled, OTHER.slug, vocabulary).length > 0;
-  const categoryMembers = results && openInfo ? inCategory(results, browseKey, vocabulary) : [];
+  const categoryMembers =
+    results && openInfo ? inCategory(results.filter((r) => !isDiscontinued(r)), browseKey, vocabulary) : [];
   const everyInstalled = categoryMembers.length > 0 && categoryMembers.every(isInstalled);
 
   // Flat, sorted list — shown when a search query or an open category narrows
@@ -600,7 +620,7 @@ export function ExtensionManagerPanel() {
     else if (sort === "updated")
       sorted.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
     else sorted.sort((a, b) => b.stars - a.stars);
-    return sorted;
+    return discontinuedLast(sorted);
   })();
 
   // Discrete "shelves" (App-Store style) for the unfiltered browse: a horizontal
@@ -656,6 +676,7 @@ export function ExtensionManagerPanel() {
         locked: false,
         hasSettings: manifest ? !!extSettings[manifest.id] : false,
         search,
+        discontinued: discontinuedOf(sel),
       };
     }
     const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === sel);
@@ -683,6 +704,7 @@ export function ExtensionManagerPanel() {
         enabled: enabled(manifest.id),
         locked: false,
         hasSettings: !!extSettings[manifest.id],
+        discontinued: discontinuedOf(repo),
       };
     }
     return null;
@@ -713,6 +735,7 @@ export function ExtensionManagerPanel() {
           onUninstall={(id) => void remove(id)}
           onToggle={toggle}
           onSettings={openSettings}
+          onInstallReplacement={installReplacement}
           related={{
             results: catalog ?? results ?? [],
             isInstalled,
@@ -994,10 +1017,14 @@ export function ExtensionManagerPanel() {
                 !iq ||
                 name.toLowerCase().includes(iq) ||
                 (desc ?? "").toLowerCase().includes(iq);
-              const installed = list.filter((m) => match(m.name, m.description));
+              const byName = (a: { name: string }, b: { name: string }) =>
+                a.name.localeCompare(b.name);
+              const installed = list
+                .filter((m) => match(m.name, m.description))
+                .sort(byName);
               const builtins = BUILTIN_EXTENSIONS.filter((b) =>
                 match(b.name, b.description),
-              );
+              ).sort(byName);
               return (
                 <div className="flex flex-col gap-3">
                   <input
@@ -1027,27 +1054,37 @@ export function ExtensionManagerPanel() {
                             const repo = repoFor(m);
                             const canUpdate =
                               !!upd?.hasUpdate && !!upd.latestTag && !!repo && !upd.requiresApp;
+                            const discontinued = discontinuedOf(repo);
                             return (
-                              <ExtensionRow
-                                key={m.id}
-                                id={m.id}
-                                name={m.name}
-                                version={m.version}
-                                repo={repo}
-                                description={m.description}
-                                enabled={enabled(m.id)}
-                                busy={busy !== null}
-                                hasSettings={!!extSettings[m.id]}
-                                onOpen={() => openDetail(repo ?? m.id)}
-                                onUpdate={
-                                  canUpdate
-                                    ? () => void update(m.id, repo!)
-                                    : undefined
-                                }
-                                onSettings={() => openSettings(m.id)}
-                                onToggle={() => toggle(m.id, !enabled(m.id))}
-                                onUninstall={() => void remove(m.id)}
-                              />
+                              <div key={m.id} className="flex flex-col gap-0.5">
+                                <ExtensionRow
+                                  id={m.id}
+                                  name={m.name}
+                                  version={m.version}
+                                  repo={repo}
+                                  description={m.description}
+                                  enabled={enabled(m.id)}
+                                  busy={busy !== null}
+                                  hasSettings={!!extSettings[m.id]}
+                                  onOpen={() => openDetail(repo ?? m.id)}
+                                  onUpdate={
+                                    canUpdate
+                                      ? () => void update(m.id, repo!)
+                                      : undefined
+                                  }
+                                  onSettings={() => openSettings(m.id)}
+                                  onToggle={() => toggle(m.id, !enabled(m.id))}
+                                  onUninstall={discontinued ? undefined : () => void remove(m.id)}
+                                />
+                                {discontinued && (
+                                  <DiscontinuedBar
+                                    discontinued={discontinued}
+                                    busy={busy !== null}
+                                    onInstallReplacement={installReplacement}
+                                    onUninstall={() => void remove(m.id)}
+                                  />
+                                )}
+                              </div>
                             );
                           })}
                         </div>

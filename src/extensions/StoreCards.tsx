@@ -15,6 +15,7 @@ import { useBannedReason, useIsVerified } from "./trust";
 import { FlaggedBadge, VerifiedBadge } from "./TrustBadges";
 import { useExtStoreUI } from "./store-ui";
 import { categoriesOf, typeOf } from "./store-categories";
+import { installBlock } from "./release-picks";
 
 /** True while the Extensions window is maximized: the store spreads out, with
  *  wrapping card grids in place of sideways-scrolling rows. */
@@ -120,6 +121,7 @@ export function ExtensionCard({
   const name = result.name ?? result.fullName.split("/")[1] ?? result.fullName;
   const verified = useIsVerified(result.fullName);
   const banned = useBannedReason(result.fullName);
+  const blocked = installBlock(result.versions, __APP_VERSION__);
   const cardRef = useRef<HTMLDivElement>(null);
   const owner = result.fullName.split("/")[0];
   const avatar = result.avatarUrl ?? `https://github.com/${owner}.png?size=120`;
@@ -248,8 +250,9 @@ export function ExtensionCard({
           <span className="shrink-0 text-text-muted">Installed</span>
         ) : (
           <button
-            disabled={disabled}
+            disabled={disabled || blocked !== null}
             onClick={onInstall}
+            title={blocked ?? undefined}
             className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-on-accent hover:opacity-80 disabled:opacity-40"
           >
             {checking ? <LoadingDots label="Checking" /> : installing ? "…" : "Install"}

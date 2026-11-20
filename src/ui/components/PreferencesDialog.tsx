@@ -14,7 +14,7 @@ import { uiZoom } from "@/ui/frame-point";
 import { SettingsFieldList } from "@/extensions/SettingsFieldList";
 import { useRegistry } from "@/extensions/registry";
 import { ModalWindow } from "@/ui/components/ModalWindow";
-import { resetSettings } from "@/state/settings-store";
+import { getSettings, resetSettings, updateSettings, useSettings } from "@/state/settings-store";
 import { PrefSearchContext } from "@/ui/preferences/fields";
 import { closePreferences, usePreferencesStore } from "@/ui/preferences/preferences-store";
 import {
@@ -46,6 +46,10 @@ const RAIL_MIN = 120;
 const RAIL_MAX = 320;
 const RAIL_DEFAULT = 144; // matches the old fixed w-36
 const RAIL_STORE_KEY = "safelight.prefs.railWidth";
+
+// Section content stops at 1.5× its width in the standard 960px window (default
+// rail, 4px handle, p-4 padding) so a maximized window doesn't stretch the rows.
+const CONTENT_MAX_WIDTH = 1.5 * (960 - RAIL_DEFAULT - 4 - 32);
 const loadRailWidth = () => {
   try {
     const saved = Number(localStorage.getItem(RAIL_STORE_KEY));
@@ -55,8 +59,12 @@ const loadRailWidth = () => {
   }
 };
 
+const toggleMaximized = () =>
+  updateSettings({ preferencesMaximized: !getSettings().preferencesMaximized });
+
 export function PreferencesDialog() {
   const open = usePreferencesStore((s) => s.open);
+  const maximized = useSettings((s) => s.preferencesMaximized);
   const target = usePreferencesStore((s) => s.target);
   const extSettings = useRegistry((s) => s.settings);
   const [sectionId, setSectionId] = useState<string>("Interface");
@@ -193,6 +201,8 @@ export function PreferencesDialog() {
     <ModalWindow
       title="Preferences"
       onClose={closePreferences}
+      maximized={maximized}
+      onToggleMaximize={toggleMaximized}
       titlebar={
         <div className="relative flex items-center">
           <svg
@@ -297,7 +307,7 @@ export function PreferencesDialog() {
               {/* Keyed so each section's content fades in; a section's own state
                   lives inside its render, and the dialog keeps nothing for it. */}
               <div key={active?.id} className="sl-enter-fade flex-1 overflow-y-auto p-4">
-                {active?.render(q)}
+                <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>{active?.render(q)}</div>
               </div>
             </>
           )}
@@ -345,29 +355,31 @@ function SearchResults({
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      {groups.map(({ section, items }) => {
-        // Sections matched by a specific setting render only the matching
-        // controls (filter = query). Sections matched only by their title or a
-        // synonym have no single setting to isolate, so show the whole panel.
-        const filter = items.length > 0 ? query : "";
-        return (
-          <div key={section.id} className="mb-6 last:mb-0">
-            <button
-              onClick={() => onPick(section.id)}
-              title={`Open ${section.label}`}
-              className="mb-2 flex items-center gap-1 text-[9px] uppercase tracking-widest text-text-muted hover:text-text-secondary"
-            >
-              {section.group === "Extensions" && (
-                <span className="opacity-70">Extensions ›</span>
-              )}
-              {section.label}
-            </button>
-            <PrefSearchContext.Provider value={filter}>
-              {section.render(filter)}
-            </PrefSearchContext.Provider>
-          </div>
-        );
-      })}
+      <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>
+        {groups.map(({ section, items }) => {
+          // Sections matched by a specific setting render only the matching
+          // controls (filter = query). Sections matched only by their title or a
+          // synonym have no single setting to isolate, so show the whole panel.
+          const filter = items.length > 0 ? query : "";
+          return (
+            <div key={section.id} className="mb-6 last:mb-0">
+              <button
+                onClick={() => onPick(section.id)}
+                title={`Open ${section.label}`}
+                className="mb-2 flex items-center gap-1 text-[9px] uppercase tracking-widest text-text-muted hover:text-text-secondary"
+              >
+                {section.group === "Extensions" && (
+                  <span className="opacity-70">Extensions ›</span>
+                )}
+                {section.label}
+              </button>
+              <PrefSearchContext.Provider value={filter}>
+                {section.render(filter)}
+              </PrefSearchContext.Provider>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -55,3 +55,15 @@ It builds (`npm ci` and `npm run build`, when your repo has them), fails if `saf
 ## Get it listed
 
 Tag the GitHub repo with the **`safelight-extension`** topic so it appears in the store's browse view. Users can also install any repo by `owner/repo` without the topic.
+
+## Registry requests
+
+The [extension registry](https://github.com/anthonyreimche/safelight-registry) keeps the verified list, the ban list and what the store shows. Each change starts as a short form, on its [New issue](https://github.com/anthonyreimche/safelight-registry/issues/new/choose) page or on the website's [registry page](../../../site/registry.html), which opens the same form filled in:
+
+- **Get an extension verified**: a code review of one release, for the Verified badge. Ask again for each release you want covered.
+- **Replace an extension**: a Discontinued bar with Install replacement on the old one. See [Replacing an extension](README.md#replacing-an-extension).
+- **Discontinue an extension**: a Discontinued bar with your message.
+- **Set an extension's category**: for an extension with no category topic.
+- **Report an extension**: for the ban list.
+
+A submitted form is checked at once (the repo exists; for a verification, the release's `safelight.json` has the same version) and opens a pull request that a maintainer reviews. A problem gets a comment saying what to fix, and editing the issue checks it again.

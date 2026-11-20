@@ -474,6 +474,7 @@ export interface AppSettings {
   autoUpdateExtensions: boolean;
   onlyVerifiedExtensions: boolean;
   extensionsMaximized: boolean;
+  preferencesMaximized: boolean;
 
   // Updates
   checkForUpdates: boolean;

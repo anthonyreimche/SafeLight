@@ -340,49 +340,51 @@ describe("ModalWindow maximize", () => {
     expect(dialog().dataset.maximized).toBe("true");
   });
 
-  // Maximized, the titlebar sits where Electron draws the OS title bar: it must
-  // leave room for the native min/max/close overlay (Windows/Linux) or that
-  // overlay covers Restore and ×, and it takes over the overlay's colour.
-  it("clears the native window controls only while maximized", () => {
+  // Maximized, the window fills the app below its top bar, so the top bar keeps
+  // being the OS title bar with the native min/max/close beside it, apart from
+  // the window's own Restore and ×.
+  it("fills the app below the top bar while maximized", () => {
     const { rerender } = render(
       <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={vi.fn()}>
         <p>Body</p>
       </ModalWindow>,
     );
-    expect(titlebar("Extensions").style.paddingRight).toBe("");
+    expect(dialog().style.top).toBe("");
 
     rerender(
       <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
         <p>Body</p>
       </ModalWindow>,
     );
-    expect(titlebar("Extensions").style.paddingRight).toBe("calc(138px / var(--ui-scale, 1))");
+    expect(dialog().style.top).toBe("38px");
   });
 
-  it("colours the native window controls to match while maximized", () => {
+  it("leaves the OS title bar and its controls to the app's top bar while maximized", () => {
     const setOverlay = vi.fn(async () => {});
     vi.stubGlobal("safelightNative", { titlebar: { setOverlay } });
-    const root = document.documentElement.style;
-    root.setProperty("--color-surface-2", "#303030");
-    root.setProperty("--color-text-secondary", "#c0c0c0");
     try {
-      const { rerender } = render(
-        <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={vi.fn()}>
-          <p>Body</p>
-        </ModalWindow>,
-      );
-      expect(setOverlay).not.toHaveBeenCalled();
-
-      rerender(
+      render(
         <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
           <p>Body</p>
         </ModalWindow>,
       );
-      expect(setOverlay).toHaveBeenLastCalledWith("#303030", "#c0c0c0", 1);
+      expect(titlebar("Extensions").getAttribute("style")).toBeNull();
+      expect(setOverlay).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
-      document.documentElement.removeAttribute("style");
     }
+  });
+
+  it("restores on a titlebar double-click while maximized", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={onToggle}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    await user.dblClick(titlebar("Extensions"));
+    expect(onToggle).toHaveBeenCalledOnce();
   });
 
   it("toggles on a titlebar double-click", async () => {

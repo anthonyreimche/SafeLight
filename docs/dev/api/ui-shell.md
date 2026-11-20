@@ -224,7 +224,7 @@ Registering a window doesn't show it. Open it with `api.windows`:
 
 One extension window is open at a time. These calls take your own windows only: another extension's id, or one nobody registered, is refused with a warning.
 
-Your component fills the window below the titlebar, at 960 × 640 or the whole app window when maximized, and manages its own padding and scrolling. Make its root a flex column (`flex min-h-0 flex-1 flex-col`) and give the part that scrolls `min-h-0 flex-1 overflow-y-auto`; content that simply runs long scrolls as a whole. A throw while it renders shows a crash notice inside the window instead of taking the app down.
+Your component fills the window below the titlebar, at 960 × 640, or the app below its top bar when maximized, and manages its own padding and scrolling. Make its root a flex column (`flex min-h-0 flex-1 flex-col`) and give the part that scrolls `min-h-0 flex-1 overflow-y-auto`; content that simply runs long scrolls as a whole. A throw while it renders shows a crash notice inside the window instead of taking the app down.
 
 With `maximizable`, a Maximize button sits beside the close button and a titlebar double-click toggles it. Each window remembers whether it was maximized until Safelight restarts.
 

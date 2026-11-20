@@ -55,7 +55,20 @@ function storeFields(e) {
   if (Array.isArray(e.screenshots))
     out.screenshots = uniqueWhere(e.screenshots, (s) => /^https:\/\//i.test(s), MAX_SCREENSHOTS);
   if (Array.isArray(e.worksWith)) out.worksWith = uniqueWhere(e.worksWith, validRepo, MAX_WORKS_WITH);
+  const deprecated = deprecation(e.deprecated);
+  if (deprecated) out.deprecated = deprecated;
   return out;
+}
+
+// A discontinued row's mark: its replacement and message, each null when
+// missing or bad, or null when the row isn't marked at all.
+function deprecation(d) {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  const message = typeof d.message === "string" ? d.message.trim() : "";
+  return {
+    replacedBy: typeof d.replacedBy === "string" && validRepo(d.replacedBy) ? d.replacedBy : null,
+    message: message && message.length <= MAX_DESCRIPTION ? message : null,
+  };
 }
 
 // One registry.json row in the ExtensionSearchResult shape the renderer

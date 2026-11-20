@@ -96,6 +96,29 @@ describe("normalizeRegistryEntry", () => {
       custom: false,
     });
   });
+
+  it("keeps a discontinued extension's replacement and message", () => {
+    const e = normalizeRegistryEntry(
+      row({ deprecated: { replacedBy: "acme/frame", message: "  Use Framing / Border " } }),
+    );
+    expect(e?.deprecated).toEqual({ replacedBy: "acme/frame", message: "Use Framing / Border" });
+  });
+
+  it("keeps a discontinued mark whose replacement or message is missing or bad", () => {
+    const e = normalizeRegistryEntry(
+      row({ deprecated: { replacedBy: "../x", message: "x".repeat(141) } }),
+    );
+    expect(e?.deprecated).toEqual({ replacedBy: null, message: null });
+    expect(normalizeRegistryEntry(row({ deprecated: {} }))?.deprecated).toEqual({
+      replacedBy: null,
+      message: null,
+    });
+  });
+
+  it("leaves a row that isn't discontinued unmarked", () => {
+    for (const deprecated of [undefined, null, false, "yes", []])
+      expect(normalizeRegistryEntry(row({ deprecated }))).not.toHaveProperty("deprecated");
+  });
 });
 
 describe("parseVocabulary", () => {
