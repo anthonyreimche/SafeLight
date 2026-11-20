@@ -163,6 +163,30 @@ export interface LayoutContribution {
   modules?: Partial<Record<string, ModuleLayoutDef>>;
 }
 
+/** One of the person's saved layouts (Preferences ▸ Interface ▸ Panel layout),
+ *  as api.layouts.saved lists it. */
+export interface SavedLayout {
+  /** "user.…" */
+  id: string;
+  name: string;
+  /** Keyed by module id. A module left out shows its defaults. */
+  modules: Partial<Record<string, ModuleLayoutDef>>;
+  /** Whether picking it switches extensions on and off to its ticks. */
+  switchesExtensions?: boolean;
+  /** Its ticks: on or off by extension id. */
+  extensions?: Record<string, boolean>;
+}
+
+/** What api.layouts.saved.save writes. A saved layout's extension ticks are
+ *  never among it: those stay the person's to set in Preferences. */
+export interface SavedLayoutInput {
+  /** Leave out to create a saved layout. */
+  id?: string;
+  name: string;
+  /** Replaces all its arrangements. Entries that aren't layouts are left out. */
+  modules: Partial<Record<string, ModuleLayoutDef>>;
+}
+
 /** A top-level module beside Library and Develop. Registering one adds its tab
  *  to the strip, lets it pop out into its own window, gives it its own dock
  *  layout, and makes its id valid for `navigation.goTo`. */
@@ -1330,6 +1354,26 @@ export interface TopBarButtonContribution {
   /** Called when the button is clicked. A throw is logged and the bar carries on. */
   onClick(): void;
   /** Sort position among extension buttons (lower = further left). Default 100. */
+  order?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Layout menu sections
+// ---------------------------------------------------------------------------
+
+/** A section in the top bar's Layout menu, below the layouts, such as a layout
+ *  manager's own list. Needs Safelight 3.2.6. */
+export interface LayoutMenuContribution {
+  /** Globally unique, e.g. "my-ext.layouts". */
+  id: string;
+  /** The section's content. Call `close` once an item is chosen, to close the
+   *  menu as the built-in items do. */
+  component: ComponentType<{ close: () => void }>;
+  /** Leave out the menu's own list of saved layouts and its "Manage layouts…"
+   *  item, for a section that lists and manages them itself. Custom and the
+   *  registered layouts stay. They come back when the extension stops. */
+  replacesSavedLayouts?: boolean;
+  /** Sort position among the sections (lower = higher up). Default 100. */
   order?: number;
 }
 

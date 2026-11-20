@@ -59,7 +59,8 @@ Notes:
 | `settings` | `get(key, fallback)`, `set(key, value)`, `onChange(cb)`. Per extension, any window. Kept on disable, deleted on uninstall. |
 | `params` | `list()`, `get(qualifiedKey)`. Read-only metadata for every stage uniform. See [`api.params`](stores.md#apiparams). |
 | `dock` | `togglePanel(id, placement?)`, `usePanelPlacement()`, `isPanelOpen(id)`. See [Panels](ui-shell.md#panels-registerpanel). |
-| `themes`, `layouts` | `apply(id)` |
+| `themes` | `apply(id)` |
+| `layouts` | `apply(id)`, `capture`, `shows`, `show`, `saved` ([UI Shell](ui-shell.md#managing-layouts-apilayouts)) |
 | `pipelines` | `apply(id)` sets the Preferences default. `effectiveId(displayTransform)` is the transform a photo renders with. `paramKeys(id)` lists a transform's bag keys. |
 | `preferences` | `open(sectionId?)`, `close()`, `toggle()`. `sectionId` is a core section or an extension id. |
 | `navigation` | `goTo(id)`: `"library"`, `"develop"` or a registered module id. |

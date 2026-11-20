@@ -29,6 +29,7 @@ import type {
   ThemeContribution,
   TopBarButtonContribution,
   WindowContribution,
+  LayoutMenuContribution,
 } from "./contributions";
 import type { CommandContribution } from "./commands";
 
@@ -98,6 +99,9 @@ export interface RegisteredTopBarButton extends TopBarButtonContribution {
 export interface RegisteredWindow extends WindowContribution {
   extensionId: string;
 }
+export interface RegisteredLayoutMenu extends LayoutMenuContribution {
+  extensionId: string;
+}
 /** A console command as the registry holds it, keyed by its name (`id`). */
 export interface RegisteredCommandEntry extends CommandContribution {
   id: string;
@@ -143,6 +147,9 @@ export interface RegistryState {
   /** Keyed by contribution id. Window-style pop-ups (api.registerWindow).
    *  Needs Safelight 3.2.6. */
   windows: Record<string, RegisteredWindow>;
+  /** Keyed by contribution id. Sections in the Layout menu
+   *  (api.registerLayoutMenu). Needs Safelight 3.2.6. */
+  layoutMenus: Record<string, RegisteredLayoutMenu>;
 }
 
 /** A stage uniform another extension contributed, as api.params lists it. */

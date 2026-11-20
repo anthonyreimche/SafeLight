@@ -6,9 +6,12 @@
 // Layout menu: switch the whole dock between registered layout presets
 // (built-in "Classic" plus any extension-provided arrangements) and "Custom",
 // the user's own saved per-module arrangement. Editing the dock while a
-// preset is active automatically flips back to Custom.
+// preset is active automatically flips back to Custom. Extensions add sections
+// below the layouts (registerLayoutMenu); one may take over the saved list.
 
-import { useRegistry } from "@/extensions/registry";
+import { useLayoutMenus, useRegistry } from "@/extensions/registry";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { boundaryKey } from "@/extensions/guard";
 import {
   CUSTOM_LAYOUT,
   applyDockLayout,
@@ -22,6 +25,8 @@ export function LayoutMenu() {
   const layouts = useRegistry((s) => s.layouts);
   const userLayouts = useUserLayouts((s) => s.layouts);
   const activeId = useLayoutStore((s) => s.activeId);
+  const sections = useLayoutMenus();
+  const showSaved = !sections.some((m) => m.replacesSavedLayouts);
 
   const layoutList = Object.values(layouts).sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -41,7 +46,7 @@ export function LayoutMenu() {
           >
             Custom
           </MenuItem>
-          {userList.map((l) => (
+          {showSaved && userList.map((l) => (
             <MenuItem
               key={l.id}
               checked={activeId === l.id}
@@ -63,17 +68,27 @@ export function LayoutMenu() {
               {l.name}
             </MenuItem>
           ))}
-          <div className="my-1 border-t border-border-subtle" />
-          <MenuItem
-            checked={false}
-            title="Add, rename or delete layouts in Preferences"
-            onClick={() => {
-              close();
-              openPreferences("Interface");
-            }}
-          >
-            Manage layouts…
-          </MenuItem>
+          {sections.map(({ id, component: Section }) => (
+            <ErrorBoundary key={boundaryKey(id, Section)} what={`Layout menu "${id}"`} className="px-3 text-[11px] text-danger">
+              <div className="my-1 border-t border-border-subtle" />
+              <Section close={close} />
+            </ErrorBoundary>
+          ))}
+          {showSaved && (
+            <>
+              <div className="my-1 border-t border-border-subtle" />
+              <MenuItem
+                checked={false}
+                title="Add, rename or delete layouts in Preferences"
+                onClick={() => {
+                  close();
+                  openPreferences("Interface");
+                }}
+              >
+                Manage layouts…
+              </MenuItem>
+            </>
+          )}
         </>
       )}
     </TopBarMenu>

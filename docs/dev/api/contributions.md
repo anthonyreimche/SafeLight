@@ -360,7 +360,7 @@ interface KeyActionContribution {
 }
 ```
 
-The action shows in **Preferences ▸ Shortcuts** and users can rebind it. `api.keybindings.getBinding(id)` returns the current combo (`""` when unbound). `api.keybindings.list()` returns every built-in action with its live combo, so you can avoid clashes. Combo format: [Subsystems → Keybindings](subsystems.md#keybindings).
+The action shows in **Preferences ▸ Shortcuts** and users can rebind it. `api.unregisterKeybinding(id)` removes one of your own, such as the shortcut of an item the person deleted (Safelight 3.2.6); their rebind is kept, so registering it again brings it back. `<api.components.ShortcutField actionId={id} />` lets the person bind one of yours from your own UI, with the recorder Preferences ▸ Shortcuts uses (Safelight 3.2.6). `api.keybindings.getBinding(id)` returns the current combo (`""` when unbound). `api.keybindings.list()` returns every built-in action with its live combo, so you can avoid clashes. Combo format: [Subsystems → Keybindings](subsystems.md#keybindings).
 
 ## `SettingsContribution`
 

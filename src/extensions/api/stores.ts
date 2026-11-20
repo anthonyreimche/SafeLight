@@ -552,3 +552,11 @@ export interface ProjectState {
 export interface ActiveIdState {
   activeId: string;
 }
+
+/** The active layout. */
+export interface LayoutState extends ActiveIdState {
+  /** While Custom is picked because the dock was edited under another layout,
+   *  that layout's id ("RAW" edited reads as Custom, edited from "RAW");
+   *  otherwise undefined. Needs Safelight 3.2.6. */
+  editedFrom?: string;
+}

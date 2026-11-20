@@ -10,6 +10,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { SafelightAPI } from "./types";
 import {
   collectPresetStages,
@@ -42,6 +43,8 @@ import {
   registerTheme,
   registerTopBarButton,
   registerWindow,
+  registerLayoutMenu,
+  unregisterLayoutMenu,
   unregisterPanel,
   unregisterTopBarButton,
   unregisterWindow,
@@ -80,11 +83,18 @@ import {
   initKeybindings,
   listBindings,
   registerExtensionAction,
+  unregisterExtensionAction,
   useKeybindings,
 } from "@/state/keybindings-store";
 import {
   applyDockLayout,
+  captureModuleLayout,
+  deleteUserLayout,
   initDockLayouts,
+  moduleShowsLayout,
+  saveUserLayout,
+  showModuleLayout,
+  useUserLayouts,
   toggleDockPanel,
   useDockPlacement,
   useDockStore,
@@ -225,6 +235,8 @@ import { autoAdjust } from "@/hooks/use-auto-adjust";
 import { PickerIcon } from "@/ui/components/PickerIcon";
 import { AutoButton } from "@/ui/components/AutoButton";
 import { ThumbnailBadge } from "@/ui/components/ThumbnailBadge";
+import { ShortcutField } from "@/ui/components/ShortcutField";
+import { LayoutExtensionsEditor } from "@/ui/components/LayoutExtensionsEditor";
 import { Slot } from "./Slot";
 import { useActivePhoto } from "@/state/use-active-photo";
 import { photoDisplayName } from "@/catalog/copy-name";
@@ -369,6 +381,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       await prepareStageVariant(plain, variant);
     },
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
+    unregisterKeybinding: (id) => unregisterExtensionAction(extensionId, id),
+    registerLayoutMenu: (c) => registerLayoutMenu(extensionId, c),
+    unregisterLayoutMenu: (id) => unregisterLayoutMenu(extensionId, id),
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
     registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
@@ -429,6 +444,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       PickerIcon,
       AutoButton,
       ThumbnailBadge,
+      ShortcutField,
+      LayoutExtensionsEditor,
     },
     ui: {
       ...uiKit,
@@ -470,7 +487,23 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       isPanelOpen: (id) => useDockStore.getState().open.includes(id),
     },
     themes: { apply: applyTheme },
-    layouts: { apply: applyDockLayout },
+    layouts: {
+      apply: applyDockLayout,
+      capture: captureModuleLayout,
+      shows: moduleShowsLayout,
+      show: showModuleLayout,
+      saved: {
+        list: () => Object.values(useUserLayouts.getState().layouts),
+        use: () => useUserLayouts(useShallow((s) => Object.values(s.layouts))),
+        save: saveUserLayout,
+        remove: deleteUserLayout,
+        onChange: trackSubscription(extensionId, (listener: () => void) =>
+          useUserLayouts.subscribe((s, prev) => {
+            if (s.layouts !== prev.layouts) listener();
+          }),
+        ),
+      },
+    },
     pipelines: { apply: applyPipeline, effectiveId: effectivePipelineId, paramKeys: transformParamKeys },
     preferences: {
       open: openPreferences,

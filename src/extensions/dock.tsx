@@ -35,6 +35,10 @@ export {
   recordActiveLayoutExtension,
   renameUserLayout,
   deleteUserLayout,
+  captureModuleLayout,
+  moduleShowsLayout,
+  showModuleLayout,
+  saveUserLayout,
 } from "./dock/layouts";
 export type { UserLayout } from "./dock/layouts";
 export {

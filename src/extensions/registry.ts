@@ -35,6 +35,7 @@ import type {
   ThumbnailBadgeContribution,
   TopBarButtonContribution,
   WindowContribution,
+  LayoutMenuContribution,
 } from "./types";
 import {
   getAllDescriptors,
@@ -134,6 +135,9 @@ export interface RegisteredTopBarButton extends TopBarButtonContribution {
 export interface RegisteredWindow extends WindowContribution {
   extensionId: string;
 }
+export interface RegisteredLayoutMenu extends LayoutMenuContribution {
+  extensionId: string;
+}
 /** A console command as the registry holds it, keyed by its name (`id`). */
 export interface RegisteredCommandEntry extends CommandContribution {
   id: string;
@@ -184,6 +188,8 @@ export interface RegistryState {
   topBarButtons: Record<string, RegisteredTopBarButton>;
   /** Keyed by contribution id. Window-style pop-ups (api.registerWindow). */
   windows: Record<string, RegisteredWindow>;
+  /** Keyed by contribution id. Sections in the Layout menu. */
+  layoutMenus: Record<string, RegisteredLayoutMenu>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -209,6 +215,7 @@ export const useRegistry = create<RegistryState>(() => ({
   commands: {},
   topBarButtons: {},
   windows: {},
+  layoutMenus: {},
 }));
 
 /** What each id-keyed registry map holds, before the registry stamps the
@@ -235,6 +242,7 @@ interface ContributionOf {
   commands: CommandContribution & { id: string };
   topBarButtons: TopBarButtonContribution;
   windows: WindowContribution;
+  layoutMenus: LayoutMenuContribution;
 }
 
 type IdKind = keyof ContributionOf;
@@ -514,6 +522,17 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
       const problem = windowProblem(c);
       if (problem) {
         console.warn(`[extensions] ${extensionId}: ${problem}; registerWindow ignored`);
+        return null;
+      }
+      return claim() ? c : null;
+    },
+  },
+  layoutMenus: {
+    call: "registerLayoutMenu",
+    vet: (extensionId, c, claim) => {
+      const component: unknown = c.component;
+      if (typeof component !== "function" && (typeof component !== "object" || component === null)) {
+        console.warn(`[extensions] ${extensionId}: layout menu "${c.id}" has no component; registerLayoutMenu ignored`);
         return null;
       }
       return claim() ? c : null;
@@ -869,6 +888,19 @@ export function unregisterTopBarButton(extensionId: string, id: string): void {
 /** Reactive, order-sorted list of the extension buttons in the top bar. */
 export function useTopBarButtons(): RegisteredTopBarButton[] {
   return useRegistry(useShallow((s) => Object.values(s.topBarButtons).sort(byOrder)));
+}
+
+export function registerLayoutMenu(extensionId: string, c: LayoutMenuContribution): void {
+  registerKind("layoutMenus", extensionId, c);
+}
+
+export function unregisterLayoutMenu(extensionId: string, id: string): void {
+  unregisterOwn("layoutMenus", "unregisterLayoutMenu", extensionId, id);
+}
+
+/** Reactive, order-sorted list of the Layout menu's extension sections. */
+export function useLayoutMenus(): RegisteredLayoutMenu[] {
+  return useRegistry(useShallow((s) => Object.values(s.layoutMenus).sort(byOrder)));
 }
 
 export function registerWindow(extensionId: string, c: WindowContribution): void {
