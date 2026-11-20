@@ -14,6 +14,7 @@ Where extension UI mounts in the app shell. For what goes inside, see [UI Compon
 | Top-bar button | `registerTopBarButton` | An icon in the main window's top bar |
 | Window | `registerWindow` | A pop-up over the app, like the Extensions window |
 | Layout | `registerLayout` | The Layout menu |
+| Layout menu section | `registerLayoutMenu` | The Layout menu, below the layouts |
 
 ## Modules
 
@@ -224,7 +225,7 @@ Registering a window doesn't show it. Open it with `api.windows`:
 
 One extension window is open at a time. These calls take your own windows only: another extension's id, or one nobody registered, is refused with a warning.
 
-Your component fills the window below the titlebar, at 960 × 640 or the whole app window when maximized, and manages its own padding and scrolling. Make its root a flex column (`flex min-h-0 flex-1 flex-col`) and give the part that scrolls `min-h-0 flex-1 overflow-y-auto`; content that simply runs long scrolls as a whole. A throw while it renders shows a crash notice inside the window instead of taking the app down.
+Your component fills the window below the titlebar, at 960 × 640, or the app below its top bar when maximized, and manages its own padding and scrolling. Make its root a flex column (`flex min-h-0 flex-1 flex-col`) and give the part that scrolls `min-h-0 flex-1 overflow-y-auto`; content that simply runs long scrolls as a whole. A throw while it renders shows a crash notice inside the window instead of taking the app down.
 
 With `maximizable`, a Maximize button sits beside the close button and a titlebar double-click toggles it. Each window remembers whether it was maximized until Safelight restarts.
 
@@ -251,3 +252,38 @@ interface ModuleLayoutDef {
 ```
 
 A module missing from `modules` uses its `defaultLayout`, else each panel's `defaultDock`. The built-in **Classic** layout has no `modules`, so extension panels join it.
+
+### Managing layouts (`api.layouts`)
+
+A layout manager, such as **Advanced Layouts**, works with the dock through `api.layouts` (Safelight 3.2.6 for everything but `apply`):
+
+```typescript
+api.layouts.apply(id);              // a registered layout, a saved one ("user.…") or "custom"
+api.layouts.capture(module?);       // ModuleLayoutDef | null
+api.layouts.shows(def);             // does the current module show def?
+api.layouts.show(def);              // show def in the current module
+api.layouts.saved.list();           // SavedLayout[]: the person's saved layouts
+api.layouts.saved.use();            // the same, as a React hook
+api.layouts.saved.save({ id?, name, modules }); // create or replace; returns the id
+api.layouts.saved.remove(id);
+api.layouts.saved.onChange(listener); // returns the unsubscribe
+```
+
+- `capture` reads the current module's arrangement as the dock shows it, or another module's as this window would load it. `show` and `shows` act on the current module only. A popped-out module keeps its own arrangement, so act from the window that shows it.
+- `shows` compares as loading `def` would show it: replaced panels are swapped, and sizes may differ by a pixel.
+- `show` under a saved layout makes `def` that layout's arrangement for the module, and the layout stays picked. Under Custom or a registered layout it is shown as Custom's, as an edit in the dock would be.
+- `saved.save` replaces a saved layout's name and all its arrangements, and keeps its extension ticks. It never takes ticks from you: which extensions a layout switches is the person's to set. Show them the control for it with `<api.components.LayoutExtensionsEditor layoutId={id} />`, the list Preferences ▸ Interface shows under the layout's Extensions button.
+- An edit in the dock under a layout picks Custom. `useLayoutStore`'s `editedFrom` then holds the layout it was edited from, until another layout is picked, so a manager can show "RAW *" rather than Custom.
+
+### Layout menu sections (`registerLayoutMenu`)
+
+```typescript
+interface LayoutMenuContribution {
+  id: string;
+  component: ComponentType<{ close: () => void }>; // call close() once an item is chosen
+  replacesSavedLayouts?: boolean; // leave out the menu's saved layouts and "Manage layouts…"
+  order?: number;                 // among sections, lower = higher (default 100)
+}
+```
+
+The section draws below the layouts. With `replacesSavedLayouts`, the menu leaves out its own list of saved layouts and its **Manage layouts…** item, for a section that lists and manages them itself; **Custom** and the registered layouts stay, and the saved list comes back when the extension stops. Style its items with the menu's own classes, which core's Tailwind build has: see Advanced Layouts' `LayoutMenu.tsx`. Remove a section with `unregisterLayoutMenu(id)`.

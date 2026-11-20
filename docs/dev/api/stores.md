@@ -24,7 +24,7 @@ useSettings       // app preferences (read-only)
 usePresetsStore   // presets list
 useKeybindings    // rebindable actions
 useThemeStore     // active theme
-useLayoutStore    // dock layouts
+useLayoutStore    // dock layouts: activeId, and editedFrom while Custom holds an edit of another layout
 usePipelineStore  // default display transform
 create            // zustand's create, for your own store
 ```
@@ -123,7 +123,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge`, `decoderOrder` (3.2.6: each format's decoder ids in the order they're tried) |
 | Develop | `developMaxEdge`, `developDynamicDetail`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
 | Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportIfExists` (`"number"` or `"replace"`), `exportPresets` |
-| Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
+| Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `preferencesMaximized` (3.2.6), `checkForUpdates`, `updateChannel` |
 
 ## Masks (the develop store's mask edits)
 

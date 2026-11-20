@@ -235,6 +235,23 @@ export function unregisterExtensionActions(extensionId: string): void {
   });
 }
 
+/** Remove action `id` if `extensionId` registered it; another extension's is
+ *  refused with a warning naming both. A rebind of it is kept, so registering
+ *  it again brings the person's combo back. */
+export function unregisterExtensionAction(extensionId: string, id: string): void {
+  const holder = useExtensionActions.getState().actions.get(id)?.extensionId;
+  if (holder === undefined) return;
+  if (holder !== extensionId) {
+    console.warn(`[extensions] ${extensionId}: "${id}" is registered by ${holder}; unregisterKeybinding ignored`);
+    return;
+  }
+  useExtensionActions.setState((s) => {
+    const next = new Map(s.actions);
+    next.delete(id);
+    return { actions: next };
+  });
+}
+
 /** Match the first extension action whose (possibly rebound) combo matches. */
 export function matchExtensionAction(e: KeyboardEvent): ExtensionActionEntry | null {
   const { overrides } = useKeybindings.getState();

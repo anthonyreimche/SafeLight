@@ -155,7 +155,7 @@ When you update the file, set `minAppVersion` to the oldest Safelight that has e
 }
 ```
 
-`id`, `name`, `version` and `main` are required. The rest is optional: `description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `worksWith`, `license`, `minAppVersion`, `permissions`, `commands`.
+`id`, `name`, `version` and `main` are required. The rest is optional: `description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `worksWith`, `license`, `minAppVersion`, `permissions`, `commands`, `supersedes`, `deprecated`.
 
 - **`id`** names the extension and its install folder. It starts with a letter or digit and holds only letters, digits, `.`, `_` and `-`. `core` and anything under `core.`, in any letter case, is reserved for built-ins and refused (`corel` or `my.core` are fine). Pick one that is yours alone, such as `com.example.histogram-pro`.
 - **`minAppVersion`** is the oldest Safelight the extension works on. Set it whenever you use an API added in a specific release. Installs and updates on an older build are refused before any files are written, and the installed version keeps running. A newer version that needs a newer Safelight is shown as needing it and never auto-installed. Versions compare as `major.minor.patch` (a `v` prefix is fine).
@@ -165,6 +165,7 @@ When you update the file, set `minAppVersion` to the oldest Safelight that has e
 - **`permissions.programs`** (3.2.6), `true` for an extension that runs one native program the person picks, such as the `gmic` command-line program. The person allows each program in a dialogue that names your extension and the full path, through [`api.programs`](../api/stores.md#apiprograms-326), and can forget it on your extension's page in the Extensions window.
 - **`permissions.commands`** (3.2.6), `true` for an extension that runs other extensions' console commands through [`api.commands.run`](../api/stores.md#apicommands-326), as the Terminal does. Without it `run` rejects. Registering your own commands needs nothing.
 - **`commands`** (3.2.6) declares the console commands your extension registers that the `safelight` command offers: a list of `{ "name", "summary", "usage": [...], "examples"?, "subcommands"? }`. The CLI reads it without starting your extension, for its help, completion and verbs. See [`api.commands`](../api/stores.md#apicommands-326).
+- **`supersedes`** (3.2.6) and **`deprecated`** retire an extension in favour of another; see [Replacing an extension](#replacing-an-extension).
 - An update that installs but fails to start is rolled back, and auto-update won't retry it until you publish a newer version.
 
 ### Store listing
@@ -188,6 +189,33 @@ Tag the GitHub repo with the `safelight-extension` topic so it appears in the in
 - `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories. The store shows the first one present as a badge (Module, Processing, Panel).
 - The store also searches `keywords`. The category list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json).
 - `screenshots` (at most 6, https URLs or repo paths) show on your store page. `worksWith` (at most 6 `"owner/repo"`) lists extensions yours pairs with. Yours appears on theirs when it is verified.
+
+### Replacing an extension
+
+When a new extension takes over from an old one, people who have both end up with two sets of settings that disagree. Two fields stop that: `supersedes` in the new extension, and `deprecated` in the old one.
+
+**`supersedes`** (3.2.6), in the new extension's `safelight.json`, lists the ids of the extensions it replaces:
+
+```json
+"supersedes": ["safelight-border", "safelight-print-mat"]
+```
+
+- While the new extension is installed and on, Safelight turns each listed one off if it is installed and on. It isn't uninstalled, so its files and settings stay, and the person can turn it back on.
+- The top bar says so: "Border was disabled — replaced by Framing / Border."
+- This happens once for each id. One the person turns back on stays on, and so does one installed after yours.
+- At most 16 ids. Ids under `core` or `safelight` are ignored, unless yours is an official extension.
+
+**`deprecated`**, in the old extension's `safelight.json` on its default branch, marks it discontinued in the store:
+
+```json
+"deprecated": { "replacedBy": "OPGERUIMD97/safelight-mat-frame", "message": "Use Framing / Border" }
+```
+
+- The registry reads it when it rebuilds (every hour), so people who already have the old extension see it without updating it. Keep the `safelight-extension` topic on the old repo, or the registry stops listing it.
+- The Extensions window shows a Discontinued bar on the old extension, with your message (at most 140 characters), Install replacement and Uninstall. Without a `message` the bar says it is no longer maintained.
+- Browse no longer offers it. A search still finds it, listed last.
+- `"deprecated": true` marks it with no replacement or message.
+- Without editing the old repository, fill in the registry's **Replace an extension** or **Discontinue an extension** form instead ([Registry requests](publishing.md#registry-requests)). The registry's mark wins over the manifest's.
 
 ### The entry bundle
 

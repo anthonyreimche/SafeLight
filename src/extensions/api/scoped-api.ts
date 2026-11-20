@@ -13,6 +13,10 @@ import type {
   GridMenuItemContribution,
   KeyActionContribution,
   LayoutContribution,
+  LayoutMenuContribution,
+  ModuleLayoutDef,
+  SavedLayout,
+  SavedLayoutInput,
   LibrarySortContribution,
   ModuleContribution,
   ModuleId,
@@ -98,6 +102,7 @@ import type {
 } from "./registry";
 import type {
   ActiveIdState,
+  LayoutState,
   AppSettings,
   AppStore,
   CatalogState,
@@ -190,6 +195,17 @@ export interface SafelightAPI {
   prepareStageTextureVariant(stageId: string, key: string, variant: string): Promise<void>;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
+  /** Remove a shortcut this extension registered (by id), such as one for an
+   *  item the person deleted. Their rebind of it is kept, so registering it
+   *  again brings it back. Another extension's id is refused with a warning.
+   *  Needs Safelight 3.2.6. */
+  unregisterKeybinding(id: string): void;
+  /** Add a section to the top bar's Layout menu, below the layouts.
+   *  Re-registering the same id replaces it. Needs Safelight 3.2.6. */
+  registerLayoutMenu(c: LayoutMenuContribution): void;
+  /** Remove a Layout menu section this extension registered (by id). Another
+   *  extension's id is refused with a warning. Needs Safelight 3.2.6. */
+  unregisterLayoutMenu(id: string): void;
   /** Declare a settings dialogue (⚙ in the Extensions panel). */
   registerSettings(c: SettingsContribution): void;
   /** Register a post-export image processor. Processors run in registration
@@ -331,6 +347,16 @@ export interface SafelightAPI {
     /** The small marker core draws on thumbnails (edited, the file type), for a badge
      *  registered with registerThumbnailBadge. `title` is its tooltip. */
     ThumbnailBadge: typeof import("@/ui/components/ThumbnailBadge").ThumbnailBadge;
+    /** The shortcut of one action, as Preferences ▸ Shortcuts shows it: click,
+     *  then press the new keys; Esc or a click elsewhere cancels, ↺ puts back
+     *  the default. For an action you registered with registerKeybinding (or a
+     *  built-in one). Needs Safelight 3.2.6. */
+    ShortcutField: typeof import("@/ui/components/ShortcutField").ShortcutField;
+    /** The extensions a saved layout switches, as Preferences ▸ Interface
+     *  shows them under its Extensions button: whether picking the layout
+     *  switches extensions, and a tick for each. The person sets them here;
+     *  api.layouts.saved.save never does. Needs Safelight 3.2.6. */
+    LayoutExtensionsEditor: typeof import("@/ui/components/LayoutExtensionsEditor").LayoutExtensionsEditor;
   };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
@@ -369,7 +395,7 @@ export interface SafelightAPI {
     usePresetsStore: typeof import("@/state/presets-store").usePresetsStore;
     useKeybindings: typeof import("@/state/keybindings-store").useKeybindings;
     useThemeStore: AppStore<ActiveIdState>;
-    useLayoutStore: AppStore<ActiveIdState>;
+    useLayoutStore: AppStore<LayoutState>;
     usePipelineStore: AppStore<ActiveIdState>;
     /** The open project: its name, folder tree and the project picker. */
     useProjectStore: AppStore<ProjectState>;
@@ -416,7 +442,41 @@ export interface SafelightAPI {
     isPanelOpen(id: string): boolean;
   };
   themes: { apply(id: string): void };
-  layouts: { apply(id: string): void };
+  /** The dock's layouts. `apply` picks a registered layout, a saved one
+   *  ("user.…") or "custom", switching a saved layout's extensions when it
+   *  does. The rest needs Safelight 3.2.6 and acts on the calling window's own
+   *  module: a popped-out module keeps its own arrangement. */
+  layouts: {
+    apply(id: string): void;
+    /** A module's arrangement, as a layout holds it: the current module's
+     *  (the default) as the dock shows it, another's as this window would load
+     *  it. Null before the dock has a module, and for a module that isn't
+     *  registered. */
+    capture(module?: ModuleId): ModuleLayoutDef | null;
+    /** Whether the current module shows `def`, as loading it would show it
+     *  (replaced panels swapped), to a pixel either way. */
+    shows(def: ModuleLayoutDef): boolean;
+    /** Show `def` in the current module. Under a saved layout it becomes that
+     *  layout's arrangement for the module and the layout stays picked; under
+     *  Custom or a registered layout it is shown as Custom's, as a dock edit
+     *  would be. */
+    show(def: ModuleLayoutDef): void;
+    /** The person's saved layouts, which the Layout menu lists. */
+    saved: {
+      list(): SavedLayout[];
+      /** React hook: list(), drawing again when they change (in any window). */
+      use(): SavedLayout[];
+      /** Create one (no `id`), or replace the name and arrangements of one,
+       *  keeping its extension ticks. Returns its id; throws for an id that
+       *  isn't a saved layout's. One that is showing shows the change. */
+      save(input: SavedLayoutInput): string;
+      /** Delete one. When it is showing, Custom is picked. */
+      remove(id: string): void;
+      /** Calls `listener` whenever they change, in this window or another;
+       *  returns the unsubscribe. Dropped when the extension stops. */
+      onChange(listener: () => void): () => void;
+    };
+  };
   /** Display transforms. `apply` sets the Preferences default, which photos
    *  without their own pick follow; `effectiveId` is the transform a photo's
    *  `displayTransform` renders with (its pick while installed, else the

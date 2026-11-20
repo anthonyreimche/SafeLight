@@ -29,7 +29,7 @@ describe("text on accent fills", () => {
     "../../modules/welcome/WelcomeView.tsx",
     "../../modules/welcome/setup/SetupParts.tsx",
     "../preferences/fields.tsx",
-    "../preferences/sections/Shortcuts.tsx",
+    "./ShortcutField.tsx",
     "../preferences/sections/LayoutField.tsx",
     "../preferences/sections/Updates.tsx",
     "../../update/UpdateBanner.tsx",

@@ -942,6 +942,36 @@ describe("ExtensionManagerPanel callback failures", () => {
   });
 });
 
+describe("ExtensionManagerPanel Installed order", () => {
+  const manifest = (id: string, name: string): ExtensionManifest => ({ id, name, version: "1.0.0", main: "index.js" });
+
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [
+          manifest("acme.zones", "Zones"),
+          manifest("acme.aperture", "aperture"),
+          manifest("acme.grain", "Grain"),
+        ],
+      },
+    });
+  });
+
+  it("lists installed extensions by name, ignoring case", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    await screen.findByRole("button", { name: /Zones v1\.0\.0/ });
+
+    const rows = screen.getAllByRole("button", { name: /(Zones|aperture|Grain) v1\.0\.0/ });
+    expect(rows.map((b) => /Zones|aperture|Grain/.exec(b.textContent ?? "")?.[0])).toEqual([
+      "aperture",
+      "Grain",
+      "Zones",
+    ]);
+  });
+});
+
 // An extension whose activate threw or timed out is named on its row, with why.
 describe("ExtensionManagerPanel start failures", () => {
   const installed = {
@@ -1188,5 +1218,123 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     within(ask).getByText("20 photos use Grain. They'll render and export without it until it's installed again.");
     expect(peak).toBeLessThanOrEqual(8);
     await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  });
+});
+
+// An extension the registry marks discontinued says so wherever it is shown
+// installed, offers its replacement, and drops out of what Browse offers.
+describe("ExtensionManagerPanel discontinued extensions", () => {
+  const r = (fullName: string, over: Partial<ExtensionSearchResult> = {}): ExtensionSearchResult => ({
+    fullName,
+    description: null,
+    stars: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    source: "registry",
+    ...over,
+  });
+  const FRAME_REPO = "opg/safelight-mat-frame";
+  const catalog = [
+    r("opg/safelight-border", {
+      name: "Old Border",
+      stars: 9,
+      deprecated: { replacedBy: FRAME_REPO, message: "Use Framing / Border" },
+    }),
+    r(FRAME_REPO, { name: "Framing / Border", stars: 2 }),
+  ];
+  const borderManifest = { id: "opg.border", name: "Old Border", version: "1.0.0", main: "index.js" };
+  const frameManifest = { id: "opg.frame", name: "Framing / Border", version: "2.1.0", main: "index.js" };
+  let installed: (typeof borderManifest)[];
+
+  beforeEach(() => {
+    useExtStoreUI.setState({
+      browse: "home",
+      railExpanded: false,
+      vocabulary: FALLBACK_VOCABULARY,
+      view: "list",
+      selected: null,
+      kit: null,
+      kits: null,
+    });
+    localStorage.setItem(RISK_ACK_KEY, "1");
+    localStorage.setItem(
+      "sl_ext_sources",
+      JSON.stringify({ "opg.border": "opg/safelight-border", "opg.frame": FRAME_REPO }),
+    );
+    installed = [borderManifest];
+    installBridge.mockResolvedValue(frameManifest);
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => installed,
+        search: async (q: string) =>
+          q ? catalog.filter((x) => x.fullName.includes(q) || x.name?.includes(q)) : catalog,
+        vocabulary: async () => FALLBACK_VOCABULARY,
+      },
+    });
+  });
+
+  const openInstalled = async (user: ReturnType<typeof userEvent.setup>) => {
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+  };
+
+  it("marks an installed one Discontinued with its message, Install replacement and one Uninstall", async () => {
+    const user = userEvent.setup();
+    await openInstalled(user);
+    const bar = await screen.findByRole("note", { name: "Discontinued" });
+    within(bar).getByText("Use Framing / Border");
+    within(bar).getByRole("button", { name: "Install replacement" });
+    within(bar).getByRole("button", { name: "Uninstall" });
+    expect(screen.getAllByRole("button", { name: "Uninstall" })).toHaveLength(1);
+  });
+
+  it("installs the replacement from the bar", async () => {
+    const user = userEvent.setup();
+    await openInstalled(user);
+    const bar = await screen.findByRole("note", { name: "Discontinued" });
+    await user.click(within(bar).getByRole("button", { name: "Install replacement" }));
+    const unreviewed = await screen.findByRole("dialog");
+    await user.click(within(unreviewed).getByRole("button", { name: "Install anyway" }));
+    await waitFor(() => expect(installBridge).toHaveBeenCalledWith(FRAME_REPO));
+  });
+
+  it("names the replacement instead of offering it once it is installed", async () => {
+    installed = [borderManifest, frameManifest];
+    const user = userEvent.setup();
+    await openInstalled(user);
+    const bar = await screen.findByRole("note", { name: "Discontinued" });
+    within(bar).getByText(/Replaced by Framing \/ Border/);
+    expect(within(bar).queryByRole("button", { name: "Install replacement" })).toBeNull();
+  });
+
+  it("shows the bar on the extension's own page", async () => {
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await screen.findByRole("note", { name: "Discontinued" });
+    await user.click(screen.getByText("Old Border"));
+    screen.getByRole("button", { name: "← Back" });
+    const bar = screen.getByRole("note", { name: "Discontinued" });
+    within(bar).getByRole("button", { name: "Install replacement" });
+    expect(screen.getAllByRole("button", { name: "Uninstall" })).toHaveLength(1);
+  });
+
+  it("keeps a discontinued extension off the Browse home page", async () => {
+    installed = [];
+    mountStore();
+    await screen.findAllByText("Framing / Border");
+    expect(screen.queryByText("Old Border")).toBeNull();
+  });
+
+  it("lists a discontinued extension last in search results, whatever the sort", async () => {
+    installed = [];
+    const user = userEvent.setup();
+    mountStore();
+    await screen.findAllByText("Framing / Border");
+    await user.type(screen.getByLabelText("Search official extensions"), "opg");
+    await screen.findByText("Old Border");
+    const names = screen
+      .getAllByText(/^(Old Border|Framing \/ Border)$/)
+      .map((el) => el.textContent);
+    expect(names).toEqual(["Framing / Border", "Old Border"]);
   });
 });

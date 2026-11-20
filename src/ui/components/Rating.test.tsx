@@ -34,4 +34,24 @@ describe("Rating", () => {
 
     expect(onChange).toHaveBeenCalledWith(0);
   });
+
+  // A strip that leaves out onRatingChange (Filmstrip with "Rate from
+  // thumbnails" off) must still select when its stars are clicked. Disabled
+  // buttons swallow the click in Chromium, so display-only stars are no buttons.
+  it("without onChange, shows the stars and lets the click reach the tile", () => {
+    const onTile = vi.fn();
+    render(
+      <div onClick={onTile}>
+        <Rating value={3} />
+      </div>,
+    );
+
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    const stars = screen.getByRole("img", { name: "Rating: 3 of 5 stars" });
+    expect(stars.textContent).toBe("★★★☆☆");
+
+    fireEvent.click(stars);
+
+    expect(onTile).toHaveBeenCalledOnce();
+  });
 });

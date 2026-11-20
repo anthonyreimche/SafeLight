@@ -23,6 +23,7 @@ import {
   resetShortcutHoldsForTests,
   shortcutsSuspended,
   suspendShortcuts,
+  unregisterExtensionAction,
   unregisterExtensionActions,
   useExtensionActions,
   useKeybindings,
@@ -437,6 +438,22 @@ describe("extension actions", () => {
     });
     unregisterExtensionActions("ext.a");
     expect([...useExtensionActions.getState().actions.keys()]).toEqual(["ext.b.run"]);
+  });
+
+  it("unregisters one action of the extension that registered it", () => {
+    registerExtensionAction("ext.a", { id: "ext.a.one", label: "One", defaultCombo: "", handler: noop });
+    registerExtensionAction("ext.a", { id: "ext.a.two", label: "Two", defaultCombo: "", handler: noop });
+    unregisterExtensionAction("ext.a", "ext.a.one");
+    expect([...useExtensionActions.getState().actions.keys()]).toEqual(["ext.a.two"]);
+  });
+
+  it("refuses to unregister another extension's action, naming both", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerExtensionAction("ext.b", { id: "ext.b.run", label: "B", defaultCombo: "", handler: noop });
+    unregisterExtensionAction("ext.a", "ext.b.run");
+    expect([...useExtensionActions.getState().actions.keys()]).toContain("ext.b.run");
+    expect(warn.mock.calls[0][0]).toMatch(/ext\.a.*ext\.b\.run.*ext\.b/);
+    warn.mockRestore();
   });
 
   it("keeps the first extension's action against another extension, and names both", () => {

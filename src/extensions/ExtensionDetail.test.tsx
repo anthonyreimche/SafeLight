@@ -250,6 +250,56 @@ describe("ExtensionDetail Latest", () => {
   });
 });
 
+// A version this build can't install greys out every way to install it.
+describe("ExtensionDetail install blocks", () => {
+  const notInstalled: DetailTarget = { ...target, installed: false, manifest: undefined, id: undefined };
+  const installButton = () => screen.getByRole("button", { name: /^Install/ }) as HTMLButtonElement;
+  const withRemote = (remote: RemoteManifest | null, atTag: RemoteManifest | null = null) => {
+    withReleases([rel("2.1.0"), rel("1.0.0")], atTag);
+    const remoteManifest = vi.fn(async () => remote);
+    vi.stubGlobal("safelightNative", { plugins: { releases: releasesBridge, manifestAt, remoteManifest } });
+    return remoteManifest;
+  };
+
+  it("greys out Install when the registry's latest needs a newer Safelight", () => {
+    mount(null, {
+      ...notInstalled,
+      search: {
+        fullName: "acme/widget",
+        description: null,
+        stars: 0,
+        updatedAt: "",
+        versions: { latest: { version: "2.1.0", from: "release", minAppVersion: "99.0.0" } },
+      },
+    });
+    expect(installButton().disabled).toBe(true);
+    screen.getByText("Needs Safelight 99.0.0 or newer");
+  });
+
+  it("greys out Install when the repo's latest needs a newer Safelight", async () => {
+    const remoteManifest = withRemote({ version: "2.1.0", minAppVersion: "99.0.0" });
+    mount(null, notInstalled);
+    await screen.findByText("Needs Safelight 99.0.0 or newer");
+    expect(installButton().disabled).toBe(true);
+    expect(remoteManifest).toHaveBeenCalledWith("acme/widget");
+  });
+
+  it("leaves Install on when this build runs the latest", async () => {
+    withRemote({ version: "2.1.0", minAppVersion: "1.0.0" });
+    mount(null, notInstalled);
+    await screen.findByRole("combobox", { name: "Version" });
+    expect(installButton().disabled).toBe(false);
+    expect(screen.queryByText(/^Needs Safelight/)).toBeNull();
+  });
+
+  it("offers no switch to a latest release that needs a newer Safelight", async () => {
+    withReleases([rel("1.4.0-beta.1", "", true), rel("1.3.0")], { version: "1.3.0", minAppVersion: "99.0.0" });
+    mount(null, { ...target, manifest: { ...target.manifest!, version: "1.4.0-beta.1" } });
+    await screen.findByText("Needs Safelight 99.0.0 or newer");
+    expect(screen.queryByRole("button", { name: /^Switch to/ })).toBeNull();
+  });
+});
+
 // What the store knows about an extension: its type badge and category chips,
 // screenshots, the extensions it works with, and more from its author and its
 // first category. Lists that offer an install follow "Only verified".
@@ -395,5 +445,54 @@ describe("ExtensionDetail store links", () => {
       />,
     );
     expect(screen.getByAltText("Screenshot 1").getAttribute("src")).toMatch(/acme\/widget.*docs\/shot\.png$/);
+  });
+});
+
+describe("ExtensionDetail for a discontinued extension", () => {
+  const discontinued = {
+    message: "Use Framing / Border",
+    replacement: { repo: "opg/safelight-mat-frame", name: "Framing / Border", installed: false },
+  };
+  const renderWith = (t: DetailTarget, onInstallReplacement = vi.fn(), onUninstall = vi.fn()) => {
+    useExtStoreUI.setState({ updates: {} });
+    render(
+      <ExtensionDetail
+        target={t}
+        busy={null}
+        onInstall={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={onUninstall}
+        onToggle={vi.fn()}
+        onSettings={vi.fn()}
+        onInstallReplacement={onInstallReplacement}
+      />,
+    );
+    return { onInstallReplacement, onUninstall };
+  };
+
+  it("offers the replacement and moves Uninstall into the bar", async () => {
+    const { onInstallReplacement, onUninstall } = renderWith({ ...target, discontinued });
+    const bar = screen.getByRole("note", { name: "Discontinued" });
+    screen.getByText("Use Framing / Border");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Install replacement" }));
+    expect(onInstallReplacement).toHaveBeenCalledWith("opg/safelight-mat-frame");
+    expect(screen.getAllByRole("button", { name: "Uninstall" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    expect(onUninstall).toHaveBeenCalledWith(ID);
+    expect(bar.textContent).toContain("Framing / Border");
+  });
+
+  it("has no Uninstall in the bar when the extension isn't installed", () => {
+    renderWith({ ...target, installed: false, manifest: undefined, discontinued });
+    screen.getByRole("note", { name: "Discontinued" });
+    expect(screen.queryByRole("button", { name: "Uninstall" })).toBeNull();
+  });
+
+  it("says it is no longer maintained when the registry gives no message or replacement", () => {
+    renderWith({ ...target, discontinued: { message: null, replacement: null } });
+    const bar = screen.getByRole("note", { name: "Discontinued" });
+    expect(bar.textContent).toContain("No longer maintained.");
+    expect(screen.queryByRole("button", { name: "Install replacement" })).toBeNull();
   });
 });

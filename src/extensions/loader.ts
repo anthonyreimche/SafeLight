@@ -53,6 +53,7 @@ import {
 import { keptVersion, setKept } from "./pins";
 import { useRunningPlugins } from "./running-plugins";
 import { noteCommandPermission } from "./command-permissions";
+import { followSupersededNotes, noteSuperseded, takeSuperseded } from "./supersedes";
 
 export { useRunningPlugins };
 
@@ -212,12 +213,45 @@ async function applyEnablement(id: string, enabled: boolean): Promise<void> {
   } else {
     const native = window.safelightNative;
     if (!native) return;
-    const manifest = (await native.plugins.list()).find((m) => m.id === id);
+    const installed = await native.plugins.list();
+    const manifest = installed.find((m) => m.id === id);
     if (!manifest) return;
     if (refuseIfBanned(manifest, "blocked")) return;
     await loadPlugin(manifest);
+    await retireSuperseded(manifest, installed);
   }
   applySavedTheme(); // the saved theme may belong to the re-enabled extension
+}
+
+/** Turn off the installed extensions `successor` replaces (its manifest's
+ *  `supersedes`), once per pair, and leave a notice. Runs inside a queued
+ *  change, so it switches them directly rather than queueing behind itself. */
+async function retireSuperseded(
+  successor: ExtensionManifest,
+  installed: readonly ExtensionManifest[],
+): Promise<void> {
+  const retiring = takeSuperseded(successor, installed, isExtensionDisabled);
+  if (retiring.length === 0) return;
+  const ids = retiring.map((m) => m.id);
+  persistDisabled([...useDisabledExtensions.getState().ids.filter((x) => !ids.includes(x)), ...ids]);
+  const kinds = extensionKinds();
+  for (const id of ids) {
+    if (layoutSwitches(id, kinds)) recordLayoutExtension?.(id, false);
+    await applyEnablement(id, false);
+  }
+  noteSuperseded(retiring.map((m) => ({ id: m.id, name: m.name, by: successor.name })));
+}
+
+/** retireSuperseded for every installed extension that is on and may run. */
+async function retireAllSuperseded(installed: readonly ExtensionManifest[]): Promise<void> {
+  for (const m of installed) {
+    if (isExtensionDisabled(m.id) || bannedReasonForManifest(m) || manifestIdRefusal(m)) continue;
+    try {
+      await retireSuperseded(m, installed);
+    } catch (e) {
+      console.error(`[extensions] could not turn off what ${m.id} replaces:`, e);
+    }
+  }
 }
 
 // Changes run one at a time, in the order they were asked for. Starting an
@@ -264,6 +298,7 @@ export async function setExtensionEnabled(
 
 /** Follow enable/disable made in other windows. Call once at boot. */
 export function initEnablement(): void {
+  followSupersededNotes();
   const follow = (id: string, enabled: boolean) =>
     queueEnablement(() => applyEnablement(id, enabled)).catch((e: unknown) => {
       console.warn(
@@ -636,6 +671,8 @@ async function loadExternalPluginsOnce(): Promise<void> {
   }
   if (!list) return;
   useInstalledPlugins.setState({ ids: list.map((m) => m.id) });
+  // Before anything starts, so an extension replaced by another never does.
+  await retireAllSuperseded(list);
   const starting = modulesFirst(list);
   // Bundles import side by side; the extensions still activate one at a time, the
   // two modules and then list order, so what they register lands in the same
@@ -924,7 +961,20 @@ async function swapIn(manifest: ExtensionManifest, enable: boolean): Promise<Ext
   await keepSettled(id);
   applySavedTheme(); // the saved theme may belong to the extension just loaded
   store.setUpdate(id, upToDate(manifest.version));
+  await retireSupersededBy(manifest);
   return manifest;
+}
+
+/** retireSuperseded for an extension just installed or updated, against the
+ *  installed list read now. Never fails the install it follows. */
+async function retireSupersededBy(manifest: ExtensionManifest): Promise<void> {
+  if (!Array.isArray(manifest.supersedes)) return;
+  try {
+    const installed = (await window.safelightNative?.plugins.list()) ?? [];
+    await retireSuperseded(manifest, installed);
+  } catch (e) {
+    console.error(`[extensions] could not turn off what ${manifest.id} replaces:`, e);
+  }
 }
 
 /** Install `spec` from GitHub: its latest release (or its branch when it

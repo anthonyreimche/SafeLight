@@ -17,6 +17,7 @@ import { openExtensions } from "./extensions-dialog-store";
 import { confirmDialog } from "./ConfirmDialog";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { EssentialsNotice } from "./EssentialsNotice";
+import { SupersededNotice } from "./SupersededNotice";
 import { usePluginRunning } from "@/extensions/loader";
 import { DEVTOOLS_EXTENSION_ID } from "@/extensions/official-extensions";
 import { detachDevtools } from "@/extensions/devtools/detach";
@@ -241,6 +242,7 @@ export function TopBar() {
       </div>
       <div className="flex items-center gap-2" style={noDragStyle}>
         <EssentialsNotice />
+        <SupersededNotice />
         {reconnectButton}
       </div>
     </div>

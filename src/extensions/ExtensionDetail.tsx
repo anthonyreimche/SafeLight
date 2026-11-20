@@ -15,6 +15,8 @@ import type { ExtensionManifest, ExtensionSearchResult } from "./types";
 import { useExtStoreUI, loadRepoMeta, loadReadme, loadReleases, updateNote } from "./store-ui";
 import {
   LATEST,
+  appBlock,
+  installBlock,
   latestFull,
   releaseBlock,
   releasesBetween,
@@ -38,6 +40,8 @@ import { AllowedSockets } from "./AllowedSockets";
 import { AllowedPrograms } from "./AllowedPrograms";
 import { openUrl } from "@/update/update-checker";
 import { isNewer } from "@/update/semver";
+import { DiscontinuedBar } from "./DiscontinuedBar";
+import { isDiscontinued, type Discontinued } from "./discontinued";
 
 /** Everything the detail page needs about the selected extension, resolved by
  *  the panel from its installed list / search results / built-ins. */
@@ -58,6 +62,8 @@ export interface DetailTarget {
   hasSettings: boolean;
   /** Search-result fallback (stars/topics before repo metadata loads). */
   search?: ExtensionSearchResult;
+  /** Present when the registry lists the extension as discontinued. */
+  discontinued?: Discontinued | null;
 }
 
 /** The store's loaded results and the panel's handlers, for the detail page's
@@ -83,6 +89,8 @@ interface Props {
   onUninstall: (id: string) => void;
   onToggle: (id: string, enable: boolean) => void;
   onSettings: (id: string) => void;
+  /** Install a discontinued extension's replacement, by "owner/repo". */
+  onInstallReplacement?: (repo: string) => void;
   /** Absent outside the store (and in tests): no chips, Works with or More shelves. */
   related?: RelatedLists;
 }
@@ -125,6 +133,7 @@ export function ExtensionDetail({
   onUninstall,
   onToggle,
   onSettings,
+  onInstallReplacement,
   related,
 }: Props) {
   const { repo } = target;
@@ -192,7 +201,8 @@ export function ExtensionDetail({
     : (target.manifest?.screenshots ?? [])
         .map((s) => resolveUrl(s, "img", repo ?? undefined, branch))
         .filter((u): u is string => !!u);
-  const offerable = (r: ExtensionSearchResult) => !onlyVerified || isVerifiedIn(trust, r.fullName);
+  const offerable = (r: ExtensionSearchResult) =>
+    !isDiscontinued(r) && (!onlyVerified || isVerifiedIn(trust, r.fullName));
   const companions = related && listing ? worksWithOf(listing, related.results).filter(offerable) : [];
   const browsable = related ? related.results.filter((r) => !related.isInstalled(r) && offerable(r)) : [];
   const fromAuthor = related && repo ? moreFromAuthor(browsable, repo, SHELF_LIMIT) : [];
@@ -229,27 +239,32 @@ export function ExtensionDetail({
   const kept = usePins((s) => (id ? (s.pins[id] ?? null) : null));
   const expanded = useContext(StoreExpanded);
 
-  // The version picker: LATEST follows new releases, any other value is a
-  // version to install. A chosen version's manifest is read at its tag first,
-  // so a release this build can't run (or a broken one) is explained, not tried.
-  const [choice, setChoice] = useState(LATEST);
-  useEffect(() => setChoice(LATEST), [repo]);
-  const chosen = choice === LATEST ? null : choice;
-  const [block, setBlock] = useState<{ version: string; note: string | null } | null>(null);
+  // What Install fetches for an extension not yet installed: the registry's
+  // record when the listing carries one, and the repo's latest either way, so
+  // a version this build can't install greys the button out instead of failing.
+  const [latestBlock, setLatestBlock] = useState<{ repo: string; note: string | null } | null>(null);
   useEffect(() => {
-    const manifestAt = window.safelightNative?.plugins?.manifestAt;
-    if (!repo || !chosen || !manifestAt) return;
+    const remoteManifest = window.safelightNative?.plugins?.remoteManifest;
+    if (!repo || target.installed || !remoteManifest) return;
     let alive = true;
-    manifestAt(repo, chosen)
+    remoteManifest(repo)
       .then((m) => {
-        if (alive) setBlock({ version: chosen, note: releaseBlock(chosen, m, __APP_VERSION__) });
+        if (alive) setLatestBlock({ repo, note: appBlock(m?.minAppVersion, __APP_VERSION__) });
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [repo, chosen]);
-  const blockedBy = chosen && block?.version === chosen ? block.note : null;
+  }, [repo, target.installed]);
+  const installBlocked =
+    installBlock(target.search?.versions, __APP_VERSION__) ??
+    (latestBlock?.repo === repo ? latestBlock.note : null);
+
+  // The version picker: LATEST follows new releases, any other value is a
+  // version to install.
+  const [choice, setChoice] = useState(LATEST);
+  useEffect(() => setChoice(LATEST), [repo]);
+  const chosen = choice === LATEST ? null : choice;
   // Latest on an installed extension the update check has nothing to offer
   // (a pre-release past the latest full release, or a kept version whose
   // re-check failed) is a switch to that release; with an update pending, the
@@ -261,6 +276,23 @@ export function ExtensionDetail({
     : target.installed && !pendingUpdate && latest && !sameVersion(latest.version, installedVersion)
       ? latest.version
       : null;
+  // The release a switch installs is read at its tag first, so one this build
+  // can't run (or a broken one) is explained, not tried.
+  const [block, setBlock] = useState<{ repo: string; version: string; note: string | null } | null>(null);
+  useEffect(() => {
+    const manifestAt = window.safelightNative?.plugins?.manifestAt;
+    if (!repo || !switchTo || !manifestAt) return;
+    let alive = true;
+    manifestAt(repo, switchTo)
+      .then((m) => {
+        if (alive) setBlock({ repo, version: switchTo, note: releaseBlock(switchTo, m, __APP_VERSION__) });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [repo, switchTo]);
+  const blockedBy = switchTo && block?.repo === repo && block.version === switchTo ? block.note : null;
 
   // The extension declares a newer SafeLight than this build — warn (the running
   // version comes from the Vite build-time constant).
@@ -432,6 +464,17 @@ export function ExtensionDetail({
         </div>
       </div>
 
+      {target.discontinued && (
+        <div className="border-b border-border-subtle px-3 py-2">
+          <DiscontinuedBar
+            discontinued={target.discontinued}
+            busy={busy !== null}
+            onInstallReplacement={onInstallReplacement}
+            onUninstall={target.installed && id && !target.locked ? () => onUninstall(id) : undefined}
+          />
+        </div>
+      )}
+
       {/* Action bar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
         {!target.installed && repo && banned && (
@@ -443,16 +486,20 @@ export function ExtensionDetail({
             Blocked by the Safelight registry — {banned}
           </span>
         )}
+        {!target.installed && repo && !banned && !chosen && installBlocked && (
+          <span className="text-[11px] text-text-muted">{installBlocked}</span>
+        )}
         {!target.installed && repo && !banned && !chosen && (
           <button
-            disabled={busy !== null || pending.has(repo)}
+            disabled={busy !== null || pending.has(repo) || installBlocked !== null}
             onClick={() => onInstall(repo)}
             title={
-              vstatus === "verified"
+              installBlocked ??
+              (vstatus === "verified"
                 ? "A maintainer code-reviewed this at a point in time — not a guarantee of safety. Runs with full access to your photos, metadata and files."
                 : vstatus === "stale"
                   ? "The verified review covered an earlier version; this version is newer and has not been reviewed. Runs with full access — install at your own risk."
-                  : "Not reviewed — third-party code that runs with full access to your photos, metadata and files. Install at your own risk."
+                  : "Not reviewed — third-party code that runs with full access to your photos, metadata and files. Install at your own risk.")
             }
             className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-40"
           >
@@ -548,7 +595,7 @@ export function ExtensionDetail({
           <LinkBtn label="Discussions" url={`${repoMeta.htmlUrl}/discussions`} />
         )}
         {homepage && <LinkBtn label="Homepage" url={homepage} />}
-        {target.installed && id && !target.locked && (
+        {target.installed && id && !target.locked && !target.discontinued && (
           <button
             disabled={busy !== null}
             onClick={() => onUninstall(id)}

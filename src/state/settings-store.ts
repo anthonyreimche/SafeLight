@@ -284,6 +284,9 @@ export interface AppSettings {
   /** The Extensions window opens maximized, filling the app window like a
    *  module, instead of as the centred pop-up. Set by its titlebar button. */
   extensionsMaximized: boolean;
+  /** The Preferences window opens maximized, filling the app below the top
+   *  bar, instead of as the centred pop-up. Set by its titlebar button. */
+  preferencesMaximized: boolean;
 
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
@@ -398,6 +401,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoUpdateExtensions: false,
   onlyVerifiedExtensions: false,
   extensionsMaximized: false,
+  preferencesMaximized: false,
   checkForUpdates: true,
   updateChannel: "stable",
 };

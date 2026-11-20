@@ -4,10 +4,10 @@
 // be preserved in derived versions.
 
 // The store's rules for an extension's releases: what the version picker
-// lists, which releases "What's new" covers, why a chosen release can't be
-// installed here, and when installing a version keeps the user on it.
+// lists, which releases "What's new" covers, why a release can't be installed
+// here, and when installing a version keeps the user on it.
 
-import type { ExtensionRelease, RemoteManifest } from "./types";
+import type { ExtensionRelease, RegistryVersions, RemoteManifest } from "./types";
 import type { SelectOption } from "@/ui/components/Select";
 import { compareSemver, isNewer, isPrerelease } from "@/update/semver";
 
@@ -82,10 +82,23 @@ export function releaseBlock(
   if (!manifest) return null;
   if (!sameVersion(manifest.version, version))
     return `This release's safelight.json says ${manifest.version}`;
-  if (manifest.minAppVersion && isNewer(appVersion, manifest.minAppVersion))
-    return `Needs Safelight ${manifest.minAppVersion} or newer`;
-  return null;
+  return appBlock(manifest.minAppVersion, appVersion);
 }
+
+/** Why the version an install would fetch can't be installed here, from what
+ *  the registry read; null when it can, or when the registry doesn't say. */
+export function installBlock(
+  versions: RegistryVersions | null | undefined,
+  appVersion: string,
+): string | null {
+  if (!versions) return null;
+  if ("releaseError" in versions) return `Can't be installed: ${versions.releaseError}`;
+  return appBlock(versions.latest.minAppVersion, appVersion);
+}
+
+/** The block for a version that needs `minAppVersion`, or null. */
+export const appBlock = (minAppVersion: string | undefined, appVersion: string): string | null =>
+  minAppVersion && isNewer(appVersion, minAppVersion) ? `Needs Safelight ${minAppVersion} or newer` : null;
 
 /** Only a version older than the latest full release is kept. */
 export const keepsVersion = (chosen: string, latest: string | null): boolean =>

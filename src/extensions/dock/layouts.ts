@@ -15,7 +15,8 @@ import { useRegistry, moduleEntry, moduleTabs } from "../registry";
 import { getSettings } from "@/state/settings-store";
 import { isPlainObject } from "@/project/fs";
 import type { AppModule } from "@/catalog/types";
-import type { ModuleLayoutDef } from "../types";
+import type { ModuleLayoutDef, SavedLayout, SavedLayoutInput } from "../types";
+import type { LayoutState } from "../api/stores";
 import {
   applyLayoutExtensions,
   captureLayoutExtensions,
@@ -45,20 +46,27 @@ import {
 
 export const CUSTOM_LAYOUT = "custom";
 const LAYOUT_PREF_KEY = "sl_layout_pref";
+const EDITED_FROM_KEY = "sl_layout_edited_from";
 
-export const useLayoutStore = create<{ activeId: string }>(() => ({
-  activeId: (() => {
-    try {
-      return localStorage.getItem(LAYOUT_PREF_KEY) ?? CUSTOM_LAYOUT;
-    } catch {
-      return CUSTOM_LAYOUT;
-    }
-  })(),
-}));
-
-function setActiveLayout(id: string) {
-  useLayoutStore.setState({ activeId: id });
+function readStored(key: string): string | null {
   try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export const useLayoutStore = create<LayoutState>(() => {
+  const activeId = readStored(LAYOUT_PREF_KEY) ?? CUSTOM_LAYOUT;
+  const editedFrom = activeId === CUSTOM_LAYOUT ? readStored(EDITED_FROM_KEY) : null;
+  return editedFrom ? { activeId, editedFrom } : { activeId };
+});
+
+function setActiveLayout(id: string, editedFrom?: string) {
+  useLayoutStore.setState({ activeId: id, editedFrom });
+  try {
+    if (editedFrom) localStorage.setItem(EDITED_FROM_KEY, editedFrom);
+    else localStorage.removeItem(EDITED_FROM_KEY);
     localStorage.setItem(LAYOUT_PREF_KEY, id);
   } catch {}
 }
@@ -67,12 +75,13 @@ function setActiveLayout(id: string) {
  *  layout showed it, so Custom carries on from the layout rather than from an
  *  arrangement left over from before it was picked. */
 export function markLayoutCustom() {
-  if (useLayoutStore.getState().activeId === CUSTOM_LAYOUT) return;
+  const from = useLayoutStore.getState().activeId;
+  if (from === CUSTOM_LAYOUT) return;
   const current = useDockStore.getState().module;
   for (const m of layoutModules()) {
     if (m !== current) saveLayout({ module: m, ...resolveModuleState(m) });
   }
-  setActiveLayout(CUSTOM_LAYOUT);
+  setActiveLayout(CUSTOM_LAYOUT, from);
 }
 
 /** The arrangement a module starts from when nothing saved or preset covers it:
@@ -284,17 +293,10 @@ useRegistry.subscribe((s, prev) => {
 // same ModuleLayoutDef shape. Captured across both modules so switching modules
 // keeps the saved arrangement.
 
-export interface UserLayout {
-  id: string;
-  name: string;
-  modules: Partial<Record<string, ModuleLayoutDef>>;
-  /** Whether picking this layout switches extensions to its ticks. Off for new
-   *  layouts and for those saved before layouts had the choice. */
-  switchesExtensions?: boolean;
-  /** The layout's ticks: on or off by extension id. Kept while switching is
-   *  off; an extension with no tick is left as it is. */
-  extensions?: Record<string, boolean>;
-}
+/** `switchesExtensions` is off for new layouts and for those saved before
+ *  layouts had the choice. While it is off the ticks in `extensions` are kept;
+ *  an extension with no tick is left as it is. */
+export type UserLayout = SavedLayout;
 
 const USER_LAYOUTS_KEY = "sl_user_layouts";
 
@@ -317,6 +319,15 @@ function persistUserLayouts(layouts: Record<string, UserLayout>) {
   try {
     localStorage.setItem(USER_LAYOUTS_KEY, JSON.stringify(layouts));
   } catch {}
+}
+
+/** A fresh id: several layouts saved in the same millisecond (an import) each
+ *  get their own. */
+function newUserLayoutId(layouts: Record<string, UserLayout>): string {
+  const base = `user.${Date.now().toString(36)}`;
+  let id = base;
+  for (let i = 2; Object.hasOwn(layouts, id); i++) id = `${base}-${i}`;
+  return id;
 }
 
 /** A unique "Layout N" name not already taken. */
@@ -364,10 +375,17 @@ export function initDockLayouts(): void {
       useUserLayouts.setState({ layouts: loadUserLayouts() });
       return;
     }
+    if (e.key === EDITED_FROM_KEY) {
+      useLayoutStore.setState({ editedFrom: e.newValue ?? undefined });
+      return;
+    }
     if (e.key !== LAYOUT_PREF_KEY || !e.newValue) return;
     if (e.newValue === useLayoutStore.getState().activeId) return;
     flushPendingSave();
-    useLayoutStore.setState({ activeId: e.newValue });
+    useLayoutStore.setState({
+      activeId: e.newValue,
+      editedFrom: e.newValue === CUSTOM_LAYOUT ? readStored(EDITED_FROM_KEY) ?? undefined : undefined,
+    });
     const m = useDockStore.getState().module;
     if (m) loadModuleLayout(m);
   });
@@ -414,7 +432,7 @@ function captureCurrentLayout(): Partial<Record<string, ModuleLayoutDef>> {
 export function addUserLayout(name?: string): string {
   flushPendingSave();
   const layouts = useUserLayouts.getState().layouts;
-  const id = `user.${Date.now().toString(36)}`;
+  const id = newUserLayoutId(layouts);
   persistUserLayouts({
     ...layouts,
     [id]: {
@@ -546,4 +564,125 @@ export function saveCollapsedToLayout(collapsed: Record<string, boolean>): boole
     [layout.id]: { ...layout, modules: { ...layout.modules, [s.module]: def } },
   });
   return true;
+}
+
+// ── Layout managers (api.layouts) ───────────────────────────────────────────
+// What an extension that manages layouts works with. Each acts on the calling
+// window's own module: a popped-out module keeps its own arrangement, so
+// another window's module can't be read or shown from here.
+
+/** A module's arrangement as a layout holds it: the current module's as the
+ *  dock shows it, another's as this window would load it. Null before the dock
+ *  has a module, and for a module that isn't registered. */
+export function captureModuleLayout(module?: AppModule): ModuleLayoutDef | null {
+  const s = useDockStore.getState();
+  if (module === undefined || module === s.module) {
+    return s.module ? moduleDefFromState(s.rails, s.floating, s.collapsed) : null;
+  }
+  if (!layoutModules().includes(module)) return null;
+  const { rails, floating, collapsed } = resolveModuleState(module);
+  return moduleDefFromState(rails, floating, collapsed);
+}
+
+/** `def` as the dock would show it in `module`: replaced panels swapped and
+ *  bottom rails pruned, as loading it does. Null when it isn't a layout. */
+function resolvedDef(module: AppModule, def: ModuleLayoutDef): ModuleLayoutDef | null {
+  const rails = layoutRails(module, recordOr<unknown>(def).rails);
+  if (!rails) return null;
+  const floating = recordOr<FloatState>(def.floating);
+  const placement = replacePanelIds(
+    { rails, floating, zOrder: Object.keys(floating), collapsed: collapsedFlags(def.collapsed) },
+    panelReplacements(useRegistry.getState().panels),
+  );
+  return moduleDefFromState(pruneBottomRails(placement.rails), placement.floating, placement.collapsed);
+}
+
+const near = (a: number | undefined, b: number | undefined) =>
+  a === b || (a !== undefined && b !== undefined && Math.abs(a - b) <= 1);
+
+function sameArrangement(a: ModuleLayoutDef, b: ModuleLayoutDef): boolean {
+  const railsMatch =
+    a.rails.length === b.rails.length &&
+    a.rails.every((r, i) => {
+      const o = b.rails[i];
+      return (
+        r.side === o.side &&
+        (r.side === "bottom" ? near(r.height, o.height) : near(r.width, o.width)) &&
+        r.panels.length === o.panels.length &&
+        r.panels.every((p, j) => p === o.panels[j])
+      );
+    });
+  const fa = a.floating ?? {};
+  const fb = b.floating ?? {};
+  const floatsMatch =
+    Object.keys(fa).length === Object.keys(fb).length &&
+    Object.entries(fa).every(([id, f]) => {
+      const o = fb[id];
+      return !!o && near(f.x, o.x) && near(f.y, o.y) && near(f.width, o.width);
+    });
+  const ca = [...(a.collapsed ?? [])].sort();
+  const cb = [...(b.collapsed ?? [])].sort();
+  return railsMatch && floatsMatch && ca.length === cb.length && ca.every((id, i) => id === cb[i]);
+}
+
+/** Whether the current module's dock shows `def`, a pixel either way. */
+export function moduleShowsLayout(def: ModuleLayoutDef): boolean {
+  const module = useDockStore.getState().module;
+  const live = captureModuleLayout();
+  const wanted = module ? resolvedDef(module, def) : null;
+  return !!live && !!wanted && sameArrangement(live, wanted);
+}
+
+/** Show `def` in the current module. Under a saved layout it becomes that
+ *  layout's arrangement for the module, and the layout stays picked; under
+ *  Custom or a registered preset it is shown as Custom's, as an edit would be.
+ *  An edit still waiting to be saved is dropped, and a layout still switching
+ *  its extensions no longer replaces it. */
+export function showModuleLayout(def: ModuleLayoutDef): void {
+  const module = useDockStore.getState().module;
+  const clean = module ? resolvedDef(module, def) : null;
+  if (!module || !clean) return;
+  layoutRequests++;
+  cancelPendingSave();
+  const layouts = useUserLayouts.getState().layouts;
+  const saved = moduleEntry(layouts, useLayoutStore.getState().activeId);
+  if (saved) {
+    persistUserLayouts({
+      ...layouts,
+      [saved.id]: { ...saved, modules: { ...saved.modules, [module]: clean } },
+    });
+  } else {
+    markLayoutCustom();
+    const rails = layoutRails(module, clean.rails)!;
+    const floating = clean.floating ?? {};
+    saveLayout({ module, rails, floating, zOrder: Object.keys(floating), collapsed: collapsedFlags(clean.collapsed) });
+  }
+  loadModuleLayout(module);
+}
+
+/** Create a saved layout, or replace the name and arrangements of one, keeping
+ *  its extension ticks. Arrangements that aren't layouts are left out. Returns
+ *  its id. A saved layout that is showing shows its new arrangement. */
+export function saveUserLayout(input: SavedLayoutInput): string {
+  const layouts = useUserLayouts.getState().layouts;
+  const existing = input.id === undefined ? undefined : moduleEntry(layouts, input.id);
+  if (input.id !== undefined && !existing) throw new Error(`There is no saved layout "${input.id}"`);
+  const modules: Partial<Record<string, ModuleLayoutDef>> = {};
+  for (const [m, def] of Object.entries(recordOr<unknown>(input.modules))) {
+    const clean = isPlainObject(def) ? resolvedDef(m, def as unknown as ModuleLayoutDef) : null;
+    if (clean) modules[m] = clean;
+  }
+  const name =
+    (typeof input.name === "string" && input.name.trim()) || existing?.name || defaultLayoutName(layouts);
+  const id = existing?.id ?? newUserLayoutId(layouts);
+  persistUserLayouts({
+    ...layouts,
+    [id]: existing ? { ...existing, name, modules } : { id, name, modules },
+  });
+  const m = useDockStore.getState().module;
+  if (existing && m && useLayoutStore.getState().activeId === id) {
+    cancelPendingSave();
+    loadModuleLayout(m);
+  }
+  return id;
 }
