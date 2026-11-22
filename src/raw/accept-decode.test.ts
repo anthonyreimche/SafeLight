@@ -387,3 +387,38 @@ describe("acceptDecode and the camera's exposure", () => {
     expect(await acceptDecode({}, gradedDecode([3, 1, 1]), preview)).toEqual({ use: false, cache: false });
   });
 });
+
+// A deep blue scene (a Nikon D7000 frame of blue stage light, _DSC3615.NEF):
+// the decode keeps its colours outside sRGB, 35 % of its pixels with negative
+// red, and the camera's JPEG maps them into its gamut, so their red/green
+// ratios disagree 4x though the decode is right (darktable's render reads the
+// same). A ratio with such a channel says nothing of the decode's balance.
+describe("the colour check on a decode with colour outside sRGB", () => {
+  const decode = { r: 0.0042, g: 0.04, b: 0.16 };
+  const camera = { r: 0.017, g: 0.04, b: 0.155 };
+
+  it("leaves out the ratio of a channel held outside sRGB and judges by the other", () => {
+    expect(compareBalance(decode, camera).ok).toBe(false);
+    expect(compareBalance(decode, camera, new Set(["r"])).ok).toBe(true);
+    expect(compareBalance({ ...decode, b: 0.4 }, camera, new Set(["r"])).ok).toBe(false);
+  });
+
+  /** An 8x8 decode, a quarter of its pixels `outside` and the rest `inside`. */
+  function mixed(inside: [number, number, number], outside: [number, number, number], share: number) {
+    const data = new Float32Array(8 * 8 * 4);
+    for (let p = 0; p < 64; p++) data.set([...(p < 64 * share ? outside : inside), 1], p * 4);
+    return { data, width: 8, height: 8 };
+  }
+
+  it("takes a decode whose red is negative in a third of its pixels", async () => {
+    h.previewRgb = [60, 70, 200];
+    const deepBlue = mixed([0.02, 0.06, 0.6], [-0.02, 0.05, 0.6], 1 / 3);
+    expect(await acceptDecode({}, deepBlue, preview)).toMatchObject({ use: true });
+  });
+
+  it("still rejects one whose red is negative in a few pixels only", async () => {
+    h.previewRgb = [60, 70, 200];
+    const deepBlue = mixed([0.005, 0.06, 0.6], [-0.05, 0.05, 0.6], 1 / 16);
+    expect(await acceptDecode({}, deepBlue, preview)).toMatchObject({ use: false });
+  });
+});

@@ -87,7 +87,7 @@ describe("FinishStep with nothing picked", () => {
     await showFinish("first-run");
     expect(
       screen.getByText(
-        "Add extensions any time from the Extensions store, and change your look and workspace in Preferences.",
+        "Add extensions any time from the open source extension library, and change your look and workspace in Preferences.",
       ),
     ).toBeTruthy();
   });

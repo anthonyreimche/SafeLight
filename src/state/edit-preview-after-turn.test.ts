@@ -16,6 +16,7 @@ interface ThumbRender {
 }
 
 vi.mock("@/rendering/render-bridge", () => ({
+  needStageVariants: () => null,
   getRenderBridge: () => ({
     ready: Promise.resolve(),
     renderThumbnailFromSource: async ({ key }: ThumbRender) => new Blob([`edit at ${key}`]),

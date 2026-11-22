@@ -13,7 +13,8 @@ import { boundValue } from "./uniform-values";
 export type SigFrame = Pick<
   PrepassFrame,
   "bag" | "w" | "h" | "baseCurve" | "linear" | "isFallbackPreview" | "processVersion" | "sourceWidth" | "sourceHeight"
->;
+> &
+  Partial<Pick<PrepassFrame, "stageTextureSig">>;
 
 const sourceHashes = new WeakMap<PrepassPass, string>();
 
@@ -32,7 +33,8 @@ function sourceHash(pass: PrepassPass): string {
  *  source's size (uSourceSize: a completed RAW cache entry can hand it a new
  *  one), the pass size, linearization, the process version the passes were built for, and the
  *  programs, bound values and draw counts of that pass and every pass before
- *  it. Inline params don't reach a pass, so they are left out: dragging one is
+ *  it, the data of the stage textures they sample among them. Inline params
+ *  don't reach a pass, so they are left out: dragging one is
  *  a cache hit. Whether any later pass draws is in it too, since that decides
  *  whether the pass's last draw is the stage's last, which is drawn whole.
  *  Through the last pass it is the signature of the stage's result. Values are
@@ -44,6 +46,7 @@ export function prefixSig(stage: PrepassStage, frame: SigFrame, srcSig: string, 
   let params = "";
   for (const pass of passes) {
     for (const b of pass.bindings) params += `${b.glslName}=${String(boundValue(bag, b))};`;
+    for (const t of pass.textures ?? []) params += `${t.glslName}=${frame.stageTextureSig?.(t.qualifiedKey) ?? ""};`;
   }
   const sources = passes.map(sourceHash).join(",");
   const counts = stage.passes.map((p) => passDraws(p, bag));

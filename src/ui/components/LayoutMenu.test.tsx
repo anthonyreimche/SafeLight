@@ -46,6 +46,14 @@ describe("Layout menu sections", () => {
     expect(screen.queryByText("Workspaces from the extension")).toBeNull();
   });
 
+  it("closes the menu once a layout is picked", async () => {
+    render(<LayoutMenu />);
+    await open();
+    await userEvent.click(screen.getByText("Culling"));
+    expect(screen.queryByText("Culling")).toBeNull();
+    expect(screen.getByRole("button", { name: /layout/i }).getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("leaves out the saved layouts and Manage layouts… for a section that replaces them", async () => {
     registerLayoutMenu("acme.layouts", { id: "acme.layouts.menu", component: Section, replacesSavedLayouts: true });
     render(<LayoutMenu />);

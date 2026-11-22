@@ -36,6 +36,7 @@ import type { MonitorTransform } from "./display-profile";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
 import type { CapturePoint, FloatFrame } from "./float-frame";
 import type { SourceSample } from "./source-sample";
+import type { RegionPixels, RegionRequest } from "./region-capture";
 
 /** What the worker hands a renderer it has just made, from the state it holds. */
 type SeedingMethod = "setCacheBudget" | "setContributedParams" | "setStageTextures" | "setParams";
@@ -57,6 +58,9 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** What probe answers, and what it throws, as a probe that fails does. */
     static probed: [number, number, number] | null = null;
     static probeError: Error | null = null;
+    /** What readRegion answers, and what it throws. */
+    static region: RegionPixels | null = null;
+    static regionError: Error | null = null;
     /** What readFloatFrame answers (null: no float targets), and what it throws. */
     static floatFrame: { data: Float32Array; width: number; height: number } | null = null;
     static floatError: Error | null = null;
@@ -98,7 +102,7 @@ const { FakeRenderer } = vi.hoisted(() => {
      *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
     drawn: { params: DevelopParams | undefined; derived?: Record<string, unknown>; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
     /** Each render and readback, in order. */
-    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame" | "readSourceSample" | "requestDetail" | "setDetailGain")[] = [];
+    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readRegion" | "readFloatFrame" | "readSourceSample" | "requestDetail" | "setDetailGain")[] = [];
     /** What each readFloatFrame drew: its point, long-edge cap and space, and
      *  the params, bag, pipeline and screen it drew with. */
     floatReads: {
@@ -115,6 +119,8 @@ const { FakeRenderer } = vi.hoisted(() => {
     floatReturned: Float32Array[] = [];
     /** The arguments of each probe call. */
     probes: { u: number; v: number; point: ProbePoint }[] = [];
+    /** The patches readRegion was asked for. */
+    regions: RegionRequest[] = [];
     /** The stages the last render left without a prepass unit. */
     overflowedStages: string[] = [];
     /** The stages of the program in use, and the ones it was built without. */
@@ -336,6 +342,13 @@ const { FakeRenderer } = vi.hoisted(() => {
       return FakeRenderer.probed;
     }
 
+    readRegion(request: RegionRequest) {
+      this.calls.push("readRegion");
+      this.regions.push({ x: request.x, y: request.y, width: request.width, height: request.height });
+      if (FakeRenderer.regionError) throw FakeRenderer.regionError;
+      return FakeRenderer.region;
+    }
+
     readFloatFrame(point: CapturePoint, maxEdge?: number, space?: StageSpace) {
       this.calls.push("readFloatFrame");
       this.floatReads.push({
@@ -518,6 +531,8 @@ beforeEach(async () => {
   FakeRenderer.histogramError = null;
   FakeRenderer.probed = null;
   FakeRenderer.probeError = null;
+  FakeRenderer.region = null;
+  FakeRenderer.regionError = null;
   FakeRenderer.floatFrame = null;
   FakeRenderer.floatError = null;
   FakeRenderer.sourceSample = null;
@@ -2745,6 +2760,58 @@ describe("render-worker probe", () => {
     send(PROBE);
     send({ cmd: "computeHistogram" });
     expect(develop().calls).toEqual(["probe", "computeHistogram"]);
+  });
+});
+
+// A magnifier's patch of the live frame, through the develop renderer. Every way
+// out answers by reqId, and the patch, drawn away from the canvas, leaves the
+// live frame bound.
+describe("render-worker captureRegion", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const ASK: WorkerRequest = { cmd: "captureRegion", reqId: 4, x: 0.25, y: 0.75, width: 3, height: 2 };
+  const develop = () => FakeRenderer.instances[0];
+  const PATCH: RegionPixels = {
+    data: new Uint8ClampedArray(24),
+    rect: { x: 10, y: 22, width: 3, height: 2 },
+    frameWidth: 64,
+    frameHeight: 32,
+    colorSpace: "srgb",
+  };
+
+  it("reads the live renderer and answers by reqId", () => {
+    FakeRenderer.region = PATCH;
+    send(INIT);
+    send(ASK);
+    expect(develop().regions).toEqual([{ x: 0.25, y: 0.75, width: 3, height: 2 }]);
+    expect(posted.at(-1)).toEqual({ type: "capturedRegion", reqId: 4, region: PATCH });
+  });
+
+  it("answers null with no renderer, and between photos without reading the one before", () => {
+    send(ASK);
+    expect(posted).toEqual([{ type: "capturedRegion", reqId: 4, region: null }]);
+    FakeRenderer.region = PATCH;
+    send(INIT);
+    send({ cmd: "clearSource" });
+    send(ASK);
+    expect(develop().regions).toEqual([]);
+    expect(posted.at(-1)).toEqual({ type: "capturedRegion", reqId: 4, region: null });
+  });
+
+  it("answers null when the read throws", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    FakeRenderer.regionError = new Error("boom");
+    send(INIT);
+    send(ASK);
+    expect(posted.at(-1)).toEqual({ type: "capturedRegion", reqId: 4, region: null });
+  });
+
+  it("measures a histogram after a patch without drawing the live view again", () => {
+    send(INIT);
+    send({ cmd: "render", seq: 1 });
+    develop().calls = [];
+    send(ASK);
+    send({ cmd: "computeHistogram" });
+    expect(develop().calls).toEqual(["readRegion", "computeHistogram"]);
   });
 });
 

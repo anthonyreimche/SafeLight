@@ -12,6 +12,7 @@ import type { DevelopParams } from "@/catalog/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { withPipeline } from "@/extensions/pipelines";
 import type { FloatFrame } from "../float-frame";
+import type { RegionPixels } from "../region-capture";
 import type { SourceSample } from "../source-sample";
 import type { WebGLRenderer } from "../webgl/renderer";
 import { bindLiveView, messageOf, showScreen, type HandlersFor, type WorkerContext } from "./context";
@@ -66,7 +67,7 @@ function drawCapture<T>(
   }
 }
 
-type CaptureCmd = "capture" | "captureFloat" | "readSourceSample" | "probe" | "readDevelopedPixels";
+type CaptureCmd = "capture" | "captureFloat" | "readSourceSample" | "probe" | "captureRegion" | "readDevelopedPixels";
 
 export function captureHandlers(ctx: WorkerContext): HandlersFor<CaptureCmd> {
   const { state, respond } = ctx;
@@ -142,6 +143,21 @@ export function captureHandlers(ctx: WorkerContext): HandlersFor<CaptureCmd> {
         }
       }
       respond({ type: "probed", reqId: msg.reqId, rgb });
+    },
+
+    captureRegion(msg) {
+      // Between photos the bound source is the last photo's, so nothing is drawn.
+      // The patch is drawn away from the canvas and binds the live frame's state
+      // again itself, so the next frame needs no redraw first.
+      let region: RegionPixels | null = null;
+      if (state.renderer && !state.awaitingSource) {
+        try {
+          region = state.renderer.readRegion(msg);
+        } catch (err) {
+          console.error("[render-worker] region capture failed:", err);
+        }
+      }
+      respond({ type: "capturedRegion", reqId: msg.reqId, region }, region ? [region.data.buffer] : undefined);
     },
 
     readDevelopedPixels(msg) {

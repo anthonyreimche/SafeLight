@@ -14,8 +14,9 @@
 
 import { normalizeRotation } from "@/catalog/orient";
 import type { InputTransform } from "@/extensions/api/develop";
-import { handleFrameRequest, placement, type FrameReply, type FrameRequest } from "./frame-job";
+import { frameBuffers, handleFrameRequest, placement, type FrameReply, type FrameRequest } from "./frame-job";
 import { halfBits } from "./half-float";
+import { decodeLinearDng } from "./linear-dng";
 import { decodeNetpbm } from "./netpbm";
 import { decodeTiff } from "./tiff-image";
 
@@ -175,8 +176,13 @@ export async function buildProfileFrame(job: ProfileJob): Promise<HalfFrame> {
 export async function answerFrameRequest(
   req: FrameRequest,
 ): Promise<{ reply: FrameReply; transfer: Transferable[] }> {
-  if (req.op !== "profile") return handleFrameRequest(req);
+  if (req.op !== "profile" && req.op !== "dng") return handleFrameRequest(req);
   try {
+    if (req.op === "dng") {
+      const result = await decodeLinearDng(req.job);
+      const transfer = "rejected" in result ? [] : frameBuffers(result);
+      return { reply: { id: req.id, op: "dng", result }, transfer };
+    }
     const frame = await buildProfileFrame(req.job);
     return { reply: { id: req.id, op: "profile", frame }, transfer: [frame.data.buffer] };
   } catch (e) {

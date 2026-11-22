@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecodedImageResult, ImageDecoderContribution } from "@/extensions/api/library";
 import { useSettings } from "@/state/settings-store";
 import {
+  acceptsVerdict,
+  answeringChain,
   chainSignature,
   decoderChain,
   decoderList,
@@ -17,7 +19,9 @@ import {
   missingLeadOwners,
   onDecodersChanged,
   registerImageDecoder,
+  rememberAccepts,
   runExtensionDecoder,
+  signatureOf,
   unregisterImageDecoder,
   withDecoderOrder,
   type ExtensionChainEntry,
@@ -82,6 +86,7 @@ describe("formats", () => {
   it("gives every RAW extension a format of its own, marked raw", () => {
     expect(formatOf("DSC_1.NEF")).toMatchObject({ id: "nef", raw: true, label: "NEF" });
     expect(formatOf("a.cr3")).toMatchObject({ id: "cr3", raw: true });
+    expect(formatOf("Indoor_Multi.ARQ")).toMatchObject({ id: "arq", raw: true, label: "ARQ" });
     expect(formatOf("a.heic")?.raw).toBe(false);
   });
 
@@ -344,5 +349,102 @@ describe("running an extension decoder", () => {
     const result = await runExtensionDecoder(extensionEntry("heif"), new Blob(), { ...request, signal: controller.signal });
     expect(result).toMatchObject({ ok: false, aborted: true });
     expect(decode).not.toHaveBeenCalled();
+  });
+});
+
+// A decoder that reads only some of a format's files says so cheaply first
+// (`accepts`); one that declines a file is passed by as if it weren't there.
+describe("decoders that check a file first", () => {
+  const nefRequest = (name: string) => ({ ...request, name, fullSize: true });
+  const sized = (n: number) => new Blob([new Uint8Array(n)]);
+
+  it("passes a file it declines by at once, never queued behind a running decode", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const decode = vi.fn(async () => {
+      await gate;
+      return linear(1, 1);
+    });
+    registerImageDecoder(
+      "ext.a",
+      decoder({ extensions: [".nef"], accepts: (_file, req) => req.name === "shift1.nef", decode }),
+    );
+    const entry = extensionEntry("nef");
+    const merging = runExtensionDecoder(entry, sized(11), nefRequest("shift1.nef"));
+    const declined = await runExtensionDecoder(entry, sized(12), nefRequest("plain1.nef"));
+
+    expect(declined).toMatchObject({ ok: false, declined: true });
+    expect(decode).toHaveBeenCalledTimes(1);
+    release();
+    expect(await merging).toMatchObject({ ok: true });
+  });
+
+  it("asks once per file and version, and again for a new version", async () => {
+    const accepts = vi.fn(() => false);
+    registerImageDecoder("ext.a", decoder({ extensions: [".nef"], version: "1", accepts }));
+    await runExtensionDecoder(extensionEntry("nef"), sized(21), nefRequest("plain2.nef"));
+    await runExtensionDecoder(extensionEntry("nef"), sized(21), nefRequest("plain2.nef"));
+    expect(accepts).toHaveBeenCalledTimes(1);
+
+    registerImageDecoder("ext.a", decoder({ extensions: [".nef"], version: "2", accepts }));
+    await runExtensionDecoder(extensionEntry("nef"), sized(21), nefRequest("plain2.nef"));
+    expect(accepts).toHaveBeenCalledTimes(2);
+  });
+
+  it("decodes a file whose check throws or answers late, and asks again next time", async () => {
+    vi.useFakeTimers();
+    const decode = vi.fn(async () => linear(1, 1));
+    const accepts = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error("no header"))
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValue(false);
+    registerImageDecoder("ext.a", decoder({ extensions: [".nef"], accepts, decode }));
+    const run = () => runExtensionDecoder(extensionEntry("nef"), sized(31), nefRequest("odd3.nef"));
+
+    expect(await run()).toMatchObject({ ok: true });
+    const late = run();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(await late).toMatchObject({ ok: true });
+    expect(await run()).toMatchObject({ ok: false, declined: true });
+    expect(accepts).toHaveBeenCalledTimes(3);
+  });
+
+  it("leaves a declining decoder out of the decoders that read a file", () => {
+    registerImageDecoder("ext.a", decoder({ extensions: [".nef"], version: "3", accepts: () => false }));
+    useSettings.setState({ decoderOrder: { nef: ["ext.a/fast", "libraw"] } });
+    const entry = extensionEntry("nef");
+
+    expect(signatureOf(answeringChain("nef", "plain4.nef", 41))).toBe("ext.a/fast@3>libraw");
+    rememberAccepts(entry, "plain4.nef", 41, false);
+    expect(answeringChain("nef", "plain4.nef", 41).map((e) => e.id)).toEqual(["libraw"]);
+    expect(signatureOf(answeringChain("nef", "plain4.nef", 41))).toBe("");
+    expect(signatureOf(answeringChain("nef", "plain4.nef", 42))).toBe("ext.a/fast@3>libraw");
+    expect(chainSignature("nef")).toBe("ext.a/fast@3>libraw");
+  });
+
+  it("keeps a decoder without a check in every file's chain", () => {
+    registerImageDecoder("ext.a", decoder({ extensions: [".nef"] }));
+    useSettings.setState({ decoderOrder: { nef: ["ext.a/fast", "libraw"] } });
+    expect(acceptsVerdict(extensionEntry("nef"), "any.nef", 5)).toBe(true);
+    expect(signatureOf(answeringChain("nef", "any.nef", 5))).toBe("ext.a/fast@1>libraw");
+  });
+});
+
+describe("a decoder's failure that may pass", () => {
+  it.each([
+    ["an error marked transient", Object.assign(new Error("the worker didn't start"), { transient: true })],
+    ["running out of memory", new RangeError("Array buffer allocation failed")],
+  ])("answers %s as transient", async (_, error) => {
+    registerImageDecoder("ext.a", decoder({ decode: async () => { throw error; } }));
+    const result = await runExtensionDecoder(extensionEntry("heif"), new Blob(), request);
+    expect(result).toMatchObject({ ok: false, transient: true });
+  });
+
+  it("answers any other throw as the decoder's verdict on the file", async () => {
+    registerImageDecoder("ext.a", decoder({ decode: async () => { throw new Error("bad file"); } }));
+    const result = await runExtensionDecoder(extensionEntry("heif"), new Blob(), request);
+    expect(result).toMatchObject({ ok: false });
+    expect(result).not.toHaveProperty("transient");
   });
 });

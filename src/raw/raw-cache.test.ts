@@ -242,7 +242,7 @@ describe("writeCachedPreview and the verdicts struck against the photo", () => {
   it("clears libraw's under the key it writes", async () => {
     await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, rawCacheGeneration());
 
-    expect(h.deleted.sort()).toEqual(strikes("v6:a.NEF:64:0", "libraw-0.22.1+1").sort());
+    expect(h.deleted.sort()).toEqual(strikes("v6:a.NEF:64:0", "libraw-0.22.1+3").sort());
   });
 
   it("clears the decoder's that made the entry, under the key markers are kept under", async () => {

@@ -6,6 +6,7 @@
 import type { DevelopedPixels, WorkerResponse } from "../render-protocol";
 import type { FloatFrame } from "../float-frame";
 import type { SourceSample } from "../source-sample";
+import type { RegionPixels } from "../region-capture";
 import type { WorkerLink } from "./transport";
 
 // A request the worker hasn't answered is settled as a failure would be once the
@@ -47,6 +48,7 @@ export class RenderRequests {
   readonly floatCaptures: Pending<number, FloatFrame | null> = new Map();
   readonly sourceSamples: Pending<number, SourceSample | null> = new Map();
   readonly probes: Pending<number, [number, number, number] | null> = new Map();
+  readonly regions: Pending<number, RegionPixels | null> = new Map();
   private idSeq = 0;
   // When each long request still waiting was posted, oldest first.
   private longPosted: number[] = [];
@@ -123,5 +125,6 @@ export class RenderRequests {
     settleAll(this.floatCaptures, () => null);
     settleAll(this.sourceSamples, () => null);
     settleAll(this.probes, () => null);
+    settleAll(this.regions, () => null);
   }
 }

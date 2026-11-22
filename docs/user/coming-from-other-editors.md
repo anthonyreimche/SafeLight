@@ -6,7 +6,7 @@ If you know Lightroom Classic, Capture One, DxO PhotoLab or darktable, most of S
 
 **A project is a folder.** There's no central catalogue. You open a folder, and Safelight keeps its data for that folder in a hidden `.safelight` folder inside it: ratings, edits and previews. This is closer to a Capture One session than a Lightroom catalogue. Your originals are never written to, and copying or moving the folder takes its edits along.
 
-**Most tools are extensions.** Library, Develop, Basic, White Balance, Tone Curve, HSL, Crop, Masking, Export and the rest of the standard set are the **Essentials**, installed on first launch. Anything else, such as virtual copies, collections or lens profiles, comes from the in-app store (**Ctrl+Shift+X**). See [Using Extensions](using-extensions.md) for what that means for your edits.
+**Most tools are extensions.** Library, Develop, Basic, White Balance, Tone Curve, HSL, Crop, Masking, Export and the rest of the standard set are the **Essentials**, installed on first launch. Anything else, such as virtual copies, collections or lens profiles, comes from the open source extension library, in the **Extensions** window (**Ctrl+Shift+X**). See [Using Extensions](using-extensions.md) for what that means for your edits.
 
 ## Names you know
 
@@ -14,23 +14,23 @@ If you know Lightroom Classic, Capture One, DxO PhotoLab or darktable, most of S
 |---|---|---|
 | Catalogue, session | Project (a folder) | **Open Folder** in the Folders panel |
 | Import | Open the folder where the files are. Safelight works on files where they sit and doesn't copy from a card. | Library |
-| Grid, Loupe, Filmstrip | Library grid, Develop, and the **Filmstrip** extension under the Develop canvas | Library, store |
+| Grid, Loupe, Filmstrip | Library grid, Develop, and the **Filmstrip** extension under the Develop canvas | Library, Extensions window |
 | Stars, flags, colour labels | The same: **1–5**, **P / X / U**, **6–9** | Library |
-| Keywords | Keywords panel. Keyword trees, synonyms and Lightroom keyword-list import come with **Hierarchical Keywording**. | Library, store |
-| Collections, smart collections | **Collections** extension | Store |
-| Virtual copy | **Virtual Copies** extension: right-click a photo | Store |
-| History | Undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z**) and reset all edits, also as buttons in the Edit History panel. Every edit is kept with the photo, so undo works after you reopen it. The **History** extension lists every step to click back to, with what each changed. | Develop, store |
+| Keywords | Keywords panel. Keyword trees, synonyms and Lightroom keyword-list import come with **Hierarchical Keywording**. | Library, Extensions window |
+| Collections, smart collections | **Collections** extension | Extensions window |
+| Virtual copy | **Virtual Copies** extension: right-click a photo | Extensions window |
+| History | Undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z**) and reset all edits, also as buttons in the Edit History panel. Every edit is kept with the photo, so undo works after you reopen it. The **History** extension lists every step to click back to, with what each changed. | Develop, Extensions window |
 | Snapshots | Not yet. Save a preset, or use a virtual copy, to keep an alternative. | |
-| Presets, styles | Presets panel. Lightroom `.xmp` presets import with **XMP Tools** or **3rd-Party Preset Tools** (which also reads `.lrtemplate`). Capture One styles don't import. | Develop, store |
-| Copy / paste settings, sync | Right-click in Library: **Copy settings…** picks what to copy, **Paste settings** applies it to the selection. **Batch Tools** adds selective sync and batch Auto. | Library, store |
-| Before/after | **Image Comparison Tools**: hold to preview, or a draggable split | Store |
+| Presets, styles | Presets panel. Lightroom `.xmp` presets import with **XMP Tools** or **3rd-Party Preset Tools** (which also reads `.lrtemplate`). Capture One styles don't import. | Develop, Extensions window |
+| Copy / paste settings, sync | Right-click in Library: **Copy settings…** picks what to copy, **Paste settings** applies it to the selection. **Batch Tools** adds selective sync and batch Auto. | Library, Extensions window |
+| Before/after | **Image Comparison Tools**: hold to preview, or a draggable split | Extensions window |
 | Masks: brush, linear, radial, range | Masking: brush, linear, radial, luminance range and colour range, combined with add, subtract and intersect. Up to 16 masks and 24 components per photo. | Develop |
 | Healing, clone | Heal, with up to 32 spots per photo | Develop |
 | Camera profile, Adobe Colour | The **display transform** (tone mapper), picked per photo in Develop's bottom bar. Camera-maker profiles (DCP) aren't supported yet. | Develop |
-| Lens profiles | **Lens Correction** extension (Lensfun database and Adobe LCP profiles) | Store |
+| Lens profiles | **Lens Correction** extension (Lensfun database and Adobe LCP profiles) | Extensions window |
 | Export presets, filename templates | Export panel: named export presets and filename templates | Library |
-| Client proofing gallery | **Web Tools** extension | Store |
-| XMP sidecars | **XMP Tools** reads sidecars on import, and writes them once you turn writing on in its settings | Store |
+| Client proofing gallery | **Web Tools** extension | Extensions window |
+| XMP sidecars | **XMP Tools** reads sidecars on import, and writes them once you turn writing on in its settings | Extensions window |
 
 ## Not available yet
 

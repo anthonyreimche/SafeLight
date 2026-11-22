@@ -263,6 +263,7 @@ vi.mock("@/catalog/edit-params", () => ({
   },
 }));
 vi.mock("@/extensions/pipelines", () => ({
+  effectivePipelineId: (displayTransform: string | null) => displayTransform ?? "default-pipeline",
   resolveDefaultPipeline: () => "default-pipeline",
   resolvePipelineFor: (displayTransform: string | null) => `pipeline:${displayTransform}`,
   setPhotoParams: () => {},
@@ -696,6 +697,29 @@ describe("a rendered batch", () => {
     const [renderer] = h.FakeRenderer.instances;
     expect(renderer.drawnTextures).toEqual([["own.stage.tex#v1"]]);
     expect(events).toEqual(["released after 1 draws"]);
+  });
+
+  // SafeLight #278: a texture of one photo's own (a fitted lookup, a warp
+  // field) is drawn from that photo's variant, never the open photo's.
+  it("waits for and draws the photo's own variant of a per-photo texture", async () => {
+    h.stages["own.stage"] = {
+      id: "own.stage",
+      name: "Own",
+      phase: "effects",
+      glsl: "",
+      uniforms: [],
+      textures: [{ key: "tex", kind: "lut", perPhoto: true }],
+    };
+    h.bags.set("a", {});
+    const asked: unknown[] = [];
+    h.needVariants = (bag) => {
+      asked.push(bag["own.stage.tex"]);
+      h.stageTextures["own.stage.tex#a"] = { width: 1 };
+      return Promise.resolve({ failure: null, release: () => undefined });
+    };
+    await exportPhotos([photo("a")], FOLDER, undefined, folder);
+    expect(asked).toEqual(["a"]);
+    expect(h.FakeRenderer.instances[0].drawnTextures).toEqual([["own.stage.tex#a"]]);
   });
 
   // The batch renderer is handed the bag by reference once; a variant let go of

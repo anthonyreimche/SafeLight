@@ -17,7 +17,14 @@ import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/raw/raw-preview";
 import { decoderMarkerId, hasDecodeMarker, markDecode, rawCacheGeneration, writeCachedPreview } from "@/raw/raw-cache";
-import { photoCacheKey, photoMarkerKey, rawDecoders, rawSignature } from "@/raw/photo-cache-key";
+import {
+  photoCacheKey,
+  photoMarkerKey,
+  rawDecoders,
+  rawSignature,
+  recallDecoderVerdicts,
+  settleDecoderVerdicts,
+} from "@/raw/photo-cache-key";
 import type { ChainEntry } from "./image-decoders";
 import { cutSourceSample } from "@/rendering/source-sample";
 import { getSettings } from "@/state/settings-store";
@@ -51,17 +58,26 @@ export async function fillCacheEntry(
   if (!photo.fileHandle) return "nothing";
   // Background work never fetches a library source's original.
   if (isSourceFile(photo.fileHandle) && !(await sourceOriginalHeld(photo.fileHandle))) return "nothing";
-  const key = photoCacheKey(photo);
+  // A leading decoder that checks files first keys the photo by its answer.
+  const recalling = recallDecoderVerdicts(photo);
+  if (recalling) await recalling;
   // Markers are kept per decoder, under the key without the chain.
   const markerKey = photoMarkerKey(photo);
-  const signature = rawSignature(photo);
   // libraw's own marker, while it is the only decoder, keeps the photo out of
   // the cache pass's list already.
-  const decoders = rawDecoders(photo);
-  const ruledOut = decoders.some((entry) => "decoder" in entry) ? await ruledOutOf(markerKey, decoders) : undefined;
+  let decoders = rawDecoders(photo);
+  let ruledOut = decoders.some((entry) => "decoder" in entry) ? await ruledOutOf(markerKey, decoders) : undefined;
   if (ruledOut?.size === decoders.length) return "nothing";
   const file = await photo.fileHandle.getFile();
   if (signal?.aborted) return "nothing";
+  const settling = settleDecoderVerdicts(photo, file, generation);
+  if (settling && (await settling)) {
+    decoders = rawDecoders(photo);
+    ruledOut = decoders.some((entry) => "decoder" in entry) ? await ruledOutOf(markerKey, decoders) : undefined;
+    if (ruledOut?.size === decoders.length) return "nothing";
+  }
+  const key = photoCacheKey(photo);
+  const signature = rawSignature(photo);
   // Read once for the decode and the preview it is judged against, and only
   // by a decode that goes ahead: one passed over reads nothing.
   let bytes: ArrayBuffer | undefined;

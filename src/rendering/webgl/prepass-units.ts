@@ -6,7 +6,7 @@
 // Texture units for the develop program's samplers. The shader owns 0 (image),
 // 1 (curve), 2 (mask), 3 (retouch), 4 (developed) and 6 (mask curves), and uses
 // 7 as transient scratch. Extension stage textures (baked LUT atlases, etc.)
-// bind from 12 up, at most four of them.
+// bind from 12 up, one unit each.
 //
 // Prepass results take every other unit. MAX_TEXTURE_IMAGE_UNITS (16 on ANGLE)
 // limits how many samplers a shader declares, not which unit one reads: a unit
@@ -18,7 +18,6 @@
 // the rest serve stages that keep a sampler of their own.
 
 export const STAGE_TEX_UNIT_BASE = 12;
-export const MAX_STAGE_TEXTURES = 4;
 
 /** The units official stages' per-photo textures (TextureRequirement "photo"
  *  and "atlas") bind at, in order: the ones the program bound those tables at
@@ -39,8 +38,7 @@ const FIRST_PREPASS_UNITS: readonly number[] = [8, 9, 10, 11, 5];
  *  context with `combinedUnits` texture units whose stage textures take
  *  `stageTextures` units from STAGE_TEX_UNIT_BASE. */
 export function prepassUnits(combinedUnits: number, stageTextures: number): number[] {
-  // Photo textures past PHOTO_TEX_UNITS bind right after the stage textures,
-  // so the count can pass MAX_STAGE_TEXTURES.
+  // Photo textures past PHOTO_TEX_UNITS bind right after the stage textures.
   const firstFree = STAGE_TEX_UNIT_BASE + stageTextures;
   const units = [...FIRST_PREPASS_UNITS];
   for (let unit = firstFree; unit < combinedUnits; unit++) units.push(unit);

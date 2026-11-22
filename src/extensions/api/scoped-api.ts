@@ -614,6 +614,27 @@ export interface SafelightAPI {
       params: import("@/catalog/types").DevelopParams,
       options?: LiveFloatCaptureOptions,
     ): Promise<FloatFrame | null>;
+    /** A patch of the live frame at the frame's own pixels: the view's whole
+     *  frame at fit (at most the Develop render resolution, the pixels Develop's
+     *  zoom counts), over the region the view shows, whatever the view is zoomed
+     *  to. What a magnifier shows at true pixel
+     *  scale: drawn at useDevelopOverlay `zoomScale` device pixels a frame pixel,
+     *  it is at Develop's 100 %. `x` and `y` are the patch's centre, 0 to 1 across the
+     *  frame (useDevelopOverlay `imageRect`), and `width` × `height` its size in
+     *  the frame's pixels, rounded and held to 1 to 1024. The patch is drawn as
+     *  the canvas shows it: the photo's params and bag as they are now, with the
+     *  view's overlays (clipping warning, mask tint) and in the screen's space.
+     *  Only the patch is drawn, away from the canvas, so the live view is left
+     *  as it was and a small patch is cheap: ask again as the pointer moves,
+     *  one at a time. `rect` says where the bitmap sits in the frame: near an
+     *  edge only the part inside the frame is drawn. `colorSpace` is the
+     *  canvas's: open your 2D context with it, or wide colour clips. Null with no photo open,
+     *  between photos, without float render targets, or for a patch wholly
+     *  outside the frame. Needs Safelight 3.2.7; on older builds it is
+     *  undefined. */
+    captureRegion(
+      request: import("@/rendering/region-capture").RegionRequest,
+    ): Promise<import("@/rendering/region-capture").RegionCapture | null>;
     /** Render an arbitrary catalogue photo by id through the full develop pipeline
      *  with `params` (and optionally that photo's extension-stage `paramBag`) to
      *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
@@ -622,7 +643,9 @@ export interface SafelightAPI {
      *  across a Library selection. Rendered small (for histogram measurement).
      *  A `paramBag` is drawn as the live view draws one: under the entries the
      *  built-in stages take from `params`, such as the Detail panel's noise
-     *  reduction. The frame is a JPEG at quality 0.9, which suits a picture. `lossless: true`
+     *  reduction. Without one the photo is drawn with its params alone (since
+     *  3.2.7; earlier builds drew whatever stage values the renderer held,
+     *  another photo's). The frame is a JPEG at quality 0.9, which suits a picture. `lossless: true`
      *  returns it from a PNG instead, so every 8-bit channel value the pipeline
      *  wrote reaches the bitmap exactly: use it for a frame that carries data,
      *  such as a stage's measurement encoding, which a JPEG would smear across
@@ -801,9 +824,11 @@ export interface SafelightAPI {
      *  without one; one runs at a time, and a second call while one runs does
      *  nothing. */
     autoAdjust: AutoAdjust;
-    /** Read the opaque blob previously stored for the current Develop photo
-     *  under `key`, or null if none exists (or no photo/project is open). */
-    getPhotoData(key: string): Promise<Uint8Array | null>;
+    /** Read the opaque blob previously stored for the current Develop photo,
+     *  or for photo `photoId` (since 3.2.7: a per-photo stage texture made for
+     *  another photo's thumbnail or export), under `key`, or null if none
+     *  exists (or no photo/project is open). */
+    getPhotoData(key: string, photoId?: string): Promise<Uint8Array | null>;
     /** Core develop scalars that live INSIDE a structured param object (e.g.
      *  "vignette.amount", "grain.size") — the ones a top-level setParam can't
      *  reach without merging the owning object. `list()` gives each one's range
@@ -1109,7 +1134,11 @@ export interface SafelightAPI {
      *  answers an image core can't use or runs past its time limit (60 s and
      *  2 s a megabyte) passes the file to the next. Decodes run one at a time
      *  per decoder (one past its time limit is abandoned, its signal aborted),
-     *  so decode in a Worker of your own to keep the window responsive. Develop, exports, headless renders and grid previews use
+     *  so decode in a Worker of your own to keep the window responsive. A
+     *  decoder for only some of a format's files gives `accepts` (3.2.7): a
+     *  file it declines skips its queue and keeps the keys and marks it would
+     *  have without it. Throw an error with `transient: true` for a failure
+     *  that may pass (3.2.7). Develop, exports, headless renders and grid previews use
      *  the order; a RAW's camera preview and its metadata stay Safelight's.
      *  See ImageDecoderContribution and DecodedImageResult for what an answer
      *  must hold. Registering an id you hold replaces it. Dropped when the

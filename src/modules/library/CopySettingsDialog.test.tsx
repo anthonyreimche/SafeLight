@@ -83,6 +83,16 @@ describe("what the clipboard carries", () => {
     expect(copied(onCopy).sourceName).toBe("IMG_0001.NEF");
   });
 
+  it("copies on Enter, from a ticked box as well as from the dialogue", async () => {
+    const { user, onCopy } = setup({ exposure: 1.2, contrast: 30 });
+    await user.keyboard("{Enter}");
+    expect(onCopy).toHaveBeenCalledTimes(1);
+
+    box(/^Contrast/).focus();
+    await user.keyboard("{Enter}");
+    expect(onCopy).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses to copy nothing", async () => {
     const { user, copy, onCopy } = setup({ exposure: 1.2 });
     await user.click(box(/^Exposure/));

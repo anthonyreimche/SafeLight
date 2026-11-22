@@ -19,3 +19,5 @@ export * from "./api/programs";
 export * from "./api/secrets";
 export * from "./api/sources";
 export * from "./api/commands";
+// What a decoder throws for a failure that may pass (api.library.registerDecoder).
+export type { TransientDecodeError } from "./api/library";

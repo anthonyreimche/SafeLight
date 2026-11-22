@@ -6,7 +6,7 @@ Frequently asked questions about Safelight.
 
 ### What is Safelight?
 
-Safelight is a free, open-source, privacy-first RAW photo editor. It combines GPU-accelerated professional editing tools with an IDE-style extensible interface, and ships as a desktop app (Electron) for Windows, Linux, and macOS, plus a browser app.
+Safelight is a free, open-source, privacy-first RAW photo editor. It combines GPU-accelerated professional editing tools with an IDE-style extensible interface, and ships as a desktop app (Electron) for Windows, Linux, and macOS. It also runs in a Chromium-based browser from source, mainly for development.
 
 ### Is Safelight free?
 
@@ -14,7 +14,7 @@ Yes — completely free and open source (GPL v3). No subscriptions, no hidden co
 
 ### Does Safelight work offline?
 
-Yes, once it's set up. The first launch needs a connection, because it downloads the Essentials (the stock tools, such as Library, Develop and Basic) from GitHub. After that, the core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
+Yes, once it's set up. The first launch needs a connection, because it downloads the Essentials (the stock tools, such as Library, Develop and Basic) from GitHub. After that, the core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions window or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
 
 ### Does Safelight collect my data?
 
@@ -58,11 +58,11 @@ Yes — masks built from radial, linear, brush, luminance-range, and colour-rang
 
 ### Can I use presets?
 
-Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate. Lightroom `.xmp` presets import through an extension such as XMP Tools, installed from the Extensions store's **Presets** category; without one, Import tells you so and links there.
+Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate. Lightroom `.xmp` presets import through an extension such as XMP Tools, installed from the **Presets** category in the Extensions window; without one, Import tells you so and links there.
 
 ### Can I compare before/after?
 
-Yes — the Image Comparison extension (from the Extensions store) adds hold-to-preview and a draggable before/after split to the Develop canvas.
+Yes — the Image Comparison extension (from the open source extension library) adds hold-to-preview and a draggable before/after split to the Develop canvas.
 
 ### Can I import Lightroom catalogues?
 

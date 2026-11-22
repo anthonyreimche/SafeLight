@@ -16,6 +16,7 @@ import type { HistogramData } from "./histogram";
 import type { MonitorTransform } from "./display-profile";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
 import type { FrameRect } from "@/raw/native-frame";
+import type { RegionPixels, RegionRequest } from "./region-capture";
 import type { DetailRequest } from "./webgl/detail-gain";
 
 /** The developed frame of the whole image, untransformed and uncropped, as
@@ -167,6 +168,9 @@ export type WorkerRequest =
   // [0, 1] across its buffer, drawn from what the worker holds when it arrives.
   // See WebGLRenderer.probe.
   | { cmd: "probe"; reqId: number; u: number; v: number; point: ProbePoint }
+  // A patch of the live frame at the frame's own pixels, as the canvas shows it,
+  // drawn from what the worker holds when it arrives. See WebGLRenderer.readRegion.
+  | ({ cmd: "captureRegion"; reqId: number } & RegionRequest)
   | { cmd: "setAsShotTemperature"; kelvin: number }
   // Answered exactly once, by `seq`: with a frame, frameSkipped or renderError. The
   // bridge sends the next render only once this one is answered.
@@ -314,6 +318,9 @@ export type WorkerResponse =
   | { type: "sourceSample"; reqId: number; sample: SourceSample | null }
   // null: no renderer, no source, no float render targets, or the probe threw.
   | { type: "probed"; reqId: number; rgb: [number, number, number] | null }
+  // null: no renderer, no source, no float render targets, a patch outside the
+  // frame, or the draw threw.
+  | { type: "capturedRegion"; reqId: number; region: RegionPixels | null }
   | { type: "hasSource"; reqId: number; has: boolean }
   | { type: "developedPixels"; reqId: number; pixels: DevelopedPixels | null }
   // A read of the developed pixels threw. Carries the reqId so the bridge settles

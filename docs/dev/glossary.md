@@ -42,7 +42,7 @@ The words these docs use, in plain terms. Imaging terms first, then Safelight's 
 | **Param scope** | What a panel reads and writes through `api.develop.useParamScope()`: the photo's param bag, or a mask's when the panel is shown inside a mask. |
 | **Process version** | The rendering version an edit was made with. Old edits keep their look when Safelight updates. See [Process versions](rendering.md#process-versions). |
 | **Dev folder** | A folder on your disk that Safelight loads extensions from directly, for testing without publishing. Needs the Developer Tools extension. See [Debugging](extensions/debugging.md). |
-| **Store, registry** | The in-app list of extensions, built from GitHub repos tagged `safelight-extension`. The trust registry marks reviewed extensions as verified and can ban harmful ones. |
+| **Open source extension library, registry** | The in-app list of extensions, shown in the Extensions window and built from GitHub repos tagged `safelight-extension`. The trust registry marks reviewed extensions as verified and can ban harmful ones. |
 
 ## Same thing, different words
 

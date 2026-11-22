@@ -1,8 +1,8 @@
 # Building Extensions
 
-An extension is a folder with a `safelight.json` manifest and a ready-to-run ES module. To share it, you put that folder in a GitHub repo. This page covers the layout, the manifest, adding a build step and the store listing. If you haven't made one yet, [Your first extension](first-extension.md) gets one running in about fifteen minutes. For how the core runs extensions, read [How Safelight works](../concepts.md). For GPU code, read [How a photo is rendered](../rendering.md).
+An extension is a folder with a `safelight.json` manifest and a ready-to-run ES module. To share it, you put that folder in a GitHub repo. This page covers the layout, the manifest, adding a build step and the library listing. If you haven't made one yet, [Your first extension](first-extension.md) gets one running in about fifteen minutes. For how the core runs extensions, read [How Safelight works](../concepts.md). For GPU code, read [How a photo is rendered](../rendering.md).
 
-Next: [Contribution Types](contribution-types.md) (every `register*` call), [Debugging](debugging.md) (Developer Tools, live-loading, load errors), [Publishing](publishing.md) (store page and releases). Exact signatures are in the [API Reference](../api/README.md) and [`src/extensions/api/`](../../../src/extensions/api/). Users install extensions as described in [Using Extensions](../../user/using-extensions.md).
+Next: [Contribution Types](contribution-types.md) (every `register*` call), [Debugging](debugging.md) (Developer Tools, live-loading, load errors), [Publishing](publishing.md) (listing page and releases). Exact signatures are in the [API Reference](../api/README.md) and [`src/extensions/api/`](../../../src/extensions/api/). Users install extensions as described in [Using Extensions](../../user/using-extensions.md).
 
 ## Anatomy of an extension
 
@@ -16,7 +16,7 @@ Themes and small panels can be one hand-written JavaScript file. Point `main` at
 safelight-theme-slate/
 ├─ safelight.json     # "main": "index.js"
 ├─ index.js           # exports activate(api)
-└─ README.md          # shown on the store page
+└─ README.md          # shown on the listing page
 ```
 
 ```js
@@ -125,7 +125,7 @@ Build rules, whatever the bundler:
 
 - **One self-contained ES module** that exports `activate(api)` and optionally `deactivate()`.
 - **No runtime imports.** React comes from `api.react`. Bundling your own copy breaks hooks, and leaving an import in fails the load. Listing React as external only keeps a stray import from pulling a copy in; your code still shouldn't import it at runtime.
-- **Ship the built bundle.** Attach a zip to a [GitHub Release](publishing.md#releases-and-versions) or commit `dist/`. The store downloads files. It never runs your build.
+- **Ship the built bundle.** Attach a zip to a [GitHub Release](publishing.md#releases-and-versions) or commit `dist/`. Safelight downloads files. It never runs your build.
 
 [Effects](https://github.com/anthonyreimche/Effects) is a real repo built this way, with tests. Most older extensions carry a hand-written `safelight.d.ts` with only the parts they use, rather than the generated file.
 
@@ -168,9 +168,9 @@ When you update the file, set `minAppVersion` to the oldest Safelight that has e
 - **`supersedes`** (3.2.6) and **`deprecated`** retire an extension in favour of another; see [Replacing an extension](#replacing-an-extension).
 - An update that installs but fails to start is rolled back, and auto-update won't retry it until you publish a newer version.
 
-### Store listing
+### Library listing
 
-Tag the GitHub repo with the `safelight-extension` topic so it appears in the in-app store. The store groups extensions by purpose: add one to three of these topics beside it.
+Tag the GitHub repo with the `safelight-extension` topic so it appears in the open source extension library. It groups extensions by purpose: add one to three of these topics beside it.
 
 | Topic | Category |
 |---|---|
@@ -186,9 +186,9 @@ Tag the GitHub repo with the `safelight-extension` topic so it appears in the in
 | `safelight-theme` | Themes and interface |
 
 - `categories` in `safelight.json` overrides the topics when a value names a category by slug or label, in any case. Values that name none are ignored.
-- `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories. The store shows the first one present as a badge (Module, Processing, Panel).
-- The store also searches `keywords`. The category list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json).
-- `screenshots` (at most 6, https URLs or repo paths) show on your store page. `worksWith` (at most 6 `"owner/repo"`) lists extensions yours pairs with. Yours appears on theirs when it is verified.
+- `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories. The Extensions window shows the first one present as a badge (Module, Processing, Panel).
+- Search also covers `keywords`. The category list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json).
+- `screenshots` (at most 6, https URLs or repo paths) show on your listing page. `worksWith` (at most 6 `"owner/repo"`) lists extensions yours pairs with. Yours appears on theirs when it is verified.
 
 ### Replacing an extension
 
@@ -205,7 +205,7 @@ When a new extension takes over from an old one, people who have both end up wit
 - This happens once for each id. One the person turns back on stays on, and so does one installed after yours.
 - At most 16 ids. Ids under `core` or `safelight` are ignored, unless yours is an official extension.
 
-**`deprecated`**, in the old extension's `safelight.json` on its default branch, marks it discontinued in the store:
+**`deprecated`**, in the old extension's `safelight.json` on its default branch, marks it discontinued in the Extensions window:
 
 ```json
 "deprecated": { "replacedBy": "OPGERUIMD97/safelight-mat-frame", "message": "Use Framing / Border" }
@@ -253,7 +253,7 @@ Notes:
 
 ## Languages
 
-Safelight's interface is in English only for now, and the API has no translation support or locale setting. An extension that wants to offer other languages picks its own strings, for example from `navigator.language`, and keeps them in its own code. The manifest's `name` and `description` and the README on your store page are shown as written.
+Safelight's interface is in English only for now, and the API has no translation support or locale setting. An extension that wants to offer other languages picks its own strings, for example from `navigator.language`, and keeps them in its own code. The manifest's `name` and `description` and the README on your listing page are shown as written.
 
 ## Working with a coding agent
 

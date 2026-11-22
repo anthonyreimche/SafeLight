@@ -73,7 +73,9 @@ export function usePipelineRows(version: ProcessVersion): PipelineRow[] {
   // photo's masks call for, as the renderer builds its program. Every brush dab
   // replaces the masks but rarely the copies, so the rows key on the copies'
   // sig, as the renderer keys its injection.
-  const copies = maskInstances(Object.values(registered), masks, variant);
+  // Stages of another display transform stay out, as stageList leaves them.
+  const own = Object.values(registered).filter((s) => s.transform === undefined || s.transform === pipeline.id);
+  const copies = maskInstances(own, masks, variant);
   return useMemo(
     () => describePipeline(copies.stages, variant, pipeline),
     // eslint-disable-next-line react-hooks/exhaustive-deps

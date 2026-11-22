@@ -15,6 +15,17 @@ import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { normalizeParams } from "@/catalog/types";
 import { photo as fixture } from "@/catalog/stored-edit.fixtures";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
+import { registerProcessingStage, unregisterExtension } from "@/extensions/registry";
+import type { ProcessingStageContribution } from "@/extensions/types";
+
+const PER_PHOTO: ProcessingStageContribution = {
+  id: "acme.per",
+  name: "Per photo",
+  phase: "effects",
+  glsl: "",
+  uniforms: [],
+  textures: [{ key: "tex", kind: "lut", perPhoto: true }],
+};
 
 const h = vi.hoisted(() => ({
   photos: [] as CatalogPhoto[],
@@ -342,12 +353,32 @@ describe("the stage bag of a measured frame", () => {
     });
   });
 
-  it("sends no bag when the caller gives none, so the renderer keeps its own", async () => {
+  // SafeLight #278: without a bag of its own the frame drew with whatever the
+  // renderer held, the open or last photo's stage values and textures.
+  it("draws the photo's params alone when the caller gives no bag, never another photo's values", async () => {
     h.resident.add(KEY);
 
     await renderPhotoFrame(ID, params);
+    await renderPhotoFloatFrame(ID, params);
 
-    expect(h.requests[0].request.contributedParams).toBeUndefined();
+    expect(h.requests.map((r) => r.request.contributedParams)).toEqual([denoiseBag(params), denoiseBag(params)]);
+  });
+
+  it("asks for, and draws, the photo's own variant of a per-photo texture", async () => {
+    h.resident.add(KEY);
+    registerProcessingStage("acme", PER_PHOTO);
+    const asked: unknown[] = [];
+    h.needVariants = (needs) => {
+      asked.push(needs["acme.per.tex"]);
+      return null;
+    };
+    try {
+      await renderPhotoFrame(ID, params, bag);
+    } finally {
+      unregisterExtension("acme");
+    }
+    expect(asked).toEqual([ID]);
+    expect(h.requests[0].request.contributedParams).toMatchObject({ "acme.per.tex": ID });
   });
 });
 
@@ -496,13 +527,5 @@ describe("a float frame of a photo", () => {
 
     expect(h.requests[0].request.contributedParams).toEqual({ ...bag, ...denoiseBag(params) });
     expect(h.requests[0].request.float).toEqual(FLOAT);
-  });
-
-  it("sends no bag when the caller gives none, so the renderer keeps its own", async () => {
-    h.resident.add(KEY);
-
-    await floats(FLOAT);
-
-    expect(h.requests[0].request.contributedParams).toBeUndefined();
   });
 });

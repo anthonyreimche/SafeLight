@@ -4,12 +4,12 @@ Safelight is extensible: panels, tools, themes, display transforms, and more are
 
 ## The Extensions panel
 
-The Extensions panel (**View ▸ Extensions**, or **Ctrl+Shift+X**) is a GitHub-backed app store with master/detail browsing, READMEs, categories, and update checks. It covers the full lifecycle:
+The Extensions panel (**View ▸ Extensions**, or **Ctrl+Shift+X**) is where you browse the open source extension library, with master/detail browsing, READMEs, categories, and update checks. It covers the full lifecycle:
 
 - **Install** — browse official extensions (GitHub repos tagged with the `safelight-extension` topic; configurable in Preferences ▸ Extensions) or enter `owner/repo`, `owner/repo#branch`, or a github.com URL. The repo is downloaded into `<userData>/plugins/<id>/` and activated live — no restart.
 - **Disable / enable** — the toggle on each row deactivates an extension and removes its contributions while keeping its files and settings. Re-enabling is instant.
 - **Settings** — extensions that expose options get a section in **Preferences ▸ Extensions**.
-- **Update** — the store checks each installed extension's latest GitHub release (or, for an extension that publishes from its main branch, the version on that branch). The **Updates** tab (first in the sidebar, with a badge showing the count) lists every installed extension that has a newer version. Open **What's new** on a row to read the release notes; its Update button downloads the new version and reinstalls the extension in place — no restart, and your settings are kept. Updates can also be applied from an extension's detail page or, opt-in, automatically (Preferences ▸ Extensions). An update that needs a newer Safelight than you have is refused until you update Safelight itself.
+- **Update** — Safelight checks each installed extension's latest GitHub release (or, for an extension that publishes from its main branch, the version on that branch). The **Updates** tab (first in the sidebar, with a badge showing the count) lists every installed extension that has a newer version. Open **What's new** on a row to read the release notes; its Update button downloads the new version and reinstalls the extension in place — no restart, and your settings are kept. Updates can also be applied from an extension's detail page or, opt-in, automatically (Preferences ▸ Extensions). An update that needs a newer Safelight than you have is refused until you update Safelight itself.
 - **Choose a version** — an extension that publishes releases has a version list on its detail page, with its release notes under **What's new**. Pick an older release to go back to it: Safelight keeps you on that version (the page says **Kept at**), so auto-update leaves it alone and the Updates badge doesn't count it, though the Updates tab still shows the newer one. To follow new releases again, pick **Latest** and click **Update** (or **Switch**, if you're on a pre-release). Pre-releases are in the list too; once you install one, you're offered newer pre-releases until a full release passes them.
 - **Uninstall** — removes the extension *and deletes its files and stored settings*.
 
@@ -17,13 +17,13 @@ The Extensions panel (**View ▸ Extensions**, or **Ctrl+Shift+X**) is a GitHub-
 
 ## The Essentials
 
-Library, Develop and the standard tools (Basic, White Balance, Tone Curve, HSL, Colour Grading, Detail, Effects, Crop, Transform, Heal, Masking, Edit History, Histogram, Presets, Export, Accessibility and the Library panels) are the **Essentials**. They're official extensions, installed on first launch, and they update through the store like any other. That means a fix to one tool reaches you without a whole new Safelight release, and you can go back to an earlier version of one tool if an update changes something you rely on.
+Library, Develop and the standard tools (Basic, White Balance, Tone Curve, HSL, Colour Grading, Detail, Effects, Crop, Transform, Heal, Masking, Edit History, Histogram, Presets, Export, Accessibility and the Library panels) are the **Essentials**. They're official extensions, installed on first launch, and they update through the Extensions window like any other. That means a fix to one tool reaches you without a whole new Safelight release, and you can go back to an earlier version of one tool if an update changes something you rely on.
 
 What happens to your edits:
 
 - **Turning an Essential off or uninstalling it never deletes edits.** The values stay in each photo's edit. The photo just renders without that tool until it's back, and Develop says "This photo uses adjustments from Basic, which is turned off", with a button to turn it on.
 - **Exports follow what's installed.** A photo exported while a tool it uses is off is exported without that tool's adjustments. Turn the tool back on before exporting delivered work.
-- **Updating an Essential can change the look of photos it touches.** Each release renders every photo with that release's maths. If an update changes a look you've delivered, pick the earlier version from the tool's page in the store and Safelight keeps you on it.
+- **Updating an Essential can change the look of photos it touches.** Each release renders every photo with that release's maths. If an update changes a look you've delivered, pick the earlier version from the tool's page in the Extensions window and Safelight keeps you on it.
 - **Offline.** Installed extensions keep working without a connection. Installing and updating need GitHub, and so does the first launch, which downloads the Essentials.
 
 ## Are extensions safe?
@@ -36,11 +36,11 @@ Safelight installs nothing without asking: you pick extensions here or in the we
 
 - **Advanced Library Sort** — custom sort orders, a live search bar, and smart searches.
 - **Image Comparison** — before/after via hold-to-preview and a draggable split on the Develop canvas.
-- **XMP Tools** — XMP sidecar read/write and Lightroom preset import. Lightroom `.xmp` presets need an importer like this one; without one, the Presets panel's Import says so and links to the store's **Presets** category.
+- **XMP Tools** — XMP sidecar read/write and Lightroom preset import. Lightroom `.xmp` presets need an importer like this one; without one, the Presets panel's Import says so and links to the **Presets** category in the Extensions window.
 
 ## Starter kits
 
-Starter kits are groups of verified extensions by shooting style, curated in the Safelight extension registry. Open **Starter kits** in the Extensions store (or run the welcome setup again) to install a kit. Kits only list extensions on the verified list, and setup only installs the version that was reviewed: if an extension has moved past its review, or Safelight can't confirm its current version right now, setup skips it and you can install it from the store yourself. Setup never removes anything; uninstall extensions from the store's **Installed** tab.
+Starter kits are groups of verified extensions by shooting style, curated in the Safelight extension registry. Open **Starter kits** in the Extensions window (or run the welcome setup again) to install a kit. Kits only list extensions on the verified list, and setup only installs the version that was reviewed: if an extension has moved past its review, or Safelight can't confirm its current version right now, setup skips it and you can install it from the Extensions window yourself. Setup never removes anything; uninstall extensions from the **Installed** tab of the Extensions window.
 
 ## Manual install
 

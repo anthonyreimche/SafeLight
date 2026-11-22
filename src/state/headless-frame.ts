@@ -90,9 +90,9 @@ export async function renderPhotoFloatFrame(
   );
 }
 
-/** measureFrom, once the stage texture variants made on demand that `paramBag`
- *  names are held, and held across every source it tries: null without decoding
- *  anything when one can't be had. */
+/** measureFrom with the frame's whole stage bag, once the stage texture variants
+ *  made on demand that it names are held, and held across every source it
+ *  tries: null without decoding anything when one can't be had. */
 async function measure<T>(
   photoId: string,
   params: DevelopParams,
@@ -100,22 +100,25 @@ async function measure<T>(
   cameraPreview: boolean,
   render: (bridge: RenderBridge, request: ThumbRequest) => Promise<T | null>,
 ): Promise<T | null> {
-  const needed = paramBag && needStageVariants(paramBag, { worker: true });
+  // Without a bag of its own the photo draws its params alone: a renderer's
+  // own bag is another photo's.
+  const bag = frameStageBag(params, paramBag ?? {}, photoId);
+  const needed = needStageVariants(bag, { worker: true });
   const lease = needed && (await needed);
   try {
     if (lease?.failure) {
       console.warn(`[render] ${lease.failure}`);
       return null;
     }
-    return await measureFrom(photoId, params, paramBag, cameraPreview, render);
+    return await measureFrom(photoId, params, bag, cameraPreview, render);
   } finally {
     lease?.release();
   }
 }
 
 /** Render `photoId` with `params` small, through the thumb renderer, from the
- *  first source that has it, with the photo's own `paramBag` drawn as the live
- *  view draws it: under the entries the built-in stages take from `params`.
+ *  first source that has it, with `contributedParams`, the frame's whole stage
+ *  bag (frameStageBag).
  *  `render` draws one request and gives null for a miss or a failure.
  *  `cameraPreview` lets the grid's camera JPEG stand in, last, for a photo with
  *  no source of its own. Null for a photo the catalogue doesn't hold, or one no
@@ -123,13 +126,12 @@ async function measure<T>(
 async function measureFrom<T>(
   photoId: string,
   params: DevelopParams,
-  paramBag: Record<string, unknown> | undefined,
+  contributedParams: Record<string, unknown>,
   cameraPreview: boolean,
   render: (bridge: RenderBridge, request: ThumbRequest) => Promise<T | null>,
 ): Promise<T | null> {
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return null;
-  const contributedParams = paramBag && frameStageBag(params, paramBag);
 
   const bridge = getRenderBridge();
   await bridge.ready;

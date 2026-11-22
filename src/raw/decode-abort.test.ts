@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   requests: [] as ({ background?: boolean; signal?: AbortSignal } | undefined)[],
   /** Runs while libraw "waits" for an instance, before it answers null. */
   whileWaiting: (): void => {},
-  /** How many times the in-house decoder started parsing a file. */
+  /** How many times the in-house decoder looked for a file's sensor data. */
   inHouse: 0,
   /** What libraw answers for a request abandoned while it was out. */
   answerOnceAbandoned: "aborted" as "aborted" | "unsupported",
@@ -36,11 +36,9 @@ vi.mock("./tiff", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./tiff")>();
   return {
     ...actual,
-    TiffReader: class extends actual.TiffReader {
-      constructor(buffer: ArrayBuffer, base?: number) {
-        h.inHouse++;
-        super(buffer, base);
-      }
+    findRawIfd: (reader: InstanceType<typeof actual.TiffReader>) => {
+      h.inHouse++;
+      return actual.findRawIfd(reader);
     },
   };
 });

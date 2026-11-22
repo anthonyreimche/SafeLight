@@ -14,6 +14,7 @@
 import { normalizeRotation } from "@/catalog/orient";
 import { encodeCacheEntry, type EncodedEntry } from "./cache-encode";
 import { halfBits } from "./half-float";
+import type { LinearDngJob, LinearDngResult } from "./linear-dng";
 import type { HalfFrame, ProfileJob } from "./profile-frame";
 
 export interface FrameJob {
@@ -54,15 +55,18 @@ export interface BuiltFrame {
 
 export type FrameResult = { rejected: string } | BuiltFrame;
 
-/** The requests answered as they arrive; a "profile" one decodes its file
- *  first, so profile-frame.ts answers it. */
+/** The requests answered as they arrive; a "profile" or "dng" one decodes
+ *  its file first, so profile-frame.ts answers it. */
 export type SyncFrameRequest =
   | { id: number; op: "build"; job: FrameJob }
   | { id: number; op: "linear"; job: LinearFrameJob }
   | { id: number; op: "srgb8"; data: Float32Array }
   | { id: number; op: "luma"; data: Float32Array };
 
-export type FrameRequest = SyncFrameRequest | { id: number; op: "profile"; job: ProfileJob };
+export type FrameRequest =
+  | SyncFrameRequest
+  | { id: number; op: "profile"; job: ProfileJob }
+  | { id: number; op: "dng"; job: LinearDngJob };
 
 export type FrameReply =
   | { id: number; op: "build"; result: FrameResult }
@@ -70,6 +74,7 @@ export type FrameReply =
   | { id: number; op: "srgb8"; bytes: Uint8ClampedArray<ArrayBuffer> }
   | { id: number; op: "luma"; data: Uint16Array<ArrayBuffer> }
   | { id: number; op: "profile"; frame: HalfFrame }
+  | { id: number; op: "dng"; result: LinearDngResult }
   | { id: number; op: "error"; message: string };
 
 // dcraw's gamma_curve() for its default transfer (power 0.45, toe slope 4.5:
@@ -230,7 +235,8 @@ export function buildLinearFrame(job: LinearFrameJob): BuiltFrame {
   return { data, width: outWidth, height: outHeight, ...(entry ? { entry } : {}) };
 }
 
-function frameBuffers(frame: BuiltFrame): Transferable[] {
+/** The buffers a built frame takes with it to the other side. */
+export function frameBuffers(frame: BuiltFrame): Transferable[] {
   return frame.entry
     ? [frame.data.buffer, frame.entry.preview.data.buffer, frame.entry.sample.data.buffer]
     : [frame.data.buffer];

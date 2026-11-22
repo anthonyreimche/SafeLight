@@ -255,7 +255,7 @@ export function DevelopCanvas({
       return {
         rect: overlayRect, imageRect: null, nonce: overlayNonce,
         toScreen: null, toImage: null, radiusToScreen: null, radiusToImage: null,
-        region: null, imageAspect,
+        region: null, imageAspect, zoomScale: logicalScale,
       };
     }
     // Through the region the canvas shows: crop mode shows the whole image past the
@@ -267,6 +267,7 @@ export function DevelopCanvas({
       nonce: overlayNonce,
       region: shown,
       imageAspect,
+      zoomScale: logicalScale,
       toScreen: (u: number, v: number) => {
         const t = mat3Apply(forwardRaw, u, v);
         const ox = (t.x - shown.x) / shown.width;
@@ -281,7 +282,7 @@ export function DevelopCanvas({
       radiusToScreen: (r: number) => (r / shown.height) * ir.h,
       radiusToImage: (px: number) => (px / ir.h) * shown.height,
     };
-  }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, geometry, imageAspect]);
+  }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, geometry, imageAspect, logicalScale]);
 
   const toolOverlay = useMemo(
     () =>

@@ -477,13 +477,15 @@ describe("what each version does differently", () => {
     expect(transformNote(V2_VARIANT, FILMIC)).toBeUndefined();
   });
 
-  it("notes the camera baseline refit after channel reconstruction on version 2 and later", () => {
+  it("notes the camera baseline after channel reconstruction on version 2 and later", () => {
     const reconstructionNote = (variant: ShaderVariant, pipeline?: ResolvedPipeline) =>
       rowsOf(describeBuiltin(variant, pipeline), "core").find((r) => r.label === "Channel reconstruction")?.note;
-    expect(reconstructionNote(V2_VARIANT)).toMatch(/refit.*camera maker's exposure offset/);
-    expect(reconstructionNote(V3_VARIANT)).toMatch(/refit.*camera maker's exposure offset/);
+    expect(reconstructionNote(V2_VARIANT)).toMatch(/refit.*camera exposure/);
+    expect(reconstructionNote(V3_VARIANT)).toMatch(/refit.*camera exposure/);
     expect(reconstructionNote(V1_VARIANT)).toBeUndefined();
-    expect(reconstructionNote(V2_VARIANT, FILMIC)).toBeUndefined();
+    const underTransform = reconstructionNote(V2_VARIANT, FILMIC);
+    expect(underTransform).toMatch(/camera exposure/);
+    expect(underTransform).not.toMatch(/refit/);
   });
 
   // Only a float16 copy keeps values outside [0, 1], and version 1 never takes one.

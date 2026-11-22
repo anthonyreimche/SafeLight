@@ -260,8 +260,10 @@ export interface PipelineContribution {
    *  default baseline tone (the camera-style lift applied to RAW sources in
    *  linear light), so the transform is the profile. It drops the baseline
    *  only: the core filmic shoulder still runs unless `skipToneShoulder` is
-   *  set. On process version 2 photos that includes the camera baseline after
-   *  channel reconstruction (the refit and the camera maker's exposure offset). */
+   *  set. On process version 2 photos that includes the camera baseline's
+   *  refit and the camera match's Shadows lift. The RAW's camera exposure
+   *  (its camera match, else its maker's offset) is not part of the look and
+   *  stays, so the transform receives the photo at its camera's exposure. */
   skipBaseCurve?: boolean;
   /** The transform brings its own highlight roll-off: the core filmic
    *  shoulder (which compresses luminance above 0.85 at Highlights 0) is
@@ -613,7 +615,9 @@ export interface TextureRequirement {
   /** Parameter bag key for the texture data. */
   key: string;
   /** "lut" / "dynamic": pixel data supplied through api.setStageTexture (one
-   *  global bag, not per photo). "coverage": the photo's paramBag value at
+   *  global bag, not per photo), sampled under its `key` by the inline glsl
+   *  and helpers, and by any of the stage's passes that names the key in its
+   *  glsl, helpers or region (since 3.2.7). "coverage": the photo's paramBag value at
    *  "{stageId}.{key}" is a BrushDab[] (the shape core masks use, source-UV,
    *  radius in image-height units); the renderer bakes it into brush coverage
    *  per render, so it persists, undoes and exports like any edit, and the
@@ -635,6 +639,14 @@ export interface TextureRequirement {
    *  isn't painted. Not available inside passes. One per stage; it takes a
    *  stage texture unit, as "lut" and "dynamic" do. */
   kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas" | "paint";
+  /** For a "lut" or "dynamic" texture that holds one photo's own data (a
+   *  fitted lookup, a warp field): every frame of a photo, in the live view,
+   *  thumbnails, exports and headless renders, draws the variant filed under
+   *  the photo's id (api.setStageTexture's `variant`, or a provider's), unless
+   *  the photo's bag names another. A photo whose variant has no data draws
+   *  the texture with none, never another photo's. Ids that aren't variant
+   *  names name none. Needs Safelight 3.2.7. */
+  perPhoto?: boolean;
   width?: number;
   height?: number;
   format?: "rgba8" | "rgba16f" | "r8";
@@ -758,6 +770,10 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *    #define SL_PROCESS_VERSION // the photo's process version (see ProcessingStageContribution.glsl)
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
  *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl.
+ *  A pass samples the stage's "lut" and "dynamic" textures by their keys, as
+ *  `sampler2D`s, laid out like the source in source-UV space: the variant the
+ *  frame's bag names, and when that data changes the passes from the first
+ *  that names the texture draw again (since 3.2.7).
  *  A pass that fails to compile takes its stage out of the frame, inline glsl
  *  included, and is reported as the stage's failure. */
 export interface StagePass {
@@ -1038,6 +1054,16 @@ export interface ProcessingStageContribution {
    *  Needs Safelight 3.2.4; older builds draw the stage everywhere. */
   viewOnly?: boolean;
 
+  /** The display transform (a PipelineContribution id) this stage belongs to:
+   *  it runs only in frames of photos that render with that transform, in the
+   *  live view, thumbnails, exports and headless renders alike, and every
+   *  other photo draws without it whatever its bag holds. For a stage that
+   *  carries a transform's look, so registering it never reaches photos that
+   *  render with another. Refused on geometry stages and on stages that
+   *  `produce` values. Needs Safelight 3.2.7; older builds draw the stage
+   *  everywhere. */
+  transform?: string;
+
   /** For a stage in the decode or noise-reduction phase: its result keeps the
    *  photo's own fine detail in place, as a chromatic-aberration or flat-field
    *  correction does. With Dynamic render resolution, Develop then goes on
@@ -1051,8 +1077,8 @@ export interface ProcessingStageContribution {
   /** The stage needs the decode as the sensor recorded it, as a film negative
    *  inversion does to read the film's densities. While the stage is at work
    *  on a photo (its `dormantWhen` doesn't hold), the photo renders without
-   *  the baseline tone, the camera baseline after it (the refit, the maker's
-   *  exposure offset and the camera match's Shadows lift) and channel
+   *  the baseline tone, the camera baseline after it (the refit, the camera
+   *  exposure and the camera match's Shadows lift) and channel
    *  reconstruction: in Develop, thumbnails, exports and captures alike, and
    *  in every stage's passes. At rest, nothing changes. Needs `dormantWhen`
    *  (registration refuses the stage without it). Only RAW photos carry a

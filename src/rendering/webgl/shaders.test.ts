@@ -95,7 +95,9 @@ describe("Highlights and Shadows in the version 2 program", () => {
 });
 
 describe("the camera baseline", () => {
-  const REFIT = "if (uApplyBaseCurve) lin = slBaselineRefit(lin) * uBaselineGain;";
+  const REFIT = "if (uApplyBaseCurve) lin = slBaselineRefit(lin);";
+  // Outside the baseline's gate: a transform that drops the look keeps it.
+  const GAIN = "lin *= uBaselineGain;";
   const main = (src: string) => src.slice(src.indexOf("void main()"));
 
   // The decode stages' passes share one prelude across versions, which runs
@@ -109,7 +111,9 @@ describe("the camera baseline", () => {
       expect(body.split(REFIT)).toHaveLength(2);
       expect(body).toContain("if (uApplyBaseCurve) lin = baselineTone(lin);");
       expect(body.indexOf("lin = reconstructClipped(lin, srcUv);")).toBeLessThan(body.indexOf(REFIT));
-      expect(body.indexOf(REFIT)).toBeLessThan(body.indexOf("lin = applyWhiteBalance(lin, uTemperature"));
+      expect(body.split(GAIN)).toHaveLength(2);
+      expect(body.indexOf(REFIT)).toBeLessThan(body.indexOf(GAIN));
+      expect(body.indexOf(GAIN)).toBeLessThan(body.indexOf("lin = applyWhiteBalance(lin, uTemperature"));
     });
 
     it(`declares the camera's gain and the refit curve on version ${variant.version}`, () => {

@@ -21,13 +21,13 @@ is sent directly to GitHub, whose terms govern it.
 | App update check | `api.github.com/.../releases` | On launch, then every 3h | **On** | Preferences → Updates → "Check for updates" |
 | Extension update check | `api.github.com` (per installed extension) | On launch, then every 3h | **On** | Preferences → Extensions → "Check for extension updates" |
 | Extension trust list | `raw.githubusercontent.com/.../safelight-registry` | On launch, if any extension is installed | **On**, gated by the extension-update setting above | Same toggle as extension updates |
-| Extension store browsing | `api.github.com/search`, plus thumbnails from `github.com`, `cdn.jsdelivr.net`, and avatar hosts | Only when you open the Extensions window and search | User-initiated | Don't open the store |
+| Browsing the open source extension library | `api.github.com/search`, plus thumbnails from `github.com`, `cdn.jsdelivr.net`, and avatar hosts | Only when you open the Extensions window and search | User-initiated | Don't open the Extensions window |
 | Installing / updating an extension | The extension's GitHub repo | Only when you click install/update | User-initiated | Don't install |
 | Report an issue | `github.com/anthonyreimche/SafeLight/issues/new`, opened in your browser | Only when you click **Open on GitHub** | User-initiated | Don't use it |
 
 **Going fully offline:** turn off both "Check for updates" and "Check for
 extension updates" in Preferences. With those off, the core app makes no network
-request unless you explicitly open the Extensions store or install an extension.
+request unless you explicitly open the Extensions window or install an extension.
 
 ## Extensions can do more
 

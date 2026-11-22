@@ -93,6 +93,7 @@ export function CopySettingsDialog({
     <Dialog
       labelledBy={titleId}
       onClose={onCancel}
+      onSubmit={submit}
       className="flex max-h-[80vh] w-[360px] flex-col rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
     >
       <div className="border-b border-[var(--color-border)] p-3">

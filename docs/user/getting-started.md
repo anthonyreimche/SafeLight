@@ -41,7 +41,7 @@ Safelight is project-based: instead of importing photos into a central catalogue
 
 Safelight reopens your last project on launch when **Restore last project** is enabled. Browsers reset folder permissions between sessions, so you may see a **Reconnect** prompt — one click re-grants access.
 
-Supported formats: JPEG, PNG, WebP, AVIF, TIFF, NetPBM, HEIC/HEIF (iPhone photos, and Sony and Canon `.HIF`), and RAW (NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, X3F). Extensions can add other decoders for these formats; pick which one is tried first in **Preferences ▸ File formats**.
+Supported formats: JPEG, PNG, WebP, AVIF, TIFF, NetPBM, HEIC/HEIF (iPhone photos, and Sony and Canon `.HIF`), and RAW (NEF, CR2, CR3, ARW, ARQ, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, X3F). Extensions can add other decoders for these formats; pick which one is tried first in **Preferences ▸ File formats**.
 
 ## Cull and Organize
 

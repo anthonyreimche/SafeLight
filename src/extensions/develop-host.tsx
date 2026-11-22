@@ -15,6 +15,7 @@ import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { FloatCaptureOptions, FloatFrame, LiveFloatCaptureOptions } from "@/rendering/float-frame";
 import type { SourceSample } from "@/rendering/source-sample";
+import { regionCapture, type RegionCapture, type RegionRequest } from "@/rendering/region-capture";
 import { renderPhotoFloatFrame, renderPhotoFrame } from "@/state/headless-frame";
 
 export interface OverlayRect {
@@ -58,6 +59,12 @@ export interface DevelopOverlayState {
   region: import("@/catalog/types").CropRect | null;
   /** The decoded image's width over its height. Needs Safelight 3.2.0. */
   imageAspect: number;
+  /** The device pixels a pixel of the view's whole frame (the pixels
+   *  captureRegion draws in) spans at Develop's 100 %. 1, except with Dynamic
+   *  render resolution on a RAW whose decoded size is larger than the source
+   *  Develop holds, where zoom is measured in the photo's own pixels: the
+   *  decoded width over the source's. Needs Safelight 3.2.7. */
+  zoomScale: number;
 }
 
 const DevelopOverlayContext = createContext<DevelopOverlayState>({
@@ -70,6 +77,7 @@ const DevelopOverlayContext = createContext<DevelopOverlayState>({
   radiusToImage: null,
   region: null,
   imageAspect: 1,
+  zoomScale: 1,
 });
 
 export const DevelopOverlayProvider = DevelopOverlayContext.Provider;
@@ -101,6 +109,14 @@ export function captureDevelopFloatFrame(
   options?: LiveFloatCaptureOptions,
 ): Promise<FloatFrame | null> {
   return getRenderBridge().captureFloat(params, options);
+}
+
+/** A patch of the live frame at the frame's own pixels, drawn as the canvas
+ *  shows it, without disturbing the view: what a magnifier shows at true pixel
+ *  scale whatever the zoom. Null without a frame (see WebGLRenderer.readRegion). */
+export async function captureDevelopRegion(request: RegionRequest): Promise<RegionCapture | null> {
+  const pixels = await getRenderBridge().captureRegion(request);
+  return pixels && regionCapture(pixels);
 }
 
 /** The native-resolution centre of the live photo's decode (source-sample.ts),

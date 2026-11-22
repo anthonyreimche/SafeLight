@@ -214,7 +214,20 @@ export function toggleDockSide(side: RailState["side"]): void {
 
 export function toggleCollapsed(id: string) {
   const s = useDockStore.getState();
-  const collapsed = { ...s.collapsed, [id]: !s.collapsed[id] };
+  setCollapsed({ ...s.collapsed, [id]: !s.collapsed[id] });
+}
+
+/** Expand `id` and collapse the other panels of its rail. A floating panel has
+ *  no rail, so it just expands. */
+export function soloCollapsed(id: string) {
+  const s = useDockStore.getState();
+  const rail = s.rails.find((r) => r.panels.includes(id));
+  const collapsed = { ...s.collapsed, [id]: false };
+  for (const p of rail?.panels ?? []) if (p !== id) collapsed[p] = true;
+  setCollapsed(collapsed);
+}
+
+function setCollapsed(collapsed: Record<string, boolean>) {
   if (!saveCollapsedToLayout(collapsed)) commit({ collapsed });
 }
 

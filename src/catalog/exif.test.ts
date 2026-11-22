@@ -1000,3 +1000,24 @@ describe("parseExif — Fujifilm RAF container", () => {
     expect(await parseExif(blobOf(latin1("FUJIFILMCCD-RAW 0201")))).toEqual({});
   });
 });
+
+// A DNG names its camera in UniqueCameraModel ("Canon EOS 6D"), and some linear
+// DNG writers leave Make and Model out: the camera then comes from it, so the
+// photo gets its maker's exposure offset as the camera's own RAW does.
+describe("parseExif — DNG UniqueCameraModel", () => {
+  const UNIQUE_CAMERA_MODEL = 0xc614;
+
+  it("takes the camera from UniqueCameraModel when Make and Model are missing", async () => {
+    const exif = await fromTiff({ le: true, ifd0: [[UNIQUE_CAMERA_MODEL, ascii("NIKON D3400")]] });
+    expect(exif.cameraMake).toBe("NIKON");
+    expect(exif.cameraModel).toBe("NIKON D3400");
+  });
+
+  it("keeps Make and Model when the file has them", async () => {
+    const exif = await fromTiff({
+      le: true,
+      ifd0: [[T.Make, ascii("Canon")], [T.Model, ascii("Canon EOS 6D")], [UNIQUE_CAMERA_MODEL, ascii("Canon EOS 6D (merged)")]],
+    });
+    expect([exif.cameraMake, exif.cameraModel]).toEqual(["Canon", "Canon EOS 6D"]);
+  });
+});

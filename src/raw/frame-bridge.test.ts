@@ -7,6 +7,9 @@
 // on structured clones, so a buffer handed over is detached here as it is in a
 // browser.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildFrame,
@@ -48,7 +51,7 @@ class FakeWorker {
       const data = structuredClone(reply, { transfer });
       setTimeout(() => this.onmessage?.({ data }));
     };
-    if (req.op === "profile") void answerFrameRequest(req).then(send);
+    if (req.op === "profile" || req.op === "dng") void answerFrameRequest(req).then(send);
     else send(handleFrameRequest(req));
   }
 
@@ -438,5 +441,31 @@ describe("finishLinearFrame", () => {
     controller.abort();
 
     await expect(finishLinearFrame(linear(), { signal: controller.signal })).rejects.toSatisfy(isAbandoned);
+  });
+});
+
+describe("decodeLinearDngFrame through the worker", () => {
+  const fixture = (): ArrayBuffer => {
+    const bytes = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "linear-dng", "f16-tiled-deflate.dng"));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  };
+
+  it("decodes the file in the worker, handing its bytes over without a copy", async () => {
+    const { decodeLinearDngFrame } = await load();
+    const buffer = fixture();
+
+    const out = await decodeLinearDngFrame({ buffer, turn: 0, cacheEdge: 8 });
+
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(buffer.byteLength).toBe(0);
+    expect(out).toMatchObject({ width: 20, height: 12, entry: expect.anything() });
+  });
+
+  it("passes a file it can't read through as rejected", async () => {
+    const { decodeLinearDngFrame } = await load();
+
+    const out = await decodeLinearDngFrame({ buffer: new ArrayBuffer(64), turn: 0 });
+
+    expect(out).toEqual({ rejected: expect.any(String) });
   });
 });

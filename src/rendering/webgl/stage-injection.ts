@@ -80,6 +80,18 @@ export interface StageTextureBinding {
   kind: TextureRequirement["kind"];
 }
 
+/** A stage's "lut" or "dynamic" texture that one of its passes samples: the
+ *  runner binds what the frame's bag draws it with to the pass's sampler. */
+export interface PassTextureBinding {
+  /** Qualified key "{stageId}.{key}" of the stage whose texture it is (a mask
+   *  copy samples its stage's). */
+  qualifiedKey: string;
+  glslName: string;
+}
+
+/** Texture kinds a pass may sample: the ones uploaded from api.setStageTexture. */
+const PASS_TEXTURE_KINDS: ReadonlySet<TextureRequirement["kind"]> = new Set(["lut", "dynamic"]);
+
 /** The GLSL behind a coverage-kind key: the stage calls `key(uv)` and reads the
  *  coverage painted for it out of the brush atlas channel bound per frame. */
 function coverageHelperGlsl(name: string): string {
@@ -370,12 +382,14 @@ export const INPUT_IS_SOURCE_UNIFORM = "uInputIsSource";
 
 /** A pass's fetchInput. From the source, a pass texel maps to the source texel
  *  it falls in, which is itself at the pass size the runner draws the input at
- *  otherwise; only a GPU without float render targets reads another size here. */
+ *  otherwise; only a GPU without float render targets reads another size here.
+ *  `texel` is highp: a mediump int's float is half precision on Mesa radeonsi,
+ *  where the texel centre and every odd column past 2048 px are lost. */
 function fetchInputGlsl(space: StageSpace | undefined): string {
   const fetched = sourceRead(space, `texelFetch(${SOURCE_IMAGE_UNIFORM}, t, 0).rgb`);
   return `uniform sampler2D ${INPUT_IMAGE_UNIFORM}; // the stage's input, drawn at pass size
 uniform bool ${INPUT_IS_SOURCE_UNIFORM};
-vec3 fetchInput(ivec2 texel) {
+vec3 fetchInput(highp ivec2 texel) {
   if (${INPUT_IS_SOURCE_UNIFORM}) {
     vec2 pass = floor(1.0 / uTexel + 0.5);
     vec2 size = vec2(textureSize(${SOURCE_IMAGE_UNIFORM}, 0));
@@ -405,6 +419,8 @@ export interface PrepassPass {
   /** Set when the count comes from the bag; passDraws() resolves it per frame. */
   drawCount?: DrawCountBinding;
   bindings: ContributedBinding[];
+  /** The stage textures the pass samples; absent when it names none. */
+  textures?: PassTextureBinding[];
   /** The pass names fetchInput, so its draws need the stage's input. */
   fetchesInput?: true;
   /** The state after the pass is checkpointed (StagePass.keep). */
@@ -500,27 +516,47 @@ const layersResults = (
  *  + helpers under the owning stage's prefix so they share the stage's param keys,
  *  and, for a pass that names its region, the vertex program that places each
  *  draw's quad over it. A mask copy passes its stage's id as `prefixId`: same
- *  programs, its own keys. */
+ *  programs, its own keys. The stage's "lut" and "dynamic" textures the pass
+ *  names are declared as the inline declares them, and listed for the runner
+ *  to bind. */
 function buildPassPrograms(
   stageId: string,
   pass: StagePass,
   space: StageSpace | undefined,
   prefixId = stageId,
-): { fragmentSource: string; vertexSource?: string; bindings: ContributedBinding[]; fetchesInput: boolean } {
+  stageTextures: readonly TextureRequirement[] = [],
+): {
+  fragmentSource: string;
+  vertexSource?: string;
+  bindings: ContributedBinding[];
+  textures: PassTextureBinding[];
+  fetchesInput: boolean;
+} {
   const uPfx = uniformPrefix(prefixId);
   const hPfx = helperPrefix(prefixId);
   const uniforms = pass.uniforms ?? [];
   const bindings: ContributedBinding[] = uniforms.map((u) => bindingOf({ id: stageId }, u, uPfx));
-  const uniformDecls = uniforms.map((u) => emitUniformDecl(u, uPfx)).join("\n");
+  const raw = pass.glsl + (pass.helpers ?? "") + (pass.region ?? "");
+  const sampled = stageTextures
+    .filter((t) => PASS_TEXTURE_KINDS.has(t.kind) && mentionsIdentifier(raw, [t.key]))
+    .map((t) => t.key);
+  const textures = sampled.map((key) => ({ qualifiedKey: `${prefixId}.${key}`, glslName: uPfx + key }));
+  const uniformDecls = [
+    ...uniforms.map((u) => emitUniformDecl(u, uPfx)),
+    ...textures.map((t) => `uniform sampler2D ${t.glslName};`),
+  ].join("\n");
   const helperNames = pass.helpers ? extractHelperNames(pass.helpers) : [];
   let helpers = "";
   if (pass.helpers) {
     let h = replaceIdentifiers(pass.helpers, helperNames, hPfx);
     h = replaceIdentifiers(h, uniforms.map((u) => u.key), uPfx);
-    helpers = h;
+    helpers = replaceIdentifiers(h, sampled, uPfx);
   }
-  const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
-  const region = pass.region === undefined ? undefined : rewriteGlsl(pass.region, uniforms, uPfx, hPfx, helperNames);
+  const body = replaceIdentifiers(rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames), sampled, uPfx);
+  const region =
+    pass.region === undefined
+      ? undefined
+      : replaceIdentifiers(rewriteGlsl(pass.region, uniforms, uPfx, hPfx, helperNames), sampled, uPfx);
   // uSourceSize and readSource are part of the pass contract (types.ts
   // StagePass) but are declared only where named: the version 1 freeze
   // (v1-identity.test.tsx) pins the prelude every older pass gets, and none of
@@ -536,14 +572,15 @@ function buildPassPrograms(
   // filtered read at vUv can mix in a trace of the neighbours (SwiftShader
   // does), which a long chain compounds. The stage's input may be the source
   // at another size, so the first draw still samples it. A four-channel pass
-  // also stores its alpha (StagePass.channels). Its reads take the pass texel
-  // as their gradient, the level texture() picks for a read that follows the
-  // fragment, and use no implicit-derivative op: ANGLE on D3D11 flattens every
-  // branch around a loop that reaches one, so each draw would run them all.
+  // also stores its alpha (StagePass.channels); its fetchPrev4 takes a highp
+  // texel as fetchInput does. Its reads take the pass texel as their gradient,
+  // the level texture() picks for a read that follows the fragment, and use no
+  // implicit-derivative op: ANGLE on D3D11 flattens every branch around a loop
+  // that reaches one, so each draw would run them all.
   const four = pass.channels === 4;
   const readPrev4 = four
     ? `\nvec4 readPrev4(vec2 uv) {\n  vec4 s = textureGrad(uPrevPass, uv, vec2(uTexel.x, 0.0), vec2(0.0, uTexel.y));\n  return uPrevRaw ? vec4(${sourceRead(space, "s.rgb")}, 1.0) : s;\n}` +
-      `\nvec4 fetchPrev4(ivec2 texel) {\n  return uPrevRaw ? readPrev4((vec2(texel) + 0.5) * uTexel) : texelFetch(uPrevPass, texel, 0);\n}`
+      `\nvec4 fetchPrev4(highp ivec2 texel) {\n  return uPrevRaw ? readPrev4((vec2(texel) + 0.5) * uTexel) : texelFetch(uPrevPass, texel, 0);\n}`
     : "";
   const declarations = `${uniformDecls}
 ${passSharedGlsl(space)}
@@ -562,7 +599,7 @@ ${body}
   fragColor = ${four ? "c" : "vec4(c, 1.0)"};
 }
 `;
-  if (region === undefined) return { fragmentSource, bindings, fetchesInput };
+  if (region === undefined) return { fragmentSource, bindings, textures, fetchesInput };
   // The fragment program's integers are mediump by default; a uniform both
   // programs declare must agree, or the program doesn't link.
   const vertexSource = `#version 300 es
@@ -588,7 +625,7 @@ void main() {
   gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
 }
 `;
-  return { fragmentSource, vertexSource, bindings, fetchesInput };
+  return { fragmentSource, vertexSource, bindings, textures, fetchesInput };
 }
 
 export interface BuiltStageInjection {
@@ -1153,7 +1190,7 @@ function declarePrepass(
     declared.uniforms.push(`uniform sampler2D ${resultUniform};`);
   }
   const passes: PrepassPass[] = stagePasses.map((p) => {
-    const built = buildPassPrograms(s.id, p, s.space, passesOf);
+    const built = buildPassPrograms(s.id, p, s.space, passesOf, s.textures);
     // A copy's pass bindings name its stage's uniforms, which the develop
     // program may declare too: binding a copy's value there would edit the stage.
     for (const b of passesOf ? [] : built.bindings) {
@@ -1165,6 +1202,7 @@ function declarePrepass(
       fragmentSource: built.fragmentSource,
       ...(built.vertexSource === undefined ? {} : { vertexSource: built.vertexSource }),
       bindings: built.bindings,
+      ...(built.textures.length > 0 ? { textures: built.textures } : {}),
       ...passCount(s, p),
       ...(built.fetchesInput ? { fetchesInput: true as const } : {}),
       ...(p.keep === true ? { keep: true as const } : {}),

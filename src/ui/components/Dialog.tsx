@@ -3,11 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Shell for the small single-purpose dialogues (rename, copy settings): a dimmed
-// backdrop that closes on outside click around a centred card. ModalWindow is
-// the draggable, titled window; this is its lightweight sibling with the same
+// Shell for the small single-purpose dialogues (rename, copy settings): a centred
+// card over a dimmed backdrop that closes on a press outside the card. ModalWindow
+// is the draggable, titled window; this is its lightweight sibling with the same
 // modal contract — named by the caller's heading, focus moved in on open and
-// handed back on close, Tab kept inside, Esc closes.
+// handed back on close, Tab kept inside, Esc closes, Enter runs onSubmit.
 //
 // App shortcuts stand down while it is up. Their capture-phase listeners
 // would otherwise rate, flag or remove the selection behind it, since a
@@ -15,6 +15,7 @@
 // no longer drain the escape stack either, so Esc is handled here.
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useBackdropDismiss } from "./backdrop-dismiss";
 import { suspendShortcuts } from "@/state/keybindings-store";
 import { trapTab } from "@/ui/focus-trap";
 
@@ -22,13 +23,17 @@ interface DialogProps {
   /** Id of the visible heading that names the dialogue. */
   labelledBy: string;
   onClose: () => void;
+  /** The dialogue's main action, run by Enter unless a button or a multi-line
+   *  field has the key. */
+  onSubmit?: () => void;
   /** Card classes (size, surface, border). */
   className: string;
   children: ReactNode;
 }
 
-export function Dialog({ labelledBy, onClose, className, children }: DialogProps) {
+export function Dialog({ labelledBy, onClose, onSubmit, className, children }: DialogProps) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const backdrop = useBackdropDismiss(onClose);
 
   // Runs before the caller's own effects, so a caller that focuses a field
   // still wins over the card itself.
@@ -48,15 +53,16 @@ export function Dialog({ labelledBy, onClose, className, children }: DialogProps
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();
+    } else if (e.key === "Enter" && onSubmit && !keepsEnter(e.target)) {
+      e.preventDefault();
+      onSubmit();
     }
   };
 
   return (
     <div
       className="sl-enter-fade fixed inset-0 z-[160] flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...backdrop}
     >
       <div
         ref={boxRef}
@@ -70,5 +76,14 @@ export function Dialog({ labelledBy, onClose, className, children }: DialogProps
         {children}
       </div>
     </div>
+  );
+}
+
+function keepsEnter(target: EventTarget): boolean {
+  return (
+    target instanceof HTMLButtonElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.getAttribute("role") === "button")
   );
 }

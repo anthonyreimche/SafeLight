@@ -217,12 +217,14 @@ function ThumbnailImpl({
       )}
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <p className="truncate text-[10px] text-text-primary">{displayName}</p>
         <Rating
           value={photo.rating}
           onChange={onRatingChange ? (r) => onRatingChange(photo.id, r) : undefined}
           size="sm"
         />
+        {/* The scrim is black in every theme, so the name takes the on-media
+            colour; the theme's text colour is dark in a light theme. */}
+        <p className="truncate text-[10px] leading-normal text-on-media">{displayName}</p>
       </div>
     </div>
   );

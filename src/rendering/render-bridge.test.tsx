@@ -47,6 +47,7 @@ import type { MonitorTransform } from "./display-profile";
 import { useDisplayProfile, type DisplayProfileState } from "./display-profile-store";
 import { DEFAULT_CAPTURE_SPACE, type CapturePoint, type FloatFrame } from "./float-frame";
 import type { SourceSample } from "./source-sample";
+import type { RegionPixels } from "./region-capture";
 import { setSourcePixels, sourcePixels } from "./source-pixels";
 import { stageSignature } from "./webgl/stage-injection";
 import { stageFailuresOf, useStageFailures } from "./render-bridge/stage-failures";
@@ -2247,6 +2248,61 @@ describe("RenderBridge worker replies", () => {
       expect([pending.state, late.state]).toEqual(["resolved", "resolved"]);
       expect([pending.value, late.value]).toEqual([null, null]);
       expect(sent(worker, "probe")).toHaveLength(1);
+    });
+  });
+
+  describe("captureRegion", () => {
+    const patch = (): RegionPixels => ({
+      data: new Uint8ClampedArray(4 * 6),
+      rect: { x: 10, y: 4, width: 3, height: 2 },
+      frameWidth: 64,
+      frameHeight: 32,
+      colorSpace: "srgb",
+    });
+
+    it("asks for the patch it is given and resolves with its pixels, matched by reqId", async () => {
+      const first = track(bridge.captureRegion({ x: 0.25, y: 0.5, width: 3, height: 2 }));
+      const second = track(bridge.captureRegion({ x: 0.75, y: 0.5, width: 8, height: 8 }));
+      const [one, two] = sent(worker, "captureRegion");
+      expect([one.x, one.y, one.width, one.height]).toEqual([0.25, 0.5, 3, 2]);
+      expect([two.x, two.width]).toEqual([0.75, 8]);
+
+      const answer = patch();
+      worker.reply({ type: "capturedRegion", reqId: one.reqId, region: answer });
+      worker.reply({ type: "capturedRegion", reqId: two.reqId, region: null });
+      await flush();
+      expect(first.value).toBe(answer);
+      expect(second.state).toBe("resolved");
+      expect(second.value).toBeNull();
+    });
+
+    it("settles a capture pending at dispose, and one asked after, with null", async () => {
+      const pending = track(bridge.captureRegion({ x: 0.5, y: 0.5, width: 4, height: 4 }));
+      bridge.dispose();
+      const late = track(bridge.captureRegion({ x: 0.5, y: 0.5, width: 4, height: 4 }));
+      await flush();
+      expect([pending.value, late.value]).toEqual([null, null]);
+      expect(sent(worker, "captureRegion")).toHaveLength(1);
+    });
+
+    it("reaches extensions as api.develop.captureRegion, a bitmap through the shared bridge", async () => {
+      const bitmap = { width: 3, height: 2 } as ImageBitmap;
+      vi.stubGlobal("ImageData", class {});
+      vi.stubGlobal("createImageBitmap", vi.fn(async () => bitmap));
+      try {
+        const asked = track(makeScopedAPI("test.loupe").develop.captureRegion({ x: 0.5, y: 0.5, width: 3, height: 2 }));
+        const shared = FakeWorker.instances.at(-1);
+        if (!shared || shared === worker) throw new Error("the shared bridge made no worker");
+        const [request] = sent(shared, "captureRegion");
+        const answer = patch();
+        shared.reply({ type: "capturedRegion", reqId: request.reqId, region: answer });
+        await flush();
+        await flush();
+        expect(asked.value).toEqual({ bitmap, rect: answer.rect, frameWidth: 64, frameHeight: 32, colorSpace: "srgb" });
+      } finally {
+        vi.unstubAllGlobals();
+        disposeRenderBridge();
+      }
     });
   });
 

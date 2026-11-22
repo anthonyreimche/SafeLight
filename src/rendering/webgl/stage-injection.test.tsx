@@ -401,7 +401,7 @@ describe("a four-channel pass", () => {
   it("mutates a vec4 and writes it whole", () => {
     const source = passesOf(4);
     expect(source).toContain("vec4 readPrev4(vec2 uv) {");
-    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("vec4 fetchPrev4(highp ivec2 texel) {");
     expect(source).toContain("vec4 c = fetchPrev4(ivec2(gl_FragCoord.xy));");
     expect(source).toContain("fragColor = c;");
     expect(source).not.toContain("fragColor = vec4(c, 1.0);");
@@ -508,7 +508,7 @@ describe("a pass's region", () => {
     expect(source).toMatch(/^#version 300 es\n/);
     expect(source).toMatch(/ivec4 passRegion\(\) \{\s*return ivec4\(0, 0, _\w+_widthOf\(u_\w+_edge\), 1 << 20\);\s*\}/);
     expect(source).toMatch(/uniform float u_\w+_edge;/);
-    expect(source).toContain("vec4 fetchPrev4(ivec2 texel) {");
+    expect(source).toContain("vec4 fetchPrev4(highp ivec2 texel) {");
     expect(source).toContain("uniform bool uWholeDraw;");
     expect(built.fragmentSource).toBe(pass({}).fragmentSource);
   });
@@ -537,7 +537,7 @@ describe("fetchInput in a pass", () => {
     expect(fetcher.fragmentSource).toContain("uniform sampler2D uSourceImage;");
     expect(fetcher.fragmentSource).toContain("uniform sampler2D uInputImage;");
     expect(fetcher.fragmentSource).toContain("uniform bool uInputIsSource;");
-    expect(fetcher.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+    expect(fetcher.fragmentSource).toContain("vec3 fetchInput(highp ivec2 texel) {");
   });
 
   it("leaves a pass that doesn't name it as it was", () => {
@@ -548,14 +548,14 @@ describe("fetchInput in a pass", () => {
     const helpers = "vec3 inputAt(ivec2 t) { return fetchInput(t); }";
     const [pass] = stageOf([{ glsl: "c = inputAt(ivec2(0));", helpers }]).passes;
     expect(pass.fetchesInput).toBe(true);
-    expect(pass.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+    expect(pass.fragmentSource).toContain("vec3 fetchInput(highp ivec2 texel) {");
   });
 
   it("shares the source sampler with readSource", () => {
     const [pass] = stageOf([{ glsl: `${FETCH} c += readSource(vUv);` }]).passes;
     expect(pass.fragmentSource.split("uniform sampler2D uSourceImage;").length - 1).toBe(1);
     expect(pass.fragmentSource).toContain("vec3 readSource(vec2 uv) {");
-    expect(pass.fragmentSource).toContain("vec3 fetchInput(ivec2 texel) {");
+    expect(pass.fragmentSource).toContain("vec3 fetchInput(highp ivec2 texel) {");
   });
 
   it("converts the source into the stage's space, as the first read does", () => {
@@ -574,7 +574,7 @@ describe("fetchInput in a pass", () => {
 
   it("is declared in a region's vertex program too", () => {
     const [pass] = stageOf([{ glsl: FETCH, region: "return ivec4(0, 0, 4, 4);" }]).passes;
-    expect(pass.vertexSource).toContain("vec3 fetchInput(ivec2 texel) {");
+    expect(pass.vertexSource).toContain("vec3 fetchInput(highp ivec2 texel) {");
   });
 });
 

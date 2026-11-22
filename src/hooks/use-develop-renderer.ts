@@ -70,9 +70,10 @@ function stageBag(
   paramBag: Record<string, unknown>,
   bypassed: Record<string, boolean>,
   viewValues: Readonly<Record<string, unknown>>,
+  photoId: string | null,
 ): Record<string, unknown> {
   const shown = Object.keys(viewValues).length > 0 ? { ...paramBag, ...viewValues } : paramBag;
-  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed));
+  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed), photoId ?? undefined);
 }
 
 // The edit the view draws: a hover preview (e.g. from the Presets panel) stands in
@@ -359,7 +360,7 @@ export function useDevelopRenderer(
     bridge.setAsShotTemperature(opened.exif.colorTemperature ?? 6500);
     const st = useDevelopStore.getState();
     bridge.setContributedParams(
-      stageBag(st.params, st.paramBag, st.bypassedPanels, useStageViewValues.getState().merged),
+      stageBag(st.params, st.paramBag, st.bypassedPanels, useStageViewValues.getState().merged, st.photoId),
       st.paramBag,
     );
     bridge.setParams(forRender(st.params, canvasToolView(useCanvasToolStore.getState().held)));
@@ -613,7 +614,7 @@ export function useDevelopRenderer(
     const renders = !last || !drawsSame(last, next);
     if (renders) {
       bridge.setAsShotTemperature(next.asShotTemperature);
-      bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues), paramBag);
+      bridge.setContributedParams(stageBag(params, paramBag, next.bypassed, next.viewValues, st.photoId), paramBag);
       bridge.setParams(next.drawn);
       histogram.markDirty();
       queueRender();

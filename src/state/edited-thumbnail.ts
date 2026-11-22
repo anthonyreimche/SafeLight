@@ -101,9 +101,10 @@ export function regenerateEditedThumbnail(
     });
 }
 
-/** renderAndStore, once the stage texture variants made on demand that
- *  `paramBag` names are held, and held across every source it tries: the grid
- *  keeps its preview, and nothing is decoded, when one can't be had. */
+/** renderAndStore, once the stage texture variants made on demand that the
+ *  frame's bag names (its photo's own per-photo variants among them) are held,
+ *  and held across every source it tries: the grid keeps its preview, and
+ *  nothing is decoded, when one can't be had. */
 async function run(
   photoId: string,
   params: DevelopParams,
@@ -111,7 +112,7 @@ async function run(
   paramBag?: Record<string, unknown>,
   leaving?: LeftPhoto,
 ): Promise<void> {
-  const needed = paramBag && needStageVariants(paramBag, { worker: true });
+  const needed = needStageVariants(frameStageBag(params, paramBag ?? {}, photoId), { worker: true });
   const lease = needed && (await needed);
   try {
     if (lease?.failure) {
@@ -144,8 +145,9 @@ async function renderAndStore(
   const maxEdge = getSettings().thumbMaxEdge;
   const key = photoSourceKey(photo);
   // The thumb renderer draws a bag it is handed in place of its own, so it is the
-  // whole bag the edit draws with, as Develop draws it.
-  const bag = paramBag && frameStageBag(params, paramBag);
+  // whole bag the edit draws with, as Develop draws it; an edit without one draws
+  // its params alone, never the bag another photo left in the renderer.
+  const bag = frameStageBag(params, paramBag ?? {}, photoId);
 
   // 1) Render from the viewport's scene-linear source if it's already resident in
   //    the thumb renderer (every commit after the first). Matches the viewport

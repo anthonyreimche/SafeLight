@@ -21,6 +21,12 @@ import { useSettings } from "@/state/settings-store";
 
 const h = vi.hoisted(() => ({
   cached: null as { data: Uint16Array; width: number; height: number; full: null; sample: null } | null,
+  /** When set, the only key the cache holds `cached` under. */
+  cachedKey: null as string | null,
+  /** Decoders' kept answers on whether they read a photo, as "decoder key". */
+  answers: new Map<string, boolean>(),
+  /** Each answer kept, as "accepts|declines decoder key". */
+  answerWrites: [] as string[],
   /** Final "unsupported" markers, as "decoder key". */
   marked: new Set<string>(),
   /** Each marker lookup, as "kind decoder key". */
@@ -50,7 +56,12 @@ vi.mock("@/raw/raw-cache", async (importOriginal) => {
     rawCacheGeneration: () => 1,
     readCachedPreview: async (key: string) => {
       h.reads.push(key);
-      return h.cached;
+      return h.cachedKey === null || h.cachedKey === key ? h.cached : null;
+    },
+    readDecoderVerdict: async (key: string, decoder: string) => h.answers.get(`${decoder} ${key}`),
+    writeDecoderVerdict: async (key: string, decoder: string, accepts: boolean) => {
+      h.answerWrites.push(`${accepts ? "accepts" : "declines"} ${decoder} ${key}`);
+      h.answers.set(`${decoder} ${key}`, accepts);
     },
     writeCachedPreview: async (
       key: string,
@@ -101,7 +112,7 @@ vi.mock("@/state/catalog-store", () => ({
 import { loadPhotoImage, photoSourceKey } from "./load-image";
 
 const EXTENSION = "ext.raw/fast@1.2.0";
-const LIBRAW = "libraw-0.22.1+1";
+const LIBRAW = "libraw-0.22.1+3";
 const SIGNATURE = `${EXTENSION}>libraw`;
 const KEY = "v6:DSC00001.NEF:8:0";
 const SIGNED_KEY = `${KEY}:${SIGNATURE}`;
@@ -142,6 +153,9 @@ const extensionFirst = (): void => useSettings.setState({ decoderOrder: { nef: [
 
 beforeEach(() => {
   h.cached = null;
+  h.cachedKey = null;
+  h.answers = new Map();
+  h.answerWrites = [];
   h.marked = new Set();
   h.lookups = [];
   h.marks = [];
@@ -337,5 +351,62 @@ describe("loadPhotoImage and the camera match", () => {
 
     expect(await loadPhotoImage(p)).toMatchObject({ baselineExposure: 0.9 });
     expect(p.exif.cameraMatchDecoders).toBeUndefined();
+  });
+});
+
+// A leading decoder that checks files first (`accepts`) and declines the photo
+// leaves it keyed, and served, as libraw alone keys it.
+describe("loadPhotoImage when the leading decoder declines the photo", () => {
+  const accepts = vi.fn(() => false);
+  const picky = (version: string) => {
+    registerImageDecoder("ext.raw", {
+      id: "fast",
+      label: "Fast",
+      version,
+      extensions: [".nef"],
+      accepts,
+      decode: async () => null,
+    });
+    extensionFirst();
+    return `ext.raw/fast@${version}`;
+  };
+  const entry = () => ({ data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null });
+
+  it("asks it once, keeps its answer and serves libraw's cache entry without a decode", async () => {
+    const decoder = picky("2.0.0");
+    h.cached = entry();
+    h.cachedKey = KEY;
+
+    const image = await loadPhotoImage(photo());
+
+    expect(image).toMatchObject({ kind: "float16" });
+    expect(h.reads).toEqual([`${KEY}:${decoder}>libraw`, KEY]);
+    expect(h.decodes).toEqual([]);
+    expect(h.answerWrites).toEqual([`declines ${decoder} ${KEY}`]);
+    expect(photoSourceKey(photo())).toBe("p1:0");
+  });
+
+  it("keys the photo from an answer an earlier session kept, without asking again", async () => {
+    const decoder = picky("2.0.1");
+    h.answers.set(`${decoder} ${KEY}`, false);
+    h.cached = entry();
+    h.cachedKey = KEY;
+    accepts.mockClear();
+
+    await loadPhotoImage(photo());
+
+    expect(h.reads).toEqual([KEY]);
+    expect(accepts).not.toHaveBeenCalled();
+  });
+
+  it("decodes and keeps a photo it declined as libraw alone does", async () => {
+    picky("2.0.2");
+    h.decodeResult = () => floatDecode();
+
+    await loadPhotoImage(photo());
+
+    expect(h.writes.map((w) => w.key)).toEqual([KEY]);
+    expect(h.lookups.at(-1)).toBe(`unsupported ${LIBRAW} ${KEY}`);
+    expect(h.marks).toEqual([]);
   });
 });

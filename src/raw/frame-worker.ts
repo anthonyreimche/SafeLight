@@ -3,10 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Dedicated worker for the per-pixel work of a RAW decode (frame-job.ts) and of
-// a non-RAW photo read through its input profile (profile-frame.ts). One
-// request per message, the reply and its buffers sent straight back; frame-bridge.ts
-// gives each worker one request at a time.
+// Dedicated worker for the per-pixel work of a RAW decode (frame-job.ts), of a
+// linear DNG's whole decode (linear-dng.ts) and of a non-RAW photo read
+// through its input profile (profile-frame.ts). One request per message, the
+// reply and its buffers sent straight back; frame-bridge.ts gives each worker
+// one request at a time.
 
 import type { FrameReply, FrameRequest } from "./frame-job";
 import { answerFrameRequest } from "./profile-frame";

@@ -170,7 +170,7 @@ If it doesn't load, the Dev section shows the error on the extension's row. A GL
 
 ## Where to go next
 
-- **Publish it.** Put the two files in a GitHub repo, add the `safelight-extension` topic, and it shows up in the store. See [Publishing](publishing.md).
+- **Publish it.** Put the two files in a GitHub repo, add the `safelight-extension` topic, and it shows up in the open source extension library. See [Publishing](publishing.md).
 - **Use TypeScript, JSX or npm packages.** Start from the [extension template](https://github.com/anthonyreimche/Extension-Template). It builds this same kind of extension, a slider and a stage, with the build, tests and a release workflow set up. [Building Extensions](README.md#with-a-build) explains each part.
 - **Get the API's types.** Copy [`extension-types/safelight.d.ts`](../../../extension-types/safelight.d.ts) next to `index.js`. Put `// @ts-check` at the top of `index.js` and `/** @param {import("./safelight").SafelightAPI} api */` above `activate`, and editors such as VS Code complete and check your calls. See [Types](README.md#types).
 - **Offer it inside masks.** Add `mask: { maskable: true }` to the stage and a `mask` entry to the panel. See [Per-mask panels](../api/ui-shell.md#per-mask-panels-panelcontributionmask).

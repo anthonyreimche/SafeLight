@@ -18,6 +18,7 @@ import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { trapTab } from "@/ui/focus-trap";
+import { useBackdropDismiss } from "./backdrop-dismiss";
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -102,6 +103,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
   }, [request]);
 
   const cardRef = useRef<HTMLDivElement>(null);
+  const backdrop = useBackdropDismiss(() => settle(request, false));
   const titleId = `confirm-title-${request.id}`;
   const messageId = `confirm-message-${request.id}`;
   const isAlert = request.kind === "alert";
@@ -110,13 +112,20 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
     // Extensions/Preferences windows.
     <div
       className="sl-enter-fade fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) settle(request, false);
-      }}
+      {...backdrop}
     >
       <div
         ref={cardRef}
-        onKeyDown={(e) => trapTab(e, cardRef.current)}
+        // Esc also closes from the card itself: a confirm may open over a
+        // dialogue that has paused the app shortcuts, and with them the global
+        // handler that drains the escape stack.
+        onKeyDown={(e) => {
+          trapTab(e, cardRef.current);
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            e.preventDefault();
+            settle(request, false);
+          }
+        }}
         role={isAlert ? "alertdialog" : "dialog"}
         aria-modal="true"
         aria-labelledby={titleId}

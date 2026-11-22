@@ -3,9 +3,12 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { decodeRawToBitmap, decodeRawToFloat } from "./decode";
-import { COMPRESSION, PHOTOMETRIC_CFA, TIFF_TAG } from "./tiff";
+import { COMPRESSION, PHOTOMETRIC_CFA, PHOTOMETRIC_LINEAR_RAW, TIFF_TAG } from "./tiff";
 import { TYPE, buildTiffWithTrailer, field, type Field, type IfdSpec } from "./tiff.test-support";
 
 const libraw = vi.hoisted(() => ({
@@ -219,5 +222,79 @@ describe("the bytes a decode reads", () => {
 
     expect(skipped).toMatchObject({ passedOver: true });
     expect(reader).not.toHaveBeenCalled();
+  });
+});
+
+// Floating-point linear DNGs (HDR and panorama merges, denoised exports) are
+// Deflate-compressed, which the bundled libraw can't read: the in-house linear
+// DNG decoder leads for them, and stands in for libraw on integer ones.
+describe("linear DNGs", () => {
+  const linearDng = (name: string): File => {
+    const bytes = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "linear-dng", `${name}.dng`));
+    return new File([bytes], `${name}.dng`);
+  };
+
+  beforeEach(() => {
+    libraw.background = [];
+  });
+
+  it("decodes a floating-point one without asking libraw", async () => {
+    const image = await decodeRawToFloat(linearDng("f16-tiled-deflate"));
+    if ("failure" in image) throw new Error(image.reason);
+    expect([image.width, image.height, image.oriented]).toEqual([20, 12, true]);
+    expect(image.data[0]).toBeCloseTo(1 / 64, 3);
+    expect(libraw.background).toEqual([]);
+  });
+
+  it("turns it as asked, says so, and builds its cache entry", async () => {
+    const image = await decodeRawToFloat(linearDng("f16-tiled-deflate"), { turn: 90, cacheEdge: 8 });
+    if ("failure" in image) throw new Error(image.reason);
+    expect([image.width, image.height, image.turned]).toEqual([12, 20, 90]);
+    expect(image.entry).toBeDefined();
+  });
+
+  it("reports the as-shot white it balanced the frame by", async () => {
+    const image = await decodeRawToFloat(linearDng("f32-strips-deflate-be"));
+    if ("failure" in image) throw new Error(image.reason);
+    expect(image.asShotMultipliers).toEqual([1, 1, 1]);
+    expect(image.colorTemperature).toBe(6500);
+  });
+
+  it("decodes an integer one libraw couldn't", async () => {
+    const image = await decodeRawToFloat(linearDng("u16-strips-deflate-pred2"));
+    if ("failure" in image) throw new Error(image.reason);
+    expect(libraw.background).toHaveLength(1);
+    expect([image.width, image.height]).toEqual([20, 12]);
+  });
+
+  it("calls one too large to fit in memory even at half size unsupported for good", async () => {
+    const side = 60_000;
+    const { buffer } = buildTiffWithTrailer([
+      {
+        fields: [
+          field(TIFF_TAG.ImageWidth, TYPE.LONG, side),
+          field(TIFF_TAG.ImageLength, TYPE.LONG, side),
+          field(TIFF_TAG.BitsPerSample, TYPE.SHORT, 16, 16, 16),
+          field(TIFF_TAG.Compression, TYPE.SHORT, COMPRESSION.Deflate),
+          field(TIFF_TAG.PhotometricInterpretation, TYPE.SHORT, PHOTOMETRIC_LINEAR_RAW),
+          field(TIFF_TAG.StripOffsets, TYPE.LONG, 8),
+          field(TIFF_TAG.SamplesPerPixel, TYPE.SHORT, 3),
+          field(TIFF_TAG.RowsPerStrip, TYPE.LONG, side),
+          field(TIFF_TAG.StripByteCounts, TYPE.LONG, 8),
+          field(TIFF_TAG.SampleFormat, TYPE.SHORT, 3, 3, 3),
+        ],
+      },
+    ]);
+    const image = await decodeRawToFloat(new File([buffer], "huge.dng"));
+    expect(image).toMatchObject({ failure: "unsupported", tooLarge: true });
+    expect(libraw.background).toEqual([]);
+  });
+
+  it("decodes from bytes its caller keeps, leaving them intact", async () => {
+    const file = linearDng("f32-uncompressed-crop");
+    const bytes = await file.arrayBuffer();
+    const image = await decodeRawToFloat(file, undefined, undefined, bytes);
+    expect("failure" in image).toBe(false);
+    expect(bytes.byteLength).toBe(file.size);
   });
 });

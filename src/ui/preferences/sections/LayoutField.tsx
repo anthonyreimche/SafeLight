@@ -17,6 +17,7 @@ import {
   useUserLayouts,
 } from "@/extensions/dock";
 import { LayoutExtensionsEditor } from "@/ui/components/LayoutExtensionsEditor";
+import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import { btnCls, labelCls, useFieldVisible } from "@/ui/preferences/fields";
 
 // Panel-layout manager: a selectable list of layouts (Custom + the user's saved
@@ -160,7 +161,8 @@ export function LayoutField() {
                     </RowButton>
                     <RowButton
                       title="Delete layout"
-                      onClick={() => deleteUserLayout(l.id)}
+                      label={`Delete ${l.name}`}
+                      onClick={() => void confirmDelete(l.id, l.name)}
                     >
                       ×
                     </RowButton>
@@ -289,4 +291,14 @@ function RowButton({
       {children}
     </button>
   );
+}
+
+async function confirmDelete(id: string, name: string): Promise<void> {
+  const confirmed = await confirmDialog({
+    title: `Delete ${name}`,
+    message: "This saved layout is removed for good.",
+    confirmLabel: "Delete",
+    variant: "danger",
+  });
+  if (confirmed) deleteUserLayout(id);
 }

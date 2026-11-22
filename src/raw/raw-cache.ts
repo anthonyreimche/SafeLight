@@ -68,7 +68,7 @@ export function rawCacheKey(
 // The decoder a marker speaks for: the vendored LibRaw release and the revision
 // of what libraw-wasm-adapter.ts and decode.ts call unsupported. A new ID
 // leaves every older marker unread, so each marked photo is tried once more.
-export const DECODER_ID = "libraw-0.22.1+1";
+export const DECODER_ID = "libraw-0.22.1+3";
 
 /** The id `entry`'s markers are kept under: DECODER_ID for libraw, an
  *  extension's decoder's id and version for one of an extension's, so its next
@@ -289,8 +289,47 @@ export async function hasDecodeMarker(
 // The photo's markers go with its preview: whatever makes the preview stale
 // (Reimport, the file leaving the disk) makes the decoder's verdict stale too.
 export async function deleteCachedPreview(key: string, decoders?: readonly string[]): Promise<void> {
-  const keys = [key, ...markerKeysOf(key, decoders)];
+  const keys = [key, ...markerKeysOf(key, decoders), ...(decoders ?? []).map((decoder) => verdictKey(key, decoder))];
   await Promise.all(keys.map((k) => workerDeleteCachedPreview(k).catch(() => {})));
+}
+
+// What a decoder that checks files first (ImageDecoderContribution.accepts)
+// answered about the photo, beside its markers, so a later session keys the
+// photo without reading the original (photo-cache-key.ts). One answer stands:
+// it depends on the file and the decoder's version alone.
+function verdictKey(cacheKey: string, decoder: string): string {
+  return `verdict@${decoder}:${cacheKey}`;
+}
+
+const ACCEPTS = "accepts";
+const DECLINES = "declines";
+
+/** What `decoder` answered about the photo when asked whether it reads it, or
+ *  undefined when no answer is kept. */
+export async function readDecoderVerdict(cacheKey: string, decoder: string): Promise<boolean | undefined> {
+  if (!getSettings().rawCacheEnabled) return undefined;
+  try {
+    const text = await workerReadMarker(verdictKey(cacheKey, decoder));
+    return text === ACCEPTS ? true : text === DECLINES ? false : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keep `decoder`'s answer about the photo; as for markDecode, only in the
+ *  project the question began in. */
+export async function writeDecoderVerdict(
+  cacheKey: string,
+  decoder: string,
+  accepts: boolean,
+  begunIn: number,
+): Promise<void> {
+  if (!getSettings().rawCacheEnabled || begunIn !== generation) return;
+  try {
+    await workerWriteMarker(verdictKey(cacheKey, decoder), accepts ? ACCEPTS : DECLINES);
+  } catch {
+    // Without it the photo's original is read once more to ask again.
+  }
 }
 
 /** Rejects when the cache worker can't be reached at all. */

@@ -2,7 +2,7 @@
 
 ← [Building Extensions](README.md)
 
-**Developer Tools** is an official extension from the store. It adds an inspector panel, console and error capture, and the dev folder, which loads extensions from your disk while you work on them. Without it installed and switched on, none of that runs, so a normal user's app stays untouched.
+**Developer Tools** is an official extension in the open source extension library. It adds an inspector panel, console and error capture, and the dev folder, which loads extensions from your disk while you work on them. Without it installed and switched on, none of that runs, so a normal user's app stays untouched.
 
 ## Install it
 

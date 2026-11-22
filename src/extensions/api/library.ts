@@ -171,8 +171,43 @@ export interface ImageDecoderContribution {
    *  only extensions Safelight already imports. */
   extensions: readonly string[];
   /** The image in `file`, or null when this decoder can't read it (the next
-   *  decoder in the person's order is tried). */
+   *  decoder in the person's order is tried, and the file is remembered as one
+   *  this version can't read). For a failure that may pass (a Worker that
+   *  didn't start, a download that failed), throw an error with `transient:
+   *  true` (TransientDecodeError): the next decoder is tried and nothing is
+   *  remembered. Running out of memory (a RangeError) counts as transient too.
+   *  Any other throw counts as null. */
   decode(file: Blob, request: ImageDecodeRequest): Promise<DecodedImageResult | null>;
+  /** Optional, and cheap: whether this decoder reads `file`, for a decoder
+   *  that reads only some of a format's files (pixel-shift DNGs among plain
+   *  ones, say). Read a header, not the image. Core asks it before queueing a
+   *  decode, outside the one-at-a-time queue, and remembers the answer for
+   *  the file (its name and size) and this `version`; for a RAW photo, also
+   *  across launches. A file it declines is passed to the next decoder as if
+   *  this one weren't in the person's order: it never waits behind your
+   *  decodes, and its kept decodes and failure marks stay exactly as without
+   *  your decoder. Base the answer on the file's content alone. A throw, an
+   *  answer later than 5 s (`signal` is then aborted) or one that isn't a
+   *  boolean counts as true and isn't remembered. Without it, every file of
+   *  your formats is yours to decode. Needs Safelight 3.2.7. */
+  accepts?(file: Blob, request: ImageAcceptRequest): boolean | Promise<boolean>;
+}
+
+/** What core passes ImageDecoderContribution.accepts. */
+export interface ImageAcceptRequest {
+  /** The file's name, its extension included. */
+  name: string;
+  /** Aborted when the check has run past its 5 s. */
+  signal: AbortSignal;
+}
+
+/** An error a decoder throws for a failure that may pass: core tries the next
+ *  decoder now and the file again later, never remembering it as one the
+ *  decoder can't read. Any error with `transient: true` counts the same, so an
+ *  extension can make its own: `Object.assign(new Error(message), { transient:
+ *  true })`. Needs Safelight 3.2.7. */
+export interface TransientDecodeError extends Error {
+  transient: true;
 }
 
 /** A decoder as Preferences lists it: core's or an extension's. */
