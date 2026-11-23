@@ -12,6 +12,7 @@
 
 import { useTrust, dismissFlag } from "./trust";
 import { openExtensions } from "@/ui/components/extensions-dialog-store";
+import { DismissButton } from "@/ui/components/DismissButton";
 
 export function ExtensionSecurityBanner() {
   const allFlagged = useTrust((s) => s.flagged);
@@ -32,14 +33,7 @@ export function ExtensionSecurityBanner() {
             <span className="min-w-0 break-words">
               “{f.name}” was turned off because the extension registry flagged it: {f.reason}.
             </span>
-            <button
-              onClick={() => dismissFlag(f.id)}
-              title="Dismiss"
-              aria-label="Dismiss"
-              className="shrink-0 rounded px-1.5 py-0.5 text-text-muted hover:text-text-primary"
-            >
-              ×
-            </button>
+            <DismissButton onClick={() => dismissFlag(f.id)} />
           </div>
         ))}
       </div>

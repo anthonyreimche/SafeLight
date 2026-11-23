@@ -16,6 +16,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { focusInitialMenuItem, handleMenuKeyDown } from "@/ui/menu-keys";
+import { MENU_SURFACE } from "@/ui/floating";
 
 /** `hovered`: the open menu was reached by hovering its trigger, so the click
  *  that usually follows the pointer there keeps it open rather than toggling
@@ -140,7 +141,7 @@ export function TopBarMenu({
           role="menu"
           aria-label={label}
           onKeyDown={(e) => handleMenuKeyDown(menuRef.current, e, "vertical")}
-          className="sl-enter-fade absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded border border-border bg-surface-2 py-1 shadow-xl"
+          className={`sl-enter-fade absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto py-1 ${MENU_SURFACE}`}
         >
           {children(dismiss)}
         </div>

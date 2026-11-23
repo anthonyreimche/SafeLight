@@ -491,7 +491,7 @@ export function ExtensionManagerPanel() {
       setBusy(id);
       await uninstallPlugin(id);
       forgetSource(id);
-      setMsg("Removed (files deleted).");
+      setMsg("Uninstalled. Its files were deleted.");
       if (view === "detail") back(); // leave the now-removed extension's page
       refresh();
     } catch (e) {
@@ -1264,7 +1264,7 @@ function ExtensionRow({
           <button
             disabled={busy}
             onClick={onUninstall}
-            title="Remove the extension and delete its files"
+            title="Uninstall the extension and delete its files"
             className="ml-2 rounded px-1.5 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary"
           >
             Uninstall

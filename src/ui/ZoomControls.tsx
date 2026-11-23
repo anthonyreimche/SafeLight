@@ -5,6 +5,8 @@
 
 // Zoom controls for the image viewports, rendered in the status bar (off the
 // image). `null` is fit-to-frame; numbers are scale factors of the buffer.
+import { STATUS_HIT } from "./status-button";
+
 const STOPS: { label: string; value: number }[] = [
   { label: "25%", value: 0.25 },
   { label: "50%", value: 0.5 },
@@ -21,17 +23,24 @@ export function ZoomControls({
   onChange: (zoom: number | null) => void;
 }) {
   const btn = (active: boolean) =>
-    `text-[10px] ${active ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`;
+    `${STATUS_HIT} text-[10px] ${active ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`;
 
   return (
     <div className="flex gap-2">
-      <button onClick={() => onChange(null)} className={btn(zoom == null)}>
+      <button
+        onClick={() => onChange(null)}
+        title="Fit the photo to the view"
+        aria-pressed={zoom == null}
+        className={btn(zoom == null)}
+      >
         Fit
       </button>
       {STOPS.map((s) => (
         <button
           key={s.label}
           onClick={() => onChange(s.value)}
+          title={`Zoom to ${s.label}`}
+          aria-pressed={zoom === s.value}
           className={btn(zoom === s.value)}
         >
           {s.label}

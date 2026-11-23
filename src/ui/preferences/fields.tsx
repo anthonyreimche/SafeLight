@@ -5,6 +5,7 @@
 
 import { createContext, useContext } from "react";
 import { Switch } from "@/ui/components/Switch";
+import { inputCls, labelCls } from "@/ui/field-styles";
 
 // While searching, section bodies render their *real* controls inside this
 // context. The Field/Toggle/Slider wrappers read it and hide themselves when
@@ -26,10 +27,7 @@ export function useFieldVisible(label: string, hint?: string): boolean {
 
 // ─── Small controls ──────────────────────────────────────────────────────────
 
-export const labelCls =
-  "text-[10px] uppercase tracking-widest text-text-muted";
-export const inputCls =
-  "w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3";
+export { inputCls, labelCls };
 export const btnCls =
   "rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary";
 

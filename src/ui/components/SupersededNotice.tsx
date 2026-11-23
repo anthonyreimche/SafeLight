@@ -13,6 +13,7 @@ import {
   type SupersededNote,
 } from "@/extensions/supersedes";
 import { openExtensions, openExtensionsOn } from "./extensions-dialog-store";
+import { DismissButton } from "./DismissButton";
 
 const listed = (names: string[]): string =>
   names.length <= 1
@@ -45,14 +46,7 @@ export function SupersededNotice() {
       >
         Manage extensions
       </button>
-      <button
-        onClick={dismissSupersededNotes}
-        aria-label="Dismiss"
-        title="Dismiss"
-        className="rounded px-1.5 py-1 text-[11px] text-text-muted hover:bg-surface-3 hover:text-text-primary"
-      >
-        ✕
-      </button>
+      <DismissButton onClick={dismissSupersededNotes} />
     </div>
   );
 }

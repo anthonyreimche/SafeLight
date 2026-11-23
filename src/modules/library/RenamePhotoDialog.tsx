@@ -73,15 +73,15 @@ export function RenamePhotoDialog({
     <Dialog
       labelledBy={titleId}
       onClose={onCancel}
-      className="w-[360px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
+      className="w-[360px] rounded-lg border border-border bg-surface-1 shadow-xl"
     >
       <div className="space-y-2 p-3">
-        <div id={titleId} className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+        <div id={titleId} className="text-[10px] uppercase tracking-widest text-text-muted">
           {title}
         </div>
-        <div className="flex items-center rounded bg-[var(--color-surface-2)] focus-within:ring-1 focus-within:ring-[var(--color-accent)]">
+        <div className="flex items-center rounded bg-surface-2 focus-within:ring-1 focus-within:ring-accent">
           {prefix && (
-            <span className="shrink-0 pl-2 text-[12px] text-[var(--color-text-muted)]">
+            <span className="shrink-0 pl-2 text-[12px] text-text-muted">
               {prefix}
             </span>
           )}
@@ -95,26 +95,26 @@ export function RenamePhotoDialog({
             onKeyDown={(e) => {
               if (e.key === "Enter") submit();
             }}
-            className="min-w-0 flex-1 bg-transparent px-2 py-1 text-[12px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent px-2 py-1 text-[12px] text-text-primary placeholder:text-text-muted focus:outline-none"
           />
           {suffix && (
-            <span className="shrink-0 pr-2 text-[12px] text-[var(--color-text-muted)]">
+            <span className="shrink-0 pr-2 text-[12px] text-text-muted">
               {suffix}
             </span>
           )}
         </div>
-        {error && <div className="text-[10px] text-[var(--color-label-red)]">{error}</div>}
+        {error && <div className="text-[10px] text-label-red">{error}</div>}
       </div>
-      <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
+      <div className="flex justify-end gap-2 border-t border-border p-3">
         <button
-          className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
+          className="rounded bg-surface-2 px-3 py-1 text-[11px] text-text-secondary hover:bg-surface-3"
           onClick={onCancel}
         >
           Cancel
         </button>
         <button
           disabled={!canSave}
-          className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           onClick={submit}
         >
           Rename

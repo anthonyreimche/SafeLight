@@ -39,7 +39,7 @@ export function ModuleTabs() {
               onClick={() => (isDetached ? attachModule(id) : detachModule(id))}
               title={isDetached ? "Re-attach to this window" : "Open in a new window"}
               aria-label={`${label}: ${isDetached ? "re-attach to this window" : "open in a new window"}`}
-              className="rounded-r py-1 pr-1.5 pl-0.5 text-[10px] text-text-muted hover:text-text-primary"
+              className="rounded-r px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
             >
               {isDetached ? "⧈" : "⧉"}
             </button>

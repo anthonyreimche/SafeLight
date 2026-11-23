@@ -570,6 +570,12 @@ export interface UniformDeclaration {
    *  ImageSpaceMatrix, which core finishes for the image's aspect wherever the
    *  image is drawn. */
   space?: "image";
+  /** The extension works this value out for each photo (from its lens, its
+   *  metadata, its pixels) rather than the user setting it. It still rides the
+   *  photo's bag, so every render of the photo draws it, but it never counts as
+   *  an edit: setting it adds no history step and leaves the photo unedited, and
+   *  Copy Settings, Paste and presets leave it out. */
+  computed?: boolean;
 }
 
 /** A matrix a geometry stage derives, row-major: `normalized` acts on image

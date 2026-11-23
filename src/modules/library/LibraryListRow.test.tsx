@@ -141,6 +141,13 @@ describe("LibraryListRow preview fade", () => {
     expect(imgOf(container).style.opacity).toBe("1");
   });
 
+  it("dims only the preview of a rejected photo, keeping its name readable", () => {
+    const { container } = render(row(photo({ flag: "reject", thumbnailUrl: "blob:row-rej" })));
+    fireEvent.load(imgOf(container));
+    expect(imgOf(container).style.opacity).toBe("0.4");
+    expect(container.querySelector(".opacity-40")).toBeNull();
+  });
+
   it("starts a different photo's preview hidden", () => {
     const { container, rerender } = render(row(photo({ id: "p1", thumbnailUrl: "blob:row-c" })));
     fireEvent.load(imgOf(container));

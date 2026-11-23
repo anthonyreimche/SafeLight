@@ -20,6 +20,8 @@ import {
 } from "@/state/settings-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { focusInitialMenuItem, handleMenuKeyDown } from "@/ui/menu-keys";
+import { STATUS_HIT } from "@/ui/status-button";
+import { MENU_SURFACE } from "@/ui/floating";
 
 const LAST = CANVAS_SURROUND_SHADES.length - 1;
 
@@ -57,8 +59,7 @@ export function SurroundControl() {
   const idx = found === -1 ? DEFAULT_CANVAS_SURROUND_INDEX : found; // → Middle grey
   const cur = CANVAS_SURROUND_SHADES[idx];
 
-  const btn =
-    "text-[11px] leading-none text-text-muted hover:text-text-primary disabled:opacity-30 disabled:hover:text-text-muted";
+  const btn = `${STATUS_HIT} text-[11px] text-text-muted hover:text-text-primary disabled:opacity-30 disabled:hover:text-text-muted`;
 
   return (
     <div ref={rootRef} className="relative flex items-center gap-1.5">
@@ -73,14 +74,18 @@ export function SurroundControl() {
       </button>
       <button
         ref={triggerRef}
-        className="h-3 w-3 rounded-sm border border-border hover:border-text-muted"
-        style={{ background: cur.value }}
+        className={`group ${STATUS_HIT}`}
         title={`Surround: ${cur.label} — click to choose`}
         aria-label="Choose surround shade"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-      />
+      >
+        <span
+          className="block h-3 w-3 rounded-sm border border-border group-hover:border-text-muted"
+          style={{ background: cur.value }}
+        />
+      </button>
       <button
         className={btn}
         title="Lighter surround"
@@ -96,7 +101,7 @@ export function SurroundControl() {
           ref={menuRef}
           role="menu"
           onKeyDown={(e) => handleMenuKeyDown(menuRef.current, e, "horizontal")}
-          className="absolute bottom-full left-1/2 mb-1.5 flex -translate-x-1/2 gap-1 rounded border border-border bg-surface-2 p-1 shadow-lg"
+          className={`absolute bottom-full left-1/2 mb-1.5 flex -translate-x-1/2 gap-1 p-1 ${MENU_SURFACE}`}
         >
           {CANVAS_SURROUND_SHADES.map((shade) => (
             <button

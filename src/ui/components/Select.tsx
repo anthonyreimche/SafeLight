@@ -30,6 +30,7 @@ import { createPortal } from "react-dom";
 import { useSettings } from "@/state/settings-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
+import { MENU_SURFACE } from "@/ui/floating";
 
 export interface SelectOption {
   value: string;
@@ -352,7 +353,7 @@ export function Select({
               maxHeight: pos.maxH,
               zIndex: 9999,
             }}
-            className="sl-enter-fade overflow-y-auto rounded-md border border-border bg-surface-1 p-1 shadow-xl"
+            className={`sl-enter-fade overflow-y-auto p-1 ${MENU_SURFACE}`}
           >
             {groupList.map((g, gi) => (
               <div key={gi}>
@@ -381,7 +382,7 @@ export function Select({
                       }}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => choose(o)}
-                      className={`truncate rounded px-2 py-1 text-[11px] ${
+                      className={`truncate rounded-sm px-2 py-1 text-[11px] ${
                         o.disabled
                           ? "cursor-default text-text-muted opacity-60"
                           : sel

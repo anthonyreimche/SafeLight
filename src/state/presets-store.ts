@@ -5,6 +5,7 @@
 
 import { create } from "zustand";
 import type { DevelopParams } from "@/catalog/types";
+import { withoutComputedParams } from "@/extensions/param-registry";
 
 export interface Preset {
   id: string;
@@ -132,7 +133,8 @@ export const usePresetsStore = create<PresetsState>((set, get) => {
   return {
     presets: loadFromStorage(),
 
-    add(name, params, group, paramBag) {
+    add(name, params, group, given) {
+      const paramBag = given && withoutComputedParams(given);
       const hasBag = paramBag && Object.keys(paramBag).length > 0;
       const preset: Preset = {
         id: crypto.randomUUID(),
@@ -144,7 +146,8 @@ export const usePresetsStore = create<PresetsState>((set, get) => {
       return commit([...get().presets, preset]);
     },
 
-    update(id, params, group, paramBag) {
+    update(id, params, group, given) {
+      const paramBag = given && withoutComputedParams(given);
       const hasBag = paramBag && Object.keys(paramBag).length > 0;
       return commit(
         get().presets.map((p) =>

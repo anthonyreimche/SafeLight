@@ -108,6 +108,7 @@ interface UniformDeclaration {
   default: number | number[] | boolean;
   range?: { min: number; max: number; step?: number };
   label?: string;
+  computed?: boolean;         // 3.2.7: worked out for each photo, never an edit, see below
 }
 ```
 
@@ -124,6 +125,18 @@ Notes:
 - **`after`** runs your stage after the named stages in the same phase, whatever the priorities. Unknown ids and ids in other phases are ignored, so you can name an optional partner.
 - **Ids.** Ids under `core.` and `builtin.denoise` are reserved. An id can't end in `@` and a number (mask copies use that). `unregisterProcessingStage(id)` removes one stage.
 - **Version.** `after`, `space` and `reads` are ignored by older builds. Set `minAppVersion` when you rely on them.
+
+### Values you work out: `computed`
+
+Some uniforms aren't settings the user makes but values your extension works out for each photo, such as a lens profile's coefficients found from the photo's metadata. Declare those `computed: true`, inline or in a pass.
+
+A computed value still lives in the photo's bag, so every render of the photo draws it: Develop, thumbnails, exports, headless renders and `dormantWhen`. What changes is that it never counts as an edit:
+
+- Writing one with `setDynParams` adds no history step and leaves the photo unedited (no Edited badge, no Edited filter). Safelight stores it on the step the photo's history stands on, in place, when the photo is left or the next edit is committed.
+- Copy Settings, Paste Settings and presets leave it out, so one photo's values never land on another. A photo keeps its own through a paste, a preset and Reset.
+- A history step that holds no value for it, such as one stored before your extension worked it out, draws with the live one.
+
+Keep the user's own choices (a mode, a manual slider, a picked profile) in uniforms or bag keys that aren't computed, and work the computed ones out from them. Since undo, redo, a paste or a preset can change those choices without changing the photo, work the values out again whenever your own keys change, not only when the photo does. Older builds ignore the field and count the values as edits, as they did before.
 
 ### Passes
 

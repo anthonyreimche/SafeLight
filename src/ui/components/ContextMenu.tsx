@@ -8,6 +8,7 @@ import { createPortal } from "react-dom";
 
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
+import { MENU_SURFACE } from "@/ui/floating";
 
 export interface ContextMenuItem {
   label: string;
@@ -116,7 +117,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
       <div
         ref={ref}
         role="menu"
-        className="sl-enter-fade absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
+        className={`sl-enter-fade absolute min-w-[180px] overflow-hidden py-1 text-[11px] ${MENU_SURFACE}`}
         style={{ left: pos.x, top: pos.y }}
         onKeyDown={onMenuKeyDown}
       >
@@ -125,7 +126,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
             <div
               key={`sep-${i}`}
               role="separator"
-              className="my-1 border-t border-[var(--color-border)]"
+              className="my-1 border-t border-border"
             />
           ) : (
             <button
@@ -137,8 +138,8 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
               disabled={item.disabled}
               className={`block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.danger
-                  ? "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-label-red)]"
-                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"
+                  ? "text-text-secondary hover:bg-danger hover:text-on-danger"
+                  : "text-text-secondary hover:bg-surface-3 hover:text-text-primary"
               }`}
               onClick={() => {
                 item.onClick();

@@ -1208,6 +1208,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     await user.click(within(ask).getByRole("button", { name: "Uninstall" }));
     await waitFor(() => expect(uninstall).toHaveBeenCalledWith(installed.id));
+    await screen.findByText("Uninstalled. Its files were deleted.");
     warn.mockRestore();
   });
 

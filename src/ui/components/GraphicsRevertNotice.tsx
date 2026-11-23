@@ -19,6 +19,7 @@ import {
   useGraphics,
 } from "@/state/graphics-store";
 import { openReportIssue } from "./report-issue-store";
+import { DismissButton } from "./DismissButton";
 
 export function GraphicsRevertNotice() {
   const main = detachedModule() === null;
@@ -48,13 +49,7 @@ export function GraphicsRevertNotice() {
           </button>
         </div>
       </div>
-      <button
-        onClick={dismissRevertNotice}
-        aria-label="Dismiss"
-        className="shrink-0 rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-      >
-        ×
-      </button>
+      <DismissButton onClick={dismissRevertNotice} />
     </div>
   );
 }

@@ -170,7 +170,7 @@ describe("confirmDialog", () => {
     await decision;
   });
 
-  it("styles the confirm button by variant — red for danger, accent otherwise", async () => {
+  it("styles the confirm button by variant — red for danger, the app's primary fill otherwise", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
     let danger!: Promise<boolean>;
@@ -186,7 +186,7 @@ describe("confirmDialog", () => {
     expect(dangerButton.className).toContain("bg-danger");
     expect(dangerButton.className).toContain("text-on-danger");
     expect(dangerButton.className).not.toContain("text-white");
-    expect(dangerButton.className).not.toContain("var(--color-accent)");
+    expect(dangerButton.className).not.toContain("bg-slider-fill");
     await user.click(dangerButton);
     await danger;
 
@@ -194,9 +194,7 @@ describe("confirmDialog", () => {
     act(() => {
       plain = confirmDialog({ title: "Reset edits", message: "Sure?" });
     });
-    expect(screen.getByRole("button", { name: "OK" }).className).toContain(
-      "var(--color-accent)",
-    );
+    expect(screen.getByRole("button", { name: "OK" }).className).toContain("bg-slider-fill");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await plain;
   });

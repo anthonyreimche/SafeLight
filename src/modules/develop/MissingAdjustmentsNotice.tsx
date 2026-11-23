@@ -19,6 +19,7 @@ import {
 import { officialExtension } from "@/extensions/official-extensions";
 import { useDevelopStore } from "@/state/develop-store";
 import { openExtensionsOn } from "@/ui/components/extensions-dialog-store";
+import { DismissButton } from "@/ui/components/DismissButton";
 
 const useDismissed = create<{ ids: string[] }>(() => ({ ids: [] }));
 
@@ -66,14 +67,7 @@ export function MissingAdjustmentsNotice() {
                 </button>
               )
             )}
-            <button
-              aria-label="Dismiss"
-              title="Dismiss"
-              className="px-1 text-text-muted hover:text-text-primary"
-              onClick={() => dismiss(e.id)}
-            >
-              ×
-            </button>
+            <DismissButton onClick={() => dismiss(e.id)} />
           </div>
         );
       })}

@@ -37,6 +37,10 @@ export interface ExtensionDescriptors {
   uniforms: { key: string; glslType: string; default: unknown; range?: { min: number; max: number; step?: number }; label?: string }[];
   panels: { id: string; title: string; owns?: string[] }[];
   hasCatalogHooks: boolean;
+  /** The bag keys of uniforms the extension computes for each photo
+   *  (UniformDeclaration.computed), inline and in passes. Absent from files an
+   *  older Safelight wrote. */
+  computed?: string[];
 }
 
 export const SHARED_SETTINGS_FILE = "shared-settings.json";        // in userData

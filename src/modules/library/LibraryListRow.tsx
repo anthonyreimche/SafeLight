@@ -79,9 +79,7 @@ function LibraryListRowImpl({
       onClick={(e) => onClick(photo.id, e)}
       onDoubleClick={() => onDoubleClick(photo.id)}
       onContextMenu={onContextMenu ? (e) => onContextMenu(photo.id, e) : undefined}
-      className={`relative flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${
-        photo.flag === "reject" ? "opacity-40" : ""
-      }`}
+      className={`relative flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass}`}
     >
       {photo.colorLabel !== "none" && (
         <span
@@ -94,7 +92,12 @@ function LibraryListRowImpl({
           src={src}
           alt={photoDisplayName(photo)}
           className="h-10 w-14 shrink-0 rounded object-contain"
-          style={{ opacity: loaded ? 1 : 0, transition: "opacity 150ms ease-out" }}
+          // A reject dims its preview only, as in the grid: dimming the whole row
+          // left its name unreadable.
+          style={{
+            opacity: loaded ? (photo.flag === "reject" ? 0.4 : 1) : 0,
+            transition: "opacity 150ms ease-out",
+          }}
           loading="lazy"
           onLoad={onLoad}
         />

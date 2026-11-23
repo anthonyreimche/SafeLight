@@ -5,6 +5,7 @@
 
 import { useDevelopStore } from "@/state/develop-store";
 import { usesSignedOutput } from "@/catalog/types";
+import { STATUS_HIT } from "@/ui/status-button";
 
 // Develop's status-bar view toggles, handed to the Develop module.
 
@@ -18,7 +19,7 @@ export function AssessmentToggle() {
       title="Colour assessment (ISO 12646): white frame + middle-grey surround"
       aria-label="Toggle colour assessment"
       aria-pressed={on}
-      className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
+      className={`${STATUS_HIT} text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
     >
       Assess
     </button>
@@ -38,7 +39,7 @@ export function ProofToggle() {
       title="Soft proof (S): preview the export colour space"
       aria-label="Toggle soft proof"
       aria-pressed={on}
-      className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
+      className={`${STATUS_HIT} text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
     >
       Proof
     </button>

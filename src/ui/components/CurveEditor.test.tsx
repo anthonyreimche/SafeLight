@@ -119,6 +119,14 @@ const IDENTITY: CurvePoint[] = [
   { x: 1, y: 1 },
 ];
 
+describe("CurveEditor help", () => {
+  it("explains its gestures in a tooltip on the graph, not in text under it", () => {
+    const { canvas } = setup(IDENTITY);
+    expect(canvas.getAttribute("title")).toMatch(/Click to add/);
+    expect(screen.queryByText(/Click to add/)).toBeNull();
+  });
+});
+
 describe("CurveEditor end points", () => {
   const drag = (
     user: ReturnType<typeof userEvent.setup>,

@@ -480,8 +480,7 @@ export function ExtensionDetail({
         {!target.installed && repo && banned && (
           <span
             title={banned}
-            className="rounded px-3 py-1 text-[11px] font-medium text-label-red"
-            style={{ background: "color-mix(in srgb, var(--color-label-red) 16%, transparent)" }}
+            className="rounded bg-danger px-3 py-1 text-[11px] font-medium text-on-danger"
           >
             Blocked by the Safelight registry — {banned}
           </span>
@@ -599,7 +598,8 @@ export function ExtensionDetail({
           <button
             disabled={busy !== null}
             onClick={() => onUninstall(id)}
-            className="rounded px-2 py-1 text-[10px] text-text-muted hover:text-label-red disabled:opacity-40"
+            title="Uninstall the extension and delete its files"
+            className="rounded px-2 py-1 text-[10px] text-text-muted hover:bg-surface-3 hover:text-text-primary disabled:opacity-40"
           >
             Uninstall
           </button>

@@ -311,6 +311,16 @@ function perPhotoTextureError(c: ProcessingStageContribution): string | null {
   return null;
 }
 
+/** computed on a uniform, inline or in a pass, that isn't a boolean. */
+function computedUniformError(c: ProcessingStageContribution): string | null {
+  for (const u of declaredUniforms(c)) {
+    const flag: unknown = u.computed;
+    if (flag !== undefined && typeof flag !== "boolean")
+      return `uniform "${u.key}": computed must be true or false, got ${formatValue(flag)}`;
+  }
+  return null;
+}
+
 /** More than one paint texture on a stage: its layers already share one. */
 function paintTextureError(c: ProcessingStageContribution): string | null {
   const textures: unknown = c.textures;
@@ -454,7 +464,11 @@ export function checkStageContract(
     }
   }
   const shape =
-    uniformShapeError(c, extensionId) ?? photoTextureError(c, extensionId) ?? paintTextureError(c) ?? perPhotoTextureError(c);
+    uniformShapeError(c, extensionId) ??
+    photoTextureError(c, extensionId) ??
+    paintTextureError(c) ??
+    perPhotoTextureError(c) ??
+    computedUniformError(c);
   if (shape) return fail(shape);
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))
