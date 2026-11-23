@@ -18,6 +18,7 @@ import {
   DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
 } from "./float-frame";
 import type { SourceSample, StoredSample } from "./source-sample";
+import type { RegionPixels, RegionRequest } from "./region-capture";
 import type { DetailGain } from "@/raw/native-frame";
 import { setSourcePixels } from "./source-pixels";
 import {
@@ -320,6 +321,9 @@ export class RenderBridge {
         break;
       case "probed":
         requests.answer(requests.probes, msg.reqId, msg.rgb);
+        break;
+      case "capturedRegion":
+        requests.answer(requests.regions, msg.reqId, msg.region);
         break;
       case "developedPixels":
         requests.answer(requests.pixels, msg.reqId, msg.pixels);
@@ -735,6 +739,20 @@ export class RenderBridge {
       this.requests.expect(this.requests.probes, reqId, resolve, () => null);
       flushStageSync();
       this.post({ cmd: "probe", reqId, u, v, point });
+    });
+  }
+
+  /** A patch of the live frame at the frame's own pixels, as the canvas shows
+   *  it (WebGLRenderer.readRegion), or null: no renderer, no source, no float
+   *  render targets, a patch outside the frame, or disposed. */
+  captureRegion(request: RegionRequest): Promise<RegionPixels | null> {
+    if (this.transport.disposed) return Promise.resolve(null);
+    return new Promise<RegionPixels | null>((resolve) => {
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.regions, reqId, resolve, () => null);
+      flushStageSync();
+      const { x, y, width, height } = request;
+      this.post({ cmd: "captureRegion", reqId, x, y, width, height });
     });
   }
 

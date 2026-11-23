@@ -65,7 +65,8 @@ export interface CurveEditorProps {
   curves: ToneCurves;
   onChange: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   onCommit: () => void;
-  // Compact mode for embedding inside another panel (mask sub-panels).
+  // Kept for callers that embed the editor in another panel (mask sub-panels).
+  // The gesture help is a tooltip now, so both modes render the same.
   compact?: boolean;
   // Show the selected point's In/Out row even without keyboard canvas editing.
   showPointValues?: boolean;
@@ -86,7 +87,6 @@ export function CurveEditor({
   curves,
   onChange,
   onCommit,
-  compact,
   showPointValues,
 }: CurveEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -360,6 +360,12 @@ export function CurveEditor({
           role={kbd ? "application" : "img"}
           aria-label={`Tone curve, ${channelLabel} channel. ${describe(sel, selPoint)}.`}
           aria-describedby={kbd ? helpId : undefined}
+          title={
+            "Click to add a point · drag to move · double-click to remove" +
+            (kbd
+              ? ". Focused: arrows nudge, Page Up/Down select, Enter adds, Delete removes"
+              : "")
+          }
           style={{ width: size, height: size, touchAction: "none" }}
           className="cursor-crosshair rounded bg-surface-0"
           onPointerDown={handlePointerDown}
@@ -439,13 +445,6 @@ export function CurveEditor({
       </div>
       )}
 
-      {!compact && (
-        <p className="mt-1 text-[10px] text-text-muted">
-          Click to add · drag to move · double-click to remove.
-          {kbd &&
-            " With the graph focused: arrows nudge, Page Up/Down select, Enter adds, Delete removes."}
-        </p>
-      )}
       {kbd && (
         <p id={helpId} className="sr-only">
           Tone curve graph editor. Arrow keys move the selected point; hold Shift

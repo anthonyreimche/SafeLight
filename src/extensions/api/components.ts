@@ -85,7 +85,8 @@ export interface CurveEditorProps {
   curves: ToneCurves;
   onChange: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   onCommit: () => void;
-  /** Compact mode for embedding inside another panel (mask sub-panels). */
+  /** Accepted for editors embedded in another panel (mask sub-panels). The
+   *  gesture help is a tooltip, so the editor renders the same either way. */
   compact?: boolean;
   /** Show the selected point's In/Out row even without keyboard canvas editing. */
   showPointValues?: boolean;

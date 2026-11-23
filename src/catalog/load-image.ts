@@ -44,7 +44,14 @@ import type { CodeDecoder } from "@/raw/profile-frame";
 import { hasCameraMatch, learnedMatch, rememberLearned, rememberSourceFrame, type DecodeLearned } from "./decode-learned";
 import { inputProfileKey, resolveInputTransform } from "./input-profiles";
 import { isSourceFile, sourceOriginalHeld } from "@/project/library-sources";
-import { photoCacheKey, photoMarkerKey, rawDecoders, rawSignature } from "@/raw/photo-cache-key";
+import {
+  photoCacheKey,
+  photoMarkerKey,
+  rawDecoders,
+  rawSignature,
+  recallDecoderVerdicts,
+  settleDecoderVerdicts,
+} from "@/raw/photo-cache-key";
 import {
   chainSignature,
   decoderChain,
@@ -343,28 +350,37 @@ export async function loadPhotoImage(
   // needs more pixels than it holds (export at "Original"/large sizes), fall
   // through to the full decode below.
   const isRaw = isRawFile({ name: photo.filename } as File);
-  const cacheKey = photoCacheKey(photo);
-  const markerKey = photoMarkerKey(photo);
-  const signature = isRaw ? rawSignature(photo) : "";
+  // A leading decoder that checks files first keys the photo by its answer,
+  // which an earlier session may have kept.
   const cacheGeneration = rawCacheGeneration();
+  const recalling = isRaw ? recallDecoderVerdicts(photo) : null;
+  if (recalling) await recalling;
+  let cacheKey = photoCacheKey(photo);
+  const markerKey = photoMarkerKey(photo);
+  let signature = isRaw ? rawSignature(photo) : "";
   // Which of its decoders have already failed on this RAW for good. Asked along
   // with the cache read, so a miss doesn't wait on a second round trip.
-  const verdicts = isRaw ? verdictsOn(markerKey, rawDecoders(photo)) : Promise.resolve(NO_VERDICTS);
-  const unsupportedLookup = verdicts.then((v) => v.unsupported);
-  const cached = isRaw ? await readCachedPreview(cacheKey, { sample: opts?.sample }) : null;
-  if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
+  let verdicts = isRaw ? verdictsOn(markerKey, rawDecoders(photo)) : Promise.resolve(NO_VERDICTS);
+  let unsupportedLookup = verdicts.then((v) => v.unsupported);
+  // The entry, when it holds as many pixels as the caller needs.
+  const servable = (entry: CachedPreview | null): CachedPreview | null =>
+    entry && Math.max(entry.width, entry.height) >= (opts?.minEdge ?? 0) ? entry : null;
+  const serve = async (entry: CachedPreview): Promise<Float16Source> => {
     // An entry from before 3.1.0 kept neither the decoded size nor the centre
     // sample. It serves as it is, and the photo is decoded again behind the
     // open so a later open has both (cache-fill.ts). A background load
     // (Develop's neighbour prefetch) does not ask: its request would push the
     // open photo's out of the waiting slot, and the neighbour is refreshed when
     // it is shown (refreshStaleSource).
-    if (opts?.sample && !opts.background && !cached.full) {
+    if (opts?.sample && !opts.background && !entry.full) {
       completeUnlessMarked(photo, markerKey, cacheGeneration, unsupportedLookup);
     }
-    if (!hasCameraMatch(photo, signature)) await learnFromEntry(photo, cached, signature);
-    return float16Of(cached, photo, signature);
-  }
+    if (!hasCameraMatch(photo, signature)) await learnFromEntry(photo, entry, signature);
+    return float16Of(entry, photo, signature);
+  };
+  let cached = isRaw ? await readCachedPreview(cacheKey, { sample: opts?.sample }) : null;
+  const hit = servable(cached);
+  if (hit) return serve(hit);
 
   const signal = opts?.signal;
   if (signal?.aborted) return null;
@@ -383,6 +399,19 @@ export async function loadPhotoImage(
       if (signal?.aborted) return null;
       if (!isRaw) original = file;
       else {
+        // A leading decoder that checks files first and declines the photo
+        // leaves it keyed as libraw alone keys it, so libraw's entry may serve.
+        const settling = settleDecoderVerdicts(photo, file, cacheGeneration);
+        if (settling && (await settling)) {
+          cacheKey = photoCacheKey(photo);
+          signature = rawSignature(photo);
+          verdicts = verdictsOn(markerKey, rawDecoders(photo));
+          unsupportedLookup = verdicts.then((v) => v.unsupported);
+          cached = await readCachedPreview(cacheKey, { sample: opts?.sample });
+          const settledHit = servable(cached);
+          if (settledHit) return serve(settledHit);
+          if (signal?.aborted) return null;
+        }
         // Such a RAW goes straight to its camera preview: the decode would only
         // fail again.
         const { unsupported, ruledOut } = await verdicts;

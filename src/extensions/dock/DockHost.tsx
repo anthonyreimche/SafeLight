@@ -48,6 +48,8 @@ import {
   setFloatWidth,
   setRailHeight,
   setRailWidth,
+  soloCollapsed,
+  toggleCollapsed,
 } from "./actions";
 import { startHeaderDrag, startResize } from "./dnd";
 import { prewarmPanel } from "./prewarm";
@@ -161,7 +163,23 @@ function PanelHeader({ id }: { id: string }) {
           </ErrorBoundary>
         </span>
       ))}
-      <span className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary">
+      {/* Not a <button>: the header starts its collapse-or-drag gesture on any
+          press outside a button, and the title is most of the header. */}
+      <span
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        title={`Click to collapse or expand · Alt+click to expand only this panel · Drag to move${
+          onReset ? " · Right-click to reset" : ""
+        }`}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          if (e.altKey) soloCollapsed(id);
+          else toggleCollapsed(id);
+        }}
+        className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary"
+      >
         {title}
       </span>
       <button
@@ -169,7 +187,7 @@ function PanelHeader({ id }: { id: string }) {
         title="Close panel"
         aria-label={`Close ${title} panel`}
         onClick={() => closeDockPanel(id)}
-        className="rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
+        className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[12px] leading-none text-text-muted hover:bg-surface-3 hover:text-text-primary"
       >
         ×
       </button>

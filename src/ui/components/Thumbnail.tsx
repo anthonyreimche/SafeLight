@@ -137,7 +137,7 @@ function ThumbnailImpl({
         <img
           src={src}
           alt={displayName}
-          className="h-full w-full object-contain group-hover:brightness-50"
+          className="h-full w-full object-contain group-hover:brightness-50 group-focus-visible:brightness-50"
           style={{
             opacity: loaded ? (isReject ? 0.4 : 1) : 0,
             rotate: shownTurn === undefined ? undefined : `${shownTurn}deg`,
@@ -196,7 +196,7 @@ function ThumbnailImpl({
 
       {photo.keywords.length > 0 && (
         <div
-          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-on-media-muted transition-opacity group-hover:opacity-0"
+          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-on-media-muted transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
           title={photo.keywords.join(", ")}
         >
           <span aria-hidden="true">{"🏷"}</span>
@@ -205,7 +205,7 @@ function ThumbnailImpl({
       )}
 
       {photo.rating > 0 && (
-        <div className="absolute bottom-1 left-1 rounded bg-black/50 px-1 text-[10px] leading-tight tracking-tight text-rating transition-opacity group-hover:opacity-0">
+        <div className="absolute bottom-1 left-1 rounded bg-black/50 px-1 text-[10px] leading-tight tracking-tight text-rating transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0">
           {"★".repeat(photo.rating)}
         </div>
       )}
@@ -216,13 +216,15 @@ function ThumbnailImpl({
         <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${labelBar}`} />
       )}
 
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <p className="truncate text-[10px] text-text-primary">{displayName}</p>
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
         <Rating
           value={photo.rating}
           onChange={onRatingChange ? (r) => onRatingChange(photo.id, r) : undefined}
           size="sm"
         />
+        {/* The scrim is black in every theme, so the name takes the on-media
+            colour; the theme's text colour is dark in a light theme. */}
+        <p className="truncate text-[10px] leading-normal text-on-media">{displayName}</p>
       </div>
     </div>
   );

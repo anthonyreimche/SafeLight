@@ -20,6 +20,7 @@ import {
   type FrameResult,
   type LinearFrameJob,
 } from "./frame-job";
+import type { LinearDngJob, LinearDngResult } from "./linear-dng";
 import { answerFrameRequest, type HalfFrame, type ProfileJob } from "./profile-frame";
 
 const POOL_SIZE = 2;
@@ -84,8 +85,9 @@ function stop(worker: Worker): void {
 
 function runInline(task: Task): void {
   const { request } = task;
-  if (request.op === "profile") void answerFrameRequest(request).then(({ reply }) => task.settle(reply));
-  else task.settle(handleFrameRequest(request).reply);
+  if (request.op === "profile" || request.op === "dng") {
+    void answerFrameRequest(request).then(({ reply }) => task.settle(reply));
+  } else task.settle(handleFrameRequest(request).reply);
 }
 
 // What the workers still hold is lost with them (its buffers were transferred);
@@ -215,6 +217,17 @@ export async function finishLinearFrame(job: LinearFrameJob, priority?: FramePri
   const error = failure(reply);
   if (error) throw error;
   if (reply.op !== "linear") throw new Error("the frame worker answered another request");
+  return reply.result;
+}
+
+/** A linear DNG decoded whole (linear-dng.ts): its frame turned upright, with
+ *  its cache entry when asked for, or why it can't be read. The file's bytes
+ *  are handed to the worker, not copied. */
+export async function decodeLinearDngFrame(job: LinearDngJob, priority?: FramePriority): Promise<LinearDngResult> {
+  const reply = await submit((id) => ({ id, op: "dng", job }), [job.buffer], priority);
+  const error = failure(reply);
+  if (error) throw error;
+  if (reply.op !== "dng") throw new Error("the frame worker answered another request");
   return reply.result;
 }
 

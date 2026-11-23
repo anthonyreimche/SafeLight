@@ -8,6 +8,7 @@ import {
   comboFromEvent,
   comboFromWheelEvent,
   findConflicts,
+  findConflictsWith,
   getBinding,
   initKeybindings,
   isBareKey,
@@ -542,6 +543,107 @@ describe("findConflicts", () => {
       handler: () => {},
     });
     expect(findConflicts({})).toEqual(new Set(["ext.a.run", "develop.toggleClipping"]));
+  });
+});
+
+describe("clashing extension shortcuts", () => {
+  const noop = () => {};
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  const registerGrid = () =>
+    registerExtensionAction("acme.crop", { id: "acme.crop.grid", label: "Show grid", defaultCombo: "Ctrl+'", handler: noop });
+  const registerCopy = () =>
+    registerExtensionAction("acme.copies", { id: "acme.copies.create", label: "Create virtual copy", defaultCombo: "Ctrl+'", handler: noop });
+
+  it("warns when a default is already held by another extension, naming both and the combo", () => {
+    registerCopy();
+    expect(warn).not.toHaveBeenCalled();
+    registerGrid();
+    expect(warn).toHaveBeenCalledOnce();
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toContain("acme.crop");
+    expect(message).toContain("acme.copies");
+    expect(message).toContain("Ctrl+'");
+  });
+
+  it("warns when a default is one of Safelight's own shortcuts", () => {
+    registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+B", handler: noop });
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0][0])).toMatch(/acme\.tool.*Ctrl\+B.*Safelight/);
+  });
+
+  it("counts a built-in alias that is still live", () => {
+    registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+Y", handler: noop });
+    expect(String(warn.mock.calls[0]?.[0])).toContain("develop.redo");
+  });
+
+  it("stays quiet for a free combo, an unbound default or its own re-registration", () => {
+    registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+Alt+K", handler: noop });
+    registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+Alt+K", handler: noop });
+    registerExtensionAction("acme.other", { id: "acme.other.run", label: "Run", defaultCombo: "", handler: noop });
+    registerExtensionAction("acme.more", { id: "acme.more.run", label: "Run", defaultCombo: "", handler: noop });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet once the person has moved the other action off the combo", () => {
+    registerCopy();
+    setBinding("acme.copies.create", "Ctrl+Alt+V");
+    registerGrid();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("still registers both, and the first registered keeps the keys", () => {
+    registerCopy();
+    registerGrid();
+    expect(useExtensionActions.getState().actions.has("acme.crop.grid")).toBe(true);
+    expect(matchExtensionAction(key("'", { ctrl: true, code: "Quote" }))?.id).toBe("acme.copies.create");
+  });
+
+  it("marks both rows as conflicting", () => {
+    registerCopy();
+    registerGrid();
+    expect(findConflicts({})).toEqual(new Set(["acme.copies.create", "acme.crop.grid"]));
+  });
+
+  it("names the other action, and its extension, for each row", () => {
+    registerCopy();
+    registerGrid();
+    expect(findConflictsWith("acme.crop.grid", {})).toEqual([
+      { id: "acme.copies.create", label: "Create virtual copy", extensionId: "acme.copies" },
+    ]);
+    expect(findConflictsWith("acme.copies.create", {})).toEqual([
+      { id: "acme.crop.grid", label: "Show grid", extensionId: "acme.crop" },
+    ]);
+  });
+
+  it("names an extension action on Safelight's own row, and back", () => {
+    registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+B", handler: noop });
+    expect(findConflictsWith("develop.colorAssessment", {})).toEqual([
+      { id: "acme.tool.run", label: "Run", extensionId: "acme.tool" },
+    ]);
+    expect(findConflictsWith("acme.tool.run", {})).toEqual([
+      { id: "develop.colorAssessment", label: "Toggle colour assessment" },
+    ]);
+  });
+
+  it("clears once either side is rebound", () => {
+    registerCopy();
+    registerGrid();
+    expect(findConflictsWith("acme.crop.grid", { "acme.crop.grid": "Ctrl+Alt+O" })).toEqual([]);
+    expect(findConflictsWith("acme.copies.create", { "acme.crop.grid": "Ctrl+Alt+O" })).toEqual([]);
+  });
+
+  it("keeps the module scopes of Safelight's own actions", () => {
+    // Develop and Library may share a key; neither is named against the other.
+    expect(findConflictsWith("develop.toggleProof", { "develop.toggleProof": "P" })).toEqual([]);
+    expect(findConflictsWith("develop.toggleClipping", { "develop.toggleClipping": "S" })).toEqual([
+      { id: "develop.toggleProof", label: "Toggle soft proof" },
+    ]);
   });
 });
 

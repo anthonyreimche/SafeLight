@@ -19,6 +19,7 @@ import {
   type UpdateInfo,
 } from "./update-checker";
 import type { UpdateSupport } from "@/extensions/types";
+import { DismissButton } from "@/ui/components/DismissButton";
 
 
 // Re-check cadence while the app stays open. Matches the extension poll.
@@ -146,14 +147,11 @@ function BannerInstall({
             Download
           </button>
         ))}
-      <button
+      <DismissButton
         onClick={() => onDismiss(false)}
+        label="Close update notification"
         title="Close — will remind you again next launch"
-        className="rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-        aria-label="Close update notification"
-      >
-        ×
-      </button>
+      />
       <button
         onClick={() => onDismiss(true)}
         className="text-[10px] text-text-muted hover:text-text-primary"

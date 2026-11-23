@@ -57,7 +57,10 @@ export function derivedKey(transformId: string, key: string): string {
 function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline {
   const skipBaseCurve = c?.skipBaseCurve ?? false;
   const skipToneShoulder = c?.skipToneShoulder ?? false;
-  if (!c?.glsl && !skipBaseCurve && !skipToneShoulder) return BUILTIN_RESOLVED;
+  // The stock program under the transform's own id, which a stage that belongs
+  // to the transform (ProcessingStageContribution.transform) goes by.
+  if (!c?.glsl && !skipBaseCurve && !skipToneShoulder)
+    return c && id !== BUILTIN_RESOLVED.id ? { ...BUILTIN_RESOLVED, id } : BUILTIN_RESOLVED;
   const flags = `${skipBaseCurve ? "b" : "-"}${skipToneShoulder ? "s" : "-"}`;
   const declared = c?.derive?.uniforms ?? c?.params ?? [];
   if (!c?.glsl || (declared.length === 0 && !c.helpers && !c.prepass)) {

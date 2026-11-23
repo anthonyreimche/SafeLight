@@ -211,6 +211,7 @@ export function registerExtensionAction(
     console.warn(`[extensions] ${extensionId}: "${c.id}" is already registered by ${holder}; registerKeybinding ignored`);
     return;
   }
+  warnIfComboHeld(extensionId, c.id, c.defaultCombo);
   useExtensionActions.setState((s) => {
     const next = new Map(s.actions);
     next.set(c.id, {
@@ -223,6 +224,20 @@ export function registerExtensionAction(
     });
     return { actions: next };
   });
+}
+
+/** Name, for the extension's developer, every action already on `combo`. Both
+ *  stay registered: Safelight's own action, then the first extension to
+ *  register, keeps the keys until the person rebinds one. */
+function warnIfComboHeld(extensionId: string, id: string, combo: string): void {
+  if (combo === "") return;
+  const held = liveCombos(useKeybindings.getState().overrides).filter((e) => e.id !== id && e.combo === combo);
+  if (held.length === 0) return;
+  const holders = held.map((e) => `${e.extensionId ?? "Safelight"} ("${e.id}")`).join(", ");
+  console.warn(
+    `[extensions] ${extensionId}: "${id}" defaults to ${combo}, which ${holders} already uses; ` +
+      `only one of them will fire until one is rebound in Preferences ▸ Shortcuts`,
+  );
 }
 
 export function unregisterExtensionActions(extensionId: string): void {
@@ -463,21 +478,27 @@ export function matchAction(
   return null;
 }
 
-/** Conflicts: same combo used twice in scopes that can both be active
- *  (same category, or one of them General). Returns the set of action ids.
- *  Extension-registered actions participate too — they match globally
- *  (matchExtensionAction ignores scope), so they're treated as if General and
- *  can collide with anything sharing their combo. Without this, those "private"
- *  keys would conflict undetected. */
-export function findConflicts(
-  overrides: Record<string, string>,
-): Set<string> {
-  const out = new Set<string>();
-  // `global` actions overlap every scope (they fire in any module).
-  type Entry = { id: string; category: ActionCategory; combo: string; global: boolean };
-  const entries: Entry[] = [
+/** An action that shares another's keys; `extensionId` is unset for
+ *  Safelight's own. */
+export interface ConflictingAction {
+  id: string;
+  label: string;
+  extensionId?: string;
+}
+
+// `global` entries overlap every scope: extension actions match in any module
+// (matchExtensionAction ignores scope).
+interface LiveCombo extends ConflictingAction {
+  category: ActionCategory;
+  combo: string;
+  global: boolean;
+}
+
+function liveCombos(overrides: Record<string, string>): LiveCombo[] {
+  return [
     ...KEY_ACTIONS.map((a) => ({
       id: a.id,
+      label: a.label,
       category: a.category,
       combo: overrides[a.id] ?? a.def,
       global: false,
@@ -486,32 +507,65 @@ export function findConflicts(
     // under their action's id so an alias collision surfaces too.
     ...KEY_ACTIONS.flatMap((a) =>
       a.altDef !== undefined && overrides[a.id] === undefined
-        ? [{ id: a.id, category: a.category, combo: a.altDef, global: false }]
+        ? [{ id: a.id, label: a.label, category: a.category, combo: a.altDef, global: false }]
         : [],
     ),
     ...Array.from(useExtensionActions.getState().actions.values()).map((e) => ({
       id: e.id,
+      label: e.label,
+      extensionId: e.extensionId,
       category: e.category,
       combo: overrides[e.id] ?? e.def,
       global: true,
     })),
   ];
+}
+
+// Unbound actions (empty combo) never clash: flip H/V ship unbound.
+const clash = (a: LiveCombo, b: LiveCombo): boolean =>
+  a.id !== b.id &&
+  a.combo !== "" &&
+  a.combo === b.combo &&
+  (a.global ||
+    b.global ||
+    a.category === b.category ||
+    a.category === "General" ||
+    b.category === "General");
+
+const asConflicting = ({ id, label, extensionId }: LiveCombo): ConflictingAction =>
+  extensionId === undefined ? { id, label } : { id, label, extensionId };
+
+/** Conflicts: same combo used twice in scopes that can both be active
+ *  (same category, or one of them General). Returns the set of action ids.
+ *  Extension-registered actions take part as if General, since they match in
+ *  every module. */
+export function findConflicts(
+  overrides: Record<string, string>,
+): Set<string> {
+  const out = new Set<string>();
+  const entries = liveCombos(overrides);
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
-      const a = entries[i];
-      const b = entries[j];
-      const overlap =
-        a.global ||
-        b.global ||
-        a.category === b.category ||
-        a.category === "General" ||
-        b.category === "General";
-      // Unbound actions (empty combo) never conflict — flip H/V ship unbound.
-      if (overlap && a.combo !== "" && a.combo === b.combo) {
-        out.add(a.id);
-        out.add(b.id);
+      if (clash(entries[i], entries[j])) {
+        out.add(entries[i].id);
+        out.add(entries[j].id);
       }
     }
   }
   return out;
+}
+
+/** The other actions sharing `actionId`'s live keys, by the same rules as
+ *  findConflicts. */
+export function findConflictsWith(
+  actionId: string,
+  overrides: Record<string, string>,
+): ConflictingAction[] {
+  const entries = liveCombos(overrides);
+  const mine = entries.filter((e) => e.id === actionId);
+  const others = new Map<string, ConflictingAction>();
+  for (const e of entries) {
+    if (mine.some((m) => clash(m, e))) others.set(e.id, asConflicting(e));
+  }
+  return [...others.values()];
 }

@@ -17,6 +17,8 @@ import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 import { useDevelopStore } from "@/state/develop-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { focusInitialMenuItem, handleMenuKeyDown } from "@/ui/menu-keys";
+import { STATUS_HIT } from "@/ui/status-button";
+import { MENU_SURFACE } from "@/ui/floating";
 
 function choose(id: string | null) {
   const dev = useDevelopStore.getState();
@@ -82,7 +84,7 @@ export function DisplayTransformControl() {
         choose(id);
         closeToTrigger();
       }}
-      className={`whitespace-nowrap rounded px-2 py-1 text-left text-[11px] leading-none ${
+      className={`whitespace-nowrap rounded-sm px-2 py-1 text-left text-[11px] leading-none ${
         checked
           ? "bg-surface-3 text-text-primary"
           : "text-text-muted hover:bg-surface-3 hover:text-text-primary"
@@ -101,7 +103,7 @@ export function DisplayTransformControl() {
         aria-label="Choose display transform"
         aria-haspopup="menu"
         aria-expanded={open}
-        className={`flex items-center gap-1 text-[10px] ${
+        className={`${STATUS_HIT} flex items-center gap-1 text-[10px] ${
           open ? "text-text-primary" : "text-text-muted hover:text-text-primary"
         }`}
       >
@@ -116,7 +118,7 @@ export function DisplayTransformControl() {
           ref={menuRef}
           role="menu"
           onKeyDown={(e) => handleMenuKeyDown(menuRef.current, e, "vertical")}
-          className="absolute bottom-full left-1/2 mb-1.5 flex min-w-[120px] -translate-x-1/2 flex-col gap-0.5 rounded border border-border bg-surface-2 p-1 shadow-lg"
+          className={`absolute bottom-full left-1/2 mb-1.5 flex min-w-[120px] -translate-x-1/2 flex-col gap-0.5 p-1 ${MENU_SURFACE}`}
         >
           {item(
             "default",

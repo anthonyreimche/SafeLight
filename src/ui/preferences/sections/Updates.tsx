@@ -260,7 +260,7 @@ export function UpdatesSection() {
                   v{r.version}
                 </span>
                 {r.prerelease && (
-                  <span className="shrink-0 rounded border border-border-subtle px-1.5 py-px text-[9px] uppercase tracking-wide text-text-muted">
+                  <span className="shrink-0 rounded border border-border-subtle px-1.5 py-px text-[9px] uppercase tracking-wider text-text-muted">
                     Pre-release
                   </span>
                 )}

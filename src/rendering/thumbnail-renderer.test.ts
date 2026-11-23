@@ -159,6 +159,7 @@ vi.mock("@/catalog/load-image", () => ({
 }));
 vi.mock("@/rendering/histogram", () => ({ computeHistogram: () => h.histogram }));
 vi.mock("@/extensions/pipelines", () => ({
+  effectivePipelineId: (displayTransform: string | null) => displayTransform ?? "default",
   setPhotoParams: () => {},
   resolvePipelineFor: (displayTransform: string | null) => `pipeline:${displayTransform}`,
 }));
@@ -298,6 +299,31 @@ describe("renderPhotoHistogram's stage textures", () => {
     expect(await renderPhotoHistogram(photo(), normalizeParams({}), { "acme.calib.table": "v1" })).toBe(h.histogram);
     expect(h.FakeRenderer.instances[0].drawnTextures).toEqual([["lut.stage.lut", "acme.calib.table#v1"]]);
     expect(events).toEqual(["released"]);
+  });
+
+  // SafeLight #278: the frame draws the photo's own variant of a per-photo
+  // texture, so that is the one it waits for and holds.
+  it("waits for the photo's own variant of a per-photo texture", async () => {
+    const { registerProcessingStage, unregisterExtension } = await import("@/extensions/registry");
+    registerProcessingStage("acme", {
+      id: "acme.per",
+      name: "Per photo",
+      phase: "effects",
+      glsl: "",
+      uniforms: [],
+      textures: [{ key: "tex", kind: "lut", perPhoto: true }],
+    });
+    const asked: unknown[] = [];
+    h.needVariants = (bag) => {
+      asked.push(bag["acme.per.tex"]);
+      return null;
+    };
+    try {
+      await renderPhotoHistogram(photo(), normalizeParams({}), {});
+    } finally {
+      unregisterExtension("acme");
+    }
+    expect(asked).toEqual(["p1"]);
   });
 
   it("gives no histogram when a variant the photo's bag names can't be had", async () => {

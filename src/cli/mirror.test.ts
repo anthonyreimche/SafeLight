@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getParamDescriptor, normalizeParamBag, unregisterExtensionParams } from "@/extensions/param-registry";
+import { getParamDescriptor, isComputedParam, normalizeParamBag, unregisterExtensionParams } from "@/extensions/param-registry";
 import type { ExtensionDescriptors } from "@/state/shared-settings";
 import { guiHeartbeatAt, readDescriptors, readSharedSettings, seedParamRegistry } from "./mirror";
 
@@ -86,5 +86,13 @@ describe("seedParamRegistry", () => {
       "demo.stage.flag": true,
       "other.key": 3,
     });
+  });
+
+  // `slu` pastes and copies as the app does, so it knows which values the
+  // extension computes for each photo.
+  it("marks the values the extension computes for each photo", () => {
+    seedParamRegistry([{ ...descriptors, computed: ["demo.stage.k1"] }]);
+    expect(isComputedParam("demo.stage.k1")).toBe(true);
+    expect(isComputedParam("demo.stage.amount")).toBe(false);
   });
 });

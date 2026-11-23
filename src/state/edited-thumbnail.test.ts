@@ -194,6 +194,16 @@ describe("rendering from the resident source", () => {
     bridge.renderThumbnailFromSource.mockResolvedValue(rendered);
   });
 
+  // SafeLight #278: without a bag the renderer drew with the one it held, which
+  // is another photo's.
+  it("draws an edit that has no bag with its params alone", async () => {
+    regenerateEditedThumbnail(PHOTO_ID, params(1), 5000);
+    await settle();
+
+    const opts = bridge.renderThumbnailFromSource.mock.calls[0][0];
+    expect(opts.contributedParams).toEqual(denoiseBag(params(1)));
+  });
+
   it("renders the committed look and writes it back to the catalogue", async () => {
     regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, { "ext.stage.k": 3 });
     await settle();

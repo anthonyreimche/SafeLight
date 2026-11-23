@@ -292,7 +292,7 @@ describe("markers of each decoder", () => {
     const decoder = { id: "fast", label: "Fast", extensions: [".nef"], decode: async () => null };
     const extension = { id: "ext.raw/fast", owner: "ext.raw", label: "Fast", version: "1.2.0", formats: ["nef"], decoder };
 
-    expect(DECODER_ID).toBe("libraw-0.22.1+1");
+    expect(DECODER_ID).toBe("libraw-0.22.1+3");
     expect(decoderMarkerId({ id: "libraw", owner: "core", label: "Built-in" })).toBe(DECODER_ID);
     expect(decoderMarkerId(extension)).toBe(EXTENSION);
   });
@@ -322,5 +322,49 @@ describe("markers of each decoder", () => {
     await cache.markDecode(KEY, "unsupported", cache.rawCacheGeneration(), EXTENSION);
 
     expect((await cache.cachedKeys()).has(KEY)).toBe(false);
+  });
+});
+
+// What a decoder that checks a file first (api.library.registerDecoder's
+// `accepts`) answered about the photo, kept so a later session keys the photo
+// without reading its original.
+describe("decoder verdicts", () => {
+  const PICKY = "ext.shift/merge@1.0.0";
+
+  it("keeps a decoder's answer on the photo for a later session", async () => {
+    const first = await session();
+    expect(await first.readDecoderVerdict(KEY, PICKY)).toBeUndefined();
+    await first.writeDecoderVerdict(KEY, PICKY, false, first.rawCacheGeneration());
+    await first.writeDecoderVerdict(OTHER, PICKY, true, first.rawCacheGeneration());
+
+    const later = await session();
+    expect(await later.readDecoderVerdict(KEY, PICKY)).toBe(false);
+    expect(await later.readDecoderVerdict(OTHER, PICKY)).toBe(true);
+    expect(await later.readDecoderVerdict(KEY, "ext.shift/merge@2.0.0")).toBeUndefined();
+  });
+
+  it("is dropped with the photo's other kept decodes", async () => {
+    const cache = await session();
+    await cache.writeDecoderVerdict(KEY, PICKY, false, cache.rawCacheGeneration());
+    await cache.deleteCachedPreview(KEY, [cache.DECODER_ID, PICKY]);
+
+    expect(await cache.readDecoderVerdict(KEY, PICKY)).toBeUndefined();
+  });
+
+  it("lands only in the project its question began in", async () => {
+    const cache = await session();
+    const begun = cache.rawCacheGeneration();
+    cache.setRawCacheDir(folder("other"));
+    await cache.writeDecoderVerdict(KEY, PICKY, false, begun);
+
+    expect(await cache.readDecoderVerdict(KEY, PICKY)).toBeUndefined();
+  });
+
+  it("never counts as a cache entry or a verdict on the decode", async () => {
+    const cache = await session();
+    await cache.writeDecoderVerdict(KEY, PICKY, false, cache.rawCacheGeneration());
+
+    expect((await cache.cachedKeys()).has(KEY)).toBe(false);
+    expect(await cache.hasDecodeMarker(KEY, "unsupported", PICKY)).toBe(false);
   });
 });

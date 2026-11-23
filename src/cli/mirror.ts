@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { GlslType } from "@/extensions/api/contributions";
-import { registerStageParams } from "@/extensions/param-registry";
+import { registerComputedParams, registerStageParams } from "@/extensions/param-registry";
 import {
   DESCRIPTORS_DIR,
   GUI_HEARTBEAT_FILE,
@@ -94,6 +94,10 @@ export function seedParamRegistry(descriptors: Iterable<ExtensionDescriptors>): 
           label: u.label,
         })),
       );
+    }
+    for (const key of d.computed ?? []) {
+      const stage = stageIds.find((id) => key.startsWith(`${id}.`));
+      if (stage !== undefined) registerComputedParams(stage, d.id, [key.slice(stage.length + 1)]);
     }
   }
 }

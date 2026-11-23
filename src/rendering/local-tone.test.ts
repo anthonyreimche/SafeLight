@@ -225,7 +225,7 @@ describe("the cost of the region base", () => {
 describe("the region base", () => {
   it("takes each tap through the refit and the camera's gain, as the pixel went", () => {
     expect(LOCAL_TONE_GLSL).toContain(
-      "if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s)) * uBaselineGain;",
+      "if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s));\n  s *= uBaselineGain;",
     );
   });
 

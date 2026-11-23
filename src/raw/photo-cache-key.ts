@@ -12,30 +12,101 @@
 // decode. A relative path never starts with "/", so the two never meet. An
 // extension's decoder ahead of libraw adds its chain's signature, so its decodes
 // are kept apart from libraw's; the decoders' markers stay under the key
-// without it (photoMarkerKey), each decoder's under its own id.
+// without it (photoMarkerKey), each decoder's under its own id. A decoder that
+// checks files first and declined the photo's is left out of its chain, so the
+// photo keeps the keys libraw alone gives it; what such a decoder answered is
+// kept beside the photo's markers (recallDecoderVerdicts, settleDecoderVerdicts).
 
 import type { CatalogPhoto } from "@/catalog/types";
-import { chainSignature, decoderChain, formatOf, type ChainEntry } from "@/catalog/image-decoders";
-import { DECODER_ID, decoderMarkerId, deleteCachedPreview, hasDecodeMarker, rawCacheKey } from "@/raw/raw-cache";
+import {
+  acceptsVerdict,
+  answeringChain,
+  askAccepts,
+  decoderChain,
+  formatOf,
+  isExtensionEntry,
+  rememberAccepts,
+  signatureOf,
+  type ChainEntry,
+  type ExtensionChainEntry,
+} from "@/catalog/image-decoders";
+import {
+  DECODER_ID,
+  decoderMarkerId,
+  deleteCachedPreview,
+  hasDecodeMarker,
+  rawCacheKey,
+  readDecoderVerdict,
+  writeDecoderVerdict,
+} from "@/raw/raw-cache";
 
 type KeyedPhoto = Pick<CatalogPhoto, "relPath" | "fileSize" | "rotation" | "sourceKey">;
+type FilePhoto = Pick<CatalogPhoto, "relPath" | "fileSize">;
 
 function nameOf(photo: KeyedPhoto): string {
   return photo.sourceKey === undefined ? photo.relPath : `/source/${photo.sourceKey}`;
 }
 
-/** The decoders that read the photo's RAW, in the person's order; none for a
- *  photo that isn't a RAW. */
-export function rawDecoders(photo: Pick<CatalogPhoto, "relPath">): readonly ChainEntry[] {
+/** The decoders that read the photo's RAW, in the person's order, without
+ *  those known to decline it; none for a photo that isn't a RAW. */
+export function rawDecoders(photo: FilePhoto): readonly ChainEntry[] {
   const format = formatOf(photo.relPath);
-  return format?.raw ? decoderChain(format.id) : [];
+  return format?.raw ? answeringChain(format.id, photo.relPath, photo.fileSize) : [];
 }
 
 /** What reads the photo's RAW, for keys of its decodes: "" while libraw leads
- *  (image-decoders.ts chainSignature). */
-export function rawSignature(photo: Pick<CatalogPhoto, "relPath">): string {
+ *  (image-decoders.ts chainSignature), or once every decoder ahead of it has
+ *  declined the photo. */
+export function rawSignature(photo: FilePhoto): string {
+  return signatureOf(rawDecoders(photo));
+}
+
+/** The decoders ahead of libraw that check files first and haven't answered
+ *  for the photo this session. */
+function unasked(photo: FilePhoto): ExtensionChainEntry[] {
   const format = formatOf(photo.relPath);
-  return format?.raw ? chainSignature(format.id) : "";
+  if (!format?.raw) return [];
+  const chain = decoderChain(format.id);
+  const ahead = chain.slice(0, Math.max(0, chain.findIndex((entry) => entry.owner === "core")));
+  return ahead
+    .filter(isExtensionEntry)
+    .filter((entry) => acceptsVerdict(entry, photo.relPath, photo.fileSize) === undefined);
+}
+
+/** Recall what the photo's leading decoders that check files first answered
+ *  in earlier sessions, kept beside its markers, so its keys follow them
+ *  without reading the original; null, at once, when there is nothing to
+ *  recall (no such decoder leads, or each has answered this session), so a
+ *  load without one waits on nothing. */
+export function recallDecoderVerdicts(photo: KeyedPhoto): Promise<void> | null {
+  const entries = unasked(photo);
+  if (entries.length === 0) return null;
+  const key = photoMarkerKey(photo);
+  return Promise.all(
+    entries.map(async (entry) => {
+      const accepts = await readDecoderVerdict(key, decoderMarkerId(entry));
+      if (accepts !== undefined) rememberAccepts(entry, photo.relPath, photo.fileSize, accepts);
+    }),
+  ).then(() => {});
+}
+
+/** Ask the photo's leading decoders that check files first about `file`, its
+ *  original, and keep each answer beside its markers for later sessions
+ *  (`generation`: the cache's when the work began). Whether the photo's cache
+ *  key changed, as it does when one declines it; null, at once, when there is
+ *  nobody to ask. */
+export function settleDecoderVerdicts(photo: KeyedPhoto, file: Blob, generation: number): Promise<boolean> | null {
+  const entries = unasked(photo);
+  if (entries.length === 0) return null;
+  const before = photoCacheKey(photo);
+  const key = photoMarkerKey(photo);
+  return Promise.all(
+    entries.map(async (entry) => {
+      const accepts = await askAccepts(entry, file, photo.relPath);
+      if (acceptsVerdict(entry, photo.relPath, photo.fileSize) === undefined) return;
+      await writeDecoderVerdict(key, decoderMarkerId(entry), accepts, generation);
+    }),
+  ).then(() => photoCacheKey(photo) !== before);
 }
 
 export function photoCacheKey(photo: KeyedPhoto): string {
@@ -48,13 +119,16 @@ export function photoMarkerKey(photo: KeyedPhoto): string {
 }
 
 /** What a reimport or a removal drops of the photo's kept decodes: its cache
- *  entry under the chain it has now and under libraw's, and the markers of
- *  libraw and of every decoder that reads its format. */
+ *  entry under the chain it has now, under its format's whole chain and under
+ *  libraw's, and the markers and answers of libraw and of every decoder that
+ *  reads its format. */
 export function photoDecodeKeys(photo: KeyedPhoto): { entries: string[]; decoders: string[] } {
-  const signed = photoCacheKey(photo);
-  const plain = photoMarkerKey(photo);
-  const decoders = [...new Set([...rawDecoders(photo).map(decoderMarkerId), DECODER_ID])];
-  return { entries: signed === plain ? [plain] : [signed, plain], decoders };
+  const format = formatOf(photo.relPath);
+  const whole = format?.raw ? decoderChain(format.id) : [];
+  const chained = rawCacheKey(nameOf(photo), photo.fileSize, photo.rotation ?? 0, signatureOf(whole));
+  const entries = [...new Set([photoCacheKey(photo), chained, photoMarkerKey(photo)])];
+  const decoders = [...new Set([...whole.map(decoderMarkerId), DECODER_ID])];
+  return { entries, decoders };
 }
 
 /** Whether every decoder that reads the photo's RAW has failed on it for good. */

@@ -11,6 +11,7 @@
 
 import { usesOlderProcessing } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
+import { STATUS_HIT } from "@/ui/status-button";
 
 const TOOLTIP =
   "This photo uses the older processing, which clips bright, very saturated colours early. " +
@@ -25,7 +26,7 @@ export function ProcessingUpdateControl() {
     <button
       onClick={() => void updateProcessing()}
       title={TOOLTIP}
-      className="text-[10px] text-text-muted hover:text-text-primary"
+      className={`${STATUS_HIT} text-[10px] text-text-muted hover:text-text-primary`}
     >
       Update processing
     </button>

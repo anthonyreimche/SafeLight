@@ -82,7 +82,22 @@ export interface BalanceComparison {
  * number leaves nothing to compare against, so the decode stands: some Mesa
  * drivers read every pixel back as zero, which says nothing about the decode.
  */
-export function compareBalance(raw: ChannelMeans, preview: ChannelMeans): BalanceComparison {
+/** The decode's channels that are negative in a good share of its pixels:
+ *  colour outside sRGB (the deep blue of a stage light carries negative red),
+ *  which the decode keeps and the camera's JPEG maps into its gamut. Their
+ *  means then say nothing of the decode's balance. */
+export type OutOfGamut = ReadonlySet<"r" | "g" | "b">;
+
+// The share of sampled pixels a channel must be negative in to count. Across the
+// sample RAWs it was at most 9.4 %; a deep blue Nikon D7000 frame whose decode
+// darktable renders the same has 35 % of its red negative.
+const OUT_OF_GAMUT_SHARE = 0.2;
+
+export function compareBalance(
+  raw: ChannelMeans,
+  preview: ChannelMeans,
+  outOfGamut?: OutOfGamut,
+): BalanceComparison {
   const rg = raw.g || 1e-6;
   const pg = preview.g || 1e-6;
 
@@ -92,7 +107,11 @@ export function compareBalance(raw: ChannelMeans, preview: ChannelMeans): Balanc
   const rgFactor = Math.max(rawRG / preRG, preRG / rawRG);
   const bgFactor = Math.max(rawBG / preBG, preBG / rawBG);
   const comparable = [preview.r, preview.g, preview.b].every((m) => Number.isFinite(m) && m > 0);
-  const ok = !comparable || (rgFactor < 2.0 && bgFactor < 2.0);
+  // A ratio with a channel the decode holds outside sRGB is left out (see
+  // OutOfGamut).
+  const rgOk = rgFactor < 2.0 || !!outOfGamut?.has("r") || !!outOfGamut?.has("g");
+  const bgOk = bgFactor < 2.0 || !!outOfGamut?.has("b") || !!outOfGamut?.has("g");
+  const ok = !comparable || (rgOk && bgOk);
   return { rawRG, preRG, rawBG, preBG, rgFactor, bgFactor, ok };
 }
 
@@ -107,18 +126,27 @@ function rawColorMatchesPreview(raw: Pixels, pf: Pixels): boolean {
   }
   const pN = pf.data.length / 4;
 
-  // Mean R/G/B of the RAW decode, sampled at a stride to keep it fast.
+  // Mean R/G/B of the RAW decode, sampled at a stride to keep it fast, and how
+  // many of the samples each channel is negative in.
   const n = raw.width * raw.height;
   const step = Math.max(1, Math.floor(n / 4096));
   let rR = 0, rG = 0, rB = 0, rN = 0;
+  let nR = 0, nG = 0, nB = 0;
   for (let i = 0; i < n * 4; i += step * 4) {
     rR += raw.data[i]; rG += raw.data[i + 1]; rB += raw.data[i + 2]; rN++;
+    if (raw.data[i] < 0) nR++;
+    if (raw.data[i + 1] < 0) nG++;
+    if (raw.data[i + 2] < 0) nB++;
   }
 
   if (!rN || !pN) return true;
+  const outOfGamut = new Set(
+    ([["r", nR], ["g", nG], ["b", nB]] as const).flatMap(([c, k]) => (k >= OUT_OF_GAMUT_SHARE * rN ? [c] : [])),
+  );
   const balance = compareBalance(
     { r: rR / rN, g: rG / rN, b: rB / rN },
     { r: pR / pN, g: pG / pN, b: pB / pN },
+    outOfGamut,
   );
 
   console.info(

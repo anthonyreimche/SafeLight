@@ -20,6 +20,7 @@
     ".cr2": "image/x-canon-cr2",
     ".cr3": "image/x-canon-cr3",
     ".arw": "image/x-sony-arw",
+    ".arq": "image/x-sony-arq",
     ".dng": "image/x-adobe-dng",
     ".orf": "image/x-olympus-orf",
     ".raf": "image/x-fuji-raf",

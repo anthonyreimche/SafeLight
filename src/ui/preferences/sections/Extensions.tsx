@@ -47,7 +47,7 @@ export function ExtensionsSection() {
       />
       <ToggleField
         label="Only verified extensions"
-        hint="Show and install only extensions on Safelight's verified allowlist: unverified ones are hidden from the store and blocked from installing. Banned extensions are always blocked regardless of this setting."
+        hint="Show and install only extensions on Safelight's verified allowlist: unverified ones are hidden from the open source extension library and blocked from installing. Banned extensions are always blocked regardless of this setting."
         checked={onlyVerifiedExtensions}
         onChange={(v) => updateSettings({ onlyVerifiedExtensions: v })}
       />

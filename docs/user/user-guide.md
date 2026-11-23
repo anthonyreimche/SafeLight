@@ -139,7 +139,7 @@ To edit and export from a terminal or a script instead, see [Safelight Unplugged
 
 ### Docking
 
-Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel — an opened panel appears as a floating window in the middle of the workspace, ready to drag into a rail; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module. A layout you save in **Preferences ▸ Interface** also remembers which panel and tool extensions are on, and picking it switches them to match; extensions that change how photos look or export, Accessibility and Developer Tools are never switched by a layout.
+Safelight uses collapsible edge rails with dockable panels. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel — an opened panel appears as a floating window in the middle of the workspace, ready to drag into a rail; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module. A layout you save in **Preferences ▸ Interface** also remembers which panel and tool extensions are on, and picking it switches them to match; extensions that change how photos look or export, Accessibility and Developer Tools are never switched by a layout.
 
 ### Multi-window
 

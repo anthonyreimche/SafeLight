@@ -28,6 +28,8 @@ const h = vi.hoisted(() => ({
   writes: [] as string[],
   /** The verdicts each write clears. */
   cleared: [] as ({ markerKey: string; decoder?: string } | undefined)[],
+  /** Each decoder's answer kept, as "accepts|declines decoder key". */
+  answers: [] as string[],
 }));
 
 vi.mock("@/raw/decode", () => ({
@@ -55,6 +57,10 @@ vi.mock("@/raw/raw-cache", async (importOriginal) => {
     markDecode: async (key: string, kind: string, _begunIn: number, decoder = actual.DECODER_ID) => {
       h.marks.push(`${kind} ${decoder} ${key}`);
     },
+    readDecoderVerdict: async () => undefined,
+    writeDecoderVerdict: async (key: string, decoder: string, accepts: boolean) => {
+      h.answers.push(`${accepts ? "accepts" : "declines"} ${decoder} ${key}`);
+    },
     writeCachedPreview: async (
       key: string,
       _data: Float32Array,
@@ -80,7 +86,7 @@ vi.mock("@/state/catalog-store", () => ({
 import { fillCacheEntry } from "./cache-fill";
 
 const EXTENSION = "ext.raw/fast@1.2.0";
-const LIBRAW = "libraw-0.22.1+1";
+const LIBRAW = "libraw-0.22.1+3";
 const SIGNATURE = `${EXTENSION}>libraw`;
 const KEY = "v6:a.NEF:64:0";
 
@@ -100,6 +106,7 @@ beforeEach(() => {
   h.marks = [];
   h.writes = [];
   h.cleared = [];
+  h.answers = [];
   useSettings.setState({ decoderOrder: { nef: ["ext.raw/fast", "libraw"] }, rawCacheEnabled: true });
   registerImageDecoder("ext.raw", {
     id: "fast",
@@ -190,5 +197,25 @@ describe("fillCacheEntry once an extension's decoder leads", () => {
     await fillCacheEntry(photo, 0);
 
     expect(photo.exif).toMatchObject({ baselineExposure: 0.4, baselineShadows: 10, cameraMatchDecoders: SIGNATURE });
+  });
+});
+
+describe("fillCacheEntry when the leading decoder declines the photo", () => {
+  it("keeps its answer and writes the entry libraw alone would", async () => {
+    registerImageDecoder("ext.raw", {
+      id: "fast",
+      label: "Fast",
+      version: "3.0.0",
+      extensions: [".nef"],
+      accepts: () => false,
+      decode: async () => null,
+    });
+    h.decodeResult = () => decoded();
+
+    expect(await fillCacheEntry(rawPhoto("a.NEF"), 0)).toBe("taken");
+
+    expect(h.answers).toEqual([`declines ext.raw/fast@3.0.0 ${KEY}`]);
+    expect(h.writes).toEqual([KEY]);
+    expect(h.cleared).toEqual([undefined]);
   });
 });

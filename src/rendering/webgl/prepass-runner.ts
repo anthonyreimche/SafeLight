@@ -31,6 +31,7 @@ import {
   PASS_VERTEX_SHADER,
   SOURCE_IMAGE_UNIFORM,
   type ContributedBinding,
+  type PassTextureBinding,
   type PrepassPass,
   type PrepassStage,
   type StageSplit,
@@ -45,6 +46,21 @@ const LAYER_KEY = "layer:";
 // scratch one, which the source takes, belongs to the develop program, so it
 // is lent for the stage's draws and handed back after them.
 const INPUT_UNIT = 4;
+
+// The units a pass samples its stage's textures from, lent the same way: one
+// for each texture, the four long-standing ones first, then every unit the
+// pass doesn't read through its own samplers (0 the previous draw, INPUT_UNIT,
+// SCRATCH_UNIT the source). A texture left without one would read the previous
+// draw as its table.
+const FIRST_PASS_TEXTURE_UNITS: readonly number[] = [1, 2, 3, 6];
+
+function passTextureUnits(combinedUnits: number): number[] {
+  const units = [...FIRST_PASS_TEXTURE_UNITS];
+  for (let unit = 5; unit < combinedUnits; unit++) {
+    if (!FIRST_PASS_TEXTURE_UNITS.includes(unit) && unit !== INPUT_UNIT && unit !== SCRATCH_UNIT) units.push(unit);
+  }
+  return units;
+}
 
 function warnOnce(seen: Set<string>, key: string, message: () => string): void {
   if (seen.has(key)) return;
@@ -148,6 +164,12 @@ export interface PrepassFrame {
   srcH: number;
   /** Whether the frame draws view-only stages; without, their passes are idle. */
   viewStages: boolean;
+  /** What a stage texture a pass samples (PassTextureBinding) draws with for
+   *  this frame's bag, as the prepass signature takes it: changes whenever
+   *  its data does. */
+  stageTextureSig?: (qualifiedKey: string) => string;
+  /** That texture, uploaded; bound to the unit active when called. */
+  stageTexture?: (qualifiedKey: string) => WebGLTexture;
 }
 
 export interface PrepassHost {
@@ -214,6 +236,7 @@ export interface PrepassOptions {
 
 export class PrepassRunner {
   private readonly gl: WebGL2RenderingContext;
+  private readonly passTextureUnits: readonly number[];
   private readonly host: PrepassHost;
   // Whether float targets render: RGBA16F intermediates, else RGBA8 (working).
   private readonly float: boolean;
@@ -296,6 +319,7 @@ export class PrepassRunner {
 
   constructor(gl: WebGL2RenderingContext, float: boolean, host: PrepassHost, opts: PrepassOptions = {}) {
     this.gl = gl;
+    this.passTextureUnits = passTextureUnits(gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) as number);
     this.float = float;
     this.host = host;
     this.keepsCheckpoints = opts.checkpoints ?? false;
@@ -607,7 +631,7 @@ export class PrepassRunner {
     owner: string,
     name: string,
     sources: { fragment: string; vertex?: string },
-    bindings: ContributedBinding[],
+    bindings: readonly Pick<ContributedBinding, "glslName">[],
   ) {
     let e = this.passPrograms.get(key);
     if (e) return e;
@@ -1087,12 +1111,14 @@ export class PrepassRunner {
         writeIdx = 1;
       }
       const lent = input && !input.isSource ? this.boundAt(INPUT_UNIT) : undefined;
+      const lentTextures = new Map<number, WebGLTexture | null>();
       try {
         for (let passIdx = first; passIdx < stage.passes.length; passIdx++) {
           const pass = stage.passes[passIdx];
           const { key, name, sources } = passBuild(owner, passIdx, pass, frame.processVersion);
-          const prog = this.passProgram(key, owner, name, sources, pass.bindings);
+          const prog = this.passProgram(key, owner, name, sources, [...pass.bindings, ...(pass.textures ?? [])]);
           const draws = counts[passIdx];
+          if (draws > 0) this.bindPassTextures(prog, pass.textures, frame, lentTextures);
           for (let it = 0; it < draws; it++) {
             const last = --remaining === 0;
             this.drawPass(prog, last ? target : this.ppFbo[writeIdx], frame, pass.bindings, {
@@ -1114,6 +1140,11 @@ export class PrepassRunner {
           gl.bindTexture(gl.TEXTURE_2D, lent);
           gl.activeTexture(gl.TEXTURE0);
         }
+        for (const [unit, tex] of lentTextures) {
+          gl.activeTexture(gl.TEXTURE0 + unit);
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+        }
+        gl.activeTexture(gl.TEXTURE0);
       }
       // The last draw left `target` bound.
       if (watched) readOnePixel(gl, this.float ? gl.FLOAT : gl.UNSIGNED_BYTE);
@@ -1122,6 +1153,33 @@ export class PrepassRunner {
     } finally {
       if (watched && !gl.isContextLost()) this.host.draws?.ended(owner, cost, finished);
     }
+  }
+
+  // Binds the stage textures a pass samples to passTextureUnits, noting in
+  // `lent` what each unit held before the stage's draws, to hand back after
+  // them. A texture the frame can't supply binds as none: opaque black.
+  private bindPassTextures(
+    prog: PassProgram,
+    textures: readonly PassTextureBinding[] | undefined,
+    frame: PrepassFrame,
+    lent: Map<number, WebGLTexture | null>,
+  ): void {
+    if (!textures) return;
+    const gl = this.gl;
+    gl.useProgram(prog.program);
+    textures.forEach((t, i) => {
+      const unit = this.passTextureUnits[i];
+      const loc = prog.locs[t.glslName];
+      if (loc == null) return;
+      // Unreachable while the pass compiles: it declares fewer samplers than
+      // the context has units. Drawn without its own, the table would be another.
+      if (unit === undefined) throw new Error(`a pass samples ${textures.length} textures, more than this GPU has units for`);
+      if (!lent.has(unit)) lent.set(unit, this.boundAt(unit));
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, frame.stageTexture?.(t.qualifiedKey) ?? null);
+      gl.uniform1i(loc, unit);
+    });
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   // One draw of a pass program into `fbo`: `readTex` is the previous draw, or

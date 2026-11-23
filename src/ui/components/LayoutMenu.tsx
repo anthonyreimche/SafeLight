@@ -37,60 +37,66 @@ export function LayoutMenu() {
 
   return (
     <TopBarMenu label="Layout">
-      {(close) => (
-        <>
-          <MenuItem
-            checked={activeId === CUSTOM_LAYOUT}
-            title="Your own arrangement. Any change you make to a layout is saved here."
-            onClick={() => applyDockLayout(CUSTOM_LAYOUT)}
-          >
-            Custom
-          </MenuItem>
-          {showSaved && userList.map((l) => (
+      {(close) => {
+        const pick = (id: string) => {
+          close();
+          void applyDockLayout(id);
+        };
+        return (
+          <>
             <MenuItem
-              key={l.id}
-              checked={activeId === l.id}
-              onClick={() => applyDockLayout(l.id)}
+              checked={activeId === CUSTOM_LAYOUT}
+              title="Your own arrangement. Any change you make to a layout is saved here."
+              onClick={() => pick(CUSTOM_LAYOUT)}
             >
-              {l.name}
+              Custom
             </MenuItem>
-          ))}
-          {layoutList.length > 0 && (
-            <div className="my-1 border-t border-border-subtle" />
-          )}
-          {layoutList.map((l) => (
-            <MenuItem
-              key={l.id}
-              checked={activeId === l.id}
-              title={l.description}
-              onClick={() => applyDockLayout(l.id)}
-            >
-              {l.name}
-            </MenuItem>
-          ))}
-          {sections.map(({ id, component: Section }) => (
-            <ErrorBoundary key={boundaryKey(id, Section)} what={`Layout menu "${id}"`} className="px-3 text-[11px] text-danger">
-              <div className="my-1 border-t border-border-subtle" />
-              <Section close={close} />
-            </ErrorBoundary>
-          ))}
-          {showSaved && (
-            <>
-              <div className="my-1 border-t border-border-subtle" />
+            {showSaved && userList.map((l) => (
               <MenuItem
-                checked={false}
-                title="Add, rename or delete layouts in Preferences"
-                onClick={() => {
-                  close();
-                  openPreferences("Interface");
-                }}
+                key={l.id}
+                checked={activeId === l.id}
+                onClick={() => pick(l.id)}
               >
-                Manage layouts…
+                {l.name}
               </MenuItem>
-            </>
-          )}
-        </>
-      )}
+            ))}
+            {layoutList.length > 0 && (
+              <div role="separator" className="my-1 border-t border-border-subtle" />
+            )}
+            {layoutList.map((l) => (
+              <MenuItem
+                key={l.id}
+                checked={activeId === l.id}
+                title={l.description}
+                onClick={() => pick(l.id)}
+              >
+                {l.name}
+              </MenuItem>
+            ))}
+            {sections.map(({ id, component: Section }) => (
+              <ErrorBoundary key={boundaryKey(id, Section)} what={`Layout menu "${id}"`} className="px-3 text-[11px] text-danger">
+                <div role="separator" className="my-1 border-t border-border-subtle" />
+                <Section close={close} />
+              </ErrorBoundary>
+            ))}
+            {showSaved && (
+              <>
+                <div role="separator" className="my-1 border-t border-border-subtle" />
+                <MenuItem
+                  checked={false}
+                  title="Add, rename or delete layouts in Preferences"
+                  onClick={() => {
+                    close();
+                    openPreferences("Interface");
+                  }}
+                >
+                  Manage layouts…
+                </MenuItem>
+              </>
+            )}
+          </>
+        );
+      }}
     </TopBarMenu>
   );
 }

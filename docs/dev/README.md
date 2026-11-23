@@ -28,10 +28,10 @@ flowchart TD
 
 - [Your first extension](extensions/first-extension.md): a panel, sliders, presets and a stage, step by step
 - [Recipes](extensions/recipes.md): short complete examples for common jobs
-- [Building Extensions](extensions/README.md): repo layout, the manifest, adding a build step, the store listing
+- [Building Extensions](extensions/README.md): repo layout, the manifest, adding a build step, the library listing
 - [Contribution Types](extensions/contribution-types.md): every `register*` call, one line each
 - [Debugging](extensions/debugging.md): Developer Tools, the dev folder, load and GLSL errors
-- [Publishing](extensions/publishing.md): store page, releases and versions
+- [Publishing](extensions/publishing.md): listing page, releases and versions
 - [How Safelight works](concepts.md): what the core does, how extensions are loaded, what they can access
 - [How a photo is rendered](rendering.md): the processing order, phases, the param bag, colour management
 
@@ -45,7 +45,7 @@ flowchart TD
 - [Core Data Types](api/types.md): `CatalogPhoto`, `DevelopParams`, masks, `EditState`
 - [Subsystems](api/subsystems.md): storage, rendering, RAW, presets, export, keybindings, the Electron bridge
 
-The pages summarize the TypeScript definitions in [`src/extensions/api/`](../../src/extensions/api/), which are the exact reference. `contributions.ts` holds every `register*` shape and `scoped-api.ts` the `api` object itself. Every published extension in the store is open source too, and most are short enough to read in one sitting.
+The pages summarize the TypeScript definitions in [`src/extensions/api/`](../../src/extensions/api/), which are the exact reference. `contributions.ts` holds every `register*` shape and `scoped-api.ts` the `api` object itself. Every published extension is open source too, and most are short enough to read in one sitting.
 
 ## Working on the core
 

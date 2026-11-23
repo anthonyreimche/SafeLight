@@ -18,6 +18,7 @@ import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { trapTab } from "@/ui/focus-trap";
+import { useBackdropDismiss } from "./backdrop-dismiss";
 
 export interface ConfirmDialogOptions {
   title: string;
@@ -102,6 +103,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
   }, [request]);
 
   const cardRef = useRef<HTMLDivElement>(null);
+  const backdrop = useBackdropDismiss(() => settle(request, false));
   const titleId = `confirm-title-${request.id}`;
   const messageId = `confirm-message-${request.id}`;
   const isAlert = request.kind === "alert";
@@ -110,23 +112,30 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
     // Extensions/Preferences windows.
     <div
       className="sl-enter-fade fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) settle(request, false);
-      }}
+      {...backdrop}
     >
       <div
         ref={cardRef}
-        onKeyDown={(e) => trapTab(e, cardRef.current)}
+        // Esc also closes from the card itself: a confirm may open over a
+        // dialogue that has paused the app shortcuts, and with them the global
+        // handler that drains the escape stack.
+        onKeyDown={(e) => {
+          trapTab(e, cardRef.current);
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            e.preventDefault();
+            settle(request, false);
+          }
+        }}
         role={isAlert ? "alertdialog" : "dialog"}
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={messageId}
-        className="sl-enter-pop w-[400px] max-w-[90vw] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
+        className="sl-enter-pop w-[400px] max-w-[90vw] rounded-lg border border-border bg-surface-1 shadow-xl"
       >
         <div className="space-y-2 p-3">
           <div
             id={titleId}
-            className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]"
+            className="text-[10px] uppercase tracking-widest text-text-muted"
           >
             {request.title}
           </div>
@@ -136,18 +145,18 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
             {request.message.split(/\n{2,}/).map((paragraph, i) => (
               <p
                 key={i}
-                className="whitespace-pre-line text-[12px] leading-relaxed text-[var(--color-text-primary)]"
+                className="whitespace-pre-line text-[12px] leading-relaxed text-text-primary"
               >
                 {paragraph}
               </p>
             ))}
           </div>
         </div>
-        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
+        <div className="flex justify-end gap-2 border-t border-border p-3">
           {!isAlert && (
             <button
               ref={request.variant === "danger" ? cancelRef : undefined}
-              className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
+              className="rounded bg-surface-2 px-3 py-1 text-[11px] text-text-secondary hover:bg-surface-3"
               onClick={() => settle(request, false)}
             >
               {request.cancelLabel ?? "Cancel"}
@@ -158,7 +167,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
             className={`rounded px-3 py-1 text-[11px] font-medium hover:opacity-90 ${
               request.variant === "danger"
                 ? "bg-danger text-on-danger"
-                : "bg-[var(--color-accent)] text-on-accent"
+                : "bg-slider-fill text-on-accent"
             }`}
             onClick={() => settle(request, true)}
           >

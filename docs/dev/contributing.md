@@ -41,7 +41,7 @@ Two things to keep in mind: rendering runs in a **Web Worker on an `OffscreenCan
 
 If your feature is a new panel, theme, or tool, consider shipping it as an extension rather than a core change — no fork required, and users can install it straight from your GitHub repo. See [Building Extensions](extensions/README.md) and the [API reference](api/README.md). Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.
 
-While developing, install the **Developer Tools** extension from the store and point it at a local folder of your built extensions to load them live with reload-on-rebuild — no GitHub reinstall per change. See [Developing & debugging](extensions/debugging.md) for the full loop, the in-app console/REPL, and common load errors.
+While developing, install the **Developer Tools** extension from the open source extension library and point it at a local folder of your built extensions to load them live with reload-on-rebuild — no GitHub reinstall per change. See [Developing & debugging](extensions/debugging.md) for the full loop, the in-app console/REPL, and common load errors.
 
 ## Workflow
 
@@ -56,7 +56,7 @@ Commit message style: `feat: …`, `fix: …`, `docs: …`, `refactor: …`.
 
 Safelight is solo-maintained, so help is genuinely welcome. The highest-leverage places to jump in:
 
-- **Build an extension.** Almost all new functionality belongs in an extension rather than the core — panels, tools, themes, display transforms, export targets, metadata sidecars, and process-heavy features all ship this way. See [Building Extensions](extensions/README.md), and tag your repo with the `safelight-extension` topic so it shows up in the in-app store.
+- **Build an extension.** Almost all new functionality belongs in an extension rather than the core — panels, tools, themes, display transforms, export targets, metadata sidecars, and process-heavy features all ship this way. See [Building Extensions](extensions/README.md), and tag your repo with the `safelight-extension` topic so it shows up in the open source extension library.
 - **Pick up an issue.** The live list of wanted work is the [issue tracker](../../issues) — auto-labelled and sorted by priority onto the project board. Planned extensions are the open issues labelled [`extension`](../../issues?q=is%3Aissue+is%3Aopen+label%3Aextension). That list is the source of truth, so nothing here goes stale.
 - **Propose an extension.** Open an issue titled `Extension: <name>` — triage auto-labels it `extension` and adds it to the board. See the [Roadmap](../../ROADMAP.md) for how planned work is tracked.
 - **Tooling for extension authors.** There's an [extension template](https://github.com/anthonyreimche/Extension-Template) and [generated API types](../../extension-types/README.md). Publishing those types as an npm package, and a manifest checker, would make starting one quicker still.

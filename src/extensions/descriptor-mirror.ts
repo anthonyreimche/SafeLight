@@ -9,7 +9,8 @@
 // once, and a file is only ever rewritten with the same content.
 
 import { useRegistry } from "./registry";
-import { getAllDescriptors } from "./param-registry";
+import { getAllDescriptors, isComputedParam } from "./param-registry";
+import { declaredUniforms } from "./stage-validation";
 import { privilegedMirror } from "@/native/privileged";
 import type { ExtensionDescriptors } from "@/state/shared-settings";
 
@@ -48,6 +49,11 @@ function describe(id: string, version: string, name: string): ExtensionDescripto
       .filter((p) => p.extensionId === id)
       .map((p) => ({ id: p.id, title: p.title, owns: p.owns && [...p.owns] })),
     hasCatalogHooks: Object.values(registry.catalogHooks).some((h) => h.extensionId === id),
+    computed: [
+      ...new Set(
+        stages.flatMap((s) => declaredUniforms(s).map((u) => `${s.id}.${u.key}`)).filter(isComputedParam),
+      ),
+    ],
   };
 }
 

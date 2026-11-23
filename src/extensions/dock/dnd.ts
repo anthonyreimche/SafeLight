@@ -24,6 +24,7 @@ import {
   dropToFloat,
   dropToNewRail,
   dropToRail,
+  soloCollapsed,
   toggleCollapsed,
 } from "./actions";
 
@@ -105,8 +106,9 @@ function hitTest(container: HTMLElement, x: number, y: number, dragId: string): 
   return { kind: "float" };
 }
 
-/** Header pointerdown: a plain click toggles collapse; moving past the
- *  threshold starts a drag that re-docks or floats the panel on release. */
+/** Header pointerdown: a plain click toggles collapse (Alt+click expands the
+ *  panel and collapses the rest of its rail); moving past the threshold
+ *  starts a drag that re-docks or floats the panel on release. */
 export function startHeaderDrag(
   id: string,
   e: ReactPointerEvent,
@@ -141,7 +143,8 @@ export function startHeaderDrag(
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     if (!active) {
-      toggleCollapsed(id);
+      if (ev.altKey) soloCollapsed(id);
+      else toggleCollapsed(id);
       return;
     }
     const t = hitTest(container, ev.clientX, ev.clientY, id);

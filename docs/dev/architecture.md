@@ -1,6 +1,6 @@
 # Architecture
 
-Safelight is a React + TypeScript application with a WebGL2 image pipeline, shipped both as a browser app and as a packaged Electron desktop app. Four ideas shape the design:
+Safelight is a React + TypeScript application with a WebGL2 image pipeline, shipped as a packaged Electron desktop app that can also run in a browser for development. Four ideas shape the design:
 
 - **Project-based storage** — the catalogue lives with the photos, in a `.safelight/` folder inside the project.
 - **A worker-isolated GPU render path** — every preview, edit, thumbnail, and export goes through one WebGL2 renderer that runs in a Web Worker on an `OffscreenCanvas`; no render-path code touches the DOM.
@@ -37,7 +37,7 @@ src/
 ├── hooks/             # Develop renderer hook, keyboard shortcuts, window sync
 ├── update/            # In-app update checker
 ├── types/             # Shared types
-└── ui/                # Shell, top bar, menus, Preferences, Extensions store, components
+└── ui/                # Shell, top bar, menus, Preferences, Extensions window, components
 ```
 
 ## The Orchestrator Model
@@ -45,7 +45,7 @@ src/
 The core is intentionally **blind**: `App.tsx` routes between modules and renders the shell, but it has no list of panels, tools, themes, or display transforms baked in. Everything visible — including the histogram and every Develop tool — is a *contribution* registered against a central reactive registry (`extensions/registry.ts`).
 
 - **Built-ins** (`extensions/builtin.tsx`): only **Safelight Core** is left, locked and always on. It registers the extension manager, the stock themes, the Classic layout, the built-in display transform and the denoiser through the *same* scoped API external plugins use.
-- **Essentials** (`extensions/official-extensions.ts`, `electron/official-extensions.json`): the stock tools (Library, Develop, Basic, White Balance, Tone Curve, HSL, Crop, Masking and the rest) are official extensions in their own repos, installed on first launch and updated through the store like any other. Their stages run at anchors only `safelight.*` extensions may use.
+- **Essentials** (`extensions/official-extensions.ts`, `electron/official-extensions.json`): the stock tools (Library, Develop, Basic, White Balance, Tone Curve, HSL, Crop, Masking and the rest) are official extensions in their own repos, installed on first launch and updated through the Extensions window like any other. Their stages run at anchors only `safelight.*` extensions may use.
 - **Host** (`extensions/host.tsx`) — builds the scoped `SafelightAPI` handed to every extension, boots the system once before first render, and exposes the host-scoped API as `window.safelight`.
 - **Registry** (`extensions/registry.ts`) — a Zustand store of all contributions, each tagged with its owning extension id so disabling or uninstalling sweeps everything it contributed. Emits lifecycle events (metadata change, edit commit, photo remove) that hook contributions subscribe to.
 - **Loader** (`extensions/loader.ts`) — loads built-ins, then external plugins from `<userData>/plugins/<id>/`; imports each ESM bundle and calls `activate(api)`; persists enablement in localStorage (synced across windows).
@@ -82,6 +82,7 @@ Catalogue hook contributions run alongside this lifecycle, so an extension (e.g.
 
 1. **libraw-wasm** — handles every compression scheme (including lossless NEF), applies camera white balance and orientation, and outputs full-precision linear data. Runs in a worker on shared memory, which requires a cross-origin-isolated context.
 2. **In-house decoder** (`raw/tiff.ts`, `raw/pixels.ts`) — uncompressed CFA TIFF-based RAW/DNG, float-capable.
+   **Linear DNG decoder** (`raw/linear-dng.ts`, `raw/dng-colour.ts`) — LinearRaw DNGs (HDR and panorama merges, denoised exports): 16/24/32-bit float or integer samples, uncompressed or Deflate, tiles or strips, any TIFF/DNG predictor, brought to linear Rec.709 at the as-shot white the way libraw reads a DNG's colour tags (its D65 ColorMatrix, white balance in camera space), so a linear DNG made from a RAW looks as that RAW does. It runs in the frame worker and leads for floating-point files, whose Deflate data libraw-wasm can't read; for integer ones it stands in when libraw fails.
 3. **Embedded JPEG preview** — final fallback, so RAW files always display.
 
 `decodeRawToFloat` answers a `DecodeFailure` when it has no image: `unsupported` (reading the file again won't help until the decoder changes), `transient` (the decoder or the file wasn't available this time; `timedOut` when libraw gave no answer within its time limit) or `aborted`, with the decoder's `reason`. Every call on a pooled libraw instance is watched: one that rejects (a trap or an abort) or outlives the limit (a minute plus 20 s per 25 MB, extended once the frame is known to a minute plus 2 s per megapixel, that part capped at five minutes) has its worker terminated and replaced, so a hung file can't hold a decoder for good. A file that timed out is passed over by background requests for the rest of the session, as is one already being decoded (`passedOver`); an interactive open always decodes.
@@ -160,7 +161,7 @@ One window owning the catalogue, with the others as its clients, would fix these
 - Registers a privileged `app://` scheme serving the built `dist/`, attaching COOP/COEP headers so the page is cross-origin isolated and libraw-wasm can use SharedArrayBuffer workers. Installed extensions are served from `<userData>/plugins/` under the same origin (`/__plugins__/`) so their ESM bundles import cleanly under COOP/COEP.
 - Forces Chromium's fast GPU path (D3D11 ANGLE on Windows, discrete GPU, no software WebGL fallback, zero-copy rasterization). On Linux it auto-detects a working ANGLE backend and relaunches once if needed.
 - Disables renderer/background throttling so decodes and renders continue while the window is occluded.
-- `electron/preload.cjs` exposes a locked-down `window.safelightNative` bridge: platform/versions, app version, the in-app updater, a GitHub Releases/repo proxy (for updates and the Extensions store), the plugin host (`list`/`install`/`uninstall`/`search`), path-based filesystem access (claimed by the core before any extension loads, so extensions never see it), devtools control, and GPU/process diagnostics.
+- `electron/preload.cjs` exposes a locked-down `window.safelightNative` bridge: platform/versions, app version, the in-app updater, a GitHub Releases/repo proxy (for updates and the Extensions window), the plugin host (`list`/`install`/`uninstall`/`search`), path-based filesystem access (claimed by the core before any extension loads, so extensions never see it), devtools control, and GPU/process diagnostics.
 
 The renderer is identical to the web build; there is no Node integration in app code beyond the preload bridge.
 

@@ -160,10 +160,11 @@ captureFloatFrame(params, opts?: {                 // 3.1.0
   paramBag?; maxEdge?: number;                     // default 1280 px
 }): Promise<FloatFrame | null>;  // { data: Float32Array; width; height; space; point }
 readSourceSample(): Promise<SourceSample | null>;  // 3.1.0
+captureRegion({ x, y, width, height }): Promise<{ bitmap: ImageBitmap; rect: { x; y; width; height }; frameWidth; frameHeight; colorSpace } | null>; // 3.2.7
 renderPhotoFrame(photoId, params, paramBag?, opts?: { lossless? }): Promise<ImageBitmap | null>;
 renderPhotoFloatFrame(photoId, params, opts?: { space?; point?; paramBag? }): Promise<FloatFrame | null>; // 3.1.0
 putPhotoData(key, data: Uint8Array | null): void;  // null deletes
-getPhotoData(key): Promise<Uint8Array | null>;
+getPhotoData(key, photoId?): Promise<Uint8Array | null>; // photoId: 3.2.7, another photo's
 setPickDrag(tool: PickDragTool | null): void;      // 3.2.0
 usePickDragHeld(): boolean;                        // 3.2.0
 probe(point): Promise<[r, g, b] | null>;            // 3.2.0
@@ -229,6 +230,7 @@ interface InputTransform {
 - A capture's params and `paramBag` never reach the live view or the histogram, Auto Tone, Auto White Balance or Upright. Use `paramBag` to render an auxiliary image (a gain map, a mask) aligned to the view.
 - `captureFloatFrame` returns RGBA floats, rows top-down. `"pre-output"` is the signed colour the output stage receives (clamped to [0, 1] on version 1 photos), `"output"` is sRGB in [0, 1], `"scene"` is what the display transform receives, and `"decode"` (3.2.6) is the linear colour the decode and noise-reduction stages leave, ahead of the built-in noise reduction, white balance and every later tool. It is `null` without float render targets, with no photo open, or when the GPU can't hold the frame.
 - `maxEdge: Infinity` gives the full view (about 180 MB at 4096 px, more on the GPU). A smaller frame is the full one averaged down, so ask for full size only when you need the detail.
+- `captureRegion` (3.2.7) draws a small patch of the live frame at the frame's own pixels, whatever the view is zoomed to: what a magnifier shows at true pixel scale. The frame is the view's whole frame at fit, at most the Develop render resolution (the pixels Develop's zoom counts), over the region the view shows. Drawn at `useDevelopOverlay` `zoomScale` (3.2.7) device pixels a frame pixel, it matches Develop's 100 %: `zoomScale` is 1, except with Dynamic render resolution on a RAW larger than the frame Develop holds, where Develop's zoom counts the photo's own pixels. `x` and `y` are the patch's centre, 0 to 1 across the frame (`useDevelopOverlay` `imageRect`), and `width` and `height` its size in frame pixels, 1 to 1024. The patch is drawn as the canvas shows it, with the view's overlays and in the screen's space. Only the patch is drawn, away from the canvas, so the live view isn't touched and a small patch is cheap enough to ask for as the pointer moves; keep one request in flight. Near an edge only the part inside the frame is drawn, and `rect` says where the bitmap sits. `colorSpace` is the canvas's (`"display-p3"` on a wide-gamut screen): open your 2D context with it, or wide colour clips. It is `null` with no photo open, between photos, without float render targets, or for a patch wholly outside the frame. The Magnifier Loupe extension uses it.
 - `readSourceSample` gives up to 1024 px from the centre of the open RAW at native resolution: linear Rec.709, white balance applied, before every edit. It is `null` for bitmaps and until the RAW decodes; wait for `useDevelopStore` `sourceSize.native` to be true. Each call copies about 16 MB.
 
 **Rendering any photo**
@@ -239,7 +241,7 @@ interface InputTransform {
 
 **Per-photo data.** `putPhotoData` stores an opaque blob for the photo open in Develop, under a key namespaced to your extension, outside the catalogue file. Use it for large payloads such as a warp field. You own the format and when to load and save.
 
-Members marked 3.1.0 are undefined on older builds: check for them, or set `minAppVersion` in the [manifest](../extensions/README.md#manifest). `minAppVersion` gates store installs only, so test dev-folder copies on a matching build.
+Members marked 3.1.0 are undefined on older builds: check for them, or set `minAppVersion` in the [manifest](../extensions/README.md#manifest). `minAppVersion` gates installs from the open source extension library only, so test dev-folder copies on a matching build.
 
 ## `api.params`
 
@@ -430,6 +432,16 @@ interface ImageDecoderContribution {
   version?: string;               // default "1"; change it when your output changes
   extensions: readonly string[];  // [".heic", ".heif"], [".cr3"]: formats Safelight already imports
   decode(file: Blob, request: ImageDecodeRequest): Promise<DecodedImageResult | null>;
+  accepts?(file: Blob, request: ImageAcceptRequest): boolean | Promise<boolean>;   // 3.2.7
+}
+
+interface ImageAcceptRequest {   // 3.2.7
+  name: string;
+  signal: AbortSignal;            // aborted once the check has run 5 s
+}
+
+interface TransientDecodeError extends Error {   // 3.2.7: throw for a failure that may pass
+  transient: true;
 }
 
 interface ImageDecodeRequest {
@@ -451,6 +463,8 @@ type DecodedImageResult =
 A decoder reads a format Safelight already imports, in place of Safelight's own or after it. Each format keeps its decoders in a list the person orders in **Preferences ▸ File formats**; a new decoder joins the end of each of its formats' lists, after Safelight's own, until the person moves it up.
 
 - **The chain.** A photo is decoded by the first decoder in its format's list that answers an image. Answering `null`, throwing, answering an image core can't use (the wrong size or kind, more than 2^28 pixels) or running past the time limit (60 s and 2 s a megabyte, counted from the start of your decode) passes the file to the next decoder, and only when every decoder has failed is the photo marked as failed. The `signal` is aborted when the time runs out or core no longer needs the answer.
+- **Only some files (3.2.7).** A decoder that reads only some of a format's files (pixel-shift DNGs among plain ones, say) gives `accepts`: read a header and answer `true` or `false`. Core asks it before queueing a decode, outside the decode queue, and remembers the answer for that file (its name and size) and your decoder's `version`, for a RAW photo across launches too (beside its RAW cache entry). A file it declines goes to the next decoder at once, never waiting behind your decodes, and is treated as if your decoder weren't in the list: its RAW cache entry, GPU source and failure marks keep the keys they have without you, so leading a format re-keys only the files you accept. Base the answer on the file's content alone. A throw, an answer later than 5 s or one that isn't a boolean counts as `true` and isn't remembered. Without `accepts` every file of your formats is yours, as before. Non-RAW photos' GPU source keys still follow the whole list.
+- **Failures that may pass (3.2.7).** `null` and any ordinary throw mark the file as one this version of your decoder can't read, once two launches agree. For a failure that may pass (a Worker that didn't start, a model download that failed), throw an error with `transient: true`, such as `Object.assign(new Error(message), { transient: true })`: the next decoder is tried now and nothing is remembered. Running out of memory (a `RangeError`) counts as transient too.
 - **Scheduling.** Core runs one decode at a time per decoder, interactive requests (the photo open in Develop, an export) ahead of `background` ones (grid previews, the RAW cache). A decode past its time limit, or one core no longer needs, is abandoned with its `signal` aborted, and the next one starts, so stop promptly when it fires. `decode` runs in the window, so do the work in a Worker of your own and transfer the result back.
 - **What uses it.** Develop, exports, headless renders, edited thumbnails and grid previews. A RAW's embedded camera preview, its metadata (frame size, as-shot white balance at import) and the colour check of a decode against that preview stay Safelight's.
 - **Formats.** Only extensions Safelight imports are taken; others are left out with a warning, and a decoder left with none is refused. A file type Safelight doesn't import can't be added this way yet.
@@ -458,7 +472,7 @@ A decoder reads a format Safelight already imports, in place of Safelight's own 
 - **RAW answers.** Only `linear`, scene-referred as Safelight's own RAW decode is: the camera's black subtracted and its matrix applied, balanced at `request.asShotMultipliers` when given (else at the camera's, returned in `asShotMultipliers` and `colorTemperature`), scaled so the least amplified channel saturates at 1, nothing clipped, no tone curve, gamma, auto-brightening or baseline exposure (Safelight adds its own). Report a Fujifilm DR mode's `rawExposureBias` after making up for it. A reduced decode gives the frame's `sourceWidth`/`sourceHeight`; when `fullSize` is true it is refused.
 - **Orientation.** `oriented: true` says the pixels already stand as the photo's EXIF orientation shows it; with `false` core turns them.
 - **Ownership.** The array becomes core's: answer a whole array (a view into a larger buffer or into wasm memory is copied once) and don't touch it after.
-- **Kept decodes.** While a decoder of yours comes before Safelight's in a format's list, decodes core keeps across launches (the RAW cache, the GPU source cache) are filed under your decoder's id and `version`, so bump `version` whenever your output changes. With Safelight's decoder first, nothing changes for existing caches.
+- **Kept decodes.** While a decoder of yours comes before Safelight's in a format's list, decodes core keeps across launches (the RAW cache, the GPU source cache) are filed under your decoder's id and `version` (only the files it accepts, when it has `accepts`), so bump `version` whenever your output changes. With Safelight's decoder first, nothing changes for existing caches.
 - Registering an id you hold replaces it. Your decoders go when your extension stops, and Develop waits a few seconds at launch for a decoder the person put first; the person's order keeps their place for when they're back, unless they reset that format's order.
 
 ## `api.network` (3.2.4)

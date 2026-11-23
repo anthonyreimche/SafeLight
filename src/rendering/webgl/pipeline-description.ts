@@ -195,9 +195,11 @@ export const CORE_BLOCKS: readonly CoreBlock[] = [
     label: "Channel reconstruction",
     // The camera baseline (baseline-tone.ts) runs right after it from version 2 on.
     note: ({ variant, pipeline }) =>
-      variant.fullInfo && !pipeline.skipBaseCurve
-        ? "Then a RAW's baseline is refit to the camera curve and given the camera maker's exposure offset"
-        : undefined,
+      !variant.fullInfo
+        ? undefined
+        : pipeline.skipBaseCurve
+          ? "Then a RAW is given its camera exposure"
+          : "Then a RAW's baseline is refit to the camera curve and given its camera exposure",
   },
   { label: "Masking (scene values)", anchors: ["white-balance", "tone", "masks"], stages: "sceneLinear" },
   {

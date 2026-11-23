@@ -39,7 +39,7 @@ export function ViewMenu() {
               {p.title}
             </MenuItem>
           ))}
-          <div className="my-1 border-t border-border-subtle" />
+          <div role="separator" className="my-1 border-t border-border-subtle" />
           <MenuLabel>Theme</MenuLabel>
           {themeList.map((t) => (
             <MenuItem

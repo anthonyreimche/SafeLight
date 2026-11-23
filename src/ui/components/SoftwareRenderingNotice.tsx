@@ -21,6 +21,7 @@ import {
   useGraphics,
 } from "@/state/graphics-store";
 import { openReportIssue } from "./report-issue-store";
+import { DismissButton } from "./DismissButton";
 
 const SLOWER = "Editing is much slower than on the graphics card.";
 
@@ -95,13 +96,7 @@ export function SoftwareRenderingNotice() {
           </button>
         </div>
       </div>
-      <button
-        onClick={dismissSoftwareNotice}
-        aria-label="Dismiss"
-        className="shrink-0 rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-      >
-        ×
-      </button>
+      <DismissButton onClick={dismissSoftwareNotice} />
     </div>
   );
 }

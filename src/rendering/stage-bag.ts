@@ -4,7 +4,9 @@
 // be preserved in derived versions.
 
 import type { DevelopParams } from "@/catalog/types";
-import { resolvePipelineFor } from "@/extensions/pipelines";
+import { effectivePipelineId, resolvePipelineFor } from "@/extensions/pipelines";
+import { useRegistry } from "@/extensions/registry";
+import { variantTextureKey } from "./webgl/stage-texture-variant";
 import { bagForRender } from "@/extensions/transform-derive";
 import { denoiseBag } from "./webgl/builtin-denoise";
 
@@ -18,8 +20,27 @@ import { denoiseBag } from "./webgl/builtin-denoise";
 export function frameStageBag(
   params: DevelopParams,
   paramBag: Record<string, unknown>,
+  photoId?: string,
 ): Record<string, unknown> {
-  return { ...paramBag, ...denoiseBag(params) };
+  return { ...photoVariants(params, photoId), ...paramBag, ...denoiseBag(params) };
+}
+
+/** The variant each per-photo stage texture (TextureRequirement.perPhoto)
+ *  draws for photo `photoId`: the one filed under its id. A stage that belongs
+ *  to a transform the photo doesn't render with names none, so the frame never
+ *  waits on its provider. */
+function photoVariants(params: DevelopParams, photoId: string | undefined): Record<string, string> {
+  const named: Record<string, string> = {};
+  if (photoId === undefined) return named;
+  const transform = effectivePipelineId(params.displayTransform);
+  for (const stage of Object.values(useRegistry.getState().processingStages)) {
+    if (stage.transform !== undefined && stage.transform !== transform) continue;
+    for (const t of stage.textures ?? []) {
+      const key = `${stage.id}.${t.key}`;
+      if (t.perPhoto === true && variantTextureKey(key, photoId)) named[key] = photoId;
+    }
+  }
+  return named;
 }
 
 /** frameStageBag with the derived uniforms of the display transform `params`
@@ -28,6 +49,7 @@ export function frameStageBag(
 export function windowFrameBag(
   params: DevelopParams,
   paramBag: Record<string, unknown>,
+  photoId?: string,
 ): Record<string, unknown> {
-  return bagForRender(resolvePipelineFor(params.displayTransform), frameStageBag(params, paramBag));
+  return bagForRender(resolvePipelineFor(params.displayTransform), frameStageBag(params, paramBag, photoId));
 }

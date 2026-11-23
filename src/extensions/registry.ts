@@ -40,6 +40,7 @@ import type {
 import {
   getAllDescriptors,
   getExtensionName,
+  registerComputedParams,
   registerStageParams,
   unregisterExtensionParams,
   unregisterStageParams,
@@ -47,7 +48,7 @@ import {
 } from "./param-registry";
 import { isBuiltinExtension } from "./core-extension";
 import { officialExtension } from "./official-extensions";
-import { checkStageContract } from "./stage-validation";
+import { checkStageContract, declaredUniforms } from "./stage-validation";
 import { rawNameClash } from "@/rendering/webgl/raw-names";
 import { writesRawNames } from "@/rendering/webgl/builtin-stage";
 import { pipelineContractError } from "./pipeline-validation";
@@ -447,6 +448,11 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
       // A stage that derives its values takes them from the photo's DevelopParams,
       // so they never ride the param bag.
       if (!derivesValues(stage, extensionId)) registerStageParams(stage.id, stage.name, extensionId, stage.uniforms);
+      registerComputedParams(
+        stage.id,
+        extensionId,
+        declaredUniforms(stage).filter((u) => u.computed === true).map((u) => u.key),
+      );
       return stage;
     },
   },

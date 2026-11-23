@@ -78,6 +78,27 @@ describe("mirrorExtensionDescriptors", () => {
     expect(typeof doc.writtenAt).toBe("number");
   });
 
+  it("names the uniforms the extension computes for each photo, inline and in passes", () => {
+    registerProcessingStage(ID, {
+      id: "acme.film.lens",
+      name: "Lens",
+      phase: "scene-linear",
+      glsl: "c.rgb *= 1.0 + k1;",
+      uniforms: [
+        { key: "k1", glslType: "float", default: 0, computed: true },
+        { key: "amount", glslType: "float", default: 0 },
+      ],
+      passes: [
+        {
+          uniforms: [{ key: "k2", glslType: "float", default: 0, computed: true }],
+          glsl: "vec3 c = readPrev(vUv) * (1.0 + k2);",
+        },
+      ],
+    });
+    mirrorExtensionDescriptors(ID, "1.0.1", "Film");
+    expect(writeDescriptors.mock.calls[0][0].computed).toEqual(["acme.film.lens.k1", "acme.film.lens.k2"]);
+  });
+
   it("leaves out what other extensions registered", () => {
     registerFixture();
     registerPanel("acme.other", { id: "acme.other.panel", title: "Other", component: () => null });

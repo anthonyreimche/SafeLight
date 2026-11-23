@@ -297,6 +297,30 @@ function photoTextureError(c: ProcessingStageContribution, extensionId?: string)
   return `texture "${photo.key}" is a ${photo.kind} texture, which only a stage of Safelight's own fills (derive)`;
 }
 
+/** perPhoto on a texture that isn't supplied as variants, or not a boolean. */
+function perPhotoTextureError(c: ProcessingStageContribution): string | null {
+  const textures: unknown = c.textures;
+  if (!Array.isArray(textures)) return null;
+  for (const t of textures as TextureRequirement[]) {
+    const perPhoto: unknown = t?.perPhoto;
+    if (perPhoto === undefined) continue;
+    if (typeof perPhoto !== "boolean") return `texture "${t.key}": perPhoto must be true or false, got ${formatValue(perPhoto)}`;
+    if (perPhoto && t.kind !== "lut" && t.kind !== "dynamic")
+      return `texture "${t.key}" is a ${t.kind} texture; perPhoto is for lut and dynamic textures, supplied as variants`;
+  }
+  return null;
+}
+
+/** computed on a uniform, inline or in a pass, that isn't a boolean. */
+function computedUniformError(c: ProcessingStageContribution): string | null {
+  for (const u of declaredUniforms(c)) {
+    const flag: unknown = u.computed;
+    if (flag !== undefined && typeof flag !== "boolean")
+      return `uniform "${u.key}": computed must be true or false, got ${formatValue(flag)}`;
+  }
+  return null;
+}
+
 /** More than one paint texture on a stage: its layers already share one. */
 function paintTextureError(c: ProcessingStageContribution): string | null {
   const textures: unknown = c.textures;
@@ -439,7 +463,12 @@ export function checkStageContract(
       warnings.push(`${stagePrefix}: geometry stages run before the image is sampled, so space is ignored`);
     }
   }
-  const shape = uniformShapeError(c, extensionId) ?? photoTextureError(c, extensionId) ?? paintTextureError(c);
+  const shape =
+    uniformShapeError(c, extensionId) ??
+    photoTextureError(c, extensionId) ??
+    paintTextureError(c) ??
+    perPhotoTextureError(c) ??
+    computedUniformError(c);
   if (shape) return fail(shape);
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))
@@ -483,6 +512,16 @@ export function checkStageContract(
     if (viewOnly && c.anchor !== undefined) return fail("an anchored stage can't be viewOnly");
     if (viewOnly && c.reads === "current")
       return fail('a viewOnly stage can\'t set reads: "current": the point it reads at is written into exports too');
+  }
+
+  const transform: unknown = c.transform;
+  if (transform !== undefined) {
+    if (typeof transform !== "string" || transform === "")
+      return fail(`transform must be a display transform's id, got ${formatValue(transform)}`);
+    if (c.phase === "geometry")
+      return fail("geometry stages move what the crop and overlays are drawn over, so they can't belong to a transform");
+    if ((c.produces?.length ?? 0) > 0)
+      return fail("a stage that belongs to a transform can't produce values: photos with another would hand other stages none");
   }
 
   const keepsDetail: unknown = c.keepsDetail;

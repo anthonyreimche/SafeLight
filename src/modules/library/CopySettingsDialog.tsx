@@ -93,18 +93,19 @@ export function CopySettingsDialog({
     <Dialog
       labelledBy={titleId}
       onClose={onCancel}
-      className="flex max-h-[80vh] w-[360px] flex-col rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
+      onSubmit={submit}
+      className="flex max-h-[80vh] w-[360px] flex-col rounded-lg border border-border bg-surface-1 shadow-xl"
     >
-      <div className="border-b border-[var(--color-border)] p-3">
-        <div id={titleId} className="text-[12px] font-medium text-[var(--color-text-primary)]">
+      <div className="border-b border-border p-3">
+        <div id={titleId} className="text-[10px] uppercase tracking-widest text-text-muted">
           Copy settings
         </div>
-        <div className="mt-0.5 truncate text-[11px] text-[var(--color-text-muted)]">
+        <div className="mt-0.5 truncate text-[11px] text-text-muted">
           from {sourceName}
         </div>
       </div>
 
-      <div className="flex items-center justify-between px-3 py-1.5 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+      <div className="flex items-center justify-between px-3 py-1.5 text-[10px] uppercase tracking-widest text-text-muted">
         <span>Include</span>
         <label className="flex cursor-pointer items-center gap-1 normal-case">
           <input
@@ -118,7 +119,7 @@ export function CopySettingsDialog({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {visible.length === 0 && !hasBag ? (
-          <div className="px-1 py-2 text-[11px] text-[var(--color-text-muted)]">
+          <div className="px-1 py-2 text-[11px] text-text-muted">
             No adjustments on this photo. Enable “Show all” to copy defaults.
           </div>
         ) : (
@@ -126,7 +127,7 @@ export function CopySettingsDialog({
             {visible.map((f) => (
               <label
                 key={f.id}
-                className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
+                className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[11px] text-text-secondary hover:bg-surface-2"
               >
                 <input
                   type="checkbox"
@@ -135,14 +136,14 @@ export function CopySettingsDialog({
                 />
                 <span className="min-w-0 flex-1 truncate">{f.label}</span>
                 {f.value && (
-                  <span className="shrink-0 tabular-nums text-[var(--color-text-muted)]">
+                  <span className="shrink-0 tabular-nums text-text-muted">
                     {f.value}
                   </span>
                 )}
               </label>
             ))}
             {hasBag && (
-              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]">
+              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[11px] text-text-secondary hover:bg-surface-2">
                 <input
                   type="checkbox"
                   checked={includeBag}
@@ -155,16 +156,16 @@ export function CopySettingsDialog({
         )}
       </div>
 
-      <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
+      <div className="flex justify-end gap-2 border-t border-border p-3">
         <button
-          className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
+          className="rounded bg-surface-2 px-3 py-1 text-[11px] text-text-secondary hover:bg-surface-3"
           onClick={onCancel}
         >
           Cancel
         </button>
         <button
           disabled={!canCopy}
-          className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           onClick={submit}
         >
           Copy

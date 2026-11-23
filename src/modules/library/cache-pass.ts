@@ -10,7 +10,7 @@ import { fillCacheEntry } from "@/catalog/cache-fill";
 import { isRawFile } from "@/raw/raw-preview";
 import { decodePoolSize, warmDecodePool } from "@/raw/decode-pool";
 import { cacheListing, rawCacheGeneration } from "@/raw/raw-cache";
-import { photoCacheKey } from "@/raw/photo-cache-key";
+import { photoCacheKey, recallDecoderVerdicts } from "@/raw/photo-cache-key";
 import { getSettings } from "@/state/settings-store";
 import { useCatalogStore } from "@/state/catalog-store";
 
@@ -86,6 +86,10 @@ export async function preDecodeRawsForCache(
   const candidates = photos.filter(
     (p) => p.fileHandle && !pending.has(p.id) && isRawFile({ name: p.filename } as File),
   );
+  // A photo a leading decoder declined is keyed as libraw alone keys it, once
+  // its kept answer is read (a read per photo only while such a decoder leads).
+  const recalling = candidates.flatMap((p) => recallDecoderVerdicts(p) ?? []);
+  if (recalling.length > 0) await Promise.all(recalling);
   const missing = candidates.filter((p) => !settled.has(keyOf(p)) && !stale.has(keyOf(p)));
   if (!opts?.force && missing.length > EAGER_CACHE_LIMIT) {
     console.info(

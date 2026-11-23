@@ -239,6 +239,23 @@ describe("add", () => {
     expect("paramBag" in emptyBag).toBe(false);
     expect("paramBag" in noBag).toBe(false);
   });
+
+  // A lens profile's coefficients belong to the photo they were worked out
+  // for: a preset carrying them would stamp one lens onto every photo.
+  it("leaves out the values an extension computes for each photo", async () => {
+    const { usePresetsStore } = await boot();
+    const { registerComputedParams } = await import("@/extensions/param-registry");
+    registerComputedParams("lens.warp", "lens", ["k1"]);
+
+    usePresetsStore.getState().add("Lens", {}, undefined, { "lens.warp.k1": 0.3, "lens.warp.amount": 2 });
+    usePresetsStore.getState().add("Only computed", {}, undefined, { "lens.warp.k1": 0.3 });
+    const [lens, onlyComputed] = usePresetsStore.getState().presets;
+    expect(lens.paramBag).toEqual({ "lens.warp.amount": 2 });
+    expect("paramBag" in onlyComputed).toBe(false);
+
+    usePresetsStore.getState().update(lens.id, {}, undefined, { "lens.warp.k1": 0.5, "lens.warp.amount": 4 });
+    expect(usePresetsStore.getState().presets[0].paramBag).toEqual({ "lens.warp.amount": 4 });
+  });
 });
 
 describe("update", () => {

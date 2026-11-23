@@ -9,7 +9,7 @@
 
 import { DEFAULT_DEVELOP_PARAMS, normalizeParams, withoutProcessVersion, type DevelopParams } from "./types";
 import type { StoredLook } from "./stored-edit-look";
-import { normalizeParamBag } from "@/extensions/param-registry";
+import { normalizeParamBag, withoutComputedParams } from "@/extensions/param-registry";
 
 /** A partial look: only the adjustments that were copied or saved. */
 export interface PartialLook {
@@ -17,10 +17,12 @@ export interface PartialLook {
   paramBag: Record<string, unknown>;
 }
 
+/** `clip` over `base`. A value an extension computes for each photo is never
+ *  pasted: the photo keeps its own. */
 export function pasteLook(base: StoredLook, clip: PartialLook): StoredLook {
   return {
     params: normalizeParams({ ...base.params, ...withoutProcessVersion(clip.params) }),
-    paramBag: { ...base.paramBag, ...normalizeParamBag(clip.paramBag) },
+    paramBag: { ...base.paramBag, ...withoutComputedParams(normalizeParamBag(clip.paramBag)) },
   };
 }
 
@@ -34,7 +36,7 @@ export const PER_PHOTO_PARAM_KEYS: readonly (keyof DevelopParams)[] = [
 const NEVER_COPIED: readonly (keyof DevelopParams)[] = ["processVersion", "displayTransform"];
 
 /** What Copy Settings pre-selects: every adjustment that differs from its default,
- *  minus the per-photo ones, plus the whole extension bag. */
+ *  minus the per-photo ones, plus the extension bag but for its computed values. */
 export function defaultCopy(look: StoredLook): PartialLook {
   const params: Partial<DevelopParams> = {};
   for (const key of Object.keys(look.params) as (keyof DevelopParams)[]) {
@@ -42,5 +44,5 @@ export function defaultCopy(look: StoredLook): PartialLook {
     if (JSON.stringify(look.params[key]) === JSON.stringify(DEFAULT_DEVELOP_PARAMS[key])) continue;
     (params as Record<string, unknown>)[key] = structuredClone(look.params[key]);
   }
-  return { params, paramBag: structuredClone(look.paramBag) };
+  return { params, paramBag: structuredClone(withoutComputedParams(look.paramBag)) };
 }

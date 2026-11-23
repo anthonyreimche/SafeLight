@@ -1,6 +1,6 @@
 # Installation
 
-Safelight ships as a packaged desktop app for **Windows** (recommended), **Linux** (packages for every major distro family), and **macOS**, plus a **browser app** run from source. The desktop app guarantees the fast RAW decode path and full GPU acceleration; the browser version is handy for development.
+Safelight ships as a packaged desktop app for **Windows** (recommended), **Linux** (packages for every major distro family), and **macOS**. It can also run in a browser from source, which is handy for development; the desktop app guarantees the fast RAW decode path and full GPU acceleration.
 
 If a prebuilt installer doesn't run on your machine, you can always build your own from source — every release artifact is produced by the same `npm` + `electron-builder` toolchain documented in [Building from source](#building-from-source), and none of it requires the helper `.bat` files.
 

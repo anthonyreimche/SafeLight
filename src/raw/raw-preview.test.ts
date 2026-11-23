@@ -240,3 +240,19 @@ describe("extractRawPreview", () => {
     expect(await bytesOf(blob!)).toEqual(MINIMAL_JPEG);
   });
 });
+
+// Compressed sensor data (a floating-point DNG's Deflate tiles) holds stray
+// FF D8 FF runs whose "segments" walk on to some later FF D9: megabytes of
+// noise that pass as a JPEG with no frame header, and would hide a real preview
+// stored after them.
+describe("JPEG candidates in compressed data", () => {
+  /** A stray SOI whose one "segment" runs over `inner`, then an EOI. */
+  function strayAround(inner: Uint8Array): Uint8Array<ArrayBuffer> {
+    const len = inner.length + 2;
+    return new Uint8Array([0x00, 0xff, 0xd8, 0xff, 0xe1, len >> 8, len & 0xff, ...inner, 0xff, 0xd9, 0x00]);
+  }
+
+  it("passes over a match without a frame header and finds the preview it covered", () => {
+    expect(previewLongEdge(strayAround(MINIMAL_JPEG))).toBe(4000);
+  });
+});

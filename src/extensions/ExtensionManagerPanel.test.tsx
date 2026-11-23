@@ -1179,7 +1179,22 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     warn.mockRestore();
   });
 
-  it("uninstalls when no photo's edit can be read", async () => {
+  it("asks before deleting the files even when no photo uses it", async () => {
+    const uninstall = vi.fn(async () => {});
+    privilegedBridge = { ...privilegedBridge!, uninstall };
+    useCatalogStore.setState({ photos: [photo("c")] });
+    installMemoryStorage(uses("c", 0));
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    within(ask).getByText("Its files are deleted from this computer. You can install it again from the open source extension library.");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+    expect(uninstall).not.toHaveBeenCalled();
+  });
+
+  it("uninstalls when no photo's edit can be read, once confirmed", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const uninstall = vi.fn(async () => {});
     privilegedBridge = { ...privilegedBridge!, uninstall };
@@ -1190,7 +1205,10 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     await openInstalled(user);
     await user.click(screen.getByRole("button", { name: "Uninstall" }));
 
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    await user.click(within(ask).getByRole("button", { name: "Uninstall" }));
     await waitFor(() => expect(uninstall).toHaveBeenCalledWith(installed.id));
+    await screen.findByText("Uninstalled. Its files were deleted.");
     warn.mockRestore();
   });
 

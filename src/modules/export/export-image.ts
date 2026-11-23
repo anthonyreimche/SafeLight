@@ -19,7 +19,7 @@ import { WebGLRenderer, type QuarantinedStage } from "@/rendering/webgl/renderer
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import type { Sharpen } from "@/rendering/webgl/export-draw";
 import { getStageTextures, needStageVariants } from "@/rendering/render-bridge";
-import { windowFrameBag } from "@/rendering/stage-bag";
+import { frameStageBag, windowFrameBag } from "@/rendering/stage-bag";
 import { windowDerived } from "@/rendering/window-derive";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry, type RegisteredExportProcessor } from "@/extensions/registry";
@@ -862,7 +862,7 @@ async function renderOne(
   const bag = bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag;
   // The batch renderer keeps the stages it was built with, so one turned off
   // since fails the photo rather than drawing without its texture.
-  const needed = prepared.image ? needStageVariants(bag, { fixedStages: true }) : null;
+  const needed = prepared.image ? needStageVariants(frameStageBag(saved.params, bag, photo.id), { fixedStages: true }) : null;
   const lease = needed && (await needed);
   try {
     if (lease?.failure)
@@ -940,7 +940,7 @@ async function drawOne(
     isFallback,
   );
   const bag = bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag;
-  renderer.setContributedParams(windowFrameBag(saved.params, bag));
+  renderer.setContributedParams(windowFrameBag(saved.params, bag, photo.id));
   setPhotoParams(renderer, saved.params);
   const colorSpace = settings.colorSpace ?? "srgb";
   // The jobs of one batch can each ask for their own space.

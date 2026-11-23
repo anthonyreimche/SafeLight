@@ -19,6 +19,7 @@
 
 import { useProjectStore } from "@/project/project-store";
 import { openPreferences } from "@/ui/preferences/preferences-store";
+import { DismissButton } from "./DismissButton";
 
 export function StorageBanner() {
   const openError = useProjectStore((s) => s.openError);
@@ -58,13 +59,7 @@ export function StorageBanner() {
             Remove from recents
           </button>
         )}
-        <button
-          onClick={dismissOpenError}
-          aria-label="Dismiss"
-          className="shrink-0 rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-        >
-          ×
-        </button>
+        <DismissButton onClick={dismissOpenError} />
       </div>
     );
   }
@@ -92,13 +87,7 @@ export function StorageBanner() {
         className="sl-enter-rise flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
       >
         <span className="text-text-primary">{storageNotice}</span>
-        <button
-          onClick={dismissStorageNotice}
-          aria-label="Dismiss"
-          className="shrink-0 rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-        >
-          ×
-        </button>
+        <DismissButton onClick={dismissStorageNotice} />
       </div>
     );
   }

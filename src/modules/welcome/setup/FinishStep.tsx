@@ -165,7 +165,7 @@ export function FinishStep({ headingId }: StepProps) {
         <StepHeading
           id={headingId}
           title="Your darkroom is ready"
-          subtitle="Add extensions any time from the Extensions store, and change your look and workspace in Preferences."
+          subtitle="Add extensions any time from the open source extension library, and change your look and workspace in Preferences."
         />
         <StepFooter>
           {back}

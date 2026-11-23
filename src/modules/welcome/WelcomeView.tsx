@@ -111,7 +111,7 @@ function RecentCard({
         onClick={onOpen}
         disabled={opening}
         title={c.path ?? c.name}
-        className="flex w-full flex-col overflow-hidden rounded-lg border border-border bg-surface-1 text-left transition hover:border-slider-fill disabled:opacity-60"
+        className="flex w-full flex-col overflow-hidden rounded-lg border border-border bg-surface-1 text-left transition hover:border-text-muted disabled:opacity-60"
       >
         <div className="aspect-[4/3] w-full overflow-hidden bg-surface-2">
           {c.coverUrl && !coverFailed ? (

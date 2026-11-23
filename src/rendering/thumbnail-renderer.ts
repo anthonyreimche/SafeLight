@@ -12,7 +12,7 @@ import { resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 import { getStageTextures, needStageVariants } from "./render-bridge";
-import { windowFrameBag } from "./stage-bag";
+import { frameStageBag, windowFrameBag } from "./stage-bag";
 import { WebGLRenderer } from "./webgl/renderer";
 import { windowDerived } from "./window-derive";
 import { blameLostContext, confirmedDrawsOf, noteStageBuild, withoutCrashed } from "./gpu-crash-guard";
@@ -144,9 +144,10 @@ export async function renderPhotoHistogram(
   paramBag: Record<string, unknown> = {},
   maxEdge: number = MAX_HIST_EDGE,
 ): Promise<HistogramData | null> {
-  // The stage texture variants made on demand that the bag names, held until
-  // the frame is drawn: no histogram, and nothing decoded, without one.
-  const needed = needStageVariants(paramBag);
+  // The stage texture variants made on demand that the frame's bag names (the
+  // photo's own per-photo variants among them), held until the frame is drawn:
+  // no histogram, and nothing decoded, without one.
+  const needed = needStageVariants(frameStageBag(params, paramBag, photo.id));
   const lease = needed && (await needed);
   try {
     if (lease?.failure) {
@@ -197,7 +198,7 @@ async function histogramOf(
     // Whole and by reference, as an export's renderer takes them: stages that
     // sample a texture draw black without it.
     ctx.renderer.setStageTextures(getStageTextures());
-    ctx.renderer.setContributedParams(windowFrameBag(params, paramBag));
+    ctx.renderer.setContributedParams(windowFrameBag(params, paramBag, photo.id));
     setPhotoParams(ctx.renderer, params);
     // The program for this photo's display transform and version, unless an earlier
     // photo built it. Left to render(), a build failure would throw out of this async

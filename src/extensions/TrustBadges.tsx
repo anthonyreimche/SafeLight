@@ -34,15 +34,13 @@ export function VerifiedBadge({
   return (
     <span
       title={title}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full font-medium ${
+      className={`inline-flex shrink-0 items-center gap-0.5 rounded font-medium text-text-primary ${
         iconOnly ? "px-1 py-px text-[10px]" : large ? "px-1.5 py-0.5 text-[10px]" : "px-1 py-px text-[9px]"
       }`}
-      style={{
-        color,
-        background: `color-mix(in srgb, ${color} 16%, transparent)`,
-      }}
+      style={{ background: `color-mix(in srgb, ${color} 16%, transparent)` }}
     >
-      {iconOnly ? (stale ? "✓*" : "✓") : stale ? "✓ Verified*" : "✓ Verified"}
+      <span style={{ color }}>{iconOnly && stale ? "✓*" : "✓"}</span>
+      {!iconOnly && (stale ? "Verified*" : "Verified")}
     </span>
   );
 }
@@ -52,10 +50,9 @@ export function FlaggedBadge({ reason, large }: { reason: string; large?: boolea
   return (
     <span
       title={reason}
-      className={`inline-flex shrink-0 items-center rounded font-medium text-label-red ${
+      className={`inline-flex shrink-0 items-center rounded bg-danger font-medium text-on-danger ${
         large ? "px-1.5 py-0.5 text-[10px]" : "px-1 py-px text-[9px]"
       }`}
-      style={{ background: "color-mix(in srgb, var(--color-label-red) 18%, transparent)" }}
     >
       Flagged unsafe
     </span>

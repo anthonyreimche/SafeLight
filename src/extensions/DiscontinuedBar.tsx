@@ -28,9 +28,7 @@ export function DiscontinuedBar({
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded px-2 py-1.5 text-[11px]"
       style={{ background: "color-mix(in srgb, var(--color-rating) 14%, transparent)" }}
     >
-      <span className="shrink-0 font-medium" style={{ color: "var(--color-rating)" }}>
-        Discontinued
-      </span>
+      <span className="shrink-0 font-medium text-text-primary">Discontinued</span>
       <span className="min-w-0 flex-1 text-text-secondary">
         {message ?? "No longer maintained."}
         {replacement && (
@@ -51,7 +49,7 @@ export function DiscontinuedBar({
         <button
           disabled={busy}
           onClick={onUninstall}
-          title="Remove the extension and delete its files"
+          title="Uninstall the extension and delete its files"
           className="shrink-0 rounded px-1.5 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
         >
           Uninstall

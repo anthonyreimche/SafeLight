@@ -113,6 +113,14 @@ describe("resolvePipelineFor", () => {
     });
   });
 
+  // Its id is how a stage that belongs to the transform (stage `transform`)
+  // knows the photo renders with it; its program is the stock one.
+  it("keeps the id of a transform that brings no shader or flag of its own", () => {
+    registerPipeline("test", { id: "test.match", name: "Match" });
+    const p = resolvePipelineFor("test.match");
+    expect(p).toMatchObject({ id: "test.match", glsl: null, sig: BUILTIN_RESOLVED.sig });
+  });
+
   it("signs each flag combination of one transform apart", () => {
     const sigs = new Set<string>();
     for (const glsl of [undefined, AGX.glsl]) {

@@ -150,8 +150,22 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
     expectGrey(got.canon, refitTone(0.09));
   });
 
-  it("keeps the gain out of a display transform that owns its own baseline", () => {
-    expectGrey(renderScene(grey(0.09, 0.31), versionParams(), { ...V3, stages: [], pipeline: LINEAR_PROBE_PIPELINE }), 0.09);
+  // The camera's gain is exposure, not look: a display transform that drops the
+  // baseline curves still receives the photo at its camera's exposure.
+  it("keeps the camera's gain under a display transform that owns its own baseline", () => {
+    expectGrey(renderScene(grey(0.09, 0.31), versionParams(), { ...V3, stages: [], pipeline: LINEAR_PROBE_PIPELINE }), 0.09 * 2 ** 0.31);
+  });
+
+  it("measures Shadows regions in the pixel's units under such a transform", () => {
+    const opts = { ...TONED, pipeline: LINEAR_PROBE_PIPELINE };
+    expectGrey(renderScene(grey(0.04, 1), versionParams({ shadows: 100 }), opts), basicShadows(0.04 * 2, 1));
+  });
+
+  // A camera preview standing in for the RAW already carries its camera's
+  // exposure.
+  it("gives a fallback preview no gain under such a transform", () => {
+    const preview = { ...grey(0.09, 1), isFallbackPreview: true };
+    expectGrey(renderScene(preview, versionParams(), { ...V3, stages: [], pipeline: LINEAR_PROBE_PIPELINE }), 0.09);
   });
 
   // On a flat frame the region is the pixel, so Shadows at 100 (all region)
@@ -207,8 +221,11 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
     expectGrey(got.canon, refitTone(0.04) * 2);
   });
 
+  // The lift stands in for the camera's tone engine, which is look: a transform
+  // that owns its baseline goes without it, and keeps the gain.
   it("keeps the lift out of a display transform that owns its own baseline", () => {
-    expectGrey(renderScene(grey(0.09, 0.31, 55), versionParams(), { ...V3, stages: [], pipeline: LINEAR_PROBE_PIPELINE }), 0.09);
+    const opts = { ...TONED, pipeline: LINEAR_PROBE_PIPELINE };
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams(), opts), 0.04 * 2);
   });
 
   // A decode stage's passes read the source through the shared pass prelude,

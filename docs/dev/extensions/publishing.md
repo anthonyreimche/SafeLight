@@ -1,10 +1,10 @@
-# Publishing & Store Listing
+# Publishing & Library Listing
 
 ← [Building Extensions](README.md)
 
-The Extensions store builds your page from your repo. You don't host anything.
+The Extensions window builds your listing page from your repo. You don't host anything.
 
-![A store page: the icon, name, type badge and Verified badge, author, stars and last update, the description and categories from safelight.json, the install line, and the README below](../images/store-page.png)
+![A listing page: the icon, name, type badge and Verified badge, author, stars and last update, the description and categories from safelight.json, the install line, and the README below](../images/store-page.png)
 
 ## Thumbnail
 
@@ -16,22 +16,22 @@ The Extensions store builds your page from your repo. You don't host anything.
 
 ## README
 
-Your repo's `README.md` is rendered on your store page, with relative image links resolved against the default branch. It is the main description users read, so lead with what the extension does and a screenshot.
+Your repo's `README.md` is rendered on your listing page, with relative image links resolved against the default branch. It is the main description users read, so lead with what the extension does and a screenshot.
 
 ## Metadata
 
-`description`, `author`, `categories`, `keywords`, `license`, `homepage`, `screenshots`, `worksWith` and `minAppVersion` from the [manifest](README.md#manifest) fill the listing. Stars, last update and open issues come live from GitHub. `categories` picks the store category over repo topics (see [Store listing](README.md#store-listing)), and `minAppVersion` blocks installs on older Safelight builds.
+`description`, `author`, `categories`, `keywords`, `license`, `homepage`, `screenshots`, `worksWith` and `minAppVersion` from the [manifest](README.md#manifest) fill the listing. Stars, last update and open issues come live from GitHub. `categories` picks the library category over repo topics (see [Library listing](README.md#library-listing)), and `minAppVersion` blocks installs on older Safelight builds.
 
 ## Releases and versions
 
 Safelight installs and updates an extension from its newest **GitHub Release** when the repo has one, and from the default branch when it has none.
 
-- **Before your first release**, every push to the default branch reaches users: the store reads `version` from the branch's `safelight.json` and offers anything newer.
+- **Before your first release**, every push to the default branch reaches users: Safelight reads `version` from the branch's `safelight.json` and offers anything newer.
 - **Once you publish a release**, pushes to the branch stop reaching users. Installs and updates come from releases only, so you can work on the branch freely and ship by tagging.
 
 **Tag = version.** Tag a release with the manifest's version, with or without a `v` (`v1.3.0` or `1.3.0`). The `version` in `safelight.json` at that tag must match: Safelight refuses a release that says otherwise. Tags that aren't versions (`nightly`) and drafts are ignored.
 
-**Release notes** show on your store page under "What's new" and in the Updates tab, so write them for users.
+**Release notes** show on your listing page under "What's new" and in the Updates tab, so write them for users.
 
 **Pre-releases.** Mark a release as a pre-release, or tag it like `v1.4.0-beta.1`. Safelight installs one only when a user picks it from the version list. After that, they're offered newer pre-releases until a full release passes them.
 
@@ -39,7 +39,7 @@ Safelight installs and updates an extension from its newest **GitHub Release** w
 
 **Older versions.** Users can install any of your releases from the version list and stay on it. Keep old releases published: deleting one removes it from that list.
 
-**Timing.** The store learns about new releases from the extension registry, which rebuilds hourly, so a release reaches users within about two hours. The ↻ button beside the version list asks GitHub straight away.
+**Timing.** Safelight learns about new releases from the extension registry, which rebuilds hourly, so a release reaches users within about two hours. The ↻ button beside the version list asks GitHub straight away.
 
 ### Automating releases
 
@@ -54,11 +54,11 @@ It builds (`npm ci` and `npm run build`, when your repo has them), fails if `saf
 
 ## Get it listed
 
-Tag the GitHub repo with the **`safelight-extension`** topic so it appears in the store's browse view. Users can also install any repo by `owner/repo` without the topic.
+Tag the GitHub repo with the **`safelight-extension`** topic so it appears in the Browse section of the Extensions window. Users can also install any repo by `owner/repo` without the topic.
 
 ## Registry requests
 
-The [extension registry](https://github.com/anthonyreimche/safelight-registry) keeps the verified list, the ban list and what the store shows. Each change starts as a short form, on its [New issue](https://github.com/anthonyreimche/safelight-registry/issues/new/choose) page or on the website's [registry page](../../../site/registry.html), which opens the same form filled in:
+The [extension registry](https://github.com/anthonyreimche/safelight-registry) keeps the verified list, the ban list and what the open source extension library shows. Each change starts as a short form, on its [New issue](https://github.com/anthonyreimche/safelight-registry/issues/new/choose) page or on the website's [registry page](../../../site/registry.html), which opens the same form filled in:
 
 - **Get an extension verified**: a code review of one release, for the Verified badge. Ask again for each release you want covered.
 - **Replace an extension**: a Discontinued bar with Install replacement on the old one. See [Replacing an extension](README.md#replacing-an-extension).

@@ -33,7 +33,7 @@ import { nativeDirectoryHandle, nativeFs, nativePathOf } from "@/project/native-
 import { ProjectStorage, type OpenedProject, type ProjectStorageDeps } from "@/project/project-storage";
 import { storageDeps } from "@/project/storage-deps";
 import type { StorageOpenOptions } from "@/project/storage-options";
-import { getRenderBridge, type FrameResult, type RenderBridge } from "@/rendering/render-bridge";
+import { getRenderBridge, needStageVariants, type FrameResult, type RenderBridge } from "@/rendering/render-bridge";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
@@ -609,12 +609,22 @@ export class EngineSession {
     await useDevelopStore.getState().loadEdit(photo.id, photo.exif.colorTemperature);
     const { params, paramBag, asShotTemperature } = useDevelopStore.getState();
     const drawn = applyPanelBypass(params, NO_BYPASS);
-    const finalFrame = this.finalFrame(bridge, gen, warn);
-    bridge.setAsShotTemperature(asShotTemperature);
-    bridge.setContributedParams(frameStageBag(drawn, bypassParamBag(paramBag, NO_BYPASS)), paramBag);
-    bridge.setParams(drawn);
-    bridge.render(true);
-    return finalFrame;
+    const bag = frameStageBag(drawn, bypassParamBag(paramBag, NO_BYPASS), photo.id);
+    // The variants made on demand that the frame draws with (the photo's own
+    // per-photo textures among them) are had first, as an export's are.
+    const needed = needStageVariants(bag, { worker: true });
+    const lease = needed && (await needed);
+    try {
+      if (lease?.failure) throw new EngineFailure("render", lease.failure);
+      const finalFrame = this.finalFrame(bridge, gen, warn);
+      bridge.setAsShotTemperature(asShotTemperature);
+      bridge.setContributedParams(bag, paramBag);
+      bridge.setParams(drawn);
+      bridge.render(true);
+      return await finalFrame;
+    } finally {
+      lease?.release();
+    }
   }
 
   private finalFrame(bridge: RenderBridge, gen: number, warn: (message: string) => void): Promise<FrameResult> {

@@ -72,6 +72,7 @@ const TAG = {
   LensMake: 0xa433,
   LensModel: 0xa434,
   LensSerial: 0xa435,
+  UniqueCameraModel: 0xc614,
   ColorMatrix1: 0xc621,
   ColorMatrix2: 0xc622,
   AsShotNeutral: 0xc628,
@@ -458,6 +459,13 @@ function parseTiff(view: DataView, base: number): ExifData {
   if (make) exif.cameraMake = make;
   const model = asciiTag(r, ifd0.get(TAG.Model));
   if (model) exif.cameraModel = model;
+  // Some linear DNG writers keep the camera in UniqueCameraModel alone, its
+  // maker's name first ("NIKON D3400").
+  const unique = make || model ? undefined : asciiTag(r, ifd0.get(TAG.UniqueCameraModel));
+  if (unique) {
+    exif.cameraMake = unique.split(/\s+/)[0];
+    exif.cameraModel = unique;
+  }
   const software = asciiTag(r, ifd0.get(TAG.Software));
   if (software) exif.software = software;
   const artist = asciiTag(r, ifd0.get(TAG.Artist));

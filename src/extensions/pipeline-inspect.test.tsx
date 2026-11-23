@@ -110,6 +110,22 @@ describe("usePipelineRows", () => {
     expect(stageRow(result.current, "acme.wash")?.copies).toBe(2);
   });
 
+  // A stage that belongs to a display transform is in the program of that
+  // transform's photos only (SafeLight #278).
+  it("lists a transform's stage only for a photo that renders with it", () => {
+    register(WASH, { ...WASH, id: "acme.match", mask: undefined, transform: "acme.look" });
+    act(() =>
+      useRegistry.setState({
+        pipelines: { "acme.look": { id: "acme.look", name: "Look", extensionId: "acme" } },
+      }),
+    );
+    openPhoto({ processVersion: 2 });
+    const { result } = renderHook(() => usePipelineRows(2));
+    expect(stageRow(result.current, "acme.match")).toBeUndefined();
+    edit({ displayTransform: "acme.look" });
+    expect(stageRow(result.current, "acme.match")).toBeDefined();
+  });
+
   it("keeps the rows for an edit that leaves the masks' copies alone", () => {
     register(WASH);
     const a = mask("a", { "acme.wash.washAmount": 0.5 });

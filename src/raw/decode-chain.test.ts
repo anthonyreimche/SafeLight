@@ -37,7 +37,7 @@ vi.mock("./libraw-wasm-adapter", () => ({
 import { decodeRawToBitmap, decodeRawToFloat } from "./decode";
 
 const EXTENSION = "ext.raw/fast@1.2.0";
-const LIBRAW = "libraw-0.22.1+1";
+const LIBRAW = "libraw-0.22.1+3";
 
 const raw = (name: string): File => new File([name], name, { lastModified: 1 });
 
@@ -393,5 +393,56 @@ describe("decodeRawToBitmap", () => {
     await decodeRawToBitmap(file);
 
     expect(reads).toHaveBeenCalled();
+  });
+});
+
+// A decoder that checks files first (`accepts`) and declines one is passed by:
+// the file decodes, and is kept, as with libraw alone.
+describe("a leading decoder that declines the file", () => {
+  beforeEach(() => {
+    registerImageDecoder("ext.raw", {
+      id: "fast",
+      label: "Fast",
+      version: "1.2.0",
+      extensions: [".nef", ".dng"],
+      accepts: async (file) => (await file.text()).startsWith("SHIFT"),
+      decode: async (file, request) => {
+        h.extension.push({ name: await file.text(), request });
+        return linearFrame();
+      },
+    });
+    extensionFirst();
+  });
+
+  it("decodes it as libraw alone does, never asking the decoder", async () => {
+    const image = await decodeRawToFloat(raw("D1.NEF"));
+
+    expect(h.extension).toEqual([]);
+    expect(image).toEqual({ ...librawFrame(), oriented: true });
+  });
+
+  it("still leads for a file it accepts", async () => {
+    const image = await decodeRawToFloat(raw("SHIFT-D2.NEF"));
+
+    expect(h.libraw).toEqual([]);
+    expect(image).toMatchObject({ decoder: EXTENSION, signature: "ext.raw/fast@1.2.0>libraw" });
+  });
+
+  it("leaves the bitmap decode to libraw's chain for a file it declined", async () => {
+    await decodeRawToFloat(raw("D3.NEF"));
+    expect(await decodeRawToBitmap(raw("D3.NEF"))).toBeNull();
+  });
+});
+
+describe("a decoder's failure that may pass", () => {
+  beforeEach(extensionFirst);
+
+  it("isn't held against the file", async () => {
+    h.extensionAnswer = () => Promise.reject(Object.assign(new Error("the worker didn't start"), { transient: true }));
+    h.librawAnswer = () => Promise.resolve({ failure: "unsupported", reason: "imageData returned undefined" });
+
+    const image = await decodeRawToFloat(raw("T1.NEF"));
+
+    expect(image).toMatchObject({ failure: "transient", unsupportedBy: [LIBRAW] });
   });
 });

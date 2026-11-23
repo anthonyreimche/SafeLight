@@ -131,10 +131,20 @@ async function photosUsing(extensionId: string): Promise<number> {
 }
 
 /** Photos that use an extension render and export without its stages while
- *  it is off or gone, so ask first. True at once when no photo uses it. */
+ *  it is off or gone, so ask first. Disabling is undone with one click, so it
+ *  goes ahead at once when no photo uses it; uninstalling deletes the files,
+ *  so it always asks. */
 async function confirmPhotosUsing(id: string, name: string, removing: boolean): Promise<boolean> {
   const count = await photosUsing(id);
-  if (count === 0) return true;
+  if (count === 0) {
+    if (!removing) return true;
+    return confirmDialog({
+      title: `Uninstall ${name}`,
+      message: "Its files are deleted from this computer. You can install it again from the open source extension library.",
+      confirmLabel: "Uninstall",
+      variant: "danger",
+    });
+  }
   const uses = count === 1 ? `1 photo uses ${name}. It'll` : `${count} photos use ${name}. They'll`;
   return confirmDialog({
     title: removing ? `Uninstall ${name}` : `Disable ${name}`,
@@ -481,7 +491,7 @@ export function ExtensionManagerPanel() {
       setBusy(id);
       await uninstallPlugin(id);
       forgetSource(id);
-      setMsg("Removed (files deleted).");
+      setMsg("Uninstalled. Its files were deleted.");
       if (view === "detail") back(); // leave the now-removed extension's page
       refresh();
     } catch (e) {
@@ -1254,7 +1264,7 @@ function ExtensionRow({
           <button
             disabled={busy}
             onClick={onUninstall}
-            title="Remove the extension and delete its files"
+            title="Uninstall the extension and delete its files"
             className="ml-2 rounded px-1.5 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary"
           >
             Uninstall

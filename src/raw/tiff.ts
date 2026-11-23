@@ -12,6 +12,7 @@
 // --experimental-strip-types runner.
 
 export const TIFF_TAG = {
+  NewSubFileType: 0x00fe,
   ImageWidth: 0x0100,
   ImageLength: 0x0101,
   BitsPerSample: 0x0102,
@@ -20,24 +21,50 @@ export const TIFF_TAG = {
   Make: 0x010f,
   Model: 0x0110,
   StripOffsets: 0x0111,
+  Orientation: 0x0112,
   SamplesPerPixel: 0x0115,
   RowsPerStrip: 0x0116,
   StripByteCounts: 0x0117,
+  PlanarConfiguration: 0x011c,
+  Predictor: 0x013d,
+  TileWidth: 0x0142,
+  TileLength: 0x0143,
+  TileOffsets: 0x0144,
+  TileByteCounts: 0x0145,
   SubIFDs: 0x014a,
+  SampleFormat: 0x0153,
   CFARepeatPatternDim: 0x828d,
   CFAPattern: 0x828e,
   CFAPlaneColor: 0xc616,
   LinearizationTable: 0xc618,
   BlackLevel: 0xc61a,
   WhiteLevel: 0xc61d,
+  DefaultCropOrigin: 0xc61f,
+  DefaultCropSize: 0xc620,
+  ColorMatrix1: 0xc621,
+  ColorMatrix2: 0xc622,
+  CameraCalibration1: 0xc623,
+  CameraCalibration2: 0xc624,
+  AnalogBalance: 0xc627,
   AsShotNeutral: 0xc628,
+  AsShotWhiteXY: 0xc629,
+  CalibrationIlluminant1: 0xc65a,
+  CalibrationIlluminant2: 0xc65b,
+  ActiveArea: 0xc68d,
+  CameraCalibrationSignature: 0xc6f3,
+  ProfileCalibrationSignature: 0xc6f4,
 } as const;
 
 // PhotometricInterpretation value that flags a Colour Filter Array (raw Bayer).
 export const PHOTOMETRIC_CFA = 32803;
+// DNG's LinearRaw: demosaiced samples in the camera's own linear space.
+export const PHOTOMETRIC_LINEAR_RAW = 34892;
 
 export const COMPRESSION = {
   None: 1,
+  Deflate: 8,
+  // The code Deflate had before TIFF registered 8; writers still use it.
+  DeflateLegacy: 32946,
   // Nikon's lossless-Huffman packed sensor data.
   NikonNEF: 34713,
 } as const;
@@ -56,6 +83,7 @@ const TYPE_SIZE: Record<number, number> = {
   10: 8, // SRATIONAL
   11: 4, // FLOAT
   12: 8, // DOUBLE
+  13: 4, // IFD (an offset, as SubIFDs may be typed)
 };
 
 export interface TiffEntry {
@@ -170,6 +198,7 @@ export class TiffReader {
           out.push(v.getInt16(p, this.le));
           break;
         case 4:
+        case 13:
           out.push(this.u32(p));
           break;
         case 9:

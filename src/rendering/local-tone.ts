@@ -164,7 +164,8 @@ float slShadows(float x, float S) {
 float slLocalToneTap(vec2 uv, float lod, vec3 wb) {
   vec3 s = textureLod(uImage, uv, lod).rgb;
   if (!uLinear && !uIsFallbackPreview) s = srgbToLinear(s);
-  if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s)) * uBaselineGain;
+  if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s));
+  s *= uBaselineGain;
   return log2(max(luma(s * wb), 1e-4));
 }
 

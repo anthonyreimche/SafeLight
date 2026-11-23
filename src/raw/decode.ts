@@ -9,7 +9,9 @@
 // (catalog/image-decoders.ts), and the first to give an image wins:
 //
 //   - core's: libraw (handles everything, best colour science), and behind it
-//     the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG);
+//     the in-house decoders for uncompressed CFA data (TIFF-based RAW / DNG)
+//     and for linear DNGs (linear-dng.ts), which leads for floating-point
+//     ones: their Deflate data is beyond the bundled libraw;
 //   - an extension's (api.library.registerDecoder): its linear frame is
 //     finished as libraw's is, off the main thread (frame-job.ts).
 //
@@ -38,14 +40,18 @@ import {
 } from "./pixels";
 import { MAX_DECODE_PIXELS } from "./decode-limits";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
-import { finishLinearFrame, isAbandoned } from "./frame-bridge";
+import { decodeLinearDngFrame, finishLinearFrame, isAbandoned } from "./frame-bridge";
+import { linearDngKind, type LinearDngResult } from "./linear-dng";
 import type { BuiltFrame } from "./frame-job";
 import { decoderMarkerId } from "./raw-cache";
 import {
-  chainSignature,
+  acceptsVerdict,
+  answeringChain,
+  askAccepts,
   decoderChain,
   formatOf,
   runExtensionDecoder,
+  signatureOf,
   type ChainEntry,
   type ExtensionChainEntry,
 } from "@/catalog/image-decoders";
@@ -163,19 +169,31 @@ function markUnanswered(key: string): void {
 }
 
 /** The decoders that read a RAW, in the person's order, and their signature
- *  (image-decoders.ts chainSignature): "" while libraw leads. */
+ *  (image-decoders.ts signatureOf): "" while libraw leads. */
 interface RawChain {
   entries: readonly ChainEntry[];
   signature: string;
 }
 
-/** The decoders that read the RAW named `name`; libraw alone for a name no RAW
- *  format claims. */
-function rawChain(name: string): RawChain {
+/** The decoders that read the RAW named `name` of `size` bytes, without
+ *  those known to decline it; libraw alone for a name no RAW format claims. */
+function rawChain(name: string, size: number): RawChain {
   const format = formatOf(name);
-  const entries = format?.raw ? decoderChain(format.id) : [];
+  const entries = format?.raw ? answeringChain(format.id, name, size) : [];
   if (!format?.raw || entries.length === 0) return { entries: [LIBRAW], signature: "" };
-  return { entries, signature: chainSignature(format.id) };
+  return { entries, signature: signatureOf(entries) };
+}
+
+/** Ask the decoders ahead of libraw that check files first whether they read
+ *  `file`, so its chain leaves out those that don't; null, at once, when none
+ *  is left to ask, so a decode without one waits on nothing. */
+function askLeadingDecoders(file: Blob, name: string): Promise<unknown> | null {
+  const format = formatOf(name);
+  if (!format?.raw) return null;
+  const chain = decoderChain(format.id);
+  const ahead = chain.slice(0, Math.max(0, chain.findIndex((entry) => entry.owner === "core")));
+  const unasked = ahead.filter((entry) => acceptsVerdict(entry, name, file.size) === undefined);
+  return unasked.length > 0 ? Promise.all(unasked.map((entry) => askAccepts(entry, file, name))) : null;
 }
 
 // Decode to a full-precision LINEAR float image, for the high-bit-depth editing
@@ -193,7 +211,9 @@ export async function decodeRawToFloat(
 ): Promise<RawFloatImage | DecodeFailure> {
   if (request?.signal?.aborted) return { failure: "aborted" };
   const name = path ?? (file instanceof File ? file.name : "");
-  const chain = rawChain(name);
+  const asking = askLeadingDecoders(file, name);
+  if (asking) await asking;
+  const chain = rawChain(name, file.size);
   const ruledOut = request?.ruledOut;
   const tried = ruledOut ? chain.entries.filter((entry) => !ruledOut.has(decoderMarkerId(entry))) : chain.entries;
   const decoders = { tried, extended: chain.entries.some(isExtension), signature: chain.signature };
@@ -299,7 +319,11 @@ async function decodeWithLibRaw(
     return { failure: "transient", reason: `couldn't read the file (${describeError(e)})` };
   }
 
-  // Prefer libraw: it decodes every compression (incl. Nikon NEF), applies
+  // A floating-point linear DNG is the in-house decoder's alone.
+  const linear = linearDngKind(buffer);
+  if (linear === "float") return decodeWithLinearDng(buffer, !bytes, request, id);
+
+  // Otherwise prefer libraw: it decodes every compression (incl. Nikon NEF), applies
   // camera WB and orientation, and outputs full-precision linear data. Only
   // the in-house fallback reads the buffer after it, and only a TIFF stream,
   // so libraw takes any other buffer read here without a copy.
@@ -312,9 +336,15 @@ async function decodeWithLibRaw(
   if (viaLib.timedOut && id !== undefined) markUnanswered(id);
   if (abandoned(request)) return ABORTED;
 
-  // In-house fallback handles only uncompressed CFA (sensor-native orientation).
-  // A file it can't take either keeps libraw's verdict.
+  // In-house fallbacks handle integer linear DNGs and uncompressed CFA
+  // (sensor-native orientation). A file they can't take either keeps libraw's
+  // verdict.
   if (transfer) return viaLib;
+  if (linear === "integer") {
+    const own = await decodeWithLinearDng(buffer, !bytes, request, id);
+    if (!("failure" in own) || own.failure === "aborted") return own;
+    return { ...viaLib, reason: `${viaLib.reason ?? "no decoder took the file"} (in-house decode: ${own.reason})` };
+  }
   try {
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
@@ -326,6 +356,49 @@ async function decodeWithLibRaw(
   } catch (e) {
     return { ...viaLib, reason: `${viaLib.reason ?? "no decoder took the file"} (in-house decode: ${describeError(e)})` };
   }
+}
+
+/** A linear DNG by the in-house decoder (linear-dng.ts), in the frame worker.
+ *  `owned`: the bytes are this decode's to hand over; a caller's are copied. */
+async function decodeWithLinearDng(
+  buffer: ArrayBuffer,
+  owned: boolean,
+  request: DecodeRequest | undefined,
+  id: string | undefined,
+): Promise<RawFloatImage | DecodeFailure> {
+  const turn = request?.turn ? normalizeRotation(request.turn) : 0;
+  let result: LinearDngResult;
+  try {
+    result = await decodeLinearDngFrame(
+      {
+        buffer: owned ? buffer : buffer.slice(0),
+        turn,
+        ...(request?.targetEdge ? { targetEdge: request.targetEdge } : {}),
+        ...(request?.cacheEdge ? { cacheEdge: request.cacheEdge } : {}),
+      },
+      { background: request?.background, signal: request?.signal },
+    );
+  } catch (e) {
+    if (isAbandoned(e)) return ABORTED;
+    return { failure: "transient", reason: `linear DNG decode: ${describeError(e)}` };
+  }
+  if ("rejected" in result) {
+    if (result.transient) return { failure: "transient", reason: result.rejected };
+    return { failure: "unsupported", reason: result.rejected, ...(result.tooLarge ? { tooLarge: true } : {}) };
+  }
+  if (id !== undefined) unanswered.delete(id);
+  const { data, width, height, entry, colorTemperature, asShotMultipliers, sourceWidth, sourceHeight } = result;
+  return {
+    data,
+    width,
+    height,
+    oriented: true,
+    ...(colorTemperature ? { colorTemperature } : {}),
+    ...(asShotMultipliers ? { asShotMultipliers } : {}),
+    ...(sourceWidth && sourceHeight ? { halfSize: true, sourceWidth, sourceHeight } : {}),
+    ...(turn ? { turned: turn } : {}),
+    ...(entry ? { entry } : {}),
+  };
 }
 
 type LinearImage = Extract<DecodedImageResult, { kind: "linear" }>;
@@ -368,6 +441,8 @@ async function decodeWithExtension(
   });
   if (!outcome.ok) {
     if (outcome.aborted) return ABORTED;
+    // Passed on unread, or a failure that may pass: nothing held against the file.
+    if (outcome.declined || outcome.transient) return { failure: "transient", reason: outcome.reason };
     if (!outcome.timedOut) return { failure: "unsupported", reason: outcome.reason };
     if (key !== undefined) markUnanswered(key);
     return { failure: "transient", reason: outcome.reason, timedOut: true };
@@ -430,7 +505,7 @@ export async function decodeRawToBitmap(
   file: Blob,
   bytes?: ArrayBuffer,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
-  const [head] = rawChain(file instanceof File ? file.name : "").entries;
+  const [head] = rawChain(file instanceof File ? file.name : "", file.size).entries;
   if (head && isExtension(head)) return null;
   let buffer: ArrayBuffer;
   try {

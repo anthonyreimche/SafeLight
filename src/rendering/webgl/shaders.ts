@@ -173,8 +173,8 @@ uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPE
 uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the default baseline
                               // (baselineTone); off for camera-rendered bitmaps and for
                               // display transforms that own their own baseline${v2(`
-uniform float uBaselineGain;  // the camera maker's exposure offset as a gain, applied with
-                              // slBaselineRefit (the camera baseline)
+uniform float uBaselineGain;  // a RAW's camera exposure as a gain (its camera match, else
+                              // its maker's offset), after slBaselineRefit; 1 otherwise
 uniform float uBaselineShadows; // the camera match's shadows lift (Shadows / 100), on each
                                 // pixel before the photo's own Shadows`)}
 uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses highlights;
@@ -923,11 +923,13 @@ void main() {
   // so the per-channel clip detection still reflects the raw sensor data.
   if (uLinear) lin = reconstructClipped(lin, srcUv);${v2(`
 
-  // The camera baseline (baseline-tone.ts): the refit to the camera curve and
-  // the camera maker's exposure offset. Here, not with baselineTone, so the
+  // The camera baseline (baseline-tone.ts): the refit to the camera curve,
+  // then the RAW's camera exposure. Here, not with baselineTone, so the
   // decode stages' passes and clip recovery's threshold still see the curve
-  // they were written against.
-  if (uApplyBaseCurve) lin = slBaselineRefit(lin) * uBaselineGain;`)}
+  // they were written against. The exposure is not part of the look, so a
+  // display transform that drops the baseline still gets it.
+  if (uApplyBaseCurve) lin = slBaselineRefit(lin);
+  lin *= uBaselineGain;`)}
 
   //__ANCHOR_WHITE_BALANCE__
 

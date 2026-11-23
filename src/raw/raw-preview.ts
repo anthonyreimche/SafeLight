@@ -118,7 +118,10 @@ function collectJpegs(buf: Uint8Array): JpegRange[] {
     const ff = buf.indexOf(0xff, i);
     if (ff === -1 || ff >= n - 2) break;
     if (buf[ff + 1] === 0xd8 && buf[ff + 2] === 0xff) {
-      const end = findJpegEnd(buf, ff);
+      // Without a frame header ahead of its scan it is no image, just a stray
+      // FF D8 FF in compressed data (a floating-point DNG's Deflate tiles hold
+      // several), whose walk could run on over a real preview.
+      const end = jpegDimensions(buf, ff) ? findJpegEnd(buf, ff) : -1;
       if (end === -1) {
         // Truncated segment or a stray FF D8 FF match (common in CRW/CIFF and
         // other odd containers). Skip past it and keep scanning rather than

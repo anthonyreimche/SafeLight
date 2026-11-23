@@ -27,7 +27,7 @@ An extension describes what it adds and Safelight decides how to fit it in. A pa
 
 ## How an extension is loaded
 
-An extension is a folder with a `safelight.json` manifest and a ready-to-run JavaScript module. Published extensions are GitHub repos: users install them from the store, which downloads them into Safelight's plugins folder. While you're developing, the Developer Tools extension can load extensions straight from a folder on your disk instead (desktop app only), so you don't need GitHub until you publish. See [Your first extension](extensions/first-extension.md) for the folder layout and [Debugging](extensions/debugging.md) for the dev folder.
+An extension is a folder with a `safelight.json` manifest and a ready-to-run JavaScript module. Published extensions are GitHub repos: users install them from the Extensions window, which downloads them into Safelight's plugins folder. While you're developing, the Developer Tools extension can load extensions straight from a folder on your disk instead (desktop app only), so you don't need GitHub until you publish. See [Your first extension](extensions/first-extension.md) for the folder layout and [Debugging](extensions/debugging.md) for the dev folder.
 
 ```mermaid
 flowchart LR
@@ -93,11 +93,11 @@ Extensions run in the same JavaScript context as Safelight's own interface. The 
 
 - **App data.** An extension can read or change anything the interface can, including the catalogue, edits, settings and the window's DOM. For the DOM, stick to the dock, slots and stylesheets, because core markup changes between releases.
 - **Files.** There's no raw filesystem access by path. Safelight claims the file and update bridges for itself before any extension loads. Extensions work with the file handles they're given, such as the folder handle passed to the import and removal hooks.
-- **Network.** `fetch` and XHR reach only the HTTPS origins you list under `permissions.network` in your manifest, plus Cloudflare Worker hosts (`*.workers.dev`), which every extension may reach. Declared origins join the app's content-security policy at the next launch. Images load from any HTTPS host. Declare every host you use: it's what users see on your store page.
+- **Network.** `fetch` and XHR reach only the HTTPS origins you list under `permissions.network` in your manifest, plus Cloudflare Worker hosts (`*.workers.dev`), which every extension may reach. Declared origins join the app's content-security policy at the next launch. Images load from any HTTPS host. Declare every host you use: it's what users see on your listing page.
 - **GPU.** Your GLSL runs on every photo while your extension is enabled.
 - **Other extensions.** Anything in `api.variables` can be read by every other extension, so don't store secrets there.
 
-Users decide which extensions to trust. The [trust registry](https://github.com/anthonyreimche/safelight-registry) marks extensions a maintainer has reviewed as verified and can ban malicious ones, and users can limit the store to verified extensions. The full safety model is described in [EXTENSIONS.md](../../EXTENSIONS.md).
+Users decide which extensions to trust. The [trust registry](https://github.com/anthonyreimche/safelight-registry) marks extensions a maintainer has reviewed as verified and can ban malicious ones, and users can limit the open source extension library to verified extensions. The full safety model is described in [EXTENSIONS.md](../../EXTENSIONS.md).
 
 ## Where to find everything
 
@@ -124,6 +124,6 @@ The published extensions are the best examples of each API in real use.
 | Restyle the app | `registerTheme`, `registerStylesheet` | [UI Components](api/components.md#styling-hooks) | [Custom Input Styling](https://github.com/anthonyreimche/Custom-Input-Styling) |
 | Decorate every panel header | `registerPanelHeaderAccessory` | [UI Shell](api/ui-shell.md) | [Panel Toggle](https://github.com/anthonyreimche/Panel-Toggle) |
 | Debug, live-reload, inspect the pipeline | Developer Tools | [Debugging](extensions/debugging.md) | |
-| List it in the store | GitHub topics, releases | [Publishing](extensions/publishing.md) | |
+| List it in the open source extension library | GitHub topics, releases | [Publishing](extensions/publishing.md) | |
 
 The exact types for everything here are in [`src/extensions/api/`](../../src/extensions/api/), mainly `contributions.ts` and `scoped-api.ts`. The reference pages summarize them.

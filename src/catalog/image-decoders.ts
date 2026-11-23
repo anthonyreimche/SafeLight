@@ -11,7 +11,9 @@
 //
 // Decodes core keeps across launches (the RAW cache, GPU sources) are keyed by
 // chainSignature, which stays "" while core's decoder leads, so the default
-// chain keeps every existing key.
+// chain keeps every existing key. A decoder that checks files first
+// (ImageDecoderContribution.accepts) and declines one is left out of that
+// file's chain (answeringChain), so its keys stay as they would be without it.
 
 import { useSyncExternalStore } from "react";
 import photoTypes from "../../electron/photo-types.json";
@@ -133,13 +135,95 @@ export function decoderChain(formatId: string): readonly ChainEntry[] {
  *  across launches: "" while core's decoder leads, else each decoder tried
  *  before core's with its version, then core's. */
 export function chainSignature(formatId: string): string {
-  const chain = decoderChain(formatId);
+  return signatureOf(decoderChain(formatId));
+}
+
+/** What `chain` decodes with, as chainSignature says it. */
+export function signatureOf(chain: readonly ChainEntry[]): string {
   const coreAt = chain.findIndex((entry) => entry.owner === "core");
   if (coreAt <= 0) return "";
   return chain
     .slice(0, coreAt + 1)
     .map((entry) => (isExtensionEntry(entry) ? `${entry.id}@${entry.version}` : entry.id))
     .join(">");
+}
+
+// ─── Decoders that check a file first ────────────────────────────────────────
+
+// What each decoder with `accepts` answered, by decoder version and file (its
+// name and size), for the session; the RAW cache keeps a photo's too
+// (photo-cache-key.ts). Only the latest are kept.
+const VERDICT_LIMIT = 20_000;
+// A check is meant to read a header: one slower than this is taken as a yes.
+const ACCEPTS_TIME_LIMIT_MS = 5_000;
+const verdicts = new Map<string, boolean>();
+const asking = new Map<string, Promise<boolean>>();
+
+const verdictKey = (entry: ExtensionChainEntry, name: string, size: number): string =>
+  `${entry.id}@${entry.version}|${name}:${size}`;
+
+/** Whether `entry` reads the file `name` of `size` bytes: true for a decoder
+ *  that doesn't check files first, undefined for one not asked yet. */
+export function acceptsVerdict(entry: ChainEntry, name: string, size: number): boolean | undefined {
+  if (!isExtensionEntry(entry) || !entry.decoder.accepts) return true;
+  return verdicts.get(verdictKey(entry, name, size));
+}
+
+/** Keep what `entry` answered about the file `name` of `size` bytes. */
+export function rememberAccepts(entry: ExtensionChainEntry, name: string, size: number, accepts: boolean): void {
+  const key = verdictKey(entry, name, size);
+  verdicts.delete(key);
+  verdicts.set(key, accepts);
+  if (verdicts.size <= VERDICT_LIMIT) return;
+  const oldest = verdicts.keys().next().value;
+  if (oldest !== undefined) verdicts.delete(oldest);
+}
+
+/** Whether `entry` reads `file` (named `name`): its remembered answer, or its
+ *  `accepts` asked now, outside its decode queue. A check that throws, or
+ *  answers late or with no boolean, counts as a yes and isn't remembered: the
+ *  decode then decides. */
+export function askAccepts(entry: ChainEntry, file: Blob, name: string): Promise<boolean> {
+  const known = acceptsVerdict(entry, name, file.size);
+  if (known !== undefined || !isExtensionEntry(entry)) return Promise.resolve(known ?? true);
+  const key = verdictKey(entry, name, file.size);
+  const pending = asking.get(key) ?? ask(entry, file, name).finally(() => asking.delete(key));
+  asking.set(key, pending);
+  return pending;
+}
+
+async function ask(entry: ExtensionChainEntry, file: Blob, name: string): Promise<boolean> {
+  const { accepts } = entry.decoder;
+  if (!accepts) return true;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve("late");
+    }, ACCEPTS_TIME_LIMIT_MS);
+  });
+  try {
+    const checked = Promise.resolve().then(() => accepts.call(entry.decoder, file, { name, signal: controller.signal }));
+    const answer: unknown = await Promise.race([checked, late]);
+    if (typeof answer !== "boolean") {
+      if (answer !== "late") warn(entry.owner, `decoder "${entry.id}": accepts answered ${String(answer)}, not a boolean`);
+      return true;
+    }
+    rememberAccepts(entry, name, file.size, answer);
+    return answer;
+  } catch (e) {
+    warn(entry.owner, `decoder "${entry.id}" couldn't check ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The decoders that read the file `name` of `size` bytes, of format
+ *  `formatId`, in order: its chain without those known to decline it. */
+export function answeringChain(formatId: string, name: string, size: number): readonly ChainEntry[] {
+  return decoderChain(formatId).filter((entry) => acceptsVerdict(entry, name, size) !== false);
 }
 
 /** The extensions whose decoders the person put ahead of every decoder now
@@ -285,9 +369,19 @@ export type OwnedDecodedImage =
   | (Extract<DecodedImageResult, { kind: "rgba8" }> & { data: Uint8ClampedArray<ArrayBuffer> })
   | (Extract<DecodedImageResult, { kind: "linear" }> & { data: Float32Array<ArrayBuffer> });
 
+/** A decoder's failed answer. `declined`: its `accepts` passed the file on, so
+ *  it never ran. `transient`: it failed in a way that may pass (it threw an
+ *  error marked `transient`, or ran out of memory), so the file isn't to be
+ *  remembered as one it can't read. */
 export type ExtensionDecodeOutcome =
   | { ok: true; image: OwnedDecodedImage }
-  | { ok: false; reason: string; aborted?: boolean; timedOut?: boolean };
+  | { ok: false; reason: string; aborted?: boolean; timedOut?: boolean; declined?: boolean; transient?: boolean };
+
+/** Whether a decoder's throw is a failure that may pass. */
+function isTransient(e: unknown): boolean {
+  if (e instanceof RangeError) return true;
+  return typeof e === "object" && e !== null && "transient" in e && e.transient === true;
+}
 
 export interface ExtensionDecodeRequest {
   name: string;
@@ -424,7 +518,8 @@ async function dispatch(task: Task): Promise<void> {
       }
       return { ok: true, image: owned(image) };
     } catch (e) {
-      return { ok: false, reason: `${entry.label} failed: ${e instanceof Error ? e.message : String(e)}` };
+      const reason = `${entry.label} failed: ${e instanceof Error ? e.message : String(e)}`;
+      return isTransient(e) ? { ok: false, reason, transient: true } : { ok: false, reason };
     }
   })();
   try {
@@ -436,16 +531,26 @@ async function dispatch(task: Task): Promise<void> {
 }
 
 /** Decode `file` with extension decoder `entry`, one decode at a time per
- *  decoder, interactive requests ahead of background ones. Never rejects: a
- *  decoder that answers nothing, throws, answers an image core can't use or
- *  runs past its time limit (60 s and 2 s a megabyte, counted from when it
- *  starts) gives a reason instead. A decode past its limit, or one its caller
- *  gave up on, is abandoned with its signal aborted, and the next starts. */
-export function runExtensionDecoder(
+ *  decoder, interactive requests ahead of background ones; a file the
+ *  decoder's `accepts` declines is answered at once, never queued. Never
+ *  rejects: a decoder that answers nothing, throws, answers an image core
+ *  can't use or runs past its time limit (60 s and 2 s a megabyte, counted
+ *  from when it starts) gives a reason instead. A decode past its limit, or
+ *  one its caller gave up on, is abandoned with its signal aborted, and the
+ *  next starts. */
+export async function runExtensionDecoder(
   entry: ExtensionChainEntry,
   file: Blob,
   request: ExtensionDecodeRequest,
 ): Promise<ExtensionDecodeOutcome> {
+  if (request.signal?.aborted) return ABORTED;
+  if (!(await askAccepts(entry, file, request.name))) {
+    return { ok: false, reason: `${entry.label} leaves this file to the next decoder.`, declined: true };
+  }
+  return queued(entry, file, request);
+}
+
+function queued(entry: ExtensionChainEntry, file: Blob, request: ExtensionDecodeRequest): Promise<ExtensionDecodeOutcome> {
   const { signal } = request;
   if (signal?.aborted) return Promise.resolve(ABORTED);
   return new Promise((resolve) => {

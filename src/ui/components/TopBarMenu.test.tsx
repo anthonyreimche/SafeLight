@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Tests for the top-bar dropdown: open/close, dismissal, and where focus lands
-// when the panel goes away.
+// Tests for the top-bar dropdowns: open/close, dismissal, where focus lands
+// when the panel goes away, arrow keys, and moving between sibling menus the
+// way a menubar does.
 
 import { describe, it, expect, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
@@ -12,8 +13,9 @@ import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
 import { MenuItem, MenuLabel, TopBarMenu } from "./TopBarMenu.tsx";
 
-const trigger = () => screen.getByRole("button", { name: "View" });
-const item = (name: string) => screen.getByRole("button", { name });
+const trigger = (name = "View") => screen.getByRole("button", { name });
+const item = (name: string) => screen.getByRole("menuitemcheckbox", { name });
+const queryItem = (name: string) => screen.queryByRole("menuitemcheckbox", { name });
 
 /** What the app's global Escape handler does: run the topmost registration. */
 function globalEscape(): boolean {
@@ -42,18 +44,42 @@ function Menu({ onPick, dismissOnPick = false }: { onPick?: () => void; dismissO
           <MenuItem checked={false} title="Not open" onClick={() => {}}>
             Presets
           </MenuItem>
+          <MenuItem checked={false} onClick={() => {}}>
+            Snapshots
+          </MenuItem>
         </>
       )}
     </TopBarMenu>
   );
 }
 
+function MenuBar() {
+  return (
+    <>
+      <TopBarMenu label="View">
+        {() => (
+          <MenuItem checked={false} onClick={() => {}}>
+            Histogram
+          </MenuItem>
+        )}
+      </TopBarMenu>
+      <TopBarMenu label="Layout">
+        {() => (
+          <MenuItem checked={false} onClick={() => {}}>
+            Classic
+          </MenuItem>
+        )}
+      </TopBarMenu>
+    </>
+  );
+}
+
 describe("TopBarMenu", () => {
   it("advertises a collapsed popup until it is opened", () => {
     render(<Menu />);
-    expect(trigger().getAttribute("aria-haspopup")).toBe("true");
+    expect(trigger().getAttribute("aria-haspopup")).toBe("menu");
     expect(trigger().getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("button", { name: "Histogram" })).toBeNull();
+    expect(queryItem("Histogram")).toBeNull();
   });
 
   it("toggles on the trigger", async () => {
@@ -62,11 +88,12 @@ describe("TopBarMenu", () => {
 
     await user.click(trigger());
     expect(trigger().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("menu")).toBeTruthy();
     expect(screen.getByText("Panels")).toBeTruthy();
 
     await user.click(trigger());
     expect(trigger().getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("button", { name: "Histogram" })).toBeNull();
+    expect(queryItem("Histogram")).toBeNull();
   });
 
   it("stays open while items are used, and closes on a press outside", async () => {
@@ -88,11 +115,10 @@ describe("TopBarMenu", () => {
     render(<Menu />);
 
     await user.click(trigger());
-    await user.tab();
     expect(document.activeElement).toBe(item("Histogram"));
 
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("button", { name: "Histogram" })).toBeNull();
+    expect(queryItem("Histogram")).toBeNull();
     expect(document.activeElement).toBe(trigger());
   });
 
@@ -102,7 +128,7 @@ describe("TopBarMenu", () => {
 
     await user.click(trigger());
     await user.click(item("Histogram"));
-    expect(screen.queryByRole("button", { name: "Histogram" })).toBeNull();
+    expect(queryItem("Histogram")).toBeNull();
     expect(document.activeElement).toBe(trigger());
   });
 
@@ -125,16 +151,90 @@ describe("TopBarMenu", () => {
 
     expect(globalEscape()).toBe(false);
   });
-});
 
-describe("MenuItem", () => {
-  it("exposes its tick as toggle state rather than in the accessible name", async () => {
+  it("moves through its items with the arrow keys, Home and End", async () => {
     const user = userEvent.setup();
     render(<Menu />);
     await user.click(trigger());
 
-    expect(item("Histogram").getAttribute("aria-pressed")).toBe("true");
-    expect(item("Presets").getAttribute("aria-pressed")).toBe("false");
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Presets"));
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(item("Snapshots"));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Histogram"));
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(item("Snapshots"));
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(item("Histogram"));
+  });
+
+  it("opens from the keyboard with ArrowDown on the trigger", async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    trigger().focus();
+
+    await user.keyboard("{ArrowDown}");
+    expect(trigger().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(item("Histogram"));
+  });
+});
+
+describe("TopBarMenu as a menubar", () => {
+  it("switches to a sibling menu when its trigger is hovered while one is open", async () => {
+    const user = userEvent.setup();
+    render(<MenuBar />);
+
+    await user.click(trigger("View"));
+    await user.hover(trigger("Layout"));
+    expect(item("Classic")).toBeTruthy();
+    expect(queryItem("Histogram")).toBeNull();
+    expect(trigger("View").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("does not open a menu on hover while none is open", async () => {
+    const user = userEvent.setup();
+    render(<MenuBar />);
+
+    await user.hover(trigger("Layout"));
+    expect(queryItem("Classic")).toBeNull();
+  });
+
+  it("moves to the next and previous menus with the arrow keys, wrapping", async () => {
+    const user = userEvent.setup();
+    render(<MenuBar />);
+    await user.click(trigger("View"));
+
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(item("Classic"));
+    expect(queryItem("Histogram")).toBeNull();
+
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(item("Histogram"));
+
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(item("Classic"));
+  });
+
+  it("closes the open menu when the other trigger is clicked open", async () => {
+    const user = userEvent.setup();
+    render(<MenuBar />);
+
+    await user.click(trigger("View"));
+    await user.click(trigger("Layout"));
+    expect(item("Classic")).toBeTruthy();
+    expect(queryItem("Histogram")).toBeNull();
+  });
+});
+
+describe("MenuItem", () => {
+  it("exposes its tick as checked state rather than in the accessible name", async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    await user.click(trigger());
+
+    expect(item("Histogram").getAttribute("aria-checked")).toBe("true");
+    expect(item("Presets").getAttribute("aria-checked")).toBe("false");
     expect(item("Presets").getAttribute("title")).toBe("Not open");
   });
 });

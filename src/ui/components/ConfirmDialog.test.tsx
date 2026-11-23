@@ -10,9 +10,10 @@
 // pin the promise contract, keyboard/focus behaviour, and FIFO queueing.
 
 import { describe, expect, it, vi } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
+import { suspendShortcuts } from "@/state/keybindings-store";
 import { ConfirmDialogHost, alertDialog, confirmDialog } from "./ConfirmDialog";
 
 describe("confirmDialog", () => {
@@ -169,7 +170,7 @@ describe("confirmDialog", () => {
     await decision;
   });
 
-  it("styles the confirm button by variant — red for danger, accent otherwise", async () => {
+  it("styles the confirm button by variant — red for danger, the app's primary fill otherwise", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
     let danger!: Promise<boolean>;
@@ -185,7 +186,7 @@ describe("confirmDialog", () => {
     expect(dangerButton.className).toContain("bg-danger");
     expect(dangerButton.className).toContain("text-on-danger");
     expect(dangerButton.className).not.toContain("text-white");
-    expect(dangerButton.className).not.toContain("var(--color-accent)");
+    expect(dangerButton.className).not.toContain("bg-slider-fill");
     await user.click(dangerButton);
     await danger;
 
@@ -193,9 +194,7 @@ describe("confirmDialog", () => {
     act(() => {
       plain = confirmDialog({ title: "Reset edits", message: "Sure?" });
     });
-    expect(screen.getByRole("button", { name: "OK" }).className).toContain(
-      "var(--color-accent)",
-    );
+    expect(screen.getByRole("button", { name: "OK" }).className).toContain("bg-slider-fill");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await plain;
   });
@@ -233,6 +232,40 @@ describe("confirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await expect(second).resolves.toBe(false);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("stays open when a press that began inside the card is released on the backdrop", async () => {
+    render(<ConfirmDialogHost />);
+    let decision!: Promise<boolean>;
+    act(() => {
+      decision = confirmDialog({ title: "Reset edits", message: "Sure?" });
+    });
+    const dialog = screen.getByRole("dialog");
+    const backdrop = dialog.parentElement as HTMLElement;
+    fireEvent.pointerDown(within(dialog).getByText("Sure?"));
+    fireEvent.click(backdrop);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    fireEvent.pointerDown(backdrop);
+    fireEvent.click(backdrop);
+    await expect(decision).resolves.toBe(false);
+  });
+
+  it("closes on Escape from the card itself while app shortcuts are paused", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    const release = suspendShortcuts();
+    let decision!: Promise<boolean>;
+    act(() => {
+      decision = confirmDialog({ title: "Reset edits", message: "Sure?" });
+    });
+    try {
+      await user.keyboard("{Escape}");
+      await expect(decision).resolves.toBe(false);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      release();
+    }
   });
 });
 

@@ -10,11 +10,13 @@
 // revision token. The bytes live as individual sidecars under the project's
 // .safelight/blobs/, so a large payload never bloats the catalog.json rewrite.
 //
-// Both calls operate on the *currently loaded Develop photo*. getPhotoData
-// captures that id at call time, so a result that arrives after a photo switch
-// still refers to the photo it was requested for.
+// Both calls operate on the *currently loaded Develop photo*; getPhotoData also
+// reads any photo it is handed the id of (a stage texture made for another
+// photo's thumbnail or export). It captures the id at call time, so a result
+// that arrives after a photo switch still refers to the photo it was requested for.
 
 import { catalogStorage } from "@/catalog/storage";
+import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 
 /** Persist (or, with null, delete) an opaque blob for the current Develop photo
@@ -26,10 +28,18 @@ export function putPhotoData(fullKey: string, data: Uint8Array | null): void {
   void catalogStorage().putPhotoBlob?.(photoId, fullKey, data);
 }
 
-/** Read the opaque blob for the current Develop photo under `fullKey`, or null
- *  if none is stored (or no photo/project is open). */
-export async function getPhotoData(fullKey: string): Promise<Uint8Array | null> {
-  const photoId = useDevelopStore.getState().photoId;
+/** Read the opaque blob for photo `of` (the current Develop photo when left
+ *  out) under `fullKey`, or null if none is stored (or no photo/project is open). */
+export async function getPhotoData(fullKey: string, of?: string): Promise<Uint8Array | null> {
+  if (of !== undefined && !namesCataloguePhoto(of)) return null;
+  const photoId = of ?? useDevelopStore.getState().photoId;
   if (!photoId) return null;
   return (await catalogStorage().getPhotoBlob?.(photoId, fullKey)) ?? null;
+}
+
+/** Whether an extension may read photo `id`'s blobs: a photo the catalogue
+ *  holds, whose id has no dot, since a blob's file is "{photoId}.{key}" and a
+ *  dotted id could name another extension's key. */
+function namesCataloguePhoto(id: string): boolean {
+  return !id.includes(".") && useCatalogStore.getState().photos.some((p) => p.id === id);
 }

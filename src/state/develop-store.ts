@@ -33,7 +33,7 @@ import { broadcast } from "./broadcast";
 import { createViewSlice, type ViewSlice } from "./develop-slices/view-slice";
 import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
 import { emitEditCommit } from "@/extensions/registry";
-import { normalizeParamBag } from "@/extensions/param-registry";
+import { computedParamsOf, normalizeParamBag, withoutComputedParams } from "@/extensions/param-registry";
 import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
 import { getRenderBridge } from "@/rendering/render-bridge";
@@ -220,10 +220,14 @@ function moveHistory(
 // With `live` (the look on screen, for a step on the same photo) every field and
 // mask that matches it stays the live object, so the renderer sees only what the
 // step changed: its sync diffs by identity, and a new masks array re-bakes them all.
+//
+// A computed value (UniformDeclaration.computed) the step doesn't hold keeps the
+// live one: it belongs to the photo, so a step stored before it was worked out
+// still draws with it.
 function lookOf(snapshot: Pick<EditSnapshot, "params" | "paramBag">, live?: Look): Look {
   const params = normalizeParams(snapshot.params);
-  const paramBag = normalizeParamBag(snapshot.paramBag);
-  if (!live) return { params, paramBag };
+  if (!live) return { params, paramBag: normalizeParamBag(snapshot.paramBag) };
+  const paramBag = { ...computedParamsOf(live.paramBag), ...normalizeParamBag(snapshot.paramBag) };
   const kept = keepEqual(params, live.params);
   kept.masks = keepMasks(params.masks, live.params.masks);
   return { params: kept, paramBag: keepEqual(paramBag, live.paramBag) };
@@ -291,20 +295,59 @@ async function storedHistory(
  *  cursor: a change made but not yet committed. The raw compare matches an entry
  *  this version wrote, stored or not; right after a commit it is cheap too, as
  *  the entry still shares nested objects with the live params. A stack written
- *  by an older build only matches once normalized. */
+ *  by an older build only matches once normalized. Computed values
+ *  (UniformDeclaration.computed) are no edit, so they're left out. */
 function hasUncommittedEdit(
   s: Pick<DevelopState, "params" | "paramBag" | "history" | "historyIndex">,
 ): boolean {
   const entry = s.history[s.historyIndex];
   if (!entry) return true;
-  const current = { params: s.params, paramBag: s.paramBag };
+  const current = { params: s.params, paramBag: withoutComputedParams(s.paramBag) };
   return !(
-    sameEdit(current, { params: entry.params, paramBag: entry.paramBag ?? {} }) ||
+    sameEdit(current, { params: entry.params, paramBag: withoutComputedParams(entry.paramBag ?? {}) }) ||
     sameEdit(current, {
       params: normalizeParams(entry.params),
-      paramBag: normalizeParamBag(entry.paramBag),
+      paramBag: withoutComputedParams(normalizeParamBag(entry.paramBag)),
     })
   );
+}
+
+/** True when the live computed values differ from those the history entry at
+ *  the cursor holds. */
+function hasNewComputedValues(s: Pick<DevelopState, "paramBag" | "history" | "historyIndex">): boolean {
+  const entry = s.history[s.historyIndex];
+  return entry !== undefined && !same(computedParamsOf(s.paramBag), computedParamsOf(entry.paramBag ?? {}));
+}
+
+/** Store the live computed values on the step the history stands on, in place:
+ *  values an extension works out for the photo are no edit, so they take no step
+ *  of their own and leave the step's label and time as they were. Skipped when
+ *  the step stored there now holds another look (another window's commit). */
+async function storeComputedValues(
+  get: () => DevelopState,
+  set: (p: Partial<DevelopState>) => void,
+  storage: CatalogStorage,
+  target?: CatalogStorage,
+): Promise<void> {
+  const { photoId, params, paramBag, history, historyIndex, asShotTemperature } = get();
+  if (!photoId) return;
+  const stored = await writeInTurn(photoId, async (latest) => {
+    const base = (await storedHistory(photoId, asShotTemperature, storage)) ?? { stack: history, index: historyIndex };
+    if (!target && catalogStorage() !== storage) return null;
+    const at = { params, paramBag, history: base.stack, historyIndex: base.index };
+    if (hasUncommittedEdit(at) || !hasNewComputedValues(at)) return null;
+    const stack = base.stack.map((step, i) => (i === base.index ? { ...step, paramBag: { ...paramBag } } : step));
+    const saved = storage.putEditState({ photoId, stack, currentIndex: base.index });
+    if (latest() && get().photoId === photoId && get().history === history) {
+      set({ history: stack, historyIndex: base.index });
+    }
+    return { saved, edited: base.index > 0 };
+  });
+  if (!stored) return;
+  await stored.saved;
+  // An edited photo's grid thumbnail draws its look, which the values change.
+  if (stored.edited && !target) refreshThumbnailWhenQuiet(photoId, params, asShotTemperature, paramBag);
+  broadcast({ type: "edit-update", payload: { photoId } });
 }
 
 const leaveHandlers = new Set<() => void>();
@@ -472,7 +515,10 @@ async function commitStoredEdit(
   const leaving = target && photoById(useCatalogStore.getState().photos, photoId);
 
   // An unchanged edit costs no step and keeps the redo tail.
-  if (!hasUncommittedEdit({ params, paramBag, history, historyIndex })) return;
+  if (!hasUncommittedEdit({ params, paramBag, history, historyIndex })) {
+    if (hasNewComputedValues({ paramBag, history, historyIndex })) await storeComputedValues(get, set, storage, target);
+    return;
+  }
 
   const snapshot: EditSnapshot = {
     timestamp: Date.now(),
@@ -702,7 +748,11 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     const { photoId, asShotTemperature, editError } = get();
     if (!photoId || openingAnotherPhoto()) return;
     if (editError || !hasUncommittedEdit(get())) {
+      // Computed values not yet stored stay: their extension worked them out for
+      // this photo and won't again until something they follow changes.
+      const computed = hasNewComputedValues(get()) ? computedParamsOf(get().paramBag) : null;
       await get().loadEdit(photoId, asShotTemperature);
+      if (computed && get().photoId === photoId) get().setDynParams(computed);
       return;
     }
     // The change being made stays; only the history behind it is renewed. A
@@ -754,7 +804,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       // Merge the preset's contributed params over the current bag (a partial
       // preset leaves untouched extension settings in place).
       paramBag: paramBag
-        ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
+        ? { ...s.paramBag, ...withoutComputedParams(normalizeParamBag(paramBag)) }
         : s.paramBag,
     }));
     await get().commitEdit("Preset");
@@ -770,7 +820,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       // clear it whenever the param preview clears.
       previewParamBag:
         params && paramBag
-          ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
+          ? { ...s.paramBag, ...withoutComputedParams(normalizeParamBag(paramBag)) }
           : null,
     }));
   },
@@ -824,7 +874,8 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async reset() {
     const fresh = freshParams(get().asShotTemperature);
     noteDiscreteChange();
-    set((s) => ({ params: fresh, paramBag: {}, discreteEdits: s.discreteEdits + 1 }));
+    // The values extensions compute for the photo are its own, not settings to reset.
+    set((s) => ({ params: fresh, paramBag: computedParamsOf(s.paramBag), discreteEdits: s.discreteEdits + 1 }));
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
   },

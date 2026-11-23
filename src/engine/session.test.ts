@@ -17,6 +17,16 @@ import type { EngineEvent, ProjectWire } from "./protocol";
 import type { PortMessage, RequestOut } from "./rpc";
 import { EngineSession, READ_RECORDS, exportSettingsFor, type SessionDeps } from "./session";
 
+const variants = vi.hoisted(() => ({
+  need: (_bag: Record<string, unknown>, _needs?: { worker?: boolean }): Promise<{ failure: string | null; release(): void }> | null =>
+    null,
+}));
+
+vi.mock("@/rendering/render-bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/rendering/render-bridge")>()),
+  needStageVariants: (bag: Record<string, unknown>, needs?: { worker?: boolean }) => variants.need(bag, needs),
+}));
+
 const PROJECT: ProjectWire = { root: "D:\\shoot", workingDir: "D:\\shoot\\.safelight", location: "in-folder" };
 
 function photo(id: string): CatalogPhoto {
@@ -221,6 +231,32 @@ describe("a preview", () => {
       { frame: 1, bytes: new Uint8Array([120, 80]) },
     ]);
     expect(project.wrote()).toBe(0);
+  });
+
+  // SafeLight #278: a variant made on demand (a photo's own per-photo texture)
+  // is had before the frame, as an export's is, or the frame draws without it.
+  it("draws once the stage texture variants the photo's bag names are held, and lets go after", async () => {
+    const project = fakeProject([photo("a")], []);
+    const { bridge, called } = fakeBridge();
+    const engine = session({ openProject: project.openProject, bridge: () => bridge });
+    const events: string[] = [];
+    let held!: () => void;
+    variants.need = (_bag, needs) => {
+      events.push(`asked, worker ${needs?.worker === true}`);
+      return new Promise((done) => {
+        held = () => done({ failure: null, release: () => events.push(`released after ${called("render").length} render`) });
+      });
+    };
+    try {
+      const shown = engine.preview({ id: 1, type: "preview", project: PROJECT, photoId: "a", width: 40, height: 20, encoding: "rgba" }, recordingOut().out);
+      await vi.waitFor(() => expect(events).toEqual(["asked, worker true"]));
+      expect(called("render")).toEqual([]);
+      held();
+      await shown;
+    } finally {
+      variants.need = () => null;
+    }
+    expect(events).toEqual(["asked, worker true", "released after 1 render"]);
   });
 
   it("draws only the region asked, at the size asked, and the whole photo again without one", async () => {

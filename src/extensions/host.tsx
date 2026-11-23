@@ -111,6 +111,7 @@ import { applyTheme, initThemes, useThemeStore } from "./themes";
 import {
   captureDevelopFloatFrame,
   captureDevelopFrame,
+  captureDevelopRegion,
   readDevelopSourceSample,
   renderDevelopPhotoFloatFrame,
   renderDevelopPhotoFrame,
@@ -520,6 +521,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useParamScope,
       captureFrame: captureDevelopFrame,
       captureFloatFrame: captureDevelopFloatFrame,
+      captureRegion: captureDevelopRegion,
       renderPhotoFrame: renderDevelopPhotoFrame,
       renderPhotoFloatFrame: renderDevelopPhotoFloatFrame,
       readSourceSample: readDevelopSourceSample,
@@ -557,7 +559,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useMaskPanels,
       useOlderProcessing: () => useDevelopStore((s) => usesOlderProcessing(s.params)),
       autoAdjust,
-      getPhotoData: (key) => getPhotoData(`${extensionId}.${key}`),
+      getPhotoData: (key, photoId) => getPhotoData(`${extensionId}.${key}`, photoId),
       adjustments: {
         list: () => listAdjustments(),
         get: getAdjustment,

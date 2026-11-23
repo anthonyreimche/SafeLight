@@ -9,7 +9,7 @@ Plain app screenshots only: real Safelight windows, the stock Safelight Neutral 
 | `pipeline-tab.png` | Developer Tools ▸ Pipeline with the tutorial stage in `display-adjust` | debugging.md |
 | `stage-error.png` | The Console after a GLSL typo in the tutorial stage | debugging.md |
 | `grid-menu-item.jpg` | Library right-click menu, extension items in the last group | recipes.md |
-| `store-page.png` | A store detail page (Batch Tools) | publishing.md |
+| `store-page.png` | An extension's listing page (Batch Tools) | publishing.md |
 
 All were taken from Safelight 3.2.0 on 2026-11-03, with the tutorial's two files loaded through the dev folder exactly as the page gives them.
 

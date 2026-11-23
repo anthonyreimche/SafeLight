@@ -15,6 +15,7 @@ import { appendStoredSnapshots, storedSnapshotTargets } from "./stored-edit";
 import { loadSavedEdit, type SavedEdit } from "./edit-params";
 import { settlePendingMetadata } from "@/modules/library/import-photos";
 import { useCatalogStore } from "@/state/catalog-store";
+import { withoutComputedParams } from "@/extensions/param-registry";
 import type { DevelopClipboard } from "@/state/develop-clipboard";
 
 const PASTE_LABEL = "Paste Settings";
@@ -29,10 +30,13 @@ export async function pasteSettings(
   return appendStoredSnapshots(storedSnapshotTargets(ids), PASTE_LABEL, (base) => pasteLook(base, clip));
 }
 
-/** The saved edit Copy settings offers from `photoId`, as Develop would open it,
- *  or null for a photo not in the catalogue. */
+/** The saved edit Copy settings offers from `photoId`, as Develop would open it
+ *  but without the values extensions compute for that photo alone, or null for
+ *  a photo not in the catalogue. */
 export async function copySettingsSource(photoId: string): Promise<SavedEdit | null> {
   await settlePendingMetadata([photoId]);
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
-  return photo ? loadSavedEdit(photoId, photo.exif.colorTemperature) : null;
+  if (!photo) return null;
+  const edit = await loadSavedEdit(photoId, photo.exif.colorTemperature);
+  return { ...edit, paramBag: withoutComputedParams(edit.paramBag) };
 }

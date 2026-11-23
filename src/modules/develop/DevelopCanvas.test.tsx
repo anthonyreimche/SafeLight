@@ -288,6 +288,24 @@ describe("DevelopCanvas's zoom in Dynamic mode", () => {
     expect(shownScale()).toBeCloseTo(6000 / 3072, 12);
   });
 
+  // A magnifier draws the frame's pixels (captureRegion) and scales them by
+  // zoomScale to match the zoom's 100%.
+  it.each([
+    ["the photo's pixels over the frame's in Dynamic mode", true, 6000 / 3072],
+    ["1 at a fixed size", false, 1],
+  ])("tells canvas overlays the zoom's scale: %s", (_label, dynamic, scale) => {
+    let seen = 0;
+    function ScaleOverlay() {
+      seen = useDevelopOverlay().zoomScale;
+      return null;
+    }
+    useSettings.setState({ developDynamicDetail: dynamic });
+    useDevelopStore.setState({ sourceSize: SOURCE });
+    registerSlot("acme.overlay", { id: "acme.overlay.scale", slot: "develop-canvas-overlay", component: ScaleOverlay });
+    render(<DevelopCanvas photo={PHOTO} zoom={1} onZoomChange={() => {}} />);
+    expect(seen).toBeCloseTo(scale, 12);
+  });
+
   // 100% is one pixel per device pixel, as in other editors: on a screen scaled
   // 2x that is half a CSS pixel, of the photo in Dynamic mode and of the buffer
   // otherwise.

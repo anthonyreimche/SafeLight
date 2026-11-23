@@ -13,13 +13,14 @@ import {
   KEY_ACTIONS,
   comboFromEvent,
   comboFromWheelEvent,
-  findConflicts,
+  findConflictsWith,
   resetBinding,
   setBinding,
   suspendShortcuts,
   useExtensionActions,
   useKeybindings,
 } from "@/state/keybindings-store";
+import { getExtensionName } from "@/extensions/param-registry";
 
 const PRETTY_KEYS: Record<string, string> = {
   ArrowLeft: "←",
@@ -45,7 +46,9 @@ export interface ShortcutFieldProps {
 
 export function ShortcutField({ actionId }: ShortcutFieldProps) {
   const overrides = useKeybindings((s) => s.overrides);
-  const extension = useExtensionActions((s) => s.actions.get(actionId));
+  // The whole map, so a clash with an extension that loads later shows up.
+  const extensions = useExtensionActions((s) => s.actions);
+  const extension = extensions.get(actionId);
   const builtin = KEY_ACTIONS.find((a) => a.id === actionId);
   const [capturing, setCapturing] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
@@ -55,7 +58,8 @@ export function ShortcutField({ actionId }: ShortcutFieldProps) {
   const wheel = builtin?.kind === "wheel";
   const combo = overrides[actionId] ?? def;
   const overridden = actionId in overrides;
-  const conflict = capturing ? false : findConflicts(overrides).has(actionId);
+  const clashes = capturing ? [] : findConflictsWith(actionId, overrides);
+  const conflict = clashes.length > 0;
 
   // While recording, the global handlers stand down (they also listen in the
   // capture phase) and the next keydown is recorded. A wheel action takes a
@@ -101,7 +105,13 @@ export function ShortcutField({ actionId }: ShortcutFieldProps) {
         aria-label={`Shortcut for ${label}`}
         aria-pressed={capturing}
         onClick={() => setCapturing((c) => !c)}
-        title={conflict ? "Conflicts with another shortcut" : undefined}
+        title={
+          conflict
+            ? `Conflicts with ${clashes
+                .map((c) => (c.extensionId ? `${c.label} (${getExtensionName(c.extensionId)})` : c.label))
+                .join(", ")}. Click to choose other keys.`
+            : undefined
+        }
         className={`rounded px-2 py-0.5 text-[11px] font-medium ${
           capturing
             ? "bg-slider-fill text-on-accent"

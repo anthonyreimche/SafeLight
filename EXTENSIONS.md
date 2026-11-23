@@ -5,7 +5,7 @@ panels, tools, themes, processing stages, importers, and more. The core app is a
 orchestrator" and extensions fill it in.
 
 This document covers what extensions are, the safety model, and the terms that apply
-when you install one or list one in the store. For how to *use* extensions, see the
+when you install one or list one in the open source extension library. For how to *use* extensions, see the
 [Using Extensions guide](docs/user/using-extensions.md).
 
 ## Extensions are third-party software
@@ -35,7 +35,7 @@ To help, Safelight consults a community
   malicious are refused at install and disabled at load, even if already installed. The
   ban list **cannot be guaranteed complete or current.**
 
-You can restrict the store to verified extensions in **Preferences ▸ Extensions ▸ Only
+You can restrict the open source extension library to verified extensions in **Preferences ▸ Extensions ▸ Only
 verified extensions**: unverified ones are hidden from Browse and refused at install. The
 registry is a best-effort safety aid, **provided as-is with no warranty**.
 
@@ -59,7 +59,7 @@ Extensions can declare the capabilities they need in `safelight.json`:
   load from any HTTPS host, so a request disguised as an image isn't blocked. The
   declaration is a strong signal, not a complete barrier. A new declaration takes effect on the
   next launch, so installing a network-using extension asks you to restart before it
-  can connect. Declared origins are shown on the extension's store page and after
+  can connect. Declared origins are shown on the extension's listing page and after
   install.
 - **Everything else is disclosure, not a sandbox.** Because extensions run inside the
   app, they have ambient access to your catalogue, photos, and files no matter what they
@@ -70,11 +70,11 @@ Extensions can declare the capabilities they need in `safelight.json`:
 
 ## No warranty
 
-Safelight, its extension store, and the trust registry are provided **without warranty
+Safelight, the open source extension library, and the trust registry are provided **without warranty
 of any kind**, to the maximum extent permitted by law. To that same extent, the
 Safelight author is **not liable** for any damage, data loss, privacy loss, or other
 harm arising from third-party extensions you choose to install or from your use of the
-store/registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+library and registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## For extension authors
 
@@ -84,7 +84,7 @@ store/registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
   and by Developer Tools, so keep secrets and anything private out of them.
 - To request a Verified badge, or to report or **appeal** a ban, see the
   [registry README](https://github.com/anthonyreimche/safelight-registry).
-- Listing, verification, and removal are at the maintainer's discretion. The store
+- Listing, verification, and removal are at the maintainer's discretion. The open source extension library
   surfaces public GitHub repos; Safelight may decline or remove a listing, and ban
   reasons reflect the registry's good-faith assessment of observed behaviour.
 

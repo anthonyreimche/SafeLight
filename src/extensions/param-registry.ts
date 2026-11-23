@@ -57,15 +57,53 @@ export function registerStageParams(
   }
 }
 
+// The bag keys of uniforms declared `computed` (UniformDeclaration.computed),
+// inline and in passes, with the stage and extension that own them.
+const computed = new Map<string, { stageId: string; extensionId: string }>();
+
+/** Mark stage `stageId`'s uniforms `keys` as values its extension computes for
+ *  each photo. */
+export function registerComputedParams(stageId: string, extensionId: string, keys: Iterable<string>): void {
+  for (const key of keys) computed.set(`${stageId}.${key}`, { stageId, extensionId });
+}
+
+/** Whether bag key `qualifiedKey` holds a value its extension computes for each
+ *  photo, which never counts as an edit. */
+export function isComputedParam(qualifiedKey: string): boolean {
+  return computed.has(qualifiedKey);
+}
+
+/** `bag` without its computed values: the user's own settings. The very `bag`
+ *  when it holds none. */
+export function withoutComputedParams(bag: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.keys(bag).some((key) => computed.has(key))) return bag;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(bag)) if (!computed.has(key)) out[key] = value;
+  return out;
+}
+
+/** Just `bag`'s computed values. */
+export function computedParamsOf(bag: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(bag)) if (computed.has(key)) out[key] = value;
+  return out;
+}
+
 export function unregisterStageParams(stageId: string): void {
   for (const [key, d] of descriptors) {
     if (d.stageId === stageId) descriptors.delete(key);
+  }
+  for (const [key, c] of computed) {
+    if (c.stageId === stageId) computed.delete(key);
   }
 }
 
 export function unregisterExtensionParams(extensionId: string): void {
   for (const [key, d] of descriptors) {
     if (d.extensionId === extensionId) descriptors.delete(key);
+  }
+  for (const [key, c] of computed) {
+    if (c.extensionId === extensionId) computed.delete(key);
   }
 }
 

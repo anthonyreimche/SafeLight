@@ -20,6 +20,7 @@ import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isBuiltInStage, writesRawNames } from "./builtin-stage";
 import { isCrashed } from "../gpu-crash-guard";
 import { isTransformPrepass, prepassStageOf } from "./transform-prepass";
+import { stagesForTransform } from "./transform-stages";
 import {
   EXPORT_TARGETS,
   drawExport,
@@ -84,7 +85,6 @@ import { SplitTokens } from "./split-signature";
 import { clippingBits, toneShoulderOn } from "./variant-decisions";
 import {
   DEVELOP_SAMPLERS,
-  MAX_STAGE_TEXTURES,
   PHOTO_TEX_UNITS,
   STAGE_TEX_UNIT_BASE,
   prepassUnits,
@@ -127,6 +127,7 @@ import {
   type SourceSample,
   type StoredSample,
 } from "@/rendering/source-sample";
+import { regionPatch, regionRgba8, type RegionPixels, type RegionRequest } from "../region-capture";
 import { NATIVE_FRAME_MAX_PIXELS, type DetailGain } from "@/raw/native-frame";
 import {
   DetailAsks,
@@ -204,10 +205,12 @@ interface ProbeDraw {
 // with neither, captureFloatFrame's frame as the screen would show it. A
 // measurement (an export frame, a float capture) has neither the view's
 // overlays nor the screen's space; "pre-output" draws `c` as the output stage
-// receives it, which output sharpening and float captures read.
+// receives it, which output sharpening and float captures read. `region` is
+// readRegion's patch, in setViewport's terms, drawn as the screen shows it.
 interface Redirect extends DrawTarget {
   probe?: ProbeDraw;
   measure?: CapturePoint;
+  region?: { x: number; y: number; w: number; h: number };
 }
 
 // Default cap on render resolution for interactive performance. Export passes
@@ -227,15 +230,14 @@ const DETAIL_UNIT = 4;
 const NO_TRANSFORM_BINDINGS: readonly ContributedBinding[] = [];
 
 /** The unit each stage texture binds at: lut, dynamic and paint textures from
- *  STAGE_TEX_UNIT_BASE (at most MAX_STAGE_TEXTURES of them), photo textures at
- *  PHOTO_TEX_UNITS and then right after the others. Coverage textures ride the
- *  brush atlas and take none. */
+ *  STAGE_TEX_UNIT_BASE, photo textures at PHOTO_TEX_UNITS and then right after
+ *  the others. Coverage textures ride the brush atlas and take none. A texture
+ *  left without one would read unit 0, the photo (SafeLight #278). */
 function stageTextureUnits(bindings: readonly StageTextureBinding[]): Map<string, number> {
   const units = new Map<string, number>();
   let next = STAGE_TEX_UNIT_BASE;
   for (const b of bindings) {
     if (b.kind === "coverage" || b.kind === "photo" || b.kind === "atlas") continue;
-    if (next >= STAGE_TEX_UNIT_BASE + MAX_STAGE_TEXTURES) break;
     units.set(b.qualifiedKey, next++);
   }
   let photo = 0;
@@ -533,8 +535,9 @@ export class WebGLRenderer {
   private displayReferred = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
-  // The source camera maker's exposure offset as a gain, which version 2 and
-  // later apply with the refit baseline (uBaselineGain); 1 for anything else.
+  // The source's camera exposure as a gain (its camera match, else its
+  // maker's offset), which version 2 and later apply after the refit baseline
+  // (uBaselineGain), whatever the display transform; 1 for anything else.
   private baselineGain = 1;
   // The camera match's shadows lift (Shadows slider units) for Active
   // D-Lighting and its kin, which version 2 and later apply with the camera
@@ -556,11 +559,16 @@ export class WebGLRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
   private stageSource: () => StageSet = () => NO_STAGES;
-  // The stage set with the drawing transform's pre-pass (stageList).
+  // The stage set with the drawing transform's pre-pass (stageList), and each
+  // list a transform's frames have drawn, by what it keeps, while the set the
+  // renderer was handed stays.
+  private stageLists: { handed: StageSet; byKept: Map<string, { stage: ProcessingStageContribution | null; list: StageSet }> } | null = null;
   private stageListMemo: {
     source: StageSet;
     pipeline: ResolvedPipeline;
     stage: ProcessingStageContribution | null;
+    /** The transform whose stages the list keeps, "" when it leaves none out. */
+    kept: string;
     list: StageSet;
   } | null = null;
   // The ids of the transform pre-passes this renderer has drawn with: their
@@ -579,10 +587,12 @@ export class WebGLRenderer {
   // replaces its processingStages object on every change, and setStages drops
   // the memo, so an injected array edited in place is rebuilt too. Each process
   // version and set of mask copies keeps its own build, so photos alternating
-  // between them reuse each.
+  // between them reuse each, and so does each list a transform's frames draw
+  // (stageList), so photos alternating between transforms do too.
   private injectionMemo: {
-    source: readonly ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
-    built: Map<string, ProgramStages>;
+    handed: StageSet;
+    source: StageSet;
+    built: Map<StageSet, Map<string, ProgramStages>>;
   } | null = null;
   // skipDormantStages: the ids of the stages a frame has needed, which no later
   // frame leaves out, and those the program in use was built without.
@@ -1964,14 +1974,21 @@ export class WebGLRenderer {
     const made = prepassStageOf(pipeline);
     const stage = made && !isCrashed(made) ? made : null;
     if (stage) this.prepassIds.add(stage.id);
-    // A pipeline resolved again under the same signature keeps the same stage, and the set its identity.
+    // Stages that belong to another transform stay out (transform-stages.ts).
+    const own = stagesForTransform(source, pipeline.id);
+    const kept = own === source ? "" : pipeline.id;
+    // A pipeline resolved again under the same signature keeps the same stage,
+    // and the set its identity, as does a transform drawn with before.
+    if (this.stageLists?.handed !== source) this.stageLists = { handed: source, byKept: new Map() };
+    const seen = this.stageLists.byKept.get(kept);
     const list =
-      m && m.source === source && m.stage === stage
-        ? m.list
+      seen && seen.stage === stage
+        ? seen.list
         : stage
-          ? [...(Array.isArray(source) ? source : Object.values(source)), stage]
-          : source;
-    this.stageListMemo = { source, pipeline, stage, list };
+          ? [...(Array.isArray(own) ? own : Object.values(own)), stage]
+          : own;
+    this.stageLists.byKept.set(kept, { stage, list });
+    this.stageListMemo = { source, pipeline, stage, kept, list };
     return list;
   }
 
@@ -1980,11 +1997,14 @@ export class WebGLRenderer {
     return Array.isArray(source) ? source : Object.values(source);
   }
 
-  /** The ids of the stages in the set, and of every transform pre-pass this
-   *  renderer has drawn with: a photo switching transforms is not the set
-   *  shrinking, and keeps the other transform's programs. */
+  /** The ids of the stages in the set, those that belong to another transform
+   *  included, and of every transform pre-pass this renderer has drawn with: a
+   *  photo switching transforms is not the set shrinking, and keeps the other
+   *  transform's programs. */
   private currentStageIds(): ReadonlySet<string> {
-    return new Set([...this.currentStages().map((s) => s.id), ...this.prepassIds]);
+    const held = this.stageSource();
+    const handed = Array.isArray(held) ? held : Object.values(held);
+    return new Set([...this.currentStages().map((s) => s.id), ...handed.map((s) => s.id), ...this.prepassIds]);
   }
 
   /** The pipeline frames of `variant` draw with: the photo's transform, or the
@@ -2003,7 +2023,9 @@ export class WebGLRenderer {
    *  alone is only found again. */
   private retryQuarantineIfShrunk(): void {
     if (this.quarantined.size === 0) return;
-    const ids = this.currentStageIds();
+    // The stages the frame draws: one that belongs to another transform is out
+    // of it, so a stage quarantined beside it is tried again.
+    const ids = new Set(this.currentStages().map((s) => s.id));
     if ([...this.quarantinedFrom].every((id) => ids.has(id))) return;
     this.quarantined.clear();
     this.copiesMemo = null;
@@ -2057,7 +2079,7 @@ export class WebGLRenderer {
   /** Leave `failing` out of `variant`'s programs until each is registered
    *  changed, and tell the owner of each. */
   private quarantine(failing: readonly FailingStage<ProcessingStageContribution>[], variant: ShaderVariant): void {
-    this.quarantinedFrom = this.currentStageIds();
+    this.quarantinedFrom = new Set(this.currentStages().map((s) => s.id));
     const vk = variantKey(variant);
     for (const { stage, log } of failing) {
       const signature = stageSignature(stage);
@@ -2137,21 +2159,27 @@ export class WebGLRenderer {
     let memo = this.injectionMemo;
     if (memo?.source !== source) {
       this.retryQuarantineIfShrunk();
-      memo = { source, built: new Map() };
+      const handed = this.stageSource();
+      memo = { handed, source, built: memo?.handed === handed ? memo.built : new Map() };
       this.injectionMemo = memo;
+    }
+    let builds = memo.built.get(source);
+    if (!builds) {
+      builds = new Map();
+      memo.built.set(source, builds);
     }
     const copies = this.maskCopies(variant);
     const given = withCopies ? copies.stages : this.stagesFor(variant);
     const { stages, dormant } = this.withoutDormant(given, variant, this.frameBag(copies), hinted);
     const key = `${variantKey(variant)}|${withCopies ? copies.sig : ""}|${dormant.join(",")}`;
-    let built = memo.built.get(key);
+    let built = builds.get(key);
     if (!built) {
       built = {
         built: buildStageInjection(stages, variant, this.samplerBudget),
         ids: new Set(stages.map((s) => (isMaskInstance(s) ? s.instanceOf : s.id))),
         dormant,
       };
-      memo.built.set(key, built);
+      builds.set(key, built);
     }
     return built;
   }
@@ -2331,7 +2359,9 @@ export class WebGLRenderer {
     // Only a frame for the eye on the canvas draws the detail gain, an as-shown
     // capture included: a measurement or a probe reads the source's own texels.
     this.frameDetail = overlays && !this.redirect ? this.liveDetail() : null;
-    this.resize(this.frameDetail);
+    // A redirect draws into a target of its own size: sizing the canvas for it
+    // would only reallocate the live frame's (and drop its detail gain's size).
+    if (!this.redirect) this.resize(this.frameDetail);
     const gl = this.gl;
     const p = this.params;
     const u = this.uniforms;
@@ -2361,10 +2391,11 @@ export class WebGLRenderer {
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
     // A replacement pipeline that brings its own look (AgX, ACES, …) can drop
     // the default RAW base curve and, separately, the core tone shoulder.
+    // The camera exposure isn't part of that look, so it stays with every RAW.
     const plain = this.plainSourceWanted(this.frameBag());
     const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase && !plain;
     gl.uniform1i(u.uApplyBaseCurve, baseCurve ? 1 : 0);
-    gl.uniform1f(u.uBaselineGain, this.baselineGain);
+    gl.uniform1f(u.uBaselineGain, this.applyBaseCurve && !plain ? this.baselineGain : 1);
     gl.uniform1f(u.uBaselineShadows, this.baselineShadows / 100);
     gl.uniform1i(u.uApplyToneShoulder, toneShoulderOn(this.variant, this.pipelineSkipShoulder) ? 1 : 0);
     gl.uniform1i(u.uShowClipping, overlays ? this.showClipping & clippingBits(this.variant) : 0);
@@ -2405,7 +2436,7 @@ export class WebGLRenderer {
     // the sensor's values as they are, clipped channels included.
     gl.uniform1f(u.uClipThreshold, this.linear && !this.displayReferred && !plain ? 0.98 : 0.0);
 
-    const vp = this.redirect?.probe?.roi ?? this.roi;
+    const vp = this.redirect?.probe?.roi ?? this.redirect?.region ?? this.roi;
     gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
 
     // Extension-contributed stage uniforms, driven by the generic param bag.
@@ -2438,6 +2469,10 @@ export class WebGLRenderer {
         const unit = units.get(tb.qualifiedKey);
         const loc = u[tb.qualifiedKey];
         if (unit === undefined || loc == null) continue;
+        // Unreachable while the program compiles (it declares fewer samplers
+        // than the context has units); a table drawn from another unit is wrong.
+        if (unit >= this.caps.combinedTextureUnits)
+          throw new Error(`stage texture "${tb.qualifiedKey}" needs unit ${unit}; this GPU has ${this.caps.combinedTextureUnits} units`);
         gl.activeTexture(gl.TEXTURE0 + unit);
         const tex =
           tb.kind === "photo"
@@ -2726,6 +2761,35 @@ export class WebGLRenderer {
     }
   }
 
+  /** A patch of the frame at the frame's own pixels (the whole view's frame at
+   *  fit, at most maxEdge on its long edge, over the region the view shows: the
+   *  pixels Develop's zoom counts), whatever window the view is zoomed to: what a
+   *  magnifier shows at true pixel scale. Drawn as the canvas shows it, with
+   *  the view's overlays and in the screen's space, from the params, bag and
+   *  pipeline held now, away from the canvas, so the live frame is untouched.
+   *  Null with no source, no float render targets, or a patch outside the
+   *  frame. */
+  readRegion(request: RegionRequest): RegionPixels | null {
+    if (!this.hasImage || !this.params || !this.caps.colorBufferFloat) return null;
+    const { width: frameWidth, height: frameHeight } = this.wholeSize();
+    const rect = regionPatch(request, frameWidth, frameHeight);
+    if (!rect) return null;
+    const region = {
+      x: rect.x / frameWidth,
+      y: rect.y / frameHeight,
+      w: rect.width / frameWidth,
+      h: rect.height / frameHeight,
+    };
+    try {
+      const raw = this.drawFloat(rect.width, rect.height, { region });
+      if (!raw) return null;
+      const colorSpace: PredefinedColorSpace = this.canTagBuffer ? this.gl.drawingBufferColorSpace : "srgb";
+      return { data: regionRgba8(raw, rect.width, rect.height), rect, frameWidth, frameHeight, colorSpace };
+    } finally {
+      this.bindFrameState();
+    }
+  }
+
   // computeHistogram and Upright redraw with what is bound, so every draw away
   // from the live frame puts back what it left: the frame's program, encoding
   // its output over the live window, at the canvas's size, without the detail
@@ -2747,7 +2811,7 @@ export class WebGLRenderer {
   private drawFloat(
     w: number,
     h: number,
-    draw: Pick<Redirect, "probe" | "measure"> = {},
+    draw: Pick<Redirect, "probe" | "measure" | "region"> = {},
     format: number = this.gl.RGBA16F,
   ): Float32Array | null {
     return this.readback.floatPixels(w, h, format, (fbo) => this.drawRedirected({ ...draw, fbo, w, h }));
@@ -2895,6 +2959,11 @@ export class WebGLRenderer {
       srcW: srcSize.w,
       srcH: srcSize.h,
       viewStages,
+      stageTextureSig: (qk) => {
+        const key = boundStageTextureKey(qk, bag);
+        return `${key}@${this.stageTextures[key]?.version ?? "-"}`;
+      },
+      stageTexture: (qk) => this.ensureStageTexture(boundStageTextureKey(qk, bag)),
     };
   }
 
