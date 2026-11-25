@@ -92,10 +92,9 @@ import { loadStoreKits, shelfKits } from "./store-kits";
 import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
-import { firstLogLine, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
-import { GPU_CRASH_LOG } from "@/rendering/gpu-crash-guard";
-import { useCallbackFailures } from "./guard";
-import { useStartFailures } from "./start-failures";
+import { stageFailureNote, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
+import { callbackFailureText, useCallbackFailures } from "./guard";
+import { startFailureText, useStartFailures } from "./start-failures";
 import { getParamDescriptor } from "./param-registry";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -1212,21 +1211,17 @@ function ExtensionRow({
         )}
         {startFailure && (
           <div className="whitespace-normal break-words text-danger" title={startFailure.message}>
-            {startFailure.reason === "timed out"
-              ? "Didn't start: it took too long to start."
-              : `Didn't start: ${startFailure.message}`}
+            {startFailureText(startFailure)}
           </div>
         )}
         {stageFailures.map((f) => (
           <div key={f.stageId} className="truncate text-danger" title={f.log}>
-            {f.log === GPU_CRASH_LOG
-              ? `Stage "${f.stageId}" took the graphics driver down and is off. Turn the extension off and on to try it again.`
-              : `Stage "${f.stageId}" failed to compile and is off: ${firstLogLine(f.log)}`}
+            {stageFailureNote(f)}
           </div>
         ))}
         {callbackFailure && (
           <div className="truncate text-danger" title={callbackFailure.error}>
-            {`Its ${callbackFailure.kind} kept failing and is off: ${callbackFailure.error}`}
+            {callbackFailureText(callbackFailure)}
           </div>
         )}
       </button>

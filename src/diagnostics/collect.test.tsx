@@ -7,7 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { PROBE_BUILTIN_ID, installProbeBuiltin } from "@/extensions/builtin.test-support";
 import type { CatalogPhoto } from "@/catalog/types";
 import { BUILTIN_EXTENSIONS } from "@/extensions/builtin";
+import { ExtensionTimeoutError, useCallbackFailures } from "@/extensions/guard";
 import { useDisabledExtensions } from "@/extensions/loader";
+import { registerProcessingStage, unregisterExtension } from "@/extensions/registry";
+import { forgetStartFailure, recordStartFailure } from "@/extensions/start-failures";
+import type { ProcessingStageContribution } from "@/extensions/types";
+import { GPU_CRASH_LOG } from "@/rendering/gpu-crash-guard";
+import { recordStageFailure, useStageFailures } from "@/rendering/render-bridge/stage-failures";
+import { stageSignature } from "@/rendering/webgl/stage-injection";
 import { nativeDirectoryHandle } from "@/project/native-fs";
 import { useProjectStore } from "@/project/project-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -117,6 +124,50 @@ describe("collectReportSections", () => {
     const text = textOf(await collectReportSections(null), "extensions");
     expect(text).toContain("- acme.film 1.2.0 · on, not running · unverified");
     expect(text.split("Built-in changes:\n")[1]?.split("\n")[0]).toBe("- core.probe · off (on by default)");
+  });
+
+  it("notes under an extension what its Extensions row shows went wrong", async () => {
+    const crashed: ProcessingStageContribution = { id: "acme.film.grain", name: "Grain", phase: "effects", glsl: "c *= 0.5;", uniforms: [] };
+    const broken: ProcessingStageContribution = { id: "acme.film.halo", name: "Halo", phase: "effects", glsl: "c = c *;", uniforms: [] };
+    registerProcessingStage("acme.film", crashed);
+    registerProcessingStage("acme.film", broken);
+    recordStageFailure({ stageId: crashed.id, signature: stageSignature(crashed), log: GPU_CRASH_LOG });
+    recordStageFailure({
+      stageId: broken.id,
+      signature: stageSignature(broken),
+      log: "Shader compile failed: ERROR: 0:12: ';' : syntax error\nERROR: 1 compilation errors.",
+    });
+    recordStartFailure("acme.film", new ExtensionTimeoutError("acme.film did not finish within 15 s"));
+    useCallbackFailures.setState({ "acme.film": { kind: "grid filter", error: "photo.exif is undefined" } }, true);
+    onTestFinished(() => {
+      unregisterExtension("acme.film");
+      useStageFailures.setState({}, true);
+      forgetStartFailure("acme.film");
+      useCallbackFailures.setState({}, true);
+    });
+
+    const text = textOf(await collectReportSections(null), "extensions");
+    expect(text).toContain(
+      [
+        "- acme.film 1.2.0 · on, not running · unverified · renders into photos",
+        "  Didn't start: it took too long to start.",
+        `  Stage "acme.film.grain" took the graphics driver down and is off. Turn the extension off and on to try it again.`,
+        `  Stage "acme.film.halo" failed to compile and is off: ERROR: 0:12: ';' : syntax error`,
+        "  Its grid filter kept failing and is off: photo.exif is undefined",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves a stage failure out once the stage is registered again changed", async () => {
+    const stage: ProcessingStageContribution = { id: "acme.film.halo", name: "Halo", phase: "effects", glsl: "c = c *;", uniforms: [] };
+    registerProcessingStage("acme.film", stage);
+    recordStageFailure({ stageId: stage.id, signature: stageSignature(stage), log: "Shader compile failed: ERROR: bad" });
+    registerProcessingStage("acme.film", { ...stage, glsl: "c *= 0.5;" });
+    onTestFinished(() => {
+      unregisterExtension("acme.film");
+      useStageFailures.setState({}, true);
+    });
+    expect(textOf(await collectReportSections(null), "extensions")).not.toContain("failed to compile");
   });
 
   it("leaves built-ins at their defaults out", async () => {

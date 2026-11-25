@@ -19,6 +19,7 @@ import {
   declaredConnectHosts,
   isOfficialOnlyId,
   isReservedExtensionId,
+  devExtensionDirs,
   listDevManifests,
   listInstalledManifests,
   listInstalledManifestsAsync,
@@ -229,6 +230,33 @@ describe("listDevManifests", () => {
   it("is empty for no folder or a missing one", async () => {
     expect(await listDevManifests(null)).toEqual([]);
     expect(await listDevManifests(path.join(root, "missing"))).toEqual([]);
+  });
+});
+
+describe("devExtensionDirs", () => {
+  it("finds the folder a dev extension is in, by id, for a single-extension folder and a parent", async () => {
+    writeExt(path.join(root, "solo"), manifest("solo.ext"));
+    writeExt(path.join(root, "parent", "Lens Blur"), manifest("lens-blur"));
+    writeExt(path.join(root, "parent", "Other"), manifest("other"));
+    const dirs = devExtensionDirs();
+    dirs.setFolder(path.join(root, "solo"));
+    expect(await dirs.dirFor("solo.ext")).toBe(path.join(root, "solo"));
+    expect(await dirs.dirFor("lens-blur")).toBeNull();
+    dirs.setFolder(path.join(root, "parent"));
+    expect(await dirs.dirFor("lens-blur")).toBe(path.join(root, "parent", "Lens Blur"));
+    expect(await dirs.dirFor("solo.ext")).toBeNull();
+  });
+
+  it("holds nothing without a folder, and reads the folder again when it is set again", async () => {
+    const dirs = devExtensionDirs();
+    expect(await dirs.dirFor("late")).toBeNull();
+    dirs.setFolder(root);
+    expect(await dirs.dirFor("late")).toBeNull();
+    writeExt(path.join(root, "Late"), manifest("late"));
+    dirs.setFolder(root);
+    expect(await dirs.dirFor("late")).toBe(path.join(root, "Late"));
+    dirs.setFolder(null);
+    expect(await dirs.dirFor("late")).toBeNull();
   });
 });
 

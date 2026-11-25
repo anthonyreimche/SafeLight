@@ -66,6 +66,18 @@ describe("startInstance", () => {
     );
   });
 
+  it("hands the extension an API that builds its own files' URLs at its version", async () => {
+    let api: SafelightAPI | null = null;
+    await startInstance({
+      id: "acme.installed",
+      source: "installed",
+      version: "2.1.0",
+      bundle: "installed:acme.installed",
+      read: async () => ({ load: async () => ({ activate: (a: SafelightAPI) => void (api = a) }) }),
+    });
+    expect(api!.assetUrl("dist/ort/runtime.mjs")).toBe(`${location.origin}/__plugins__/acme.installed/dist/ort/runtime.mjs?v=2.1.0`);
+  });
+
   it("rejects a bundle with no activate and frees what it was read from", async () => {
     const { start, release } = bundle("acme.dev", "dev", {});
     await expect(start).rejects.toThrow("acme.dev: bundle has no activate(api) export");

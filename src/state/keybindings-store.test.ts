@@ -282,6 +282,14 @@ describe("bindings", () => {
     expect(getBinding("develop.undo")).toBe("Ctrl+Alt+Z");
   });
 
+  it("reports an extension action's own default until it is rebound", () => {
+    registerExtensionAction("ext.compare", { id: "ext.compare.before", label: "Before", defaultCombo: "\\", handler: () => {} });
+    expect(getBinding("ext.compare.before")).toBe("\\");
+    setBinding("ext.compare.before", "Shift+B");
+    expect(getBinding("ext.compare.before")).toBe("Shift+B");
+    unregisterExtensionActions("ext.compare");
+  });
+
   it("returns an empty combo for an unknown action", () => {
     expect(getBinding("no.such.action")).toBe("");
   });

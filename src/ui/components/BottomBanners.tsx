@@ -9,6 +9,7 @@
 // (z-[160]) and ConfirmDialog (z-[200]), which cover it.
 
 import { ExtensionSecurityBanner } from "@/extensions/ExtensionSecurityBanner";
+import { ExtensionNotices } from "./ExtensionNotices";
 import { UpdateBanner } from "@/update/UpdateBanner";
 import { GraphicsKeepNotice } from "./GraphicsKeepNotice";
 import { GraphicsNotice } from "./GraphicsNotice";
@@ -27,6 +28,7 @@ export function BottomBanners() {
       <SoftwareRenderingNotice />
       <GraphicsRevertNotice />
       <ExtensionSecurityBanner />
+      <ExtensionNotices />
       <StorageBanner />
       <UpdateBanner />
     </div>

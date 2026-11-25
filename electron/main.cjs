@@ -78,6 +78,7 @@ const { argvPaths, createRequestOrder, openTargetFor, withoutPaths } = require("
 const {
   listInstalledManifestsAsync,
   listDevManifests,
+  devExtensionDirs,
   declaredConnectHosts,
   readDevFolder,
 } = require("./extension-origins.cjs");
@@ -397,13 +398,15 @@ app.on("child-process-gone", (_event, details) => {
 // (socket-access.cjs), checked by the same rule.
 const galleryOrigins = galleryOriginsFrom(process.env);
 let launchHosts = [];
+// Where the dev folder's extensions are, for app:// to serve their files; the
+// Dev tab records the folder again on every scan (devtools:sync-dev-folder).
+const devExtensions = devExtensionDirs();
 // Once per launch, before the first page is served. The dev folder is read
 // without blocking: it may sit on a slow or network drive.
 async function loadLaunchHosts() {
-  const manifests = [
-    ...(await listPlugins()),
-    ...(await listDevManifests(await readDevFolder(devFolderFile()))),
-  ];
+  const devFolder = await readDevFolder(devFolderFile());
+  devExtensions.setFolder(devFolder);
+  const manifests = [...(await listPlugins()), ...(await listDevManifests(devFolder))];
   const allowedSockets = await readSocketGrantOrigins(path.join(userData(), SOCKET_GRANTS_FILE), manifests);
   launchHosts = [...new Set([...declaredConnectHosts(manifests), ...allowedSockets])];
 }
@@ -559,6 +562,7 @@ async function registerIpcChannels() {
     fileWriter,
     crashLog,
     devFolderFile,
+    devExtensions,
     extensionConnectHosts,
     gpuBackendState,
     saveMaterial: (material) => writeMaterial(materialFile(), material),
@@ -957,7 +961,7 @@ if (!app.requestSingleInstanceLock()) {
       ALLOWED_PERMISSIONS.has(permission)
     );
     await loadLaunchHosts();
-    serveAppProtocol({ protocol, net, dist: DIST, pluginsDir, csp: appCSP });
+    serveAppProtocol({ protocol, net, dist: DIST, pluginsDir, devExtensionDir: devExtensions.dirFor, csp: appCSP });
     await registerIpcChannels();
     createWindow();
 

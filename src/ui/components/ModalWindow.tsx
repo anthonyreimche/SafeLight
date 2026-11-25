@@ -151,7 +151,7 @@ export function ModalWindow({
 
   return (
     <div
-      className="sl-enter-fade fixed inset-0 z-[100] flex items-center justify-center"
+      className="sl-enter-dim fixed inset-0 z-[100] flex items-center justify-center"
       style={{ backgroundColor: `rgba(0, 0, 0, ${dim})` }}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();

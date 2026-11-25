@@ -5,10 +5,10 @@ Thank you. 💛
 
 ## 🧩 Extension developers
 
-Sorted by the number of extensions they've published.
+In alphabetical order.
 
 - [oatbiscuit](https://github.com/oatbiscuit), 5 extensions
-- [OPGERUIMD97](https://github.com/OPGERUIMD97), 5 extensions
+- [OPGERUIMD97](https://github.com/OPGERUIMD97), 8 extensions
 
 ## ☕ Bought a coffee
 

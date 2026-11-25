@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safelight for labs and industry</title>
+<meta name="description" content="The same Safelight engine, with or without a window: a readable colour chain, edits that never change on update, your own formats, and GPL v3 terms.">
+<meta property="og:title" content="Safelight for labs and industry">
+<meta property="og:description" content="The same Safelight engine, with or without a window: a readable colour chain, edits that never change on update, your own formats, and GPL v3 terms.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="shots/og-cover.jpg">
+<meta name="theme-color" content="#111111">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="fonts/doto.css">
+<link rel="stylesheet" href="fonts/geist.css">
+<link rel="stylesheet" href="fonts/geist-mono.css">
+<style>
+body{margin:0;background:#EDEDEA}
+a{color:#111111}a:hover{color:#B8112A}
+
+@media (max-width: 720px){.sl-nav{height:auto!important;flex-wrap:wrap;padding-top:8px!important;padding-bottom:8px!important}.sl-nav-links{order:3;width:100%;justify-content:center}}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div style="background: #EDEDEA; color: #111111; font-family: Geist, system-ui, sans-serif; font-size: 16px; line-height: 25px">
+
+<nav style="border-bottom: 1px solid rgba(17,17,17,0.14)">
+<div class="sl-nav" style="max-width: 1344px; margin: 0 auto; padding: 0 clamp(20px, 3.4vw, 48px); height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; box-sizing: border-box">
+<a href="index.html" aria-label="Safelight home" style="display: inline-flex; align-items: center; gap: 10px; min-height: 44px; text-decoration: none; font-weight: 500; font-size: 16px"><img src="img/logo-icon.png" alt="" style="display: block; width: auto; height: 38px">Safelight</a>
+<div class="sl-nav-links" style="display: flex; flex-wrap: wrap; gap: 4px 28px; font-size: 15px">
+<a href="index.html" style="min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; color: #55554F">Photographers</a>
+<a href="developers.html" style="min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; color: #55554F">Developers</a>
+<a href="labs.html" aria-current="page" style="min-height: 44px; display: inline-flex; align-items: center; text-decoration: underline; text-underline-offset: 6px; text-decoration-thickness: 1px">Labs</a>
+</div>
+<a href="download.html" style="display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 16px; background: #111111; color: #FFFFFF; font-weight: 500; font-size: 15px; text-decoration: none"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F; box-shadow: 0 0 6px rgba(229,23,47,0.7)"></span>Download</a>
+</div>
+</nav>
+
+<header style="position: relative; max-width: 1344px; margin: 0 auto; padding: 64px clamp(20px, 3.4vw, 48px) 88px; box-sizing: border-box; background-image: repeating-linear-gradient(to right, rgba(17,17,17,0.06) 0 1px, transparent 1px calc(100% / 12)); background-origin: content-box; background-clip: content-box">
+<p style="margin: 0 0 28px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">01 / 08 · Reproducible RAW processing</p>
+<div style="display: flex; flex-wrap: wrap; gap: 48px 64px; align-items: flex-start">
+<div style="flex: 1 1 520px; min-width: 0">
+<h1 style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(48px, 6.4vw, 96px); line-height: 1; letter-spacing: -0.01em">Same file.<br>Same result.<br>Every time.</h1>
+<p style="margin: 36px 0 0; max-width: 560px; font-size: 18px; line-height: 28px; color: #3A3A38">Safelight renders RAW the same way from the app or from a script. Every edit records the processing version it was made with, so a Safelight update never changes an old result. It runs offline, needs no account, collects nothing, and its source is open to audit.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px">
+<a href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/unplugged.md" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; height: 48px; padding: 0 20px; background: #111111; color: #FFFFFF; font-weight: 500; font-size: 15px; text-decoration: none">Read the CLI manual&#160;→</a>
+<a href="https://github.com/anthonyreimche/SafeLight" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; height: 48px; padding: 0 20px; border: 1px solid #111111; font-weight: 500; font-size: 15px; text-decoration: none">Source on GitHub</a>
+</div>
+</div>
+<div style="flex: 0 1 420px; min-width: 280px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.2); padding: 22px 24px 8px">
+<div style="display: flex; justify-content: space-between; align-items: center; font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">Readout<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #E5172F; box-shadow: 0 0 6px rgba(229,23,47,0.7)"></span></div>
+
+<div style="display: flex; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid rgba(17,17,17,0.12); margin-top: 14px">
+<span style="flex: none; width: 128px; font-family: Doto, monospace; font-weight: 900; font-size: 72px; line-height: 1; color: #111111">16</span>
+<span style="font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #55554F">Bit GPU pipeline</span>
+</div>
+
+
+<div style="display: flex; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid rgba(17,17,17,0.12); margin-top: 14px">
+<span style="flex: none; width: 128px; font-family: Doto, monospace; font-weight: 900; font-size: 72px; line-height: 1; color: #111111">8</span>
+<span style="font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #55554F">Pipeline phases you can extend</span>
+</div>
+
+
+<div style="display: flex; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid rgba(17,17,17,0.12); margin-top: 14px">
+<span style="flex: none; width: 128px; font-family: Doto, monospace; font-weight: 900; font-size: 72px; line-height: 1; color: #111111">4</span>
+<span style="font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #55554F">Output colour spaces</span>
+</div>
+
+
+<div style="display: flex; align-items: center; gap: 24px; padding: 14px 0; border-top: 1px solid rgba(17,17,17,0.12); margin-top: 14px">
+<span style="flex: none; width: 128px; font-family: Doto, monospace; font-weight: 900; font-size: 72px; line-height: 1; color: #B8112A">0</span>
+<span style="font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #55554F">Telemetry</span>
+</div>
+
+</div>
+</div>
+</header>
+
+<main style="max-width: 1344px; margin: 0 auto; padding: 0 clamp(20px, 3.4vw, 48px); box-sizing: border-box">
+
+<section aria-labelledby="l2" style="padding: 88px 0; border-top: 1px solid rgba(17,17,17,0.14)">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px 48px">
+<div><p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">02 / 08 · Specification</p>
+<h2 id="l2" style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">Spec sheet</h2></div>
+</div>
+<dl style="margin: 40px 0 0">
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Input</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">NEF, CR2, CR3, ARW, DNG, ORF, RAF, RW2 and more. JPEG, PNG, TIFF and HEIC.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Decode</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">Open source RAW decoding plus Safelight’s own linear-float decoder. Add your own decoder for any format.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Working space</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">Scene-linear Rec.709 before the display transform. Stages can work in Rec.2020.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Precision</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">16-bit GPU pipeline. One shader renders the preview, the thumbnail and the export.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Output</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">JPEG, PNG, WebP, and 8 or 16-bit TIFF in sRGB, Display P3, Adobe RGB or ProPhoto RGB, with an embedded ICC profile.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Metadata</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">Camera EXIF stays out unless you turn it on. GPS has its own switch. XMP is never copied.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Automation</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">The safelight command: JSON output, documented exit codes, batches from standard input.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Network</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">None required. The update check can be switched off.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Platforms</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">Windows, macOS (universal) and Linux: deb, rpm, pacman, Flatpak and AppImage.</dd>
+</div>
+
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 16px 0; border-top: 1px solid rgba(17,17,17,0.12)">
+<dt style="flex: 0 0 260px; display: flex; align-items: center; gap: 12px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #C9C9C6"></span>Licence</dt>
+<dd style="flex: 1 1 420px; margin: 0; color: #3A3A38">GPL v3. No seats, no keys, no expiry.</dd>
+</div>
+
+</dl>
+</section>
+
+<section aria-labelledby="l3" style="padding: 88px 0; border-top: 1px solid rgba(17,17,17,0.14); display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start">
+<div style="flex: 1 1 360px; min-width: 0; max-width: 440px">
+<p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">03 / 08 · Headless</p>
+<h2 id="l3" style="margin: 0 0 20px; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">No window required.</h2>
+<p style="margin: 0; color: #3A3A38">Safelight Unplugged is the same engine as a command. It reads and writes the same catalogue, renders through the same shader, and reports in JSON with exit codes your pipeline can branch on.</p>
+<dl style="margin: 28px 0 0">
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">0</dt><dd style="margin: 0; color: #55554F">Done</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">1</dt><dd style="margin: 0; color: #55554F">Usage</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">2</dt><dd style="margin: 0; color: #55554F">Photo problem</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">3</dt><dd style="margin: 0; color: #55554F">Engine problem</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">4</dt><dd style="margin: 0; color: #55554F">Busy</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">5</dt><dd style="margin: 0; color: #55554F">Extension problem</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #B8112A">6</dt><dd style="margin: 0; color: #55554F">Partly done</dd></div>
+
+
+<div style="display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid rgba(17,17,17,0.1); font-family: 'Geist Mono', monospace; font-size: 12px"><dt style="font-weight: 500; color: #111111">130</dt><dd style="margin: 0; color: #55554F">Stopped</dd></div>
+
+</dl>
+</div>
+<div style="flex: 1.6 1 520px; min-width: 0; background: #111111; overflow: hidden">
+<div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: #1C1C1C; font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #9A9A96">Shell · QA batch 0412<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #E5172F"></span></div>
+<div style="display: flex; flex-direction: column; gap: 14px; padding: 24px; font-family: 'Geist Mono', monospace; font-size: 13px; line-height: 20px">
+<div style="color: #FFFFFF; word-break: break-all">$ safelight import ./run-0412 --json</div>
+<div style="color: #9A9A96; word-break: break-all">{"slu": 1, "imported": [ … ], "failed": [], "stopped": null}</div>
+<div style="color: #FFFFFF; word-break: break-all">$ safelight apply "Lab neutral" ./run-0412 --json</div>
+<div style="color: #9A9A96; word-break: break-all">{"slu": 1, "photos": [{"path": "…/0001.NEF", "ok": true, "changed": true}, …]}</div>
+<div style="color: #FFFFFF; word-break: break-all">$ safelight export ./run-0412 --format tiff --bit-depth 16 --colour-space prophoto-rgb -o ./out -q</div>
+<div style="color: #FFFFFF; word-break: break-all">$ echo $?</div>
+<div style="color: #FF3B30; word-break: break-all">0</div>
+</div>
+</div>
+</section>
+
+<section aria-labelledby="l4" style="padding: 88px 0; border-top: 1px solid rgba(17,17,17,0.14)">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 24px 48px">
+<div style="flex: 1 1 520px"><p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">04 / 08 · Reproducibility</p>
+<h2 id="l4" style="margin: 0; max-width: 760px; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">Safelight updates never change an old edit.</h2></div>
+<p style="flex: 0 1 420px; margin: 0; color: #3A3A38">Every edit stores the processing version it was made with. A new release renders new edits with the new version and old edits with their own, so last year's result renders the same today.</p>
+</div>
+<div style="position: relative; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 24px; margin-top: 48px; padding-top: 28px; border-top: 2px solid #111111">
+
+<div>
+<div style="font-family: Doto, monospace; font-weight: 900; font-size: 64px; line-height: 1; color: #111111">V1</div>
+<p style="margin: 14px 0 6px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #111111">Frozen</p>
+<p style="margin: 0; color: #3A3A38">Edits from before versions existed. It never changes again.</p>
+</div>
+
+
+<div>
+<div style="font-family: Doto, monospace; font-weight: 900; font-size: 64px; line-height: 1; color: #E5172F">V2</div>
+<p style="margin: 14px 0 6px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #E5172F">Current</p>
+<p style="margin: 0; color: #3A3A38">Every new edit, with the full range kept through the display half.</p>
+</div>
+
+
+<div>
+<div style="font-family: Doto, monospace; font-weight: 900; font-size: 64px; line-height: 1; color: #6B6B68">V3</div>
+<p style="margin: 14px 0 6px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6B6B68">In development</p>
+<p style="margin: 0; color: #3A3A38">Not given to new edits yet.</p>
+</div>
+
+</div>
+</section>
+</main>
+
+<section aria-labelledby="l5" style="background: #111111; color: #F2F2F0">
+<div style="max-width: 1344px; margin: 0 auto; padding: 88px clamp(20px, 3.4vw, 48px); box-sizing: border-box">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 24px 48px">
+<div style="flex: 1 1 520px"><p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #9A9A96">05 / 08 · Colour</p>
+<h2 id="l5" style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">A colour chain you can read.</h2></div>
+<p style="flex: 0 1 420px; margin: 0; color: #9A9A96">Four documented steps from camera RGB to file, with every point where an extension can step in written down.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); margin-top: 48px; border: 1px solid rgba(255,255,255,0.18)">
+
+<div style="padding: 24px; border-right: 1px solid rgba(255,255,255,0.18)">
+<div style="display: flex; justify-content: space-between; align-items: center"><span style="font-family: Doto, monospace; font-weight: 900; font-size: 40px; color: #F2F2F0">01</span><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #5A5A58"></span></div>
+<div aria-hidden="true" style="height: 72px; margin: 18px 0; background: #1C1C1C; border: 1px solid rgba(255,255,255,0.08)">
+<svg viewBox="0 0 240 72" style="display: block; width: 100%; height: 100%"><circle cx="96" cy="12" r="8.0" fill="#F2F2F0"></circle><circle cx="120" cy="12" r="4.7" fill="#5A5A58"></circle><circle cx="144" cy="12" r="3.2" fill="#5A5A58"></circle><circle cx="96" cy="36" r="3.8" fill="#5A5A58"></circle><circle cx="120" cy="36" r="8.0" fill="#F2F2F0"></circle><circle cx="144" cy="36" r="4.1" fill="#5A5A58"></circle><circle cx="96" cy="60" r="2.9" fill="#5A5A58"></circle><circle cx="120" cy="60" r="4.4" fill="#5A5A58"></circle><circle cx="144" cy="60" r="8.0" fill="#F2F2F0"></circle><text x="10" y="40" fill="#5A5A58" font-family="Geist Mono, monospace" font-size="10">CAM</text><text x="176" y="40" fill="#5A5A58" font-family="Geist Mono, monospace" font-size="10">709</text></svg>
+
+
+
+</div>
+<p style="margin: 0 0 8px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Input</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #9A9A96">Camera matrix and as-shot white balance. Out-of-gamut values are kept, not clipped.</p>
+</div>
+
+
+<div style="padding: 24px; border-right: 1px solid rgba(255,255,255,0.18)">
+<div style="display: flex; justify-content: space-between; align-items: center"><span style="font-family: Doto, monospace; font-weight: 900; font-size: 40px; color: #F2F2F0">02</span><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #5A5A58"></span></div>
+<div aria-hidden="true" style="height: 72px; margin: 18px 0; background: #1C1C1C; border: 1px solid rgba(255,255,255,0.08)">
+
+<svg viewBox="0 0 240 72" style="display: block; width: 100%; height: 100%"><line x1="0" y1="26" x2="240" y2="26" stroke="#5A5A58" stroke-width="1" stroke-dasharray="3 4"></line><text x="8" y="18" fill="#5A5A58" font-family="Geist Mono, monospace" font-size="10">1.0</text><circle cx="8.0" cy="66.0" r="2.6" fill="#F2F2F0"></circle><circle cx="18.6" cy="62.9" r="2.6" fill="#F2F2F0"></circle><circle cx="29.2" cy="59.8" r="2.6" fill="#F2F2F0"></circle><circle cx="39.8" cy="56.7" r="2.6" fill="#F2F2F0"></circle><circle cx="50.4" cy="53.6" r="2.6" fill="#F2F2F0"></circle><circle cx="61.0" cy="50.5" r="2.6" fill="#F2F2F0"></circle><circle cx="71.6" cy="47.4" r="2.6" fill="#F2F2F0"></circle><circle cx="82.2" cy="44.3" r="2.6" fill="#F2F2F0"></circle><circle cx="92.8" cy="41.2" r="2.6" fill="#F2F2F0"></circle><circle cx="103.4" cy="38.1" r="2.6" fill="#F2F2F0"></circle><circle cx="114.0" cy="35.0" r="2.6" fill="#F2F2F0"></circle><circle cx="124.6" cy="31.9" r="2.6" fill="#F2F2F0"></circle><circle cx="135.2" cy="28.8" r="2.6" fill="#F2F2F0"></circle><circle cx="145.8" cy="25.7" r="2.6" fill="#8A8A86"></circle><circle cx="156.4" cy="22.6" r="2.6" fill="#8A8A86"></circle><circle cx="167.0" cy="19.5" r="2.6" fill="#8A8A86"></circle><circle cx="177.6" cy="16.4" r="2.6" fill="#8A8A86"></circle><circle cx="188.2" cy="13.3" r="2.6" fill="#8A8A86"></circle><circle cx="198.8" cy="10.2" r="2.6" fill="#8A8A86"></circle><circle cx="209.4" cy="7.1" r="2.6" fill="#8A8A86"></circle><circle cx="220.0" cy="4.0" r="2.6" fill="#8A8A86"></circle><circle cx="230.6" cy="0.9" r="2.6" fill="#8A8A86"></circle></svg>
+
+
+</div>
+<p style="margin: 0 0 8px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Working</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #9A9A96">Linear Rec.709, scene-referred. Highlights above 1.0 survive.</p>
+</div>
+
+
+<div style="padding: 24px; border-right: 1px solid rgba(255,255,255,0.18)">
+<div style="display: flex; justify-content: space-between; align-items: center"><span style="font-family: Doto, monospace; font-weight: 900; font-size: 40px; color: #FF3B30">03</span><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #E5172F"></span></div>
+<div aria-hidden="true" style="height: 72px; margin: 18px 0; background: #1C1C1C; border: 1px solid rgba(255,255,255,0.08)">
+
+
+<svg viewBox="0 0 240 72" style="display: block; width: 100%; height: 100%"><path d="M8 66 C 80 66, 110 8, 232 6" stroke="#FF3B30" stroke-width="5" fill="none" stroke-linecap="round" stroke-dasharray="0 7"></path></svg>
+
+</div>
+<p style="margin: 0 0 8px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Scene to display</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #9A9A96">A display transform chosen per photo, and replaceable by an extension.</p>
+</div>
+
+
+<div style="padding: 24px; border-right: 1px solid rgba(255,255,255,0.18)">
+<div style="display: flex; justify-content: space-between; align-items: center"><span style="font-family: Doto, monospace; font-weight: 900; font-size: 40px; color: #F2F2F0">04</span><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #5A5A58"></span></div>
+<div aria-hidden="true" style="height: 72px; margin: 18px 0; background: #1C1C1C; border: 1px solid rgba(255,255,255,0.08)">
+
+
+
+<svg viewBox="0 0 240 72" style="display: block; width: 100%; height: 100%"><path d="M120 4 L198 68 L42 68 Z" stroke="#5A5A58" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-dasharray="0 6"></path><path d="M120 16 L178 62 L62 62 Z" stroke="#8A8A86" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-dasharray="0 6"></path><path d="M120 28 L160 56 L80 56 Z" stroke="#C9C9C6" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-dasharray="0 6"></path><path d="M120 38 L144 50 L96 50 Z" stroke="#F2F2F0" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-dasharray="0 6"></path></svg>
+</div>
+<p style="margin: 0 0 8px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Output</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #9A9A96">sRGB, Display P3, Adobe RGB or ProPhoto, with an ICC v2 matrix profile embedded.</p>
+</div>
+
+</div>
+</div>
+</section>
+
+<div style="max-width: 1344px; margin: 0 auto; padding: 0 clamp(20px, 3.4vw, 48px); box-sizing: border-box">
+<section aria-labelledby="l6" style="padding: 88px 0">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 24px 48px">
+<div style="flex: 1 1 520px"><p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">06 / 08 · Your domain</p>
+<h2 id="l6" style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">Your format.<br>Your maths.</h2></div>
+<p style="flex: 0 1 420px; margin: 0; color: #3A3A38">Your decoder, calibration stage or export format plugs into the same public API the built-in tools use. The core doesn't need to know what it does.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; margin-top: 48px">
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div aria-hidden="true" style="height: 72px; margin-bottom: 6px; background: #EDEDEA; border: 1px solid rgba(17,17,17,0.12); overflow: hidden">
+<div style="display: flex; flex-direction: column; justify-content: center; gap: 4px; height: 100%; padding: 0 14px; font-family: 'Geist Mono', monospace; font-size: 12px; line-height: 16px; color: #6B6B68"><span>4D 4D 00 2A 00 00</span><span style="color: #111111">→ <span style="color: #B8112A">linear float</span></span></div>
+
+
+
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Decoders</p>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B8112A">registerDecoder</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Read a proprietary or scientific format, in the order you set.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div aria-hidden="true" style="height: 72px; margin-bottom: 6px; background: #EDEDEA; border: 1px solid rgba(17,17,17,0.12); overflow: hidden">
+
+<svg viewBox="0 0 236 72" style="display: block; width: 100%; height: 100%"><rect x="6" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="34" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="62" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="90" y="22" width="22" height="28" fill="#E5172F" stroke="#111111" stroke-width="1.2"></rect><rect x="118" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="146" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="174" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect><rect x="202" y="22" width="22" height="28" fill="none" stroke="#111111" stroke-width="1.2"></rect></svg>
+
+
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">GPU stages</p>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B8112A">scene-linear phase</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Matrices, corrections and measurements on linear light.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div aria-hidden="true" style="height: 72px; margin-bottom: 6px; background: #EDEDEA; border: 1px solid rgba(17,17,17,0.12); overflow: hidden">
+
+
+<svg viewBox="0 0 236 72" style="display: block; width: 100%; height: 100%"><rect x="14" y="8" width="56" height="56" fill="none" stroke="rgba(17,17,17,0.2)"></rect><path d="M14 64 C 34 64, 40 14, 70 8" stroke="#111111" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="0 7"></path><text x="92" y="28" fill="#111111" font-family="Geist Mono, monospace" font-size="11">0.64 0.33 0.03</text><text x="92" y="44" fill="#111111" font-family="Geist Mono, monospace" font-size="11">0.30 0.60 0.10</text><text x="92" y="60" fill="#111111" font-family="Geist Mono, monospace" font-size="11">0.15 0.06 0.79</text></svg>
+
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Input profiles</p>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B8112A">registerInputProfiles</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Curves and matrices for non-RAW sources.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div aria-hidden="true" style="height: 72px; margin-bottom: 6px; background: #EDEDEA; border: 1px solid rgba(17,17,17,0.12); overflow: hidden">
+
+
+
+<div style="display: flex; align-items: center; gap: 12px; height: 100%; padding: 0 14px; font-family: 'Geist Mono', monospace; font-size: 12px; color: #111111"><span style="display: inline-flex; align-items: flex-end; justify-content: center; width: 34px; height: 44px; box-sizing: border-box; padding-bottom: 4px; border: 1.5px solid #111111; font-size: 9px">TIF</span><span style="line-height: 17px">16-bit<br><span style="color: #B8112A">ProPhoto RGB</span></span></div>
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Export</p>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B8112A">registerExportProcessor</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Write the pixels your next tool expects.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 22px; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div aria-hidden="true" style="height: 72px; margin-bottom: 6px; background: #EDEDEA; border: 1px solid rgba(17,17,17,0.12); overflow: hidden">
+
+
+
+
+<div style="display: flex; align-items: center; height: 100%; padding: 0 14px; font-family: 'Geist Mono', monospace; font-size: 12px; color: #111111"><span><span style="color: #B8112A">$ </span>safelight &lt;command&gt; <span style="display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: #E5172F"></span></span></div>
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Commands</p>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; color: #B8112A">safelight <command></p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Your own step, callable from the batch.</p>
+</div>
+
+</div>
+</section>
+
+<section aria-labelledby="l7" style="padding: 88px 0; border-top: 1px solid rgba(17,17,17,0.14)">
+<p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">07 / 08 · Deployment</p>
+<h2 id="l7" style="margin: 0; max-width: 820px; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">Runs where your data has to stay.</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 0; margin-top: 48px">
+
+<div style="padding: 4px 24px 4px 0; margin-bottom: 24px; border-right: 1px solid rgba(17,17,17,0.14)">
+<p style="display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Offline</p>
+<p style="margin: 0; font-size: 15px; line-height: 24px; color: #3A3A38">No account and no cloud. Switch off the update check and nothing leaves the machine.</p>
+</div>
+
+
+<div style="padding: 4px 24px 4px 0; margin-bottom: 24px; border-right: 1px solid rgba(17,17,17,0.14)">
+<p style="display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Portable</p>
+<p style="margin: 0; font-size: 15px; line-height: 24px; color: #3A3A38">The catalogue is a folder of JSON beside the data. Copy the folder and the history comes with it.</p>
+</div>
+
+
+<div style="padding: 4px 24px 4px 0; margin-bottom: 24px; border-right: 1px solid rgba(17,17,17,0.14)">
+<p style="display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Local view</p>
+<p style="margin: 0; font-size: 15px; line-height: 24px; color: #3A3A38">Live view is served on 127.0.0.1 only, at an address that changes every run.</p>
+</div>
+
+
+<div style="padding: 4px 24px 4px 0; margin-bottom: 24px; border-right: 1px solid rgba(17,17,17,0.14)">
+<p style="display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #E5172F"></span>Auditable</p>
+<p style="margin: 0; font-size: 15px; line-height: 24px; color: #3A3A38">GPL v3 source. Build it yourself and compare.</p>
+</div>
+
+</div>
+</section>
+
+<section aria-labelledby="l8" style="padding: 88px 0; border-top: 1px solid rgba(17,17,17,0.14)">
+<p style="margin: 0 0 16px; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #55554F">08 / 08 · Applications</p>
+<h2 id="l8" style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(36px, 4vw, 56px); line-height: 1">Built for work like this.</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; margin-top: 48px">
+
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="position: relative; aspect-ratio: 1; overflow: hidden; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+<div role="img" aria-label="A 24-patch colour chart" style="position: absolute; inset: 14%; display: grid; grid-template-columns: repeat(6, 1fr); grid-template-rows: repeat(4, 1fr); gap: 5px; padding: 9px; background: #1A1A1A"><span style="background: #735244; border-radius: 2px"></span><span style="background: #C29682; border-radius: 2px"></span><span style="background: #627A9D; border-radius: 2px"></span><span style="background: #576C43; border-radius: 2px"></span><span style="background: #8580B1; border-radius: 2px"></span><span style="background: #67BDAA; border-radius: 2px"></span><span style="background: #D67E2C; border-radius: 2px"></span><span style="background: #505BA6; border-radius: 2px"></span><span style="background: #C15A63; border-radius: 2px"></span><span style="background: #5E3C6C; border-radius: 2px"></span><span style="background: #9DBC40; border-radius: 2px"></span><span style="background: #E0A32E; border-radius: 2px"></span><span style="background: #383D96; border-radius: 2px"></span><span style="background: #469449; border-radius: 2px"></span><span style="background: #AF363C; border-radius: 2px"></span><span style="background: #E7C71F; border-radius: 2px"></span><span style="background: #BB5695; border-radius: 2px"></span><span style="background: #0885A1; border-radius: 2px"></span><span style="background: #F3F3F2; border-radius: 2px"></span><span style="background: #C8C8C8; border-radius: 2px"></span><span style="background: #A0A0A0; border-radius: 2px"></span><span style="background: #7A7A79; border-radius: 2px"></span><span style="background: #555555; border-radius: 2px"></span><span style="background: #343434; border-radius: 2px"></span></div>
+
+
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Digitization and archives</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">One set of settings for a whole collection, and edits that open the same years later.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="position: relative; aspect-ratio: 1; overflow: hidden; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+
+<img src="img/print-teapot.jpg" alt="A clay teapot and a milk jug on a test chart" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover"><span style="position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 10px; background: rgba(17,17,17,0.82); font-family: 'Geist Mono', monospace; font-size: 10px; line-height: 15px; color: #F2F2F0">DSC_9675.NEF · 50 mm · f/2.8 · 1/25 · ISO 100</span>
+
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Documentation</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">The same preset and the same export settings for every record in a series.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="position: relative; aspect-ratio: 1; overflow: hidden; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+
+
+<img src="img/labs-charts.jpg" alt="Resolution test charts in Safelight's library grid" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover">
+
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Product and QA imaging</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Check charts and products against one fixed render, batch after batch.</p>
+</div>
+
+
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="position: relative; aspect-ratio: 1; overflow: hidden; background: #F7F7F5; border: 1px solid rgba(17,17,17,0.16)">
+
+
+
+<svg role="img" aria-label="Three colour channel response curves" viewBox="0 0 240 200" style="position: absolute; inset: 0; width: 100%; height: 100%"><line x1="20" y1="176" x2="222" y2="176" stroke="#111111" stroke-width="1"></line><line x1="20" y1="28" x2="20" y2="176" stroke="#111111" stroke-width="1"></line><path d="M20.0 165.4 L23.3 161.8 L26.6 157.3 L29.9 151.8 L33.2 145.5 L36.5 138.2 L39.8 130.1 L43.1 121.4 L46.4 112.3 L49.7 103.3 L53.0 94.6 L56.3 86.8 L59.6 80.2 L62.9 75.2 L66.2 72.1 L69.5 71.0 L72.8 72.1 L76.1 75.2 L79.4 80.2 L82.7 86.8 L86.0 94.6 L89.3 103.3 L92.6 112.3 L95.9 121.4 L99.2 130.1 L102.5 138.2 L105.8 145.5 L109.1 151.8 L112.4 157.3 L115.7 161.8 L119.0 165.4 L122.3 168.3 L125.6 170.5 L128.9 172.2 L132.2 173.4 L135.5 174.2 L138.8 174.8 L142.1 175.2 L145.4 175.5 L148.7 175.7 L152.0 175.8 L155.3 175.9 L158.6 175.9 L161.9 176.0 L165.2 176.0 L168.5 176.0 L171.8 176.0 L175.1 176.0 L178.4 176.0 L181.7 176.0 L185.0 176.0 L188.3 176.0 L191.6 176.0 L194.9 176.0 L198.2 176.0 L201.5 176.0 L204.8 176.0 L208.1 176.0 L211.4 176.0 L214.7 176.0 L218.0 176.0" stroke="#2B4C8C" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="0 7"></path><path d="M20.0 175.9 L23.3 175.9 L26.6 175.8 L29.9 175.7 L33.2 175.5 L36.5 175.3 L39.8 174.9 L43.1 174.4 L46.4 173.8 L49.7 172.8 L53.0 171.5 L56.3 169.8 L59.6 167.7 L62.9 164.9 L66.2 161.4 L69.5 157.1 L72.8 151.9 L76.1 145.7 L79.4 138.6 L82.7 130.5 L86.0 121.6 L89.3 111.9 L92.6 101.6 L95.9 91.1 L99.2 80.5 L102.5 70.3 L105.8 60.8 L109.1 52.5 L112.4 45.5 L115.7 40.3 L119.0 37.1 L122.3 36.0 L125.6 37.1 L128.9 40.3 L132.2 45.5 L135.5 52.5 L138.8 60.8 L142.1 70.3 L145.4 80.5 L148.7 91.1 L152.0 101.6 L155.3 111.9 L158.6 121.6 L161.9 130.5 L165.2 138.6 L168.5 145.7 L171.8 151.9 L175.1 157.1 L178.4 161.4 L181.7 164.9 L185.0 167.7 L188.3 169.8 L191.6 171.5 L194.9 172.8 L198.2 173.8 L201.5 174.4 L204.8 174.9 L208.1 175.3 L211.4 175.5 L214.7 175.7 L218.0 175.8" stroke="#3E7A44" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="0 7"></path><path d="M20.0 176.0 L23.3 176.0 L26.6 176.0 L29.9 176.0 L33.2 176.0 L36.5 176.0 L39.8 176.0 L43.1 176.0 L46.4 176.0 L49.7 176.0 L53.0 176.0 L56.3 176.0 L59.6 176.0 L62.9 176.0 L66.2 176.0 L69.5 176.0 L72.8 176.0 L76.1 175.9 L79.4 175.9 L82.7 175.8 L86.0 175.7 L89.3 175.5 L92.6 175.1 L95.9 174.7 L99.2 174.0 L102.5 173.0 L105.8 171.6 L109.1 169.8 L112.4 167.3 L115.7 164.0 L119.0 159.9 L122.3 154.8 L125.6 148.6 L128.9 141.4 L132.2 133.1 L135.5 123.9 L138.8 114.1 L142.1 103.8 L145.4 93.6 L148.7 83.8 L152.0 74.9 L155.3 67.4 L158.6 61.8 L161.9 58.2 L165.2 57.0 L168.5 58.2 L171.8 61.8 L175.1 67.4 L178.4 74.9 L181.7 83.8 L185.0 93.6 L188.3 103.8 L191.6 114.1 L194.9 123.9 L198.2 133.1 L201.5 141.4 L204.8 148.6 L208.1 154.8 L211.4 159.9 L214.7 164.0 L218.0 167.3" stroke="#B8112A" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="0 7"></path><text x="20" y="192" fill="#6B6B68" font-family="Geist Mono, monospace" font-size="10">400</text><text x="198" y="192" fill="#6B6B68" font-family="Geist Mono, monospace" font-size="10">700 nm</text></svg>
+</div>
+<p style="margin: 0; font-family: 'Geist Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase">Research and teaching</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: #3A3A38">Open source maths you can read, change and show to a class.</p>
+</div>
+
+</div>
+</section>
+</div>
+
+<section aria-labelledby="l9" style="background: #E5172F; color: #FFFFFF">
+<div style="max-width: 1344px; margin: 0 auto; padding: 96px clamp(20px, 3.4vw, 48px); box-sizing: border-box">
+<h2 id="l9" style="margin: 0; font-family: Doto, monospace; font-weight: 900; font-size: clamp(44px, 6.4vw, 96px); line-height: 1">Free under GPL v3.<br>No seats. No keys.</h2>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 44px">
+<a href="download.html" style="display: inline-flex; align-items: center; height: 48px; padding: 0 22px; background: #FFFFFF; color: #111111; font-weight: 500; font-size: 15px; text-decoration: none">Download</a>
+<a href="https://github.com/anthonyreimche/SafeLight/issues/new/choose" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; height: 48px; padding: 0 22px; border: 1px solid #FFFFFF; color: #FFFFFF; font-weight: 500; font-size: 15px; text-decoration: none">Open an issue on GitHub</a>
+</div>
+</div>
+</section>
+
+<footer style="background: #111111; color: #F2F2F0">
+<div style="max-width: 1344px; margin: 0 auto; padding: 40px clamp(20px, 3.4vw, 48px) 56px; box-sizing: border-box; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 32px">
+<div style="display: flex; align-items: center; gap: 16px">
+<img src="img/logo-icon.png" alt="Safelight" style="display: block; width: auto; height: 64px">
+<span style="font-size: 14px; line-height: 22px; color: #9A9A96">A lean core plus the open source extension library.<br>Named for the red lamp photographers print by.</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 14px">
+<a href="index.html" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">Photographers</a>
+<a href="developers.html" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">Developers</a>
+<a href="labs.html" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">Labs</a>
+<a href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/README.md" target="_blank" rel="noopener" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">Manual</a>
+<a href="https://github.com/anthonyreimche/SafeLight" target="_blank" rel="noopener" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">GitHub</a>
+<a href="https://github.com/anthonyreimche/SafeLight/blob/main/PRIVACY.md" target="_blank" rel="noopener" style="min-height: 32px; display: inline-flex; align-items: center; text-decoration: none; color: #9A9A96">Privacy</a>
+</div>
+</div>
+</footer>
+</div>
+<script>
+(function () {
+  var ua = navigator.userAgent;
+  var os = /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) && !/iPhone|iPad/.test(ua) ? "macOS" : /Linux/.test(ua) && !/Android/.test(ua) ? "Linux" : "";
+  document.querySelectorAll("[data-download-label]").forEach(function (a) {
+    a.textContent = os ? "Download for " + os : "Download";
+  });
+  var slot = document.querySelector("[data-version]");
+  if (!slot) return;
+  fetch("https://api.github.com/repos/anthonyreimche/SafeLight/releases/latest")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (r) {
+      if (r && typeof r.tag_name === "string") slot.textContent = "Version " + r.tag_name.replace(/^v/, "") + ", free.";
+    })
+    .catch(function () {});
+})();
+</script>
+</body>
+</html>

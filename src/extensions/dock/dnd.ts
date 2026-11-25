@@ -24,8 +24,7 @@ import {
   dropToFloat,
   dropToNewRail,
   dropToRail,
-  soloCollapsed,
-  toggleCollapsed,
+  clickCollapsed,
 } from "./actions";
 
 function hitTest(container: HTMLElement, x: number, y: number, dragId: string): DropTarget {
@@ -143,8 +142,7 @@ export function startHeaderDrag(
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     if (!active) {
-      if (ev.altKey) soloCollapsed(id);
-      else toggleCollapsed(id);
+      clickCollapsed(id, ev.altKey);
       return;
     }
     const t = hitTest(container, ev.clientX, ev.clientY, id);

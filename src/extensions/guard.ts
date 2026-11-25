@@ -138,6 +138,7 @@ const SUBSCRIBE_CALL = /^(on|subscribe)([A-Z]|$)/;
 const FENCED_WRITERS = new Set([
   "putEditState",
   "putPhotoData",
+  "applyBagPatch",
   "addPhotos",
   "renamePhoto",
   "apply",
@@ -239,6 +240,10 @@ export interface CallbackFailure {
   kind: string;
   error: string;
 }
+
+/** What the extension's row, and an issue report, say of a callback the core stopped calling. */
+export const callbackFailureText = (failure: CallbackFailure): string =>
+  `Its ${failure.kind} kept failing and is off: ${failure.error}`;
 
 /** The extensions with a callback the core stopped calling, by extension id. */
 export const useCallbackFailures = create<Record<string, CallbackFailure>>(() => ({}));

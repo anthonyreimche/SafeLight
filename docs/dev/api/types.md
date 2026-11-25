@@ -80,7 +80,7 @@ Notes:
 
 ## Masks and retouch
 
-A `Mask` combines one or more components (`radial`, `linear`, `brush`, `lumRange`, `colorRange`) in list order, each with mode `add`, `subtract` or `intersect` and an optional invert.
+A `Mask` combines one or more components (`radial`, `linear`, `brush`, `lumRange`, `colorRange`, or `extension`) in list order, each with mode `add`, `subtract` or `intersect` and an optional invert.
 
 ```typescript
 interface Mask {
@@ -96,6 +96,8 @@ interface Mask {
   components: MaskComponent[]; // at least one
 }
 ```
+
+A component of kind `"extension"` carries `extension: { type, values }`: the qualified type of a [registered mask component kind](stores.md#apidevelop) (`"{extensionId}.{name}"`) and its plain-JSON `values` (at most 16 KB, else emptied). A type nothing registers is kept as saved and covers nothing (3.2.8).
 
 A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow?, strokeStart?, tip?, angle? }` in source UV, with `radius` in image-height units. `tip` (a [registered brush tip](stores.md#apidevelop) id) is read from a stroke's `strokeStart` dab and holds for the whole stroke. `angle` (radians) turns the tip: a dab's own angle wins, and a dab without one takes its stroke's (per-dab since 3.2.5). A tip stamps its own shape across the dab's diameter instead of the round, feathered disc, and an unknown tip stamps the disc (3.2.1). A `RetouchSpot` is a `"circle"` or `"brush"` spot in `"heal"` or `"clone"` mode, with destination and source positions in source UV.
 

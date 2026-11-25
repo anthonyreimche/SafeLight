@@ -22,9 +22,13 @@ export type ThumbAnswer = Extract<WorkerResponse, { type: "thumbnail" | "thumbna
 
 type Pending<K, T> = Map<K, (value: T) => void>;
 
-/** What the worker answers a capture it can't draw with. */
+/** What the worker answers a capture it can't draw with. A canvas hands over a
+ *  bitmap only once a context has been taken from it: without one Chromium
+ *  throws, and the capture's caller would get that instead of the blank. */
 export function blankBitmap(): ImageBitmap {
-  return new OffscreenCanvas(1, 1).transferToImageBitmap();
+  const canvas = new OffscreenCanvas(1, 1);
+  canvas.getContext("2d");
+  return canvas.transferToImageBitmap();
 }
 
 /** Settles every request in `pending` with its own `none()`, emptying it first so a

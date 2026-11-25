@@ -8,7 +8,8 @@
 // next attached module from the registry's tab order.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { attachModule, detachModule, detachedModule, focusDetached, goToModule } from "./detach";
+import { attachModule, detachModule, detachedModule, focusDetached, goToModule, shownModule, useShownModule } from "./detach";
+import { act, renderHook } from "@testing-library/react";
 import { useUIStore } from "./ui-store";
 import { registerModule, useRegistry } from "@/extensions/registry";
 import { registerEssentialModules } from "@/test/essential-modules.test-support";
@@ -88,6 +89,26 @@ describe("detachedModule", () => {
   it("rejects an id registerModule would refuse", () => {
     window.history.replaceState({}, "", "/?detached=Map");
     expect(detachedModule()).toBeNull();
+  });
+});
+
+describe("shownModule", () => {
+  it("is the main window's active tab", () => {
+    useUIStore.setState({ activeModule: "develop" });
+    expect(shownModule()).toBe("develop");
+  });
+
+  it("is a pop-out's own module, whatever tab it last had", () => {
+    window.history.replaceState({}, "", "/?detached=develop");
+    useUIStore.setState({ activeModule: "library" });
+    expect(shownModule()).toBe("develop");
+  });
+
+  it("follows the active tab as a hook", () => {
+    const { result } = renderHook(() => useShownModule());
+    expect(result.current).toBe("library");
+    act(() => useUIStore.setState({ activeModule: "develop" }));
+    expect(result.current).toBe("develop");
   });
 });
 

@@ -116,6 +116,11 @@ export interface AppSettings {
    *  the change into that layout. Off = the edit turns the layout into Custom,
    *  like any other dock edit, until it is saved with ↻. */
   autoSaveCollapsedPanels: boolean;
+  /** Expanding a dock panel by clicking its header collapses the other panels
+   *  in its column, and Alt+click toggles the panel on its own. Off (the
+   *  default) is the other way round: a click toggles one panel, and Alt+click
+   *  expands it and collapses the others. */
+  soloPanels: boolean;
 
   // ── Accessibility ──────────────────────────────────────────────────────
   // All off/neutral by default: the themes ship as designed, and a user who
@@ -348,6 +353,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sliderJumpToCursor: false,
   dropdownWheelSelect: false,
   autoSaveCollapsedPanels: true,
+  soloPanels: false,
   highContrast: false,
   strongFocus: false,
   colorVisionFilter: "none",

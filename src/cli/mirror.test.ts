@@ -95,4 +95,11 @@ describe("seedParamRegistry", () => {
     expect(isComputedParam("demo.stage.k1")).toBe(true);
     expect(isComputedParam("demo.stage.amount")).toBe(false);
   });
+
+  it("keeps a scalar array uniform's length, so its array values survive normalizing", () => {
+    seedParamRegistry([
+      { ...descriptors, uniforms: [{ key: "demo.stage.gains", glslType: "float", length: 3, default: [0, 0, 0] }] },
+    ]);
+    expect(normalizeParamBag({ "demo.stage.gains": [0.2, 0.3, 0.5] })).toEqual({ "demo.stage.gains": [0.2, 0.3, 0.5] });
+  });
 });

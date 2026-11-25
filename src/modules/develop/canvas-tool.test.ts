@@ -18,11 +18,15 @@ import {
   type CanvasTool,
 } from "./canvas-tool";
 import { CALLBACK_FAILURE_LIMIT, forgetCallbackFailures, useCallbackFailures } from "@/extensions/guard";
+import { setPickDrag, usePickDragStore } from "./pick-drag";
 
 const tool = (over: Partial<CanvasTool> = {}): CanvasTool => ({ overlay: () => null, ...over });
 const held = () => useCanvasToolStore.getState().held;
 
-afterEach(() => useCanvasToolStore.setState({ held: null }));
+afterEach(() => {
+  useCanvasToolStore.setState({ held: null });
+  usePickDragStore.setState({ held: null });
+});
 
 describe("the canvas tool", () => {
   it("is held by the last extension to set one", () => {
@@ -48,6 +52,36 @@ describe("the canvas tool", () => {
     expect(onEscape).toHaveBeenCalledTimes(1);
     expect(held()).toBeNull();
     expect(escapeCanvasTool()).toBe(false);
+  });
+});
+
+// One on-image tool at a time: a picker and a canvas tool both take a press on
+// the photo, so arming one lets the other go, as one canvas tool lets go of
+// another (its owner follows useCanvasToolHeld / usePickDragHeld).
+describe("the canvas tool and the picker", () => {
+  it("lets the held canvas tool go when a picker is armed, without an Escape", () => {
+    const onEscape = vi.fn();
+    setCanvasTool("acme.mask", tool({ onEscape }));
+    setPickDrag("safelight.white-balance", { onPress: () => {} });
+    expect(held()).toBeNull();
+    expect(onEscape).not.toHaveBeenCalled();
+    expect(usePickDragStore.getState().held?.owner).toBe("safelight.white-balance");
+  });
+
+  it("lets an armed picker go when a canvas tool is held", () => {
+    setPickDrag("safelight.white-balance", { onPress: () => {} });
+    setCanvasTool("acme.mask", tool());
+    expect(usePickDragStore.getState().held).toBeNull();
+    expect(held()?.owner).toBe("acme.mask");
+  });
+
+  it("leaves the other alone when one is let go", () => {
+    setCanvasTool("acme.mask", tool());
+    setPickDrag("safelight.white-balance", null);
+    expect(held()?.owner).toBe("acme.mask");
+    setPickDrag("safelight.white-balance", { onPress: () => {} });
+    setCanvasTool("acme.mask", null);
+    expect(usePickDragStore.getState().held?.owner).toBe("safelight.white-balance");
   });
 });
 

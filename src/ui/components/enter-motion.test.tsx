@@ -5,7 +5,10 @@
 
 // Dialogs, popovers and banners play a one-shot enter animation. Each is a CSS
 // class (killed by Reduce motion), so these pin which element carries which:
-// frames pop, backdrops and measured popovers only fade, banners rise.
+// frames pop, backdrops fade their dim, measured popovers only fade, banners rise.
+// A backdrop never fades its opacity: an ancestor with an opacity effect is the
+// backdrop root of the dialogue inside it, so a glass theme's frost on the
+// dialogue would blur only the dim layer and come out an opaque slab.
 
 import { describe, it, expect, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -21,8 +24,13 @@ import { StorageBanner } from "./StorageBanner";
 
 const backdropOf = (box: HTMLElement): HTMLElement => box.parentElement as HTMLElement;
 
+function expectDimFade(backdrop: HTMLElement) {
+  expect(backdrop.classList.contains("sl-enter-dim")).toBe(true);
+  expect(backdrop.classList.contains("sl-enter-fade")).toBe(false);
+}
+
 describe("dialog enter motion", () => {
-  it("Dialog pops its box and fades its backdrop", () => {
+  it("Dialog pops its box and fades its backdrop's dim", () => {
     render(
       <Dialog labelledBy="h" onClose={vi.fn()} className="w-40">
         <h2 id="h">Rename</h2>
@@ -30,10 +38,10 @@ describe("dialog enter motion", () => {
     );
     const box = screen.getByRole("dialog");
     expect(box.classList.contains("sl-enter-pop")).toBe(true);
-    expect(backdropOf(box).classList.contains("sl-enter-fade")).toBe(true);
+    expectDimFade(backdropOf(box));
   });
 
-  it("ModalWindow pops its box and fades its backdrop", () => {
+  it("ModalWindow pops its box and fades its backdrop's dim", () => {
     render(
       <ModalWindow title="Extensions" onClose={vi.fn()}>
         <p>Body</p>
@@ -41,7 +49,7 @@ describe("dialog enter motion", () => {
     );
     const box = screen.getByRole("dialog");
     expect(box.classList.contains("sl-enter-pop")).toBe(true);
-    expect(backdropOf(box).classList.contains("sl-enter-fade")).toBe(true);
+    expectDimFade(backdropOf(box));
   });
 
   it("a moved ModalWindow keeps its inline transform beside the pop class", () => {
@@ -62,14 +70,14 @@ describe("dialog enter motion", () => {
     expect(box.classList.contains("sl-enter-pop")).toBe(true);
   });
 
-  it("ConfirmDialog pops its card and fades its backdrop", () => {
+  it("ConfirmDialog pops its card and fades its backdrop's dim", () => {
     render(<ConfirmDialogHost />);
     act(() => {
       void confirmDialog({ title: "Reset", message: "Sure?" });
     });
     const card = screen.getByRole("dialog");
     expect(card.classList.contains("sl-enter-pop")).toBe(true);
-    expect(backdropOf(card).classList.contains("sl-enter-fade")).toBe(true);
+    expectDimFade(backdropOf(card));
   });
 });
 

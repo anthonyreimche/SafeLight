@@ -15,6 +15,7 @@ import {
 } from "@/catalog/types";
 import type { ProcessingStageContribution, UniformDeclaration } from "@/extensions/types";
 import { buildMaskCurveLUT } from "../curve";
+import { maskRasterChannels } from "../mask-component-kinds";
 
 // Core's copies of the stages the Essentials that left core register, one set
 // per release line (a line is the process version its text was written for;
@@ -1032,7 +1033,7 @@ const healSpots = (line: EssentialLine): ProcessingStageContribution => ({
 /** Masking's masks: declarations only, at the masks anchor, for main()'s two
  *  mask loops and the mask maths core keeps. Line 1 lacks version 2's flag
  *  for a mask's display adjustments. */
-const MASK_HELPERS = `// Coverage of one component (0..1), before add/subtract combine. px is the
+const MASK_HELPERS_BEFORE_BRUSH = `// Coverage of one component (0..1), before add/subtract combine. px is the
 // current pixel's working (scene-linear) colour and pxL its luma — used by the
 // parametric range masks (luminance / colour).
 float compCoverage(int i, vec2 uv, vec3 px, float pxL) {
@@ -1090,7 +1091,19 @@ float compCoverage(int i, vec2 uv, vec3 px, float pxL) {
     // Near-neutral target/pixel have no meaningful hue — fall back to chroma only.
     float chromaW = smoothstep(0.01, 0.05, tLen);
     m = mix(satM, hueM * satM, chromaW);
-  } else {
+  }`;
+
+/** Line 3: an extension's component reads its channel of the raster core
+ *  packs (uMaskRasters), its inversion already in it. Until a raster is held
+ *  the sampler has core's 1×1 stand-in, whose opaque alpha would cover the
+ *  photo, so it reads nothing. */
+const RASTER_BRANCH = ` else if (type == 5) {
+    int ch = uCompBrushCh[i];
+    vec4 r = textureLod(uMaskRasters, uv, 0.0);
+    m = ch < 0 || textureSize(uMaskRasters, 0).x < 2 ? 0.0 : (ch == 0 ? r.r : (ch == 1 ? r.g : (ch == 2 ? r.b : r.a)));
+  }`;
+
+const MASK_HELPERS_BRUSH = ` else {
     // Brush: prebaked coverage from the atlas channel. ch < 0 marks a brush with
     // no atlas slot (beyond the 4 the RGBA atlas holds) — it contributes nothing
     // rather than borrowing channel 0's coverage.
@@ -1101,6 +1114,9 @@ float compCoverage(int i, vec2 uv, vec3 px, float pxL) {
   if (uCompInvert[i] == 1) m = 1.0 - m;
   return clamp(m, 0.0, 1.0);
 }`;
+
+const maskHelpers = (line: EssentialLine): string =>
+  MASK_HELPERS_BEFORE_BRUSH + (line >= 3 ? RASTER_BRANCH : "") + MASK_HELPERS_BRUSH;
 
 const ints = (key: string, size: string, length: number): UniformDeclaration => ({
   key,
@@ -1137,6 +1153,12 @@ function componentGeometry(c: MaskComponent): { type: number; a: number[]; b: nu
   return { type, a: [0, 0, 0, 0], b: [0, 0, 0, 0] };
 }
 
+/** An extension's component: on line 3 its raster channel, inverted in the
+ *  raster; before, a brush with no channel, drawing nothing. */
+function extensionShape(line: EssentialLine, channel: number | undefined): { type: number; ch: number } {
+  return line >= 3 ? { type: 5, ch: channel ?? -1 } : { type: 2, ch: -1 };
+}
+
 let maskCurveVersion = 0;
 
 const masksStage = (line: EssentialLine): ProcessingStageContribution => ({
@@ -1145,7 +1167,7 @@ const masksStage = (line: EssentialLine): ProcessingStageContribution => ({
   phase: "scene-linear",
   anchor: "masks",
   glsl: "",
-  helpers: MASK_HELPERS,
+  helpers: maskHelpers(line),
   uniforms: [
     { key: "uMaskCount", glslType: "int", default: 0 },
     ints("uMaskInvert", "MAX_MASKS", MAX_MASKS),
@@ -1167,7 +1189,7 @@ const masksStage = (line: EssentialLine): ProcessingStageContribution => ({
     ints("uMaskHasCurve", "MAX_MASKS", MAX_MASKS),
     ...(line === 1 ? [] : [ints("uMaskHasDisplay", "MAX_MASKS", MAX_MASKS)]),
   ],
-  textures: [{ key: "uMaskCurves", kind: "photo" }],
+  textures: [{ key: "uMaskCurves", kind: "photo" }, ...(line >= 3 ? [{ key: "uMaskRasters", kind: "dynamic" as const }] : [])],
   derive: ({ masks: all }) => {
     const masks = all.slice(0, MAX_MASKS);
     // The brush atlas holds the masks' brush components first, in order, one
@@ -1182,7 +1204,13 @@ const masksStage = (line: EssentialLine): ProcessingStageContribution => ({
     masks.forEach((m, mi) => {
       for (const c of m.components) if (comps.length < MAX_MASK_COMPONENTS) comps.push({ mi, c });
     });
-    const shapes = comps.map(({ c }) => componentGeometry(c));
+    const rasters = maskRasterChannels(all);
+    const extensions = comps.map(({ c }) => (c.kind === "extension" ? extensionShape(line, rasters[c.id]) : null));
+    const shapes = comps.map(({ c }, i) => {
+      const shape = componentGeometry(c);
+      const ext = extensions[i];
+      return ext ? { ...shape, type: ext.type } : shape;
+    });
     const hsl = new Array(MAX_MASKS * 24).fill(0);
     masks.forEach((m, i) => {
       if (!m.hsl || isDefaultHSL(m.hsl)) return;
@@ -1213,8 +1241,8 @@ const masksStage = (line: EssentialLine): ProcessingStageContribution => ({
       uCompMaskIdx: padded(comps.map(({ mi }) => mi), MAX_MASK_COMPONENTS),
       uCompMode: padded(comps.map(({ c }) => (c.mode === "subtract" ? 1 : c.mode === "intersect" ? 2 : 0)), MAX_MASK_COMPONENTS),
       uCompType: padded(shapes.map((g) => g.type), MAX_MASK_COMPONENTS),
-      uCompInvert: padded(comps.map(({ c }) => (c.invert ? 1 : 0)), MAX_MASK_COMPONENTS),
-      uCompBrushCh: padded(comps.map(({ c }) => brushChannel.get(c.id) ?? -1), MAX_MASK_COMPONENTS),
+      uCompInvert: padded(comps.map(({ c }, i) => (c.invert && !extensions[i] ? 1 : 0)), MAX_MASK_COMPONENTS),
+      uCompBrushCh: padded(comps.map(({ c }, i) => extensions[i]?.ch ?? brushChannel.get(c.id) ?? -1), MAX_MASK_COMPONENTS),
       uCompGeoA: padded(shapes.flatMap((g) => g.a), MAX_MASK_COMPONENTS * 4),
       uCompGeoB: padded(shapes.flatMap((g) => g.b), MAX_MASK_COMPONENTS * 4),
       uMaskAdj0: adj((a) => [a.exposure, a.contrast, a.highlights, a.shadows]),

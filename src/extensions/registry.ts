@@ -59,6 +59,7 @@ import { setPickDrag } from "@/modules/develop/pick-drag";
 import { setCanvasTool } from "@/modules/develop/canvas-tool";
 import { setStageViewValues } from "@/modules/develop/stage-view-values";
 import { dropBrushTips } from "@/rendering/brush-tip-registry";
+import { unregisterMaskComponentKindsOf } from "@/rendering/mask-component-kinds";
 import { dropInputProfiles } from "@/catalog/input-profiles";
 import { dropLibrarySources } from "@/project/library-sources";
 import { dropImageDecoders } from "@/catalog/image-decoders";
@@ -68,6 +69,7 @@ import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forg
 import { forgetStartFailure } from "./start-failures";
 import { isPlainObject } from "@/project/fs";
 import { commandNameRefusal } from "./command-rules";
+import { dropNotifications } from "@/state/notification-store";
 import type { RegisteredCommand } from "./api/commands";
 
 export interface RegisteredPanel extends PanelContribution {
@@ -1124,7 +1126,8 @@ export interface PresetStageField {
   /** "global" looks are offered/pre-checked; "per-image" tools are hidden under
    *  "Show all" and never pre-selected. */
   scope: "global" | "per-image";
-  /** Qualified paramBag keys this stage owns (the keys a preset would carry). */
+  /** Qualified paramBag keys this stage owns (the keys a preset would carry),
+   *  its params then its dataKeys. */
   paramKeys: string[];
   /** True when any owned key in `bag` differs from the stage's default. */
   changed: boolean;
@@ -1158,14 +1161,19 @@ export function collectPresetStages(
   for (const stage of Object.values(stages)) {
     // A built-in's adjustments are DevelopParams preset fields already.
     if (isBuiltinExtension(stage.extensionId)) continue;
-    const descs = descsByStage.get(stage.id);
-    if (!descs || descs.length === 0) continue; // no savable params
+    const descs = descsByStage.get(stage.id) ?? [];
+    const dataKeys = (Array.isArray(stage.dataKeys) ? stage.dataKeys : [])
+      .filter((k): k is string => typeof k === "string" && k !== "")
+      .map((k) => (k.startsWith(`${stage.id}.`) ? k : `${stage.id}.${k}`));
+    if (descs.length === 0 && dataKeys.length === 0) continue; // no savable params
     out.push({
       stageId: stage.id,
       label: stage.name,
       scope: stage.presetScope ?? "global",
-      paramKeys: descs.map((d) => d.qualifiedKey),
-      changed: descs.some((d) => bagDiffersFromDefault(bag[d.qualifiedKey], d.default)),
+      paramKeys: [...descs.map((d) => d.qualifiedKey), ...dataKeys],
+      changed:
+        descs.some((d) => bagDiffersFromDefault(bag[d.qualifiedKey], d.default)) ||
+        dataKeys.some((k) => bag[k] !== undefined),
     });
   }
   out.sort((a, b) => a.label.localeCompare(b.label));
@@ -1212,6 +1220,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => setCanvasTool(id, null),
   (id) => setStageViewValues(id, null),
   (id) => dropBrushTips(id),
+  (id) => unregisterMaskComponentKindsOf(id),
   (id) => dropInputProfiles(id),
   (id) => dropLibrarySources(id),
   (id) => dropImageDecoders(id),
@@ -1219,6 +1228,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => forgetCallbackFailures(id),
   (id) => dropSubscriptions(id),
   (id) => forgetStartFailure(id),
+  (id) => dropNotifications(id),
 ];
 
 /** Remove every contribution an extension made (uninstall/deactivate). */

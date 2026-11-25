@@ -194,3 +194,34 @@ describe("ContextMenu escape", () => {
     expect(first).not.toHaveBeenCalled();
   });
 });
+
+describe("ContextMenu items", () => {
+  it("shows an item's icon before its label, hidden from screen readers", () => {
+    render(
+      <ContextMenu
+        x={0}
+        y={0}
+        items={[{ label: "Brush", icon: <svg data-testid="brush-icon" />, onClick: () => {} }]}
+        onClose={() => {}}
+      />,
+    );
+    const item = screen.getByRole("menuitem", { name: "Brush" });
+    const icon = screen.getByTestId("brush-icon");
+    expect(item.contains(icon)).toBe(true);
+    expect(icon.parentElement?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("gives an item its tooltip, disabled or not", () => {
+    render(
+      <ContextMenu
+        x={0}
+        y={0}
+        items={[{ label: "Fuzzy Select", title: "A photo holds at most 4 of these", disabled: true, onClick: () => {} }]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("menuitem", { name: "Fuzzy Select" }).getAttribute("title")).toBe(
+      "A photo holds at most 4 of these",
+    );
+  });
+});

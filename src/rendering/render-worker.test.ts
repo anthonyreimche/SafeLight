@@ -137,10 +137,12 @@ const { FakeRenderer } = vi.hoisted(() => {
     drawnCrop = { x: 0, y: 0, width: 1, height: 1 };
     disposed = false;
 
-    constructor(_canvas: unknown, opts: unknown) {
+    constructor(canvas: { getContext(): unknown }, opts: unknown) {
       if (FakeRenderer.throwOnConstruct) {
         throw new Error("WebGL2 not supported");
       }
+      // The WebGL context the real renderer takes from its canvas.
+      canvas.getContext();
       this.opts = opts;
       FakeRenderer.instances.push(this);
     }
@@ -477,7 +479,10 @@ class FakeOffscreenCanvas {
   /** Whether the context is lost, as a canvas whose event hasn't been delivered yet shows. */
   lost = false;
 
+  private context = false;
+
   getContext(): { isContextLost(): boolean } {
+    this.context = true;
     return { isContextLost: () => this.lost };
   }
 
@@ -486,7 +491,11 @@ class FakeOffscreenCanvas {
     return encodeError ? Promise.reject(encodeError) : Promise.resolve(new Blob());
   }
 
+  // Like Chromium's, a bitmap only once a context has been taken.
   transferToImageBitmap(): ImageBitmap {
+    if (!this.context) {
+      throw new DOMException("Cannot transfer an ImageBitmap from an OffscreenCanvas with no context", "InvalidStateError");
+    }
     const bitmap = {
       width: this.width,
       height: this.height,

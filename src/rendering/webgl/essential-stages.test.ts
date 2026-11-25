@@ -49,7 +49,7 @@ const ESSENTIAL_LINE_HASHES: Record<EssentialLine, Record<string, string>> = {
   3: {
     "safelight.crop.geometry": "8b75ed903282d975542d751c938d58afdd762ce26463af4ab2f48ada743acc31",
     "safelight.heal.retouch": "7d48e923e283d2a22f084c7fe42009bf25c480a880d8cc977bac37849782b8a7",
-    "safelight.masks.coverage": "84c45658aa749f02ef686b98dda4249aed77bce8383c9763d3b712f462d15667",
+    "safelight.masks.coverage": "0037c554a3121d31019caa616d878ce2b31c7dfba58e220498f125910b5bfe7b",
     "safelight.white-balance.balance": "3d219c7b3496d44c42b88403910030e33bb3ce40aaab9411e1846d661ae4c998",
     "safelight.basic.tone": "b49dbc83ba6d4333747bed873e98360e8b466961577b7122826605953ab0a759",
     "safelight.basic.display": "ca8456a68e6aa294d080ad64520030d43aee56755992c98421ec34648140de3f",

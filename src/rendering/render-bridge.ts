@@ -29,6 +29,7 @@ import { RenderMailbox } from "./render-bridge/mailbox";
 import { ParamSync, derivedFor } from "./render-bridge/param-sync";
 import { flushStageSync, flushStageTextures, stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
 import { needStageVariants, noteLiveStageBag } from "./render-bridge/stage-texture-providers";
+import { startMaskRasters, withoutMaskRasters } from "./render-bridge/mask-rasters";
 import { unwireBrushTips, wireBrushTips } from "./brush-tip-registry";
 import {
   forgetStageFailures,
@@ -70,6 +71,12 @@ export {
   type StageTextureProvide,
   type StageVariantLease,
 } from "./render-bridge/stage-texture-providers";
+export {
+  liveMaskRasterBag,
+  maskRastersRevision,
+  subscribeMaskRasters,
+  withoutMaskRasters,
+} from "./render-bridge/mask-rasters";
 
 export interface FrameResult {
   /** The seq of the render it answers (RenderBridge.lastRenderSeq): a frame of a seq
@@ -688,7 +695,8 @@ export class RenderBridge {
     opts: LiveFloatCaptureOptions = {},
   ): Promise<FloatFrame | null> {
     if (this.transport.disposed) return Promise.resolve(null);
-    return this.withStageVariants(this.liveBagWith(opts.paramBag), () => new Promise<FloatFrame | null>((resolve) => {
+    const bag = this.liveBagWith(opts.paramBag);
+    return this.withStageVariants(opts.point === "mask" ? withoutMaskRasters(bag) : bag, () => new Promise<FloatFrame | null>((resolve) => {
       const reqId = this.requests.nextId();
       this.requests.expect(this.requests.floatCaptures, reqId, resolve, () => null, { long: true });
       flushStageSync();
@@ -991,6 +999,10 @@ export class RenderBridge {
     this.transport.post(msg, transfer);
   }
 }
+
+// Core makes Masking's raster of extension mask components wherever a frame
+// is drawn in this window, the live view's, a thumbnail's or an export's.
+startMaskRasters();
 
 // Singleton bridge — shared across all hooks that need rendering.
 let singleton: RenderBridge | null = null;

@@ -132,22 +132,28 @@ function resolveRequestPath(dist, urlPath) {
  *   net: { fetch: typeof fetch },
  *   dist: string,
  *   pluginsDir: () => string,
+ *   devExtensionDir?: (id: string) => Promise<string | null>,
  *   csp: () => string,
  * }} deps
  */
-function serveAppProtocol({ protocol, net, dist, pluginsDir, csp }) {
+function serveAppProtocol({ protocol, net, dist, pluginsDir, devExtensionDir = async () => null, csp }) {
   protocol.handle("app", async (request) => {
     const url = new URL(request.url);
 
     // Installed extensions are served from userData/plugins under the same
     // origin (/__plugins__/<id>/...), so dynamic import works under COOP/COEP
-    // without any CORS dance.
+    // without any CORS dance. An extension the Developer Tools dev folder
+    // holds is served from its folder there instead: that copy is the one
+    // running, and it reaches its own files by the same URLs.
     if (url.pathname.startsWith("/__plugins__/")) {
       const decoded = decodePath(url.pathname.slice("/__plugins__/".length));
       if (decoded === null) return new Response("Bad request", { status: 400 });
       const rel = path.normalize(decoded).replace(/^([/\\]|\.\.[/\\])+/, "");
-      const filePath = path.join(pluginsDir(), rel);
-      const stat = contains(pluginsDir(), filePath) ? await fsp.stat(filePath).catch(() => null) : null;
+      const [id, ...rest] = rel.split(/[/\\]/);
+      const devDir = id ? await devExtensionDir(id) : null;
+      const base = devDir ?? pluginsDir();
+      const filePath = devDir ? path.join(devDir, ...rest) : path.join(base, rel);
+      const stat = contains(base, filePath) ? await fsp.stat(filePath).catch(() => null) : null;
       if (!stat?.isFile()) {
         return new Response("Not found", { status: 404 });
       }

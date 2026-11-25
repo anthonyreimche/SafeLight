@@ -22,6 +22,7 @@ import {
   type Mask,
   type MaskAdjustments,
   type MaskComponent,
+  type MaskComponentExtension,
   type RadialMaskGeo,
   type RetouchSpot,
   type ToneCurves,
@@ -316,6 +317,26 @@ function normColorRange(g: Partial<ColorRangeGeo> | undefined): ColorRangeGeo {
   };
 }
 
+const MAX_EXTENSION_VALUES_BYTES = 16 * 1024;
+
+// An extension component's saved state: a qualified type and plain-JSON values.
+// An unregistered type is kept as it came, so its extension can pick it up again.
+function normExtension(raw: unknown): MaskComponentExtension | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const { type, values } = raw as { type?: unknown; values?: unknown };
+  if (typeof type !== "string" || !type.includes(".")) return null;
+  let kept: Record<string, unknown> = {};
+  if (typeof values === "object" && values !== null && !Array.isArray(values)) {
+    try {
+      const json = JSON.stringify(values);
+      if (json.length <= MAX_EXTENSION_VALUES_BYTES) kept = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      kept = {};
+    }
+  }
+  return { type, values: kept };
+}
+
 // Build a single component from a (possibly legacy) raw geometry object.
 function normComponent(raw: Partial<MaskComponent>, fallbackId: string): MaskComponent | null {
   const kind = raw.kind;
@@ -339,6 +360,10 @@ function normComponent(raw: Partial<MaskComponent>, fallbackId: string): MaskCom
     return { ...base, kind, lumRange: normLumRange(raw.lumRange) };
   if (kind === "colorRange")
     return { ...base, kind, colorRange: normColorRange(raw.colorRange) };
+  if (kind === "extension") {
+    const extension = normExtension(raw.extension);
+    return extension ? { ...base, kind, extension } : null;
+  }
   return null;
 }
 
@@ -385,7 +410,8 @@ function normalizeMasks(masks: unknown): Mask[] {
 
     const m: Mask = {
       id: maskId,
-      name: typeof raw.name === "string" ? raw.name : components[0].kind,
+      name:
+        typeof raw.name === "string" ? raw.name : components[0].kind === "extension" ? "Mask" : components[0].kind,
       visible: raw.visible !== false, // default visible; only an explicit false mutes
       invert: !!raw.invert,
       opacity: clampN(raw.opacity, 0, 100, 100),

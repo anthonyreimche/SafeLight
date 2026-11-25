@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { pushEscapeHandler } from "@/ui/escape-stack";
@@ -12,10 +12,16 @@ import { MENU_SURFACE } from "@/ui/floating";
 
 export interface ContextMenuItem {
   label: string;
+  /** A small glyph before the label (about 14 px); decorative, so the label
+   *  alone names the item. Needs Safelight 3.2.7. */
+  icon?: ReactNode;
   onClick: () => void;
   /** Render in the red danger colour (e.g. Remove). */
   danger?: boolean;
   disabled?: boolean;
+  /** Tooltip, shown on hover even when the item is disabled (say why it is).
+   *  Needs Safelight 3.2.8. */
+  title?: string;
 }
 
 /** A horizontal divider between groups of items. */
@@ -136,7 +142,8 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
               // otherwise also step the active photo behind it.
               data-keyboard-capture=""
               disabled={item.disabled}
-              className={`block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
+              title={item.title}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.danger
                   ? "text-text-secondary hover:bg-danger hover:text-on-danger"
                   : "text-text-secondary hover:bg-surface-3 hover:text-text-primary"
@@ -146,6 +153,11 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
                 onClose();
               }}
             >
+              {item.icon !== undefined && (
+                <span aria-hidden="true" className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                  {item.icon}
+                </span>
+              )}
               {item.label}
             </button>
           ),

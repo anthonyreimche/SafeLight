@@ -88,6 +88,13 @@ export function firstLogLine(log: string): string {
   return line.replace(/^(Shader compile|Program link) failed:\s*/, "").trim();
 }
 
+/** What the stage's extension row, and an issue report, say of a quarantined stage. */
+export function stageFailureNote(stage: QuarantinedStage): string {
+  return stage.log === GPU_CRASH_LOG
+    ? `Stage "${stage.stageId}" took the graphics driver down and is off. Turn the extension off and on to try it again.`
+    : `Stage "${stage.stageId}" failed to compile and is off: ${firstLogLine(stage.log)}`;
+}
+
 /** What the window says of a quarantined stage: the extension it came from first. */
 export function stageFailureText(stage: QuarantinedStage, stages: Stages): string {
   const owner = stages[stage.stageId];

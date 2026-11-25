@@ -16,6 +16,8 @@ export interface ParamDescriptor {
    *  list these can say WHERE a slider comes from instead of showing a raw id. */
   extensionName: string;
   glslType: GlslType;
+  /** UniformDeclaration.length: the uniform is an array of this many, its value a flat number array. */
+  length?: number;
   default: number | number[] | boolean;
   range?: { min: number; max: number; step?: number };
   label?: string;
@@ -50,6 +52,7 @@ export function registerStageParams(
       extensionId,
       extensionName: getExtensionName(extensionId),
       glslType: u.glslType,
+      length: u.length,
       default: u.default,
       range: u.range,
       label: u.label,
@@ -123,7 +126,8 @@ export function getDefaults(): Record<string, unknown> {
   return out;
 }
 
-function valueMatchesType(value: unknown, type: GlslType): boolean {
+function valueMatchesType(value: unknown, type: GlslType, length: number | undefined): boolean {
+  if (length !== undefined) return Array.isArray(value);
   switch (type) {
     case "float":
     case "int":
@@ -152,7 +156,7 @@ export function normalizeParamBag(
       out[key] = value; // unknown (extension absent) — preserve
       continue;
     }
-    if (valueMatchesType(value, d.glslType)) out[key] = value;
+    if (valueMatchesType(value, d.glslType, d.length)) out[key] = value;
   }
   return out;
 }

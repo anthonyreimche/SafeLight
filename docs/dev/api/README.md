@@ -20,6 +20,7 @@ interface SafelightAPI {
   version: 1;
   extensionId: string;              // your id; contributions are tagged with it
   react: typeof import("react");    // the app's React; never bundle your own
+  assetUrl(path: string): string;   // URL of one of your own files, e.g. "dist/x.wasm" (3.2.7)
 
   register*(c): void;               // see Contribution Types for every call
   unregisterProcessingStage(id: string): void;
@@ -50,6 +51,7 @@ Notes:
 - If `activate` throws, or returns a promise that rejects, the extension counts as failed to start: what it registered is swept and the error is logged. One that hasn't finished starting within 15 seconds counts as failed too, so Safelight can go on to the next extension.
 - Everything you register is swept when the extension is disabled, uninstalled or updated. You don't need to unregister in `deactivate`.
 - Registering the same id again replaces the earlier contribution.
+- `import.meta.url` is undefined in an extension's module, so reach a file you ship (a worker, a WebAssembly binary, a model) with `api.assetUrl("dist/…")`. It is cache-busted by your version and serves a Developer Tools dev-folder copy from its folder too. Never build `/__plugins__/` URLs yourself.
 - Call `setStageTexture` from `activate`, not from module top-level code. Disabling or updating drops stage textures, and a re-enabled extension's module is not re-run. Bump the texture's `version` to swap its data without a recompile.
 
 ### Imperative control surfaces
@@ -63,18 +65,18 @@ Notes:
 | `layouts` | `apply(id)`, `capture`, `shows`, `show`, `saved` ([UI Shell](ui-shell.md#managing-layouts-apilayouts)) |
 | `pipelines` | `apply(id)` sets the Preferences default. `effectiveId(displayTransform)` is the transform a photo renders with. `paramKeys(id)` lists a transform's bag keys. |
 | `preferences` | `open(sectionId?)`, `close()`, `toggle()`. `sectionId` is a core section or an extension id. |
-| `navigation` | `goTo(id)`: `"library"`, `"develop"` or a registered module id. |
+| `navigation` | `goTo(id)`: `"library"`, `"develop"` or a registered module id. `current()` / `useCurrent()`: the module this window shows; `ownModule()`: a pop-out's own module (3.2.7). |
 | `keybindings` | `getBinding(actionId)` returns the live combo, `""` when unbound. `list()` returns every built-in action. |
 | `cursors` | `labels`, `resolve(token)`. See [Cursors](contributions.md#cursorcontribution). |
 | `develop` | Develop canvas: overlays, mask scope, frame capture, cursors, per-photo data. See [`api.develop`](stores.md#apidevelop). |
-| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)` (render without writing), `exportPhotos(photos, settings, onProgress?, destDir?, options?)` (the Export panel's whole run, into a folder from `project.pickDirectory`), or `exportPhotos(photos, jobs, onProgress?, options?)` for several exports of one selection, each photo decoded once. See [`api.export`](stores.md#apiexport). |
-| `catalog` | Records, edit stacks, rename, photo surfaces. See [`api.catalog`](stores.md#apicatalog). |
+| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)` (render without writing), `exportPhotos(photos, settings, onProgress?, destDir?, options?)` (the Export panel's whole run, into a folder from `project.pickDirectory`), or `exportPhotos(photos, jobs, onProgress?, options?)` for several exports of one selection, each photo decoded once. `describeResult(result)` words the outcome as the Export panel does (3.2.7). See [`api.export`](stores.md#apiexport). |
+| `catalog` | Records, edit stacks, rename, photo surfaces, the photos a command targets (`targetIds`, 3.2.7). See [`api.catalog`](stores.md#apicatalog). |
 | `project` | `pickDirectory(id)` asks the user for a folder to write into (null if they cancel). `pickKeptDirectory(id, replacing?)` does the same and keeps the folder across launches behind a token; `openKeptDirectory(token)` opens it again, or says it is `"gone"`, `"unwritable"` or `"unknown"` (on Windows a folder whose permissions refuse writes is reported by the first file written there, not here); `forgetKeptDirectory(token)` lets it go, and uninstalling the extension forgets all of them. `pathOf(handle)` and `reveal(path)` show it in the file manager on the desktop. `createFolder`, `renameFolder`, `moveFolder`, `movePhotos`, `deleteFolder` change the project's folders on disk, with paths relative to the project root. |
 | `presets` | `importFile`, `exportFile`, `pickFile`, `fields`, `summarize`, `describeBag`, `useImporters()`: what the Presets panel and Copy Settings use. |
 | `appSettings` | `update(patch)` writes Preferences and runs their side effects. Read them with `stores.useSettings`. |
 | `registry` | `use(selector)`: a React hook over every registered contribution (panels, stages, modules and so on). |
 | `events` | `onBroadcast(cb)`: messages between windows, such as catalogue and edit changes. Returns an unsubscribe function. |
-| `extensions` | `openStore(category?)` opens the Extensions window, on a category's list if given. |
+| `extensions` | `openStore(category?)` opens the Extensions window, on a category's list if given. `useSettled()` (hook) is true once the installed extensions have finished starting at launch; wait for it before calling another extension's data missing. Needs Safelight 3.2.8. |
 | `accessibility` | `useKeyboardCanvasEditing()`: whether an on-image tool should show number fields instead of drag handles. `activate()` / `deactivate()` are for the Accessibility extension. |
 | `titleBar` | `useOverlay(bgVar)` recolours the window controls over a custom title bar. |
 | `variables` | `register`, `get`, `subscribe`, `set`, `update`. Named JSON values shared by every extension and window. Needs Safelight 3.0.1. See [`api.variables`](stores.md#apivariables-shared-variables). |

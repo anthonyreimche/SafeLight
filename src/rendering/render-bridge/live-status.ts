@@ -15,6 +15,9 @@ import type { LiveRenderStatus, ProcessVersion } from "@/extensions/api/devtools
 export interface LiveViewSource {
   photoId(): string | null;
   processVersion(): ProcessVersion;
+  /** Whether the source bound now is the photo's own decode, not a preview
+   *  standing in until it lands. */
+  finalSource?(): boolean;
 }
 
 interface ProgramStatus {
@@ -73,6 +76,12 @@ export function setLiveViewSource(source: LiveViewSource | null): void {
 /** Whether a Develop view is drawing in this window now. */
 export function hasLiveView(): boolean {
   return view !== null;
+}
+
+/** Whether the live view draws from the photo's own decode now: false with
+ *  no view, or while a preview stands in for it. */
+export function liveSourceIsFinal(): boolean {
+  return view?.finalSource?.() === true;
 }
 
 function fresh(view: LiveViewSource): LiveRenderStatus {

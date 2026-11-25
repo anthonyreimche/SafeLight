@@ -228,32 +228,39 @@ describe("Esc exits one layer at a time", () => {
     resetStores();
   });
 
-  it("works down the chain: modal, canvas tool, pick tool", () => {
+  it("works down the chain: modal, then the canvas tool", () => {
     const modal = vi.fn();
     unregister = pushEscapeHandler(modal);
     holdCanvas();
-    setPickDrag("acme", { onDown: () => {}, onMove: () => {}, onUp: () => {} });
 
     expect(fire(window, "Escape"), "modal").toBe(true);
     expect(modal).toHaveBeenCalledTimes(1);
-    expect(layers()).toEqual({
-      canvasTool: true,
-      picking: true,
-    });
+    expect(layers()).toEqual({ canvasTool: true, picking: false });
 
     unregister();
     unregister = null;
     expect(fire(window, "Escape"), "canvas tool").toBe(true);
-    expect(layers()).toEqual({
-      canvasTool: false,
-      picking: true,
-    });
+    expect(layers()).toEqual({ canvasTool: false, picking: false });
 
+    expect(fire(window, "Escape"), "nothing left").toBe(false);
+  });
+
+  // A picker and a canvas tool are never on together: arming one lets the other go.
+  it("works down the chain: modal, then the pick tool", () => {
+    const modal = vi.fn();
+    unregister = pushEscapeHandler(modal);
+    holdCanvas();
+    setPickDrag("acme", { onDown: () => {}, onMove: () => {}, onUp: () => {} });
+    expect(layers()).toEqual({ canvasTool: false, picking: true });
+
+    expect(fire(window, "Escape"), "modal").toBe(true);
+    expect(modal).toHaveBeenCalledTimes(1);
+    expect(layers()).toEqual({ canvasTool: false, picking: true });
+
+    unregister();
+    unregister = null;
     expect(fire(window, "Escape"), "pick tool").toBe(true);
-    expect(layers()).toEqual({
-      canvasTool: false,
-      picking: false,
-    });
+    expect(layers()).toEqual({ canvasTool: false, picking: false });
 
     expect(fire(window, "Escape"), "nothing left").toBe(false);
   });

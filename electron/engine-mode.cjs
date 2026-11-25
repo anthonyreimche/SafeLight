@@ -58,6 +58,7 @@ const {
   listDevManifests,
   listInstalledManifestsAsync,
   readDevFolder,
+  devExtensionDirs,
 } = require("./extension-origins.cjs");
 const { readSocketGrantOrigins, GRANTS_FILE: SOCKET_GRANTS_FILE } = require("./socket-access.cjs");
 const { createExtensionStore } = require("./extension-store/index.cjs");
@@ -363,7 +364,9 @@ function run({
 
       const hosts = await launchHosts(appUserData, pluginsDir());
       const csp = buildCSP(galleryOriginsFrom(proc.env), hosts);
-      serveAppProtocol({ protocol, net, dist, pluginsDir, csp: () => csp });
+      const devExtensions = devExtensionDirs();
+      devExtensions.setFolder(await readDevFolder(path.join(appUserData, "dev-folder.json")));
+      serveAppProtocol({ protocol, net, dist, pluginsDir, devExtensionDir: devExtensions.dirFor, csp: () => csp });
 
       const userData = () => appUserData;
       const channels = ipcChannels({

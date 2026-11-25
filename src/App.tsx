@@ -31,6 +31,8 @@ import {
 } from "@/modules/welcome/setup/setup-store";
 import { OpeningVeil } from "@/ui/components/OpeningVeil";
 import { BottomBanners } from "@/ui/components/BottomBanners";
+import { WhatsNewDialog } from "@/whats-new/WhatsNewDialog";
+import { initWhatsNew } from "@/whats-new/whats-new-store";
 
 function renderModule(module: AppModule) {
   return <ModuleView id={module} />;
@@ -77,11 +79,19 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Main window only: decide whether the welcome setup opens by itself. Detached
-  // windows share localStorage and must never decide or show it.
+  // Main window only: decide whether the welcome setup opens by itself, then
+  // whether What's new does (never both: a first run gets the setup). Detached
+  // windows share localStorage and must never decide or show either.
   useEffect(() => {
     if (dm || devtoolsWindow) return;
-    void initFirstRun();
+    void initFirstRun().then(() => {
+      const { phase, mode } = useSetupStore.getState();
+      initWhatsNew({
+        store: localStorage,
+        current: __APP_VERSION__,
+        newInstall: phase === "open" && mode === "first-run",
+      });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -119,6 +129,7 @@ export function App() {
           </div>
         </AppShell>
         <SetupFlow />
+        <WhatsNewDialog />
         <PreferencesDialog />
         <ExtensionsDialog />
         <ExtensionWindowHost />
@@ -142,6 +153,7 @@ export function App() {
           <WelcomeView />
         )}
         <SetupFlow />
+        <WhatsNewDialog />
         <PreferencesDialog />
         <ExtensionsDialog />
         <ExtensionWindowHost />
@@ -156,6 +168,7 @@ export function App() {
     <>
       {opening && !root ? <OpeningVeil /> : renderModule(activeModule)}
       <SetupFlow />
+      <WhatsNewDialog />
       <PreferencesDialog />
       <ExtensionsDialog />
       <ExtensionWindowHost />

@@ -205,8 +205,15 @@ export interface ColorRangeGeo {
 // A mask is built from one or more components (Lightroom-style). Each component
 // contributes coverage that is ADDED (union, max), SUBTRACTED (carve, ×(1−c)),
 // or INTERSECTED (×c) into the mask's combined coverage, in list order.
-export type MaskComponentKind = MaskType | "lumRange" | "colorRange";
+export type MaskComponentKind = MaskType | "lumRange" | "colorRange" | "extension";
 export type MaskComponentMode = "add" | "subtract" | "intersect";
+
+/** What an extension's own component kind keeps: its qualified type
+ *  ("{extensionId}.{name}") and the plain-JSON values it chose. */
+export interface MaskComponentExtension {
+  type: string;
+  values: Record<string, unknown>;
+}
 
 export interface MaskComponent {
   id: string;
@@ -218,6 +225,7 @@ export interface MaskComponent {
   brush?: BrushMaskGeo;
   lumRange?: LumRangeGeo;
   colorRange?: ColorRangeGeo;
+  extension?: MaskComponentExtension;
 }
 
 export interface Mask {
@@ -319,6 +327,7 @@ export interface DevelopParams {
 export const MAX_MASKS = 16;
 export const MAX_RETOUCH = 32;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
+export const MAX_EXTENSION_MASK_COMPONENTS = 4; // extension component rasters pack into one RGBA texture
 export const MAX_MASK_COMPONENTS = 24; // total components across all masks (shader cap)
 
 // Assign one develop param, keeping the key and value types tied. Lets callers

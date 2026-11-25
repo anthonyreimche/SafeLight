@@ -150,3 +150,23 @@ describe("stage param registration lifecycle", () => {
     expect(getParamDescriptor("s2.b")).toBeUndefined();
   });
 });
+
+describe("normalizeParamBag — scalar arrays (UniformDeclaration.length)", () => {
+  it("keeps a float, int or bool array whose uniform declares a length", () => {
+    registerStageParams("test.stage", STAGE, EXT, [
+      { key: "gains", glslType: "float", length: 3, default: [0, 0, 0] },
+      { key: "ids", glslType: "int", length: 2, default: [0, 0] },
+      { key: "flags", glslType: "bool", length: 2, default: [0, 0] },
+    ]);
+    const bag = { "test.stage.gains": [0.2, 0.3, 0.5], "test.stage.ids": [1, 4], "test.stage.flags": [1, 0] };
+    expect(normalizeParamBag(bag)).toEqual(bag);
+  });
+
+  it("drops a lone number where the uniform is an array, and an array where it is a scalar", () => {
+    registerStageParams("test.stage", STAGE, EXT, [
+      { key: "gains", glslType: "float", length: 3, default: [0, 0, 0] },
+      { key: "amount", glslType: "float", default: 0 },
+    ]);
+    expect(normalizeParamBag({ "test.stage.gains": 0.5, "test.stage.amount": [1, 2] })).toEqual({});
+  });
+});

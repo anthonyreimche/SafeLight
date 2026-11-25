@@ -54,6 +54,7 @@ export type {
   MaskComponentKind,
   MaskComponentMode,
   MaskComponent,
+  MaskComponentExtension,
   Mask,
   RetouchSpot,
   DevelopParams,
@@ -66,6 +67,7 @@ export {
   MAX_MASKS,
   MAX_RETOUCH,
   MAX_BRUSH_MASKS,
+  MAX_EXTENSION_MASK_COMPONENTS,
   MAX_MASK_COMPONENTS,
   assignDevelopParam,
 } from "./develop-params";

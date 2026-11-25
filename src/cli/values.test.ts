@@ -21,6 +21,7 @@ const localContrast: ExtensionDescriptors = {
     { key: "local-contrast.lightness.detail", glslType: "float", default: 1, range: { min: 0.25, max: 4, step: 0.05 }, label: "Detail" },
     { key: "local-contrast.lightness.on", glslType: "bool", default: false },
     { key: "local-contrast.lightness.tint", glslType: "vec3", default: [0, 0, 0] },
+    { key: "local-contrast.lightness.gains", glslType: "float", length: 3, default: [0, 0, 0] },
   ],
   panels: [],
   hasCatalogHooks: true,
@@ -98,7 +99,7 @@ describe("resolveKey", () => {
     expect(service().resolveKey("crop.x").settable).toBe(false);
   });
 
-  it("lists scalar extension uniforms with their ranges and skips vectors", () => {
+  it("lists scalar extension uniforms with their ranges and skips vectors and arrays", () => {
     const keys = service().values("local-contrast").map((v) => v.key);
     expect(keys).toEqual(["local-contrast.lightness.detail", "local-contrast.lightness.on"]);
     expect(service().resolveKey("local-contrast.lightness.detail")).toMatchObject({ min: 0.25, max: 4, step: 0.05, decimals: 2 });

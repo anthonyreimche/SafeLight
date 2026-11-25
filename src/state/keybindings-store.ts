@@ -145,7 +145,12 @@ function persist(overrides: Record<string, string>): void {
 }
 
 export function getBinding(actionId: string): string {
-  return useKeybindings.getState().overrides[actionId] ?? DEFAULTS[actionId] ?? "";
+  return (
+    useKeybindings.getState().overrides[actionId] ??
+    DEFAULTS[actionId] ??
+    useExtensionActions.getState().actions.get(actionId)?.def ??
+    ""
+  );
 }
 
 export interface BindingInfo {

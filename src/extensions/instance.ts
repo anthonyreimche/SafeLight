@@ -20,17 +20,19 @@ import { useRunningPlugins, type RunningInstance } from "./running-plugins";
 import { forgetStartFailure, recordStartFailure } from "./start-failures";
 import { mirrorExtensionDescriptors } from "./descriptor-mirror";
 
-let scopedAPI: ((id: string) => SafelightAPI) | null = null;
+type MakeScopedAPI = (id: string, version?: string) => SafelightAPI;
+
+let scopedAPI: MakeScopedAPI | null = null;
 
 /** The host hands over the maker of each extension's API as it loads, so this
  *  module, which the host's own imports reach, never imports the host back. */
-export function provideScopedAPI(make: (id: string) => SafelightAPI): void {
+export function provideScopedAPI(make: MakeScopedAPI): void {
   scopedAPI = make;
 }
 
-function makeScopedAPI(id: string): SafelightAPI {
+function makeScopedAPI(id: string, version?: string): SafelightAPI {
   if (!scopedAPI) throw new Error(`${id}: the extension host has not loaded`);
-  return scopedAPI(id);
+  return scopedAPI(id, version);
 }
 
 /** The built-in extension `id` names, if it is one. core-extension.ts keeps the
@@ -206,7 +208,7 @@ export async function startInstance(start: InstanceStart): Promise<void> {
           const mod = imported as ExtensionModule;
           signal.throwIfAborted();
           if (start.name) setExtensionName(id, start.name);
-          await activateFenced(mod, makeScopedAPI(id), signal, subscriptions);
+          await activateFenced(mod, makeScopedAPI(id, start.version), signal, subscriptions);
           return { mod, release, subscriptions };
         } catch (e) {
           if (signal.aborted) subscriptions.forEach((unsubscribe) => unsubscribe());

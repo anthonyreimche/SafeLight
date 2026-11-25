@@ -238,6 +238,7 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
   let closed = false;
   let running = false;
   let cancelRunning: (() => void) | null = null;
+  let stopAsked = false;
 
   const deliver = (item: Read): void => {
     if (waiting) {
@@ -276,7 +277,9 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
     if (!running) return;
     inbox.length = 0;
     editor = emptyEditor();
-    cancelRunning?.();
+    // Before the command listens, the stop waits for it.
+    if (cancelRunning) cancelRunning();
+    else stopAsked = true;
     // A command waiting on an answer stops waiting.
     if (waiting) deliver({ kind: "interrupt", text: "" });
   };
@@ -409,16 +412,17 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
 
   /** Runs `words` through main; `own` stands in for the verb of the same name. */
   const dispatch = async (words: string[], own?: CommandSpec): Promise<ExitCode> => {
-    // The engine answers one request at a time: what was asked goes before the prefetch.
-    await prefetcher.stop();
     const stopListening = io.onInterrupt(stopRunning);
     running = true;
+    stopAsked = false;
     const verb = words.find((w) => !w.startsWith("-")) ?? COMMAND;
     const startedAt = deps.now();
     const clock = Date.now();
     live = showWhileRunning(streams, () => footerRow({ kind: "running", label: `Running ${verb}`, startedAt: clock }));
     let code: ExitCode = 1;
     try {
+      // The engine answers one request at a time: what was asked goes before the prefetch.
+      await prefetcher.stop();
       code = await main(words, {
         ...io,
         cwd,
@@ -431,6 +435,10 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
         onProblem: (problem) => { fix = fixLine(problem); },
         onInterrupt(handler) {
           cancelRunning = handler;
+          if (stopAsked) {
+            stopAsked = false;
+            handler();
+          }
           return () => { cancelRunning = null; };
         },
       });
@@ -438,6 +446,7 @@ export async function runRepl(io: MainIO, overrides: Partial<ReplDeps> = {}, sta
       live.stop();
       live = null;
       running = false;
+      stopAsked = false;
       stopListening();
     }
     if (code === 130) {

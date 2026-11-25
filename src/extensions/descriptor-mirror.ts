@@ -41,6 +41,7 @@ function describe(id: string, version: string, name: string): ExtensionDescripto
     uniforms: uniforms.map((d) => ({
       key: d.qualifiedKey,
       glslType: d.glslType,
+      ...(d.length !== undefined && { length: d.length }),
       default: d.default,
       range: d.range,
       label: d.label,

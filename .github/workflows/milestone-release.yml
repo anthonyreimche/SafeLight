@@ -55,6 +55,8 @@ jobs:
           fi
           echo "Version verified: $PKG_VERSION"
 
+      # The app bundles docs/user/changelog.md and shows the running version's
+      # section after an update, so the section has to be in the tagged commit.
       - name: Create and push git tag (skip if already exists)
         run: |
           TAG="${{ steps.version.outputs.tag }}"
@@ -63,6 +65,15 @@ jobs:
           else
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
+            node build-scripts/changelog.mjs stamp "$TAG"
+            if ! git diff --quiet -- docs/user/changelog.md; then
+              git add docs/user/changelog.md
+              git commit -m "Changelog for $TAG"
+              if ! git push origin "HEAD:${{ github.event.repository.default_branch }}"; then
+                echo "::error::Couldn't push the changelog for $TAG. Run 'node build-scripts/changelog.mjs stamp $TAG' locally, push it, then close the milestone again."
+                exit 1
+              fi
+            fi
             git tag "$TAG" -m "Release $TAG"
             git push origin "$TAG"
             echo "Tag $TAG created and pushed."
@@ -128,6 +139,19 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Release notes
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        shell: bash
+        run: |
+          {
+            echo "## Safelight $TAG"
+            echo
+            node build-scripts/changelog.mjs notes "$TAG"
+            echo
+            echo "Every change, release by release, is in the [changelog](https://github.com/${{ github.repository }}/blob/main/docs/user/changelog.md)."
+          } > release-notes.md
+
       - name: Upload installers to release
         uses: softprops/action-gh-release@v2
         with:
@@ -138,18 +162,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
-          body: |
-            ## Safelight ${{ needs.tag.outputs.tag }}
-
-            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
-
-            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
-
-            ---
-            ### Thank you
-            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
-
-            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          body_path: release-notes.md
           files: |
             release/*.exe
             release/*.blockmap
@@ -184,6 +197,19 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Release notes
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        shell: bash
+        run: |
+          {
+            echo "## Safelight $TAG"
+            echo
+            node build-scripts/changelog.mjs notes "$TAG"
+            echo
+            echo "Every change, release by release, is in the [changelog](https://github.com/${{ github.repository }}/blob/main/docs/user/changelog.md)."
+          } > release-notes.md
+
       - name: Upload installers to release
         uses: softprops/action-gh-release@v2
         with:
@@ -194,18 +220,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
-          body: |
-            ## Safelight ${{ needs.tag.outputs.tag }}
-
-            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
-
-            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
-
-            ---
-            ### Thank you
-            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
-
-            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          body_path: release-notes.md
           files: |
             release/*.dmg
             release/*.zip
@@ -248,6 +263,19 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Release notes
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        shell: bash
+        run: |
+          {
+            echo "## Safelight $TAG"
+            echo
+            node build-scripts/changelog.mjs notes "$TAG"
+            echo
+            echo "Every change, release by release, is in the [changelog](https://github.com/${{ github.repository }}/blob/main/docs/user/changelog.md)."
+          } > release-notes.md
+
       - name: Upload installers to release
         uses: softprops/action-gh-release@v2
         with:
@@ -258,18 +286,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
-          body: |
-            ## Safelight ${{ needs.tag.outputs.tag }}
-
-            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
-
-            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
-
-            ---
-            ### Thank you
-            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
-
-            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          body_path: release-notes.md
           files: |
             release/*.AppImage
             release/*.deb

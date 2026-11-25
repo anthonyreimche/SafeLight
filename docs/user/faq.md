@@ -20,6 +20,10 @@ Yes, once it's set up. The first launch needs a connection, because it downloads
 
 There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. By default, exported images carry no camera EXIF, GPS or XMP. **Preferences ▸ Export ▸ Include metadata** copies the camera EXIF, **Include location (GPS)** adds GPS on top, and XMP is never copied. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
 
+### Is Safelight written with AI?
+
+Partly. One person builds Safelight with help from an AI coding assistant, and decides, reviews, tests and releases every change. The app itself has no AI features and sends nothing to AI services. See [AI use](../../AI.md).
+
 ### Desktop app or browser — which should I use?
 
 The desktop app. It guarantees the fast libraw RAW decode path (cross-origin isolation + SharedArrayBuffer) and forces the high-performance GPU. The browser version works in recent Chromium-based browsers (Chrome, Edge, Opera) and is mainly useful for development; Firefox and Safari lack the File System Access API Safelight relies on.

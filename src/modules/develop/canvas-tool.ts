@@ -8,13 +8,15 @@ import { create } from "zustand";
 import type { DevelopParams } from "@/catalog/types";
 import type { OverlayRect } from "@/extensions/api/develop";
 import { guardCallback } from "@/extensions/guard";
+import { usePickDragStore } from "./pick-drag";
 
 // The canvas tool: an extension's on-image tool that takes the canvas over
 // while it is held (Crop & Straighten's crop mode, Guided Upright's lines, the
 // heal and mask tools). Its overlay is drawn over the image inside the view;
-// core's own canvas gestures (the pick-drag tool, and zoom unless the tool
-// allows it) stand aside, and the live view may draw different params while
-// it is held. One extension holds it at a time; ephemeral, never persisted.
+// core's own canvas gestures (zoom, unless the tool allows it) stand aside,
+// and the live view may draw different params while it is held. One extension
+// holds it at a time, and holding it lets an armed picker (pick-drag) go, as
+// arming a picker lets it go; ephemeral, never persisted.
 
 export interface CanvasTool {
   /** Drawn over the image, inside the view: `rect` is the box the frame
@@ -43,11 +45,13 @@ export interface Held {
 
 export const useCanvasToolStore = create<{ held: Held | null }>(() => ({ held: null }));
 
-/** Hand the canvas `owner`'s tool, or with null take `owner`'s tool back; a
- *  tool another extension holds stays. */
+/** Hand the canvas `owner`'s tool, letting an armed picker go, or with null
+ *  take `owner`'s tool back; a tool another extension holds stays. */
 export function setCanvasTool(owner: string, tool: CanvasTool | null): void {
-  if (tool) useCanvasToolStore.setState({ held: { owner, tool } });
-  else if (useCanvasToolStore.getState().held?.owner === owner) useCanvasToolStore.setState({ held: null });
+  if (tool) {
+    usePickDragStore.setState({ held: null });
+    useCanvasToolStore.setState({ held: { owner, tool } });
+  } else if (useCanvasToolStore.getState().held?.owner === owner) useCanvasToolStore.setState({ held: null });
 }
 
 interface GuardedTool {

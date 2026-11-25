@@ -216,6 +216,25 @@ describe("dev folder channel", () => {
     expect(MAIN).toMatch(/await loadLaunchHosts\(\);[\s\S]*?serveAppProtocol\(/);
     expect(MAIN).not.toMatch(/listDevManifests\(readDevFolder\(/);
   });
+
+  it("serves the dev folder's extension files from the folder it records, from launch on", async () => {
+    expect(MAIN).toMatch(/const devFolder = await readDevFolder\(devFolderFile\(\)\);\s*devExtensions\.setFolder\(devFolder\);/);
+    expect(MAIN).toMatch(/serveAppProtocol\(\{[^}]*devExtensionDir: devExtensions\.dirFor/);
+    const dir = mkdtempSync(join(tmpdir(), "sl-dev-folder-"));
+    try {
+      const folders: (string | null)[] = [];
+      const { handler } = entry("devtools:sync-dev-folder", {
+        devFolderFile: () => join(dir, "dev-folder.json"),
+        extensionConnectHosts: () => [],
+        devExtensions: { setFolder: (f: string | null) => void folders.push(f) },
+      });
+      await handler(NO_EVENT, dir);
+      await handler(NO_EVENT, null);
+      expect(folders).toEqual([dir, null]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Report an issue channels", () => {

@@ -2269,10 +2269,17 @@ export class WebGLRenderer {
     let built = stages.built;
     // A mask probe's frame stops where the mask components read `lin`, a scene
     // measurement where the display transform takes it, a decode measurement
-    // where the decode and noise-reduction stages leave it.
+    // where the decode and noise-reduction stages leave it, and a mask
+    // measurement where the mask components read it, over the whole source.
     const measure = this.redirect?.measure;
     const exit: ProgramExit | undefined =
-      this.redirect?.probe?.point === "mask" ? "mask" : measure === "scene" || measure === "decode" ? measure : undefined;
+      this.redirect?.probe?.point === "mask"
+        ? "mask"
+        : measure === "scene" || measure === "decode"
+          ? measure
+          : measure === "mask"
+            ? "mask-source"
+            : undefined;
     const unchanged =
       p.sig === this.pipelineSig &&
       built.sig === this.stageSig &&
@@ -2619,8 +2626,11 @@ export class WebGLRenderer {
    *  "pre-output" it is the signed `c` the output stage receives, at "output"
    *  what the output stage makes of it: sRGB as long as no export output space
    *  is set, which holds for the worker's live and thumb renderers. At "scene"
-   *  it is the scene-linear `lin` the display transform receives, and at
-   *  "decode" the linear `lin` the decode and noise-reduction stages leave. A
+   *  it is the scene-linear `lin` the display transform receives, at
+   *  "decode" the linear `lin` the decode and noise-reduction stages leave, and
+   *  at "mask" the scene-linear `lin` the mask components compare, over the
+   *  whole uncropped source at the prepasses' size, without the geometry
+   *  stages, its rows the source's (row 0 at source v 0). A
    *  measurement, like an export frame: without the view's overlays, the
    *  screen's space, the monitor profile or the proof. Null with no source,
    *  without float render targets, or when a target can't be allocated or
@@ -2634,7 +2644,10 @@ export class WebGLRenderer {
     this.syncPipeline();
     this.resize();
     const gl = this.gl;
-    const full = { w: this.canvas.width, h: this.canvas.height };
+    // A mask measurement is the whole source, at the prepasses' size, whose
+    // rows are the source's: row 0 is source v 0, as read back.
+    const wholeSource = point === "mask";
+    const full = wholeSource ? this.prepassDims() : { w: this.canvas.width, h: this.canvas.height };
     const { width: w, height: h } = measureSize(full.w, full.h, captureEdge);
     let raw: Float32Array | null;
     try {
@@ -2660,7 +2673,7 @@ export class WebGLRenderer {
       this.syncPipeline();
       this.bindFrameState();
     }
-    return raw && { data: topDown(raw, w, h), width: w, height: h };
+    return raw && { data: wholeSource ? raw : topDown(raw, w, h), width: w, height: h };
   }
 
   /** Whether a photo with `params` renders through version 3's signed output

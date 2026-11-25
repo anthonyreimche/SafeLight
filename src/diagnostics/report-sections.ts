@@ -70,7 +70,8 @@ export interface ExtensionRow {
   running: boolean;
   trust: "verified" | "unverified" | "stale" | null;
   rendersPixels: boolean;
-  problem?: string;
+  /** What went wrong with it, one line each, as its Extensions row says it. */
+  problems?: string[];
 }
 
 export interface ExtensionFacts {
@@ -132,6 +133,7 @@ export const REPORTED_SETTINGS = [
   "highBitDepth",
   "liveHistogram",
   "autoSaveCollapsedPanels",
+  "soloPanels",
 ] as const satisfies readonly (keyof AppSettings)[];
 
 const PLATFORM_NAMES: Record<string, string> = { win32: "Windows", darwin: "macOS", linux: "Linux" };
@@ -230,7 +232,7 @@ function extensionLine(row: ExtensionRow): string[] {
   if (row.trust) parts.push(TRUST_LABELS[row.trust]);
   if (row.rendersPixels) parts.push("renders into photos");
   const lines = [parts.join(" · ")];
-  if (row.problem) lines.push(`  ${row.problem}`);
+  for (const problem of row.problems ?? []) lines.push(`  ${problem}`);
   return lines;
 }
 

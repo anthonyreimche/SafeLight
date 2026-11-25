@@ -90,7 +90,8 @@ library and registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Reporting a malicious extension
 
-Report it through the
-[registry](https://github.com/anthonyreimche/safelight-registry) (open an issue, or a PR
-to `banned.json`) or email **anthonyreimche@gmail.com**. Once assessed, a ban disables
-the extension everywhere on the next launch — no app update required.
+Report it privately, through the registry's
+[private report form](https://github.com/anthonyreimche/safelight-registry/security/advisories/new)
+or by email to **anthonyreimche@gmail.com**, not in a public issue. Include the repo, what
+it does, and the version where you saw it. Once assessed, a ban disables the extension
+everywhere on the next launch — no app update required.

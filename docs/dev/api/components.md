@@ -182,6 +182,7 @@ Themed controls that match Preferences. Controlled inputs take `value` and an `o
 | `Skeleton` | `style?`, `className?` | A breathing block standing in for content still loading. Give it the size of what will arrive, so nothing jumps when it does. |
 | `useDelayedFlag(active, ms = 300)` | — | A hook: true once `active` has stayed true for `ms`, and false the moment it ends. Gate a wait indicator on it, so a quick load never flashes one. |
 | `Stack` / `Row` | `gap?` (px, default 8), `style?`; `Row`: `align?`, `justify?`, `wrap?` | Vertical / horizontal flex. |
+| `ColourField` | `label`, `hue`, `saturation?`, `lightness?`, `onChange`, `onCommit?`, `toRgb?`, `fromRgb?`, `pick?`, `title?` | A colour: see [Colour field](#colour-field). Needs Safelight 3.2.8. |
 
 ```js
 const { Button, Field, Select, Stack } = api.ui;
@@ -192,6 +193,26 @@ h(Stack, { gap: 8 },
     h(Select, { value: size, onChange: setSize,
       options: [{ value: "2048", label: "2048 px" }, { value: "4096", label: "4096 px" }] })),
   h(Button, { variant: "primary", full: true, onClick: run }, "Export"));
+```
+
+### Colour field
+
+`ColourField` is the one control for choosing a colour. A swatch as wide as the row shows the colour, with an eyedropper beside it. Clicking the swatch opens a picker under it: a hue-by-saturation area (a hue bar when the field has no `saturation`), a lightness bar when it has `lightness`, and a hex field. Escape or another click on the swatch closes it. Keep your Hue and Saturation sliders under it for fine control if you have them.
+
+- `hue` is in degrees (0 to 360), `saturation` and `lightness` in percent. `onChange` gets only the channels the field has, live during a drag; `onCommit` follows once the drag ends, and after a key, a hex or a pick.
+- `toRgb(hue, saturation, lightness)` returns the display sRGB colour (0 to 1) your model makes of those values, and `fromRgb(rgb)` reads a typed or picked colour back as `{ hue, saturation, lightness }`. Both default to HSL. A channel the field lacks is passed to `toRgb` as 100 (saturation) or 50 (lightness).
+- The eyedropper holds the canvas's pick-drag tool, so it gives way to a canvas tool and lets go on Escape. With the default `pick: true` it takes the colour the view shows where the photo is clicked. Pass `pick: { paramBag }` to sample a capture with that bag merged over the photo's instead, and over each mask's copy of a stage it names, which leaves your own effect out of the sample (set your stage's opacity or amount to its off value there). `pick: false` hides it.
+
+```js
+const { ColourField } = api.ui;
+h(ColourField, {
+  label: "Tint",
+  hue: p.hue,
+  saturation: p.saturation,
+  pick: { paramBag: { "my-ext.tint.amount": 0 } },
+  onChange: (c) => scope.setParams({ "my-ext.tint.hue": c.hue, "my-ext.tint.saturation": c.saturation }),
+  onCommit: () => scope.commit("Tint"),
+});
 ```
 
 ## `api.ui` dialogues
@@ -238,6 +259,29 @@ Takes the Escape key while something of yours is open that Escape should close: 
 React.useEffect(() => (editing ? api.ui.onEscape(() => setEditing(false)) : undefined), [editing]);
 ```
 
+### `notify`
+
+```ts
+api.ui.notify(notice: string | { message: string; tone?: "info" | "success" | "warning" | "error"; progress?: number | null }): {
+  update(next: Partial<typeof notice>): void;
+  close(): void;
+};
+```
+
+Tells the person something without stopping them: a bar in the app's bottom stack, like core's own notices, under your extension's name and with a × to dismiss. Needs Safelight 3.2.7.
+
+- `info` (the default) and `success` go by themselves after a few seconds. `warning` and `error` stay until dismissed.
+- A notice with `progress` (0..1) shows a bar and stays while the run is under way. `update` it as the run goes, then update it to `progress: null` with the result.
+- The message is selectable, so an error can be copied into a report.
+- Core takes your notices down when your extension stops.
+- Use it for the outcome of work the person started and may not be watching (a merge, a batch). Ask a question with `confirmDialog` instead.
+
+```js
+const run = api.ui.notify({ message: "Aligning 5 frames…", progress: 0 });
+run.update({ progress: 0.5 });
+run.update({ message: "Merged 5 frames.", tone: "success", progress: null });
+```
+
 ```js
 const ok = await api.ui.confirmDialog({
   title: "Clear the cache",
@@ -280,6 +324,7 @@ Themes recolour, stylesheets reshape. A [`StylesheetContribution`](contributions
 | Selector | What it is |
 |---|---|
 | `button`, `[role="button"]` | Every button. Exclude `.sl-switch` and `.sl-select` for push buttons only. |
+| `.sl-colour-field` | `ColourField` container; `.sl-colour-swatch`, `.sl-colour-pick`, `.sl-colour-picker`, `.sl-colour-area`, `.sl-colour-bar`, `.sl-colour-marker` and `.sl-colour-hex` are its parts |
 | `.sl-segmented` | `SegmentedControl` container (options are `button`s) |
 | `.sl-select` | `Select` trigger |
 | `.sl-switch`, `.sl-switch-track`, `.sl-switch-knob` | Toggle switch; `aria-checked="true"` when on |

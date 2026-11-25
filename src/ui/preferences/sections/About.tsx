@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import { openReportIssue } from "@/ui/components/report-issue-store";
+import { openWhatsNew } from "@/whats-new/whats-new-store";
 import { Field } from "@/ui/preferences/fields";
 import { closePreferences } from "@/ui/preferences/preferences-store";
 import { settings, type PrefSection } from "@/ui/preferences/section-model";
@@ -63,6 +64,19 @@ export function AboutSection() {
         >
           {repo.replace("https://", "")}
         </a>
+      </Field>
+
+      <Field label="Release notes">
+        <button
+          type="button"
+          onClick={() => {
+            closePreferences();
+            openWhatsNew();
+          }}
+          className="text-[11px] text-slider-fill hover:underline"
+        >
+          What's new in v{__APP_VERSION__}…
+        </button>
       </Field>
 
       <Field label="Feedback" hint="Opens a GitHub issue with diagnostics you can check first.">

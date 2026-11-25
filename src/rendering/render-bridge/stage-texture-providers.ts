@@ -29,8 +29,15 @@ import {
 
 /** Makes `variant`. `signal` aborts once nothing needs it any more (a variant
  *  the live view passed by in a drag, with no frame waiting for it): work not
- *  started yet can be skipped, and whatever it resolves with then is let go. */
-export type StageTextureProvide = (variant: string, signal: AbortSignal) => Promise<StageTextureData | null>;
+ *  started yet can be skipped, and whatever it resolves with then is let go.
+ *  `bag` is the param bag of the frame that first asked for the variant. */
+export type StageTextureProvide = (
+  variant: string,
+  signal: AbortSignal,
+  bag: Readonly<Record<string, unknown>>,
+) => Promise<StageTextureData | null>;
+
+type Named = [key: string, plainKey: string, variant: string, bag: Readonly<Record<string, unknown>>];
 
 /** A frame's hold on the variants it draws with: they stay until it lets go. */
 export interface StageVariantLease {
@@ -113,15 +120,15 @@ function ownerAmong(key: string, ids: readonly string[]): string {
   return owner;
 }
 
-/** The provided variants `bag` names: [variant key, plain key, variant]. */
-function namedIn(bag: Readonly<Record<string, unknown>>): [string, string, string][] {
+/** The provided variants `bag` names: [variant key, plain key, variant, bag]. */
+function namedIn(bag: Readonly<Record<string, unknown>>): Named[] {
   if (providers.size === 0) return [];
-  const out: [string, string, string][] = [];
+  const out: Named[] = [];
   for (const plainKey of providers.keys()) {
     const name = bag[plainKey];
     if (typeof name !== "string") continue;
     const key = variantTextureKey(plainKey, name);
-    if (key) out.push([key, plainKey, name]);
+    if (key) out.push([key, plainKey, name, bag]);
   }
   return out;
 }
@@ -149,7 +156,7 @@ function post(keys: readonly string[]): boolean {
   return any;
 }
 
-function ask(key: string, plainKey: string, variant: string): Promise<Outcome> {
+function ask(key: string, plainKey: string, variant: string, bag: Readonly<Record<string, unknown>>): Promise<Outcome> {
   // One set directly (api.setStageTexture) is drawn as it was set.
   if (holds(key) || absent.has(key) || Object.hasOwn(getStageTextures(), key)) return Promise.resolve({ ok: true });
   const running = inflight.get(key);
@@ -172,7 +179,7 @@ function ask(key: string, plainKey: string, variant: string): Promise<Outcome> {
     STAGE_VARIANT_TIMEOUT_MS,
   );
   inflight.set(key, request);
-  provider.provide(variant, request.abort.signal).then(
+  provider.provide(variant, request.abort.signal, bag).then(
     (made) => {
       if (inflight.get(key) !== request) return;
       if (!made) {
@@ -252,9 +259,9 @@ export function needStageVariants(
       pin(keys, -1);
     },
   });
-  const one = async ([key, plainKey, variant]: [string, string, string]): Promise<string | null> => {
+  const one = async ([key, plainKey, variant, asking]: Named): Promise<string | null> => {
     for (;;) {
-      const outcome = await ask(key, plainKey, variant);
+      const outcome = await ask(key, plainKey, variant, asking);
       if ("stale" in outcome) continue;
       return outcome.ok ? null : outcome.reason;
     }
@@ -272,7 +279,7 @@ export function needStageVariants(
 export async function prepareStageVariant(plainKey: string, variant: string): Promise<void> {
   if (!variantTextureKey(plainKey, variant)) throw new Error(`"${variant}" isn't a variant name: 1 to 64 letters, digits, - or _`);
   if (!providers.has(plainKey)) throw new Error(`"${plainKey}" has no provider`);
-  const lease = await needStageVariants({ [plainKey]: variant }, { worker: true });
+  const lease = await needStageVariants({ ...liveBag, [plainKey]: variant }, { worker: true });
   lease?.release();
   if (lease?.failure) throw new Error(lease.failure);
 }
@@ -295,10 +302,10 @@ export function noteLiveStageBag(bag: Readonly<Record<string, unknown>>, own?: R
   dropUnneeded();
   if (post(liveKeys)) redrawStages();
   const now = Date.now();
-  for (const [key, plainKey, variant] of named) {
+  for (const [key, plainKey, variant, asking] of named) {
     if (holds(key) || absent.has(key) || inflight.has(key)) continue;
     if (now - (failedAt.get(key) ?? -Infinity) < LIVE_RETRY_MS) continue;
-    void ask(key, plainKey, variant).then((outcome) => {
+    void ask(key, plainKey, variant, asking).then((outcome) => {
       if ("ok" in outcome && !outcome.ok) {
         failedAt.set(key, Date.now());
         console.warn(`[extensions] ${outcome.reason}`);
@@ -319,6 +326,19 @@ function forgetVariant(key: string): void {
 function forgetKey(plainKey: string): void {
   for (const key of new Set([...held.keys(), ...absent, ...inflight.keys(), ...failedAt.keys()]))
     if (key.startsWith(`${plainKey}#`)) forgetVariant(key);
+}
+
+/** Whether variant `variant` of `plainKey` is held as it was made. */
+export function holdsStageVariant(plainKey: string, variant: string): boolean {
+  const key = variantTextureKey(plainKey, variant);
+  return key !== null && holds(key);
+}
+
+/** Whether a frame in flight draws with variant `variant` of `plainKey`, or
+ *  the live view names it. */
+export function stageVariantInUse(plainKey: string, variant: string): boolean {
+  const key = variantTextureKey(plainKey, variant);
+  return key !== null && (pins.has(key) || liveKeys.includes(key));
 }
 
 /** The extension providing stage texture `plainKey`, if any. */

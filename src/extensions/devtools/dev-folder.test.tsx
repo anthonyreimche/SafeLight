@@ -206,6 +206,23 @@ describe("a dev folder extension's id", () => {
     expect(fakeFs.read).toHaveBeenCalledWith(`${FOLDER}\\index.js`);
   });
 
+  // The main process reads the same manifest for the extension's network
+  // origins and refuses it unless it is whole (extension-origins.cjs
+  // validManifest): one it refuses never loads here either.
+  it.each([
+    [{ id: "acme.tools", version: "1.0.0", main: "index.js" }, "safelight.json is missing `name` or `version`"],
+    [{ id: "acme.tools", name: "Tools", main: "index.js" }, "safelight.json is missing `name` or `version`"],
+    [{ id: "acme.tools", name: "Tools", version: "1.0.0", main: "../outside.js" }, "safelight.json's `main` must stay inside its folder"],
+  ])("that isn't whole is refused before its bundle is read (%j)", async (manifest, error) => {
+    fakeFs.exists.mockImplementation(async (p) => p === `${FOLDER}\\safelight.json`);
+    fakeFs.read.mockImplementation(async () => file(manifest));
+
+    await scan();
+
+    expect(useDevFolder.getState().items).toMatchObject([{ status: "error", error }]);
+    expect(fakeFs.read).toHaveBeenCalledTimes(1);
+  });
+
   // A manifest is untyped JSON: whatever is not text cannot be an id, and the
   // rule that compares ids must never see it.
   it.each([5, true, ["core"], {}])("that is not text counts as missing (%j)", async (id) => {
