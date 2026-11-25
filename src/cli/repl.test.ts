@@ -635,6 +635,30 @@ describe("open photos", () => {
     await h.result;
   });
 
+  it("keeps a Ctrl+C that comes before the command is listening for it", async () => {
+    const log: string[] = [];
+    let release = () => {};
+    const h = harness({
+      commands: viewing([], log), photos: PHOTOS,
+      deps: {
+        ...finding,
+        prefetch: (_env, _abs, _engine, signal) => new Promise((resolve) => {
+          signal.addEventListener("abort", () => { log.push("stopping"); release = () => resolve(null); });
+        }),
+      },
+    });
+    await h.ready();
+    h.send("open a.NEF b.NEF\r");
+    await h.until(() => h.out().includes("Opened 2 photos."));
+    h.send("hang\r");
+    await h.until(() => log.includes("stopping"));
+    h.interrupt();
+    release();
+    await h.until(() => h.out().includes("[cancelled]"));
+    h.send("exit\r");
+    await h.result;
+  });
+
   it("drops a photo that left the catalogue at the next command, with one line", async () => {
     const h = harness({
       commands: viewing([]),
