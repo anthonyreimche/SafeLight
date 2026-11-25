@@ -89,6 +89,7 @@ export function seedParamRegistry(descriptors: Iterable<ExtensionDescriptors>): 
         uniforms.map((u) => ({
           key: u.key.startsWith(`${stage}.`) ? u.key.slice(stage.length + 1) : u.key,
           glslType: u.glslType as GlslType,
+          length: u.length,
           default: u.default as number | number[] | boolean,
           range: u.range,
           label: u.label,

@@ -14,6 +14,8 @@ import { installMemoryStorage, snapshot } from "@/catalog/stored-edit.fixtures";
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import type { EditSnapshot, EditState } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
+import { useCatalogStore } from "@/state/catalog-store";
+import { photo } from "@/catalog/stored-edit.fixtures";
 
 class FakeChannel {
   postMessage(): void {}
@@ -151,5 +153,46 @@ describe("api.catalog.putEditState on the photo Develop holds", () => {
 
     expect(useDevelopStore.getState().photoId).toBe(OTHER);
     expect(labelsOf(useDevelopStore.getState().history)).toEqual(["Original", "Auto"]);
+  });
+});
+
+describe("api.catalog.applyBagPatch", () => {
+  it("commits a patch to a photo that isn't open as a step made for the extension", async () => {
+    const { written } = installMemoryStorage(edit([ORIGINAL], OTHER));
+    useCatalogStore.setState({ photos: [photo(PHOTO), photo(OTHER)] });
+
+    await makeScopedAPI("ext.map").catalog.applyBagPatch(OTHER, { "ext.map.stage.tMean": [0.5] }, "Match colours");
+
+    const stored = written[written.length - 1];
+    expect(stored.photoId).toBe(OTHER);
+    expect(labelsOf(stored.stack)).toEqual(["Original", "Match colours"]);
+    expect(stored.stack[1].source).toBe("ext.map");
+    expect(stored.stack[1].paramBag).toEqual({ "ext.map.stage.tMean": [0.5] });
+  });
+
+  it("reloads Develop when the photo is the one open there", async () => {
+    installMemoryStorage(edit([ORIGINAL]));
+    useCatalogStore.setState({ photos: [photo(PHOTO)] });
+    await useDevelopStore.getState().loadEdit(PHOTO, 4300);
+
+    await makeScopedAPI("ext.map").catalog.applyBagPatch(PHOTO, { "ext.map.stage.on": true }, "Match colours");
+
+    expect(labelsOf(useDevelopStore.getState().history)).toEqual(["Original", "Match colours"]);
+    expect(useDevelopStore.getState().paramBag["ext.map.stage.on"]).toBe(true);
+  });
+});
+
+describe("api.develop.putPhotoData for another photo", () => {
+  it("writes that photo's blob under the extension's key, and the open photo's when none is named", () => {
+    const put = vi.fn(async () => {});
+    installMemoryStorage();
+    Object.assign(catalogStorage(), { putPhotoBlob: put });
+    useCatalogStore.setState({ photos: [photo(PHOTO), photo(OTHER)] });
+    useDevelopStore.setState({ photoId: PHOTO });
+    const develop = makeScopedAPI("ext.map").develop;
+    develop.putPhotoData("hist", new Uint8Array([1]), OTHER);
+    develop.putPhotoData("hist", new Uint8Array([2]));
+    expect(put).toHaveBeenNthCalledWith(1, OTHER, "ext.map.hist", new Uint8Array([1]));
+    expect(put).toHaveBeenNthCalledWith(2, PHOTO, "ext.map.hist", new Uint8Array([2]));
   });
 });

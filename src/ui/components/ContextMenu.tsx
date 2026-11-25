@@ -19,6 +19,9 @@ export interface ContextMenuItem {
   /** Render in the red danger colour (e.g. Remove). */
   danger?: boolean;
   disabled?: boolean;
+  /** Tooltip, shown on hover even when the item is disabled (say why it is).
+   *  Needs Safelight 3.2.8. */
+  title?: string;
 }
 
 /** A horizontal divider between groups of items. */
@@ -139,6 +142,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
               // otherwise also step the active photo behind it.
               data-keyboard-capture=""
               disabled={item.disabled}
+              title={item.title}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.danger
                   ? "text-text-secondary hover:bg-danger hover:text-on-danger"

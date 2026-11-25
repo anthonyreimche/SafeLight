@@ -397,6 +397,8 @@ export interface AppSettings {
   dropdownWheelSelect: boolean;
   /** Collapsing a dock panel writes into the picked saved layout. */
   autoSaveCollapsedPanels: boolean;
+  /** Expanding a dock panel collapses the others in its column. */
+  soloPanels: boolean;
 
   // Accessibility
   highContrast: boolean;

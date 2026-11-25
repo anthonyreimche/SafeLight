@@ -76,7 +76,7 @@ Notes:
 | `appSettings` | `update(patch)` writes Preferences and runs their side effects. Read them with `stores.useSettings`. |
 | `registry` | `use(selector)`: a React hook over every registered contribution (panels, stages, modules and so on). |
 | `events` | `onBroadcast(cb)`: messages between windows, such as catalogue and edit changes. Returns an unsubscribe function. |
-| `extensions` | `openStore(category?)` opens the Extensions window, on a category's list if given. |
+| `extensions` | `openStore(category?)` opens the Extensions window, on a category's list if given. `useSettled()` (hook) is true once the installed extensions have finished starting at launch; wait for it before calling another extension's data missing. Needs Safelight 3.2.8. |
 | `accessibility` | `useKeyboardCanvasEditing()`: whether an on-image tool should show number fields instead of drag handles. `activate()` / `deactivate()` are for the Accessibility extension. |
 | `titleBar` | `useOverlay(bgVar)` recolours the window controls over a custom title bar. |
 | `variables` | `register`, `get`, `subscribe`, `set`, `update`. Named JSON values shared by every extension and window. Needs Safelight 3.0.1. See [`api.variables`](stores.md#apivariables-shared-variables). |

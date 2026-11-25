@@ -210,4 +210,18 @@ describe("ContextMenu items", () => {
     expect(item.contains(icon)).toBe(true);
     expect(icon.parentElement?.getAttribute("aria-hidden")).toBe("true");
   });
+
+  it("gives an item its tooltip, disabled or not", () => {
+    render(
+      <ContextMenu
+        x={0}
+        y={0}
+        items={[{ label: "Fuzzy Select", title: "A photo holds at most 4 of these", disabled: true, onClick: () => {} }]}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("menuitem", { name: "Fuzzy Select" }).getAttribute("title")).toBe(
+      "A photo holds at most 4 of these",
+    );
+  });
 });

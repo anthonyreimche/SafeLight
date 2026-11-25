@@ -772,6 +772,24 @@ describe("registerProcessingStage: Safelight's own stage ids", () => {
     expect(collectPresetStages({}).map((s) => s.stageId)).toEqual(["acme.look"]);
   });
 
+  it("carries a stage's dataKeys with its params, relative or qualified, and counts one in the bag as a change", () => {
+    registerProcessingStage("acme", {
+      ...plain("acme.look"),
+      uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+      dataKeys: ["sourceHist", "acme.look.sihist"],
+    });
+    const [stage] = collectPresetStages({});
+    expect(stage.paramKeys).toEqual(["acme.look.amount", "acme.look.sourceHist", "acme.look.sihist"]);
+    expect(stage.changed).toBe(false);
+    expect(collectPresetStages({ "acme.look.sourceHist": "AQID" })[0].changed).toBe(true);
+  });
+
+  it("lists a stage that has only dataKeys, and one with none still needs a param", () => {
+    registerProcessingStage("acme", { ...plain("acme.data"), dataKeys: ["table"] });
+    registerProcessingStage("acme", plain("acme.bare"));
+    expect(collectPresetStages({}).map((s) => s.stageId)).toEqual(["acme.data"]);
+  });
+
   // A built-in is one of BUILTIN_EXTENSIONS, whatever its id: the official
   // extensions that replace them keep ids outside "core" and their stage params
   // are preset fields like any other extension's.

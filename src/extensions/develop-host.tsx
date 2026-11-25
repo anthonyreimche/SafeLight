@@ -13,10 +13,19 @@
 import { createContext, useContext } from "react";
 import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
-import type { FloatCaptureOptions, FloatFrame, LiveFloatCaptureOptions } from "@/rendering/float-frame";
+import { liveSourceIsFinal } from "@/rendering/render-bridge/live-status";
+import {
+  MASK_CAPTURE_MAX_EDGE,
+  captureMaxEdge,
+  type FloatCaptureOptions,
+  type FloatFrame,
+  type LiveFloatCaptureOptions,
+} from "@/rendering/float-frame";
 import type { SourceSample } from "@/rendering/source-sample";
 import { regionCapture, type RegionCapture, type RegionRequest } from "@/rendering/region-capture";
 import { renderPhotoFloatFrame, renderPhotoFrame } from "@/state/headless-frame";
+import { liveMaskInputKey, photoMaskInputKey } from "@/state/mask-input-key";
+import { useDevelopStore } from "@/state/develop-store";
 
 export interface OverlayRect {
   x: number;
@@ -104,11 +113,29 @@ export function captureDevelopFrame(
  *  captureDevelopFrame does for measuring, and hand it over as floats at a
  *  capture point, in the space asked for, at most `options.maxEdge` px on its
  *  long edge. Null without float render targets. */
-export function captureDevelopFloatFrame(
+export async function captureDevelopFloatFrame(
   params: DevelopParams,
   options?: LiveFloatCaptureOptions,
 ): Promise<FloatFrame | null> {
-  return getRenderBridge().captureFloat(params, options);
+  if (options?.point !== "mask") return getRenderBridge().captureFloat(params, options);
+  // Read before the draw: a decode landing meanwhile only makes the frame better.
+  const finalSource = liveSourceIsFinal();
+  const { photoId, paramBag } = useDevelopStore.getState();
+  const frame = await getRenderBridge().captureFloat(params, {
+    ...options,
+    maxEdge: Math.min(captureMaxEdge(options.maxEdge), MASK_CAPTURE_MAX_EDGE),
+  });
+  if (!frame) return null;
+  const inputKey = photoId ? photoMaskInputKey(photoId, params, { ...paramBag, ...options.paramBag }) : null;
+  return { ...frame, inputKey: inputKey ?? "", finalSource };
+}
+
+/** The key of what the open photo's mask components compare (maskInputKey):
+ *  it changes when an edit, a stage or the source changes the colour they
+ *  see, and holds through masks, the crop, geometry and anything after the
+ *  masks. Null with no photo open. */
+export function developMaskInputKey(): Promise<string | null> {
+  return Promise.resolve(liveMaskInputKey());
 }
 
 /** A patch of the live frame at the frame's own pixels, drawn as the canvas

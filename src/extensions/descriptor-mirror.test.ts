@@ -34,6 +34,7 @@ function registerFixture(): void {
     uniforms: [
       { key: "amount", glslType: "float", default: 0.25, range: { min: 0, max: 1, step: 0.01 }, label: "Amount" },
       { key: "mono", glslType: "bool", default: false },
+      { key: "gains", glslType: "float", length: 3, default: [0, 0, 0] },
     ],
   });
   registerPanel(ID, { id: "acme.film.panel", title: "Film", component: () => null, owns: ["exposure"] });
@@ -71,6 +72,7 @@ describe("mirrorExtensionDescriptors", () => {
           label: "Amount",
         },
         { key: "acme.film.grain.mono", glslType: "bool", default: false },
+        { key: "acme.film.grain.gains", glslType: "float", length: 3, default: [0, 0, 0] },
       ],
       panels: [{ id: "acme.film.panel", title: "Film", owns: ["exposure"] }],
       hasCatalogHooks: true,

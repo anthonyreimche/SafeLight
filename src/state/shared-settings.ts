@@ -34,7 +34,7 @@ export interface ExtensionDescriptors {
   name: string;
   writtenAt: number;
   stages: { id: string; phase: string; priority?: number; after?: string[]; anchor?: string }[];
-  uniforms: { key: string; glslType: string; default: unknown; range?: { min: number; max: number; step?: number }; label?: string }[];
+  uniforms: { key: string; glslType: string; length?: number; default: unknown; range?: { min: number; max: number; step?: number }; label?: string }[];
   panels: { id: string; title: string; owns?: string[] }[];
   hasCatalogHooks: boolean;
   /** The bag keys of uniforms the extension computes for each photo

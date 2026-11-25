@@ -22,6 +22,8 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { broadcast } from "@/state/broadcast";
 import { emitEditCommit } from "@/extensions/registry";
+import { normalizeParamBag } from "@/extensions/param-registry";
+import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
 import type { StoredLook } from "./stored-edit-look";
 
 export type { StoredLook } from "./stored-edit-look";
@@ -36,9 +38,19 @@ export interface StoredSnapshotTarget {
   asShot: number;
 }
 
+/** How an appended step is made and followed up. `source` is the extension the
+ *  step is made for, which stamps it in local history. `refreshThumbnails` draws
+ *  each stored photo's grid preview from its new look, but for the photo open in
+ *  Develop, which draws its own. */
+export interface AppendOptions {
+  source?: string;
+  refreshThumbnails?: boolean;
+}
+
 /** One photo's edit with its new step appended, waiting to be stored and announced. */
 interface AppendedEdit {
   target: StoredSnapshotTarget;
+  look: StoredLook;
   editState: EditState;
 }
 
@@ -60,11 +72,12 @@ async function appendedEdit(
   target: StoredSnapshotTarget,
   label: string,
   next: NextLook,
+  source?: string,
 ): Promise<AppendedEdit | null> {
   const existing = await storage.getEditState(target.photoId);
   const look = next(currentLook(existing, target.asShot));
   if (!look) return null;
-  return { target, editState: appendStep(existing, target, label, look, Date.now()) };
+  return { target, look, editState: appendStep(existing, target, label, look, Date.now(), source) };
 }
 
 /** Append a snapshot labelled `label` to the photo's stored edit, and make it the
@@ -92,6 +105,7 @@ export async function appendStoredSnapshots(
   targets: StoredSnapshotTarget[],
   label: string,
   next: NextLook,
+  options: AppendOptions = {},
 ): Promise<number> {
   const storage = catalogStorage();
 
@@ -103,7 +117,7 @@ export async function appendStoredSnapshots(
       for (const target of targets) {
         if (seen.has(target.photoId)) continue;
         seen.add(target.photoId);
-        const edit = await appendedEdit(storage, target, label, next);
+        const edit = await appendedEdit(storage, target, label, next, options.source);
         if (edit) appended.push(edit);
       }
       const stored =
@@ -120,7 +134,7 @@ export async function appendStoredSnapshots(
   const open = appended.find(({ target }) => target.photoId === develop.photoId);
   await Promise.all([stored, open && develop.loadEdit(open.target.photoId, open.target.asShot)]);
 
-  for (const { target, editState } of appended) {
+  for (const { target, editState, look } of appended) {
     try {
       // Let extensions persist the committed edit elsewhere (e.g. XMP sidecars).
       const photo = useCatalogStore.getState().photos.find((p) => p.id === target.photoId);
@@ -128,10 +142,43 @@ export async function appendStoredSnapshots(
 
       // Refresh this photo's histogram wherever it's shown.
       broadcast({ type: "edit-update", payload: { photoId: target.photoId } });
+
+      if (options.refreshThumbnails && target.photoId !== develop.photoId) {
+        void regenerateEditedThumbnail(target.photoId, look.params, target.asShot, look.paramBag);
+      }
     } catch (error) {
       // The edit is already stored; a failed announcement must not hold back the rest.
       console.warn(`[stored-edit] announcing ${target.photoId} failed:`, error);
     }
   }
   return appended.length;
+}
+
+/** Commit `patch` over the bag of catalogue photo `photoId`, which needn't be
+ *  open, as one history step labelled `label` made for extension `source`: its
+ *  keys replace the photo's own, computed values included. The step is stored
+ *  with the edit-commit hooks run, the Library told, and the grid preview drawn
+ *  from the new look. Resolves false, writing nothing, when the photo already
+ *  holds every value. */
+export async function applyBagPatch(
+  photoId: string,
+  patch: Record<string, unknown>,
+  label: string,
+  source: string,
+): Promise<boolean> {
+  if (typeof patch !== "object" || patch === null || Array.isArray(patch))
+    throw new Error("applyBagPatch: the patch must be an object of bag keys");
+  const [target] = storedSnapshotTargets([photoId]);
+  if (!target) throw new Error(`applyBagPatch: photo ${photoId} is not in the catalogue`);
+  const values = normalizeParamBag(patch);
+  const changed = await appendStoredSnapshots(
+    [target],
+    label,
+    (base) =>
+      Object.entries(values).every(([key, value]) => JSON.stringify(base.paramBag[key]) === JSON.stringify(value))
+        ? null
+        : { params: base.params, paramBag: { ...base.paramBag, ...values } },
+    { source, refreshThumbnails: true },
+  );
+  return changed === 1;
 }

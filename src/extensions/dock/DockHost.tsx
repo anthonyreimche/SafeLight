@@ -16,6 +16,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { ContextMenu } from "@/ui/components/ContextMenu";
 import { ErrorBoundary } from "@/ui/components/ErrorBoundary";
 import {
@@ -25,7 +26,7 @@ import {
   panelTitle,
 } from "../registry";
 import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
-import { getSettings } from "@/state/settings-store";
+import { getSettings, useSettings } from "@/state/settings-store";
 import type { AppModule } from "@/catalog/types";
 import type { PanelPlacement } from "../types";
 import { boundaryKey } from "../guard";
@@ -48,8 +49,7 @@ import {
   setFloatWidth,
   setRailHeight,
   setRailWidth,
-  soloCollapsed,
-  toggleCollapsed,
+  clickCollapsed,
 } from "./actions";
 import { startHeaderDrag, startResize } from "./dnd";
 import { prewarmPanel } from "./prewarm";
@@ -113,6 +113,9 @@ function PanelHeader({ id }: { id: string }) {
   const extensionId = useRegistry((s) => s.panels[id]?.extensionId ?? "");
   const previewable = useRegistry((s) => panelIsPreviewable(id, s));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  const clickHint = useSettings((s) => s.soloPanels)
+    ? "Click to collapse, or expand and collapse the others · Alt+click to collapse or expand on its own"
+    : "Click to collapse or expand · Alt+click to expand only this panel";
   // The marker points the way the body will go: a column folds up to the right,
   // a bottom strip folds down out of the canvas's way.
   const { side } = useDockPlacement();
@@ -169,14 +172,11 @@ function PanelHeader({ id }: { id: string }) {
         role="button"
         tabIndex={0}
         aria-expanded={!collapsed}
-        title={`Click to collapse or expand · Alt+click to expand only this panel · Drag to move${
-          onReset ? " · Right-click to reset" : ""
-        }`}
+        title={`${clickHint} · Drag to move${onReset ? " · Right-click to reset" : ""}`}
         onKeyDown={(e) => {
           if (e.key !== "Enter" && e.key !== " ") return;
           e.preventDefault();
-          if (e.altKey) soloCollapsed(id);
-          else toggleCollapsed(id);
+          clickCollapsed(id, e.altKey);
         }}
         className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary"
       >
@@ -288,12 +288,15 @@ const DockedPanel = memo(function DockedPanel({
 });
 
 const Rail = memo(function Rail({ rail }: { rail: RailState }) {
-  // At most one fill panel per rail stretches to the leftover height; while one
-  // is present (and expanded) the rail stops scrolling and the panel scrolls.
-  const fillId = useRegistry(
-    (s) => rail.panels.find((id) => s.panels[id]?.fill) ?? null,
+  // Expanded fill panels share the leftover height; while any is expanded the
+  // rail stops scrolling and each of them scrolls itself.
+  const fillIds = useRegistry(
+    useShallow((s) => rail.panels.filter((id) => s.panels[id]?.fill)),
   );
-  const fillExpanded = useDockStore((s) => !!fillId && !s.collapsed[fillId]);
+  const stretched = useDockStore(
+    useShallow((s) => fillIds.filter((id) => !s.collapsed[id])),
+  );
+  const fillExpanded = stretched.length > 0;
   return (
     <PlacementCtx.Provider value={PLACEMENTS[rail.side]}>
       <div
@@ -311,7 +314,7 @@ const Rail = memo(function Rail({ rail }: { rail: RailState }) {
           }
         >
           {rail.panels.map((id) => (
-            <DockedPanel key={id} id={id} stretch={fillExpanded && id === fillId} />
+            <DockedPanel key={id} id={id} stretch={stretched.includes(id)} />
           ))}
         </div>
         <div

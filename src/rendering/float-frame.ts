@@ -18,8 +18,12 @@ import type { StageSpace } from "@/extensions/types";
  *  version 2 and later unless the photo's display transform sets
  *  `skipToneShoulder`; elsewhere it is unclamped. "decode": the linear colour
  *  the decode and noise-reduction stages leave, ahead of the built-in noise
- *  reduction, white balance and every later tool. */
-export type CapturePoint = "pre-output" | "output" | "scene" | "decode";
+ *  reduction, white balance and every later tool. "mask": the scene-linear
+ *  colour the mask components compare (after white balance and the tone
+ *  tools, before any mask applies), over the whole uncropped source, without
+ *  the crop or the geometry stages, row 0 at source v 0: the orientation of a
+ *  brush dab's y. Needs Safelight 3.2.8. */
+export type CapturePoint = "pre-output" | "output" | "scene" | "decode" | "mask";
 
 export interface FloatCaptureOptions {
   /** Default DEFAULT_CAPTURE_SPACE. */
@@ -28,6 +32,9 @@ export interface FloatCaptureOptions {
   point?: CapturePoint;
   /** Merged over the photo's extension-stage params for this capture only. */
   paramBag?: Record<string, unknown>;
+  /** For renderPhotoFloatFrame at "mask": the frame's long edge, up to
+   *  MASK_CAPTURE_MAX_EDGE. Other photo frames are read small and ignore it. */
+  maxEdge?: number;
 }
 
 /** What a live capture (api.develop.captureFloatFrame) takes: the options of
@@ -45,7 +52,19 @@ export interface FloatFrame {
   height: number;
   space: StageSpace;
   point: CapturePoint;
+  /** For a "mask" frame: what the colour the mask components compare is made
+   *  from (maskInputKey's key for the frame's params and source). Needs
+   *  Safelight 3.2.8. */
+  inputKey?: string;
+  /** For a "mask" frame: false while it was drawn from a stand-in for the
+   *  photo (the camera preview before a RAW decodes), true from the photo's
+   *  own decode. Needs Safelight 3.2.8. */
+  finalSource?: boolean;
 }
+
+/** The long edge a "mask" frame may be read at: the size masks made from it
+ *  are packed at. */
+export const MASK_CAPTURE_MAX_EDGE = 2048;
 
 export const DEFAULT_CAPTURE_SPACE: StageSpace = { encoding: "linear", primaries: "rec709" };
 

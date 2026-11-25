@@ -55,6 +55,13 @@
 // Under the built-in transform the pixels are unchanged; under one that sets
 // skipBaseCurve a RAW now arrives at its camera match's exposure. The v1
 // hashes are untouched.
+//
+// Edited again on 2026-11-24, the 18 v3 hashes only (2026-11-24: #287
+// Masking line 3 reads extension component rasters, approved by Anthony):
+// Masking's line 3 declares the uMaskRasters sampler, and compCoverage reads
+// a type 5 component from its channel of it, nothing while no raster is
+// held. Existing edits draw the same pixels. The v1 and v2 hashes are
+// untouched.
 
 export const PROGRAM_REFERENCE: Readonly<Record<string, string>> = {
   "v1/builtin/builtin": "3f1f81f7c98881be54232b4523a8a60ee1d247e99c6b87a8045284d6bcc590d3",
@@ -93,22 +100,22 @@ export const PROGRAM_REFERENCE: Readonly<Record<string, string>> = {
   "v2/splits/builtin": "226a31604fb6d542c81e854246699c122cb879eb799ea8093fccfdca1cfc9267",
   "v2/splits/custom": "1fb6d9d372065f7f71833cd2ea1bf3ce46e3522fb9dda2da84b576eb3f625cef",
   "v2/splits/rec2020": "22ac61ac0dcb0fa91348316c7236444aed41fd5dc438b72577035b25f99c6186",
-  "v3/builtin/builtin": "d0abb54605c461b08eb1db439d90ca024237f5371a46c95b295d9930fc1e4bd2",
-  "v3/builtin/custom": "a2438118c22cdaf0172ef5cce8ed6a14520cf6b758512186de35a5a4c564016e",
-  "v3/builtin/rec2020": "cdd37a77b772ca3427927e806db5a0dc38cb4eacccadf5425c3bbbe430355712",
-  "v3/layered/builtin": "33c795bbb781c5f725ee4f1a0c6354928491a66ee2c897bf3cf027d024e051f2",
-  "v3/layered/custom": "dba13827152413e32d7c58cbc4b6caac669222fe5cb9213c4a388928617e44b5",
-  "v3/layered/rec2020": "87ce087a78fc49ad0a7d01b28d7b2e8485d25e9db883757b51d48dcb51bb41d7",
-  "v3/legacyExtensions/builtin": "6cac25789997bae3276ce389483955a180a92f8293871aaf6bf6ac0b99a18f28",
-  "v3/legacyExtensions/custom": "32c2d68d61ba4fa264834a7f53bbb5e68a32d6fa581acccdc8e0b7bea5876dff",
-  "v3/legacyExtensions/rec2020": "5dbc68dae4dd89df9b16f76febc7b9a24249433b6f0b6fd80999b192f2f36299",
-  "v3/sceneLuma/builtin": "9c62bba1ed31ea1bca121ac532722874c3c8cba10d4a07f1d29adf327cfaad64",
-  "v3/sceneLuma/custom": "2010b71950b000cc1a992cc14100a7bff03be40dc4f8441cf43c4bdbe5ddc99e",
-  "v3/sceneLuma/rec2020": "d45bae08d221b646c77f421bb9f5c4644bc972bc802a268690d9504c3da7c0ec",
-  "v3/spaced/builtin": "809215f2bb1568345fad51ab2e37cb07043d9ffa859ee03994a850e01fb53660",
-  "v3/spaced/custom": "279067de182c7d36a7d34bdbe149455e23501419d2a1dc2a0a6bc4a3601d066f",
-  "v3/spaced/rec2020": "9dae916f9d2635089dd4af68a06923f3702dedeb18d4cc6aaaa19b6b6700db1c",
-  "v3/splits/builtin": "56bc986aa39543e25709137ea725e9f0bdb246f88a9f9aab30e88ac3f0a42376",
-  "v3/splits/custom": "3aedc7b617079ca8f4c2685c2cebd11d3ea63695fc8f50830eb5be8c7d140660",
-  "v3/splits/rec2020": "db3c23591c1a9aa5c451bca83158623a9f4a74e96fb8aaa4c1ec04490f0df46b",
+  "v3/builtin/builtin": "f057888822f42cc952b34a649c892994be071d8713a20488f69d5ce1a8144a6e",
+  "v3/builtin/custom": "c7cbc278ceed99abefdf9a57d91adb6012b392dffcbadbb80e7f9454f7415f6d",
+  "v3/builtin/rec2020": "e1893eb10dfce52dabeee371c72fd25a48707fe779f8c8fd93ee046724a2ea5b",
+  "v3/layered/builtin": "be32bec5cd99a8b015c0a4ca3015dd710f2013fbb7c071cb8a291a50a4a00659",
+  "v3/layered/custom": "992255a44b856973e8ecfaff3638d13945512790cd666ccf6cb3497f7fd29592",
+  "v3/layered/rec2020": "0256323d2a0b06d605e5e3ffcd708213aff0c2d9c9f763cbcdac7d654799ccd0",
+  "v3/legacyExtensions/builtin": "2c4011940ce35367cf9548be8238c81b0df392ebe0543e3d881a245faf5a694a",
+  "v3/legacyExtensions/custom": "aba59fe8f9a8b2ded1f8aa16233e9422445c0b67e3d136794f80d49981989ede",
+  "v3/legacyExtensions/rec2020": "cc6e2d8281705d7e4ffcc9c13d54f48d13971cd898a05f4fb702e3838568cf55",
+  "v3/sceneLuma/builtin": "43a331493fa8c054893e688fb777c13bb8a76ecc1cd351a8174b4f60b15d114c",
+  "v3/sceneLuma/custom": "04a24fb8e6867a223a5733402ed69c793f81964b35a18574457c875c8438ba2b",
+  "v3/sceneLuma/rec2020": "8d0574b37a03bcff88f1baf4e7b0f1ea2e2f385d1f4613662fac2a0fb6912135",
+  "v3/spaced/builtin": "5a4e70a0d40f5cdcc3c158052ee612c38b04a0fa1181ddf27882fd33646a8ea0",
+  "v3/spaced/custom": "f34658d755ee0e8dadeda52bb3bbd8a586a66efbd174120df1320b4720c9099d",
+  "v3/spaced/rec2020": "e8febbeffb0db27add5674897fa773a4dc4723a4ad6043c56a34e4dd992654b1",
+  "v3/splits/builtin": "510b3fed43e4fb2fae146b2664ded8e779e75d0834a29ea660784a5716acb2ff",
+  "v3/splits/custom": "798f0ae1aa8dc0ffee18c756a63741c1a2a6c8f18d130e8d950447d52e9e227b",
+  "v3/splits/rec2020": "d14d30740014242a73e3162d01faba282ebc65667a623022de9f38f7798adfda",
 };

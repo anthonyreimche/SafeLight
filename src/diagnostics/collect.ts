@@ -15,7 +15,9 @@ import { repoFor } from "@/extensions/sources";
 import { useTrust, verificationStatus } from "@/extensions/trust";
 import { updateNote, useExtStoreUI } from "@/extensions/store-ui";
 import { useDevFolder } from "@/extensions/devtools/dev-folder";
-import { moduleLabel } from "@/extensions/registry";
+import { callbackFailureText, useCallbackFailures } from "@/extensions/guard";
+import { moduleLabel, useRegistry } from "@/extensions/registry";
+import { startFailureText, useStartFailures } from "@/extensions/start-failures";
 import { effectivePipelineId } from "@/extensions/pipelines";
 import { useThemeStore } from "@/extensions/themes";
 import { useLayoutStore } from "@/extensions/dock";
@@ -27,6 +29,7 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useUIStore } from "@/state/ui-store";
 import { detachedModule } from "@/state/detach";
 import { DEFAULT_SETTINGS, getSettings } from "@/state/settings-store";
+import { stageFailureNote, stageFailuresOf, useStageFailures } from "@/rendering/render-bridge/stage-failures";
 import { readErrorLog, syncNativeCrashes } from "./error-log";
 import { readEnvironment, readGraphics } from "./environment";
 import { makeRedactor } from "./redact";
@@ -68,6 +71,19 @@ async function installedManifests(): Promise<ExtensionManifest[]> {
   }
 }
 
+/** What the Extensions window notes on `id`'s row: a failed start, its stages
+ *  that are off, a callback the core stopped calling. */
+function problemsOf(id: string): string[] {
+  const start = useStartFailures.getState()[id];
+  const callback = useCallbackFailures.getState()[id];
+  const stages = stageFailuresOf(id, useStageFailures.getState(), useRegistry.getState().processingStages);
+  return [
+    ...(start ? [startFailureText(start)] : []),
+    ...stages.map(stageFailureNote),
+    ...(callback ? [callbackFailureText(callback)] : []),
+  ];
+}
+
 async function extensionFacts(): Promise<ExtensionFacts> {
   const kinds = extensionKinds();
   const rendersPixels = (id: string): boolean => Object.hasOwn(kinds, id) && kinds[id] === "pixels";
@@ -83,7 +99,7 @@ async function extensionFacts(): Promise<ExtensionFacts> {
       running: isPluginRunning(m.id),
       trust: verificationStatus(repoFor(m), m.version),
       rendersPixels: rendersPixels(m.id),
-      ...(upd?.failed ? { problem: updateNote(m.version, upd) } : {}),
+      problems: [...(upd?.failed ? [updateNote(m.version, upd)] : []), ...problemsOf(m.id)],
     };
   });
   const dev: ExtensionRow[] = useDevFolder.getState().items.map((item) => ({
@@ -94,7 +110,7 @@ async function extensionFacts(): Promise<ExtensionFacts> {
     running: item.status === "loaded",
     trust: null,
     rendersPixels: rendersPixels(item.id),
-    ...(item.error ? { problem: `error: ${item.error}` } : {}),
+    problems: [...(item.error ? [`error: ${item.error}`] : []), ...problemsOf(item.id)],
   }));
   const builtinChanges = BUILTIN_EXTENSIONS.filter(
     (b) => !b.locked && isExtensionDisabled(b.id) !== Boolean(b.disabledByDefault),

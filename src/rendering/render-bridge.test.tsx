@@ -96,17 +96,27 @@ class FakeWorker {
 }
 
 // The bridge answers a capture it gives up on with a blank bitmap, as the worker
-// does, and jsdom has no OffscreenCanvas to draw one.
+// does, and jsdom has no OffscreenCanvas to draw one. Like Chromium's, it hands
+// over a bitmap only once a context has been taken.
 class FakeOffscreenCanvas {
   readonly width: number;
   readonly height: number;
+  private context = false;
 
   constructor(width: number, height: number) {
     this.width = width;
     this.height = height;
   }
 
+  getContext(): object {
+    this.context = true;
+    return {};
+  }
+
   transferToImageBitmap(): ImageBitmap {
+    if (!this.context) {
+      throw new DOMException("Cannot transfer an ImageBitmap from an OffscreenCanvas with no context", "InvalidStateError");
+    }
     return { width: this.width, height: this.height, close: () => undefined };
   }
 }
@@ -4345,7 +4355,7 @@ describe("a headless frame naming a variant made on demand", () => {
     makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
     void bridge.capture(normalizeParams({}), { paramBag: { "acme.calib.table": "v2" } });
     await vi.waitFor(() => expect(sent(worker)).toEqual(["textures acme.calib.table#v2", "capture"]));
-    expect(provide).toHaveBeenCalledWith("v2", expect.anything());
+    expect(provide).toHaveBeenCalledWith("v2", expect.anything(), expect.objectContaining({ "acme.calib.table": "v2" }));
   });
 
   it("keeps the variants a worker frame draws with until the worker answers it", async () => {

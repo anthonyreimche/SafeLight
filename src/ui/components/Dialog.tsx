@@ -61,7 +61,7 @@ export function Dialog({ labelledBy, onClose, onSubmit, className, children }: D
 
   return (
     <div
-      className="sl-enter-fade fixed inset-0 z-[160] flex items-center justify-center bg-black/50"
+      className="sl-enter-dim fixed inset-0 z-[160] flex items-center justify-center bg-black/50"
       {...backdrop}
     >
       <div

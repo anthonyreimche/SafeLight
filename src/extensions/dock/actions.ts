@@ -8,6 +8,7 @@
 // commit(), which turns an active preset into Custom and queues the save.
 
 import type { DockPanelPlacement } from "../api/contributions";
+import { getSettings } from "@/state/settings-store";
 import { useRegistry } from "../registry";
 import {
   allowsBottom,
@@ -212,19 +213,32 @@ export function toggleDockSide(side: RailState["side"]): void {
 // Layout mutations
 // ---------------------------------------------------------------------------
 
-export function toggleCollapsed(id: string) {
+function toggleCollapsed(id: string) {
   const s = useDockStore.getState();
   setCollapsed({ ...s.collapsed, [id]: !s.collapsed[id] });
 }
 
 /** Expand `id` and collapse the other panels of its rail. A floating panel has
  *  no rail, so it just expands. */
-export function soloCollapsed(id: string) {
+function soloCollapsed(id: string) {
   const s = useDockStore.getState();
   const rail = s.rails.find((r) => r.panels.includes(id));
   const collapsed = { ...s.collapsed, [id]: false };
   for (const p of rail?.panels ?? []) if (p !== id) collapsed[p] = true;
   setCollapsed(collapsed);
+}
+
+/** A click on a panel's header. Alt+click solos the panel; with "Expand one
+ *  panel at a time" on, a plain click that expands a panel solos it and
+ *  Alt+click toggles it alone. */
+export function clickCollapsed(id: string, alt: boolean) {
+  if (!getSettings().soloPanels) {
+    if (alt) soloCollapsed(id);
+    else toggleCollapsed(id);
+    return;
+  }
+  if (!alt && useDockStore.getState().collapsed[id]) soloCollapsed(id);
+  else toggleCollapsed(id);
 }
 
 function setCollapsed(collapsed: Record<string, boolean>) {

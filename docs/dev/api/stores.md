@@ -160,18 +160,19 @@ adjustments: { list(); get(key); set(key, value) };
 captureFrame(params, opts?: { asShown?; paramBag? }): Promise<ImageBitmap>;
 captureFloatFrame(params, opts?: {                 // 3.1.0
   space?: StageSpace;                              // default linear Rec.709
-  point?: "pre-output" | "output" | "scene" | "decode"; // default "pre-output"
+  point?: "pre-output" | "output" | "scene" | "decode" | "mask"; // default "pre-output"; "mask": 3.2.8
   paramBag?; maxEdge?: number;                     // default 1280 px
-}): Promise<FloatFrame | null>;  // { data: Float32Array; width; height; space; point }
+}): Promise<FloatFrame | null>;  // { data: Float32Array; width; height; space; point; inputKey?; finalSource? }
 readSourceSample(): Promise<SourceSample | null>;  // 3.1.0
 captureRegion({ x, y, width, height }): Promise<{ bitmap: ImageBitmap; rect: { x; y; width; height }; frameWidth; frameHeight; colorSpace } | null>; // 3.2.7
 renderPhotoFrame(photoId, params, paramBag?, opts?: { lossless? }): Promise<ImageBitmap | null>;
-renderPhotoFloatFrame(photoId, params, opts?: { space?; point?; paramBag? }): Promise<FloatFrame | null>; // 3.1.0
-putPhotoData(key, data: Uint8Array | null): void;  // null deletes
+renderPhotoFloatFrame(photoId, params, opts?: { space?; point?; paramBag?; maxEdge? }): Promise<FloatFrame | null>; // 3.1.0; maxEdge at "mask": 3.2.8
+putPhotoData(key, data: Uint8Array | null, photoId?): void;  // null deletes; photoId: 3.2.8, another photo's
 getPhotoData(key, photoId?): Promise<Uint8Array | null>; // photoId: 3.2.7, another photo's
 setPickDrag(tool: PickDragTool | null): void;      // 3.2.0
 usePickDragHeld(): boolean;                        // 3.2.0
 probe(point): Promise<[r, g, b] | null>;            // 3.2.0
+sampleView(point, paramBag?): Promise<[r, g, b] | null>; // 3.2.8
 setCanvasTool(tool: CanvasTool | null): void;      // 3.2.0
 useCanvasToolHeld(): boolean;                      // 3.2.0
 readDevelopedPixels(edge: number): Promise<{ data: Uint8Array; width; height } | null>; // 3.2.0
@@ -185,6 +186,13 @@ registerBrushTip(tip: BrushTipContribution): void; // 3.2.1: { id, label, alpha:
 unregisterBrushTip(id: string): void; // 3.2.5: one of your own
 brushTips(): readonly BrushTipContribution[]; // 3.2.5: every extension's tips, in order
 useBrushTips(): readonly BrushTipContribution[]; // 3.2.5: React hook
+registerMaskComponentKind(kind: MaskComponentKindContribution): void; // 3.2.8: a mask component whose coverage you compute
+unregisterMaskComponentKind(name: string): void; // 3.2.8: one of your own
+maskComponentKinds(): readonly RegisteredMaskComponentKind[]; // 3.2.8: every extension's kinds, in order
+useMaskComponentKinds(): readonly RegisteredMaskComponentKind[]; // 3.2.8: React hook
+refreshMaskCoverage(name: string): void; // 3.2.8: ask for your kind's coverage again
+maskRasterChannels(masks: readonly Mask[]): Record<string, number>; // 3.2.8: component id -> raster channel 0..3, or -1
+maskInputKey(): Promise<string | null>; // 3.2.8: key of the colour the open photo's masks compare
 registerInputProfiles(resolver: InputProfileResolver): void; // 3.2.3: { resolve(photo, file) }
 invalidateInputProfiles(): void;                   // 3.2.3
 useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
@@ -219,6 +227,9 @@ A tool that paints uses the official brush, Masking's, rather than its own (Safe
 - `registerBrushTip` adds a brush shape that masks and paint strokes can stamp with, named by a dab's `tip` (see [`BrushDab`](types.md)). `alpha` is the shape's coverage, one byte a pixel, at most 128 px a side (`MAX_BRUSH_TIP_EDGE`). Tip ids are shared by every extension: registering your own id again replaces it, and another extension's id is refused with a warning, as is a malformed tip. Your tips go when your extension stops, and strokes that name them stamp the round disc until they are back. A tip may carry a `group` (a picker heading) and `brush`, the settings it was made for: `spacing`, `scatter`, `count`, `sizeJitter`, `angleJitter`, `flowJitter`, `angle`, `followStroke`. Core clamps them into range and stamps nothing by them; a painter loads them when the tip is picked (3.2.5).
 - `unregisterBrushTip` takes back one tip of your own, as when the person removes it from your library; strokes that name it stamp the round disc from then on (3.2.5).
 - `brushTips` and `useBrushTips` list every registered tip, whichever extension registered it, so a brush can offer another extension's tips in its picker (3.2.5).
+- `registerMaskComponentKind` adds a kind of mask component whose coverage your extension computes (a fuzzy select, say). It is held as `{your id}.{name}` (`name`: lower-case letters, digits and dashes); a malformed kind is refused with a warning, and registering a name you hold again replaces it. `create()` makes a new component's `values` (plain JSON, kept up to 16 KB, saved in the mask as `component.extension = { type, values }`); `onPoint(values, { u, v, alt, shift })` turns a click on the photo into new values or `null`; `markers(values)` lists source-UV points to draw; `Controls` is its panel, given `values`, `setValues(patch)` and `commit(label)`; `coverage({ photoId, componentId, values, signal })` resolves a `{ width, height, data }` bitmap of the whole uncropped source, one byte a pixel, row 0 at source v 0 (as a brush dab's y), or null. A callback that throws answers a safe value (`{}`, `null`, `[]`) and is logged under your extension; `Controls` runs inside Masking's own error boundary. Core renders at most 4 extension components per photo (`MAX_EXTENSION_MASK_COMPONENTS`), by `maskRasterChannels`: each takes the channel of its place among extension components across the masks in order, and the fifth and later get -1. Your kinds go when your extension stops; components that name a type nothing holds stay in their masks and cover nothing (3.2.8).
+- `unregisterMaskComponentKind` takes back one of your kinds; `maskComponentKinds` and `useMaskComponentKinds` list every kind with its `type`, `owner` and `generation`. `refreshMaskCoverage(name)` bumps your kind's generation, so `coverage` is asked for again for the values the components already hold; it works on your own kinds only (3.2.8).
+- Core asks `coverage` when a frame of the photo first needs it: the live view, a thumbnail, an export or a headless frame, each of which waits for it but the live view. It resamples each bitmap to one size (the largest given, at most 2048 px on its long edge) and packs the photo's extension components into Masking's raster a channel each, an inverted component inverted there, so a component whose coverage is `null`, or isn't in yet, covers nothing, inverted or not. New values, a new generation or another photo make a new raster; the live view keeps drawing the last one while the next is made (3.2.8).
 - `registerInputProfiles` lets one extension read non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) through their colour profiles. Each load of such a photo calls `resolve(photo, file)` with `{ id, filename, inputProfile }` and the original as a `Blob`. Answer an `InputTransform` (below) or `null`. Core then decodes the file's 8-bit codes without colour management, puts each channel through its `trc` table and the three through `toRec709`, and clamps nothing. Colour outside sRGB arrives as negative channels, as it does from a RAW. Develop, exports, headless renders and edited thumbnails use the result; the Library's plain grid previews stay the browser's. HEIF photos are read through their own colour information instead, and a photo an extension decoder reads (`api.library.registerDecoder`) isn't passed to the resolver (3.2.6).
   - `null`, a throw, an answer later than 3 s or an invalid transform leaves the photo to the browser's decode, which converts to sRGB as before. So does a decode or conversion that fails afterwards.
   - One extension holds the resolver. Another's is refused with a warning naming the holder. Registering again replaces your own, and it is dropped when your extension stops.
@@ -236,6 +247,7 @@ interface InputTransform {
   A code `c` is read at `p = c / 255 * (n - 1)`, interpolated linearly between the samples around it. Every sample and matrix entry must be finite.
 - `useMaskPanels` lists the panels that can be added to a mask (`PanelContribution.mask`), in their `order` then by title. `extensionParams` is true for one that owns an extension's params, which run inside the mask only at the current processing. Draw one inside `components.MaskScope`; the develop store's `seedMaskPanelValues` and `clearMaskPanelValues` set or clear its values when it is added or removed.
 - `probe` reads the colour the canvas shows at a point in its pixels (sRGB, 0 to 1) from the live frame, or `null` with no frame.
+- `sampleView` is what `ColourField`'s eyedropper reads, for a picker of your own on `setPickDrag`: call it from `onPress` with the point. It captures the view with `paramBag` merged over the photo's, and over each mask's copy of a stage the bag names, so `{ "{stageId}.on": 0 }` leaves your own effect out, and returns the average of the 5×5 pixels around the point (sRGB, 0 to 1). It is `null` off the frame, without a renderer, or when another photo opened before the capture landed.
 - `autoAdjust` runs core's Auto White Balance, the white-balance eyedropper at a canvas point, or Auto Tone to convergence, then commits one undo step. Each needs the frame's histogram (`useDevelopStore` `histogram`) and does nothing without one, and only one runs at a time. Pair `whiteBalanceAt` with `setPickDrag`: call it from `onPress` with the point.
 - `adjustments` reaches core values inside structured params (`"vignette.amount"`, `"grain.size"`) that `setParam` can't set alone. `set` is live with no history entry: call `commitEdit` yourself.
 
@@ -245,6 +257,8 @@ interface InputTransform {
 - A capture's params and `paramBag` never reach the live view or the histogram, Auto Tone, Auto White Balance or Upright. Use `paramBag` to render an auxiliary image (a gain map, a mask) aligned to the view.
 - `captureFloatFrame` returns RGBA floats, rows top-down. `"pre-output"` is the signed colour the output stage receives (clamped to [0, 1] on version 1 photos), `"output"` is sRGB in [0, 1], `"scene"` is what the display transform receives, and `"decode"` (3.2.6) is the linear colour the decode and noise-reduction stages leave, ahead of the built-in noise reduction, white balance and every later tool. It is `null` without float render targets, with no photo open, or when the GPU can't hold the frame.
 - `maxEdge: Infinity` gives the full view (about 180 MB at 4096 px, more on the GPU). A smaller frame is the full one averaged down, so ask for full size only when you need the detail.
+- `point: "mask"` (3.2.8) is the colour the mask components compare: scene-linear, after white balance and the tone tools, before any mask applies. It covers the whole uncropped source in source UV, without the crop or the geometry stages, so row 0 is source v 0, the orientation of a brush dab's y and of a mask coverage bitmap. It is read at most 2048 px on its long edge. The frame carries `inputKey`, what `maskInputKey()` answers for its params and source, and `finalSource`, false while Develop still draws from the camera preview before the RAW decodes: fill a region from such a frame again once a final one comes. A mask capture never waits for the mask raster your own kind may be making.
+- `maskInputKey()` (3.2.8) is a key of that colour for the open photo: it changes with an edit, a stage ahead of the masks or the source that changes it (exposure, white balance, a denoiser), and holds through masks, the crop, geometry and every tool after the masks. The same edit gives the same key in every session, so you can save it beside a region you filled and fill again only when it changes. `null` with no photo open.
 - `captureRegion` (3.2.7) draws a small patch of the live frame at the frame's own pixels, whatever the view is zoomed to: what a magnifier shows at true pixel scale. The frame is the view's whole frame at fit, at most the Develop render resolution (the pixels Develop's zoom counts), over the region the view shows. Drawn at `useDevelopOverlay` `zoomScale` (3.2.7) device pixels a frame pixel, it matches Develop's 100 %: `zoomScale` is 1, except with Dynamic render resolution on a RAW larger than the frame Develop holds, where Develop's zoom counts the photo's own pixels. `x` and `y` are the patch's centre, 0 to 1 across the frame (`useDevelopOverlay` `imageRect`), and `width` and `height` its size in frame pixels, 1 to 1024. The patch is drawn as the canvas shows it, with the view's overlays and in the screen's space. Only the patch is drawn, away from the canvas, so the live view isn't touched and a small patch is cheap enough to ask for as the pointer moves; keep one request in flight. Near an edge only the part inside the frame is drawn, and `rect` says where the bitmap sits. `colorSpace` is the canvas's (`"display-p3"` on a wide-gamut screen): open your 2D context with it, or wide colour clips. It is `null` with no photo open, between photos, without float render targets, or for a patch wholly outside the frame. The Magnifier Loupe extension uses it.
 - `readSourceSample` gives up to 1024 px from the centre of the open RAW at native resolution: linear Rec.709, white balance applied, before every edit. It is `null` for bitmaps and until the RAW decodes; wait for `useDevelopStore` `sourceSize.native` to be true. Each call copies about 16 MB.
 
@@ -253,8 +267,9 @@ interface InputTransform {
 - `renderPhotoFrame` and `renderPhotoFloatFrame` render any catalogue photo small, for measurement, whatever Develop has open (batch Auto Tone, say). `null` if the photo can't render.
 - Built-in stages add their entries from `params` (Detail noise reduction) and win over the same keys in `paramBag`. Set `luminanceNR` and `colorNR` to 0 for a frame without it.
 - `renderPhotoFrame` decodes from a JPEG. Pass `lossless: true` (PNG, 3.0.1) for a frame that carries data. A lossless or float frame is `null` where only the grid's camera preview could stand in for the photo.
+- `renderPhotoFloatFrame` at `point: "mask"` (3.2.8) is the live mask capture's frame for any photo, read at `maxEdge` up to 2048 px (default 640) from a source held at 2048 px, with `inputKey` and `finalSource` (false when a stored or embedded preview stood in for the original).
 
-**Per-photo data.** `putPhotoData` stores an opaque blob for the photo open in Develop, under a key namespaced to your extension, outside the catalogue file. Use it for large payloads such as a warp field. You own the format and when to load and save.
+**Per-photo data.** `putPhotoData` stores an opaque blob for the photo open in Develop, under a key namespaced to your extension, outside the catalogue file. Use it for large payloads such as a warp field. You own the format and when to load and save. From 3.2.8 `putPhotoData(key, data, photoId)` writes another photo's blob (a photo the catalogue holds), and a `getPhotoData` of it sees the new data at once, before the write lands.
 
 Members marked 3.1.0 are undefined on older builds: check for them, or set `minAppVersion` in the [manifest](../extensions/README.md#manifest). `minAppVersion` gates installs from the open source extension library only, so test dev-folder copies on a matching build.
 
@@ -337,6 +352,7 @@ Lower-level catalogue access, for extensions that add records the scan didn't pr
 addPhotos(photos, opts?: { afterId?: string }): Promise<void>; // saved + in grid
 getEditState(photoId): Promise<EditState | null>;  // recipe + undo stack
 putEditState(editState): Promise<void>;
+applyBagPatch(photoId, patch, label): Promise<boolean>; // 3.2.8: one history step, photo needn't be open
 renamePhoto(photoId, newBaseName): Promise<RenamePhotoResult>;
 useVisiblePhotos(opts?: { without?: string[] }): CatalogPhoto[]; // grid order
 usePhotoActions(): { onContextMenu; overlays };    // Library menu
@@ -356,6 +372,7 @@ useTargetPhotos(): CatalogPhoto[];                 // 3.2.7: targetIds' photos, 
 **Notes**
 
 - Writing the photo open in Develop with `putEditState` reloads it there, which clears the active tool and the mask and spot selection.
+- `applyBagPatch` (3.2.8) commits `patch`, bag keys by qualified key, computed values included, over a photo's bag as one history step labelled `label`, made in your extension's name (its local history). Every extension's `onEditCommit` runs, the grid preview is drawn from the new look, and the photo open in Develop reloads from it. It resolves `false` and writes nothing when the photo already holds every value, and rejects for a photo the catalogue doesn't hold. Use it for a Library batch; `putEditState` does none of this.
 - `renamePhoto` takes the name without its extension and keeps the sidecar, virtual copies, ratings and edits. It returns `{ ok: false, reason }` rather than throwing. To shuffle a numbering range, rename through temporary names first.
 - `useVisiblePhotos`'s `without` names grid filters to ignore, for a surface that registers a filter of its own.
 - `targetIds` is the rule core's rating, rotate and remove shortcuts use for "these photos": the selection, else the active photo, else none. Use it for a command of your own rather than reading `selectedIds` yourself.

@@ -15,14 +15,15 @@
 // build a per-photo histogram for batch Auto Tone / Auto WB across a selection.
 
 import type { DevelopParams } from "@/catalog/types";
-import { getRenderBridge, needStageVariants, type RenderBridge } from "@/rendering/render-bridge";
+import { getRenderBridge, needStageVariants, withoutMaskRasters, type RenderBridge } from "@/rendering/render-bridge";
 import type { SourceImage, ThumbRequest } from "@/rendering/render-protocol";
-import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
+import { MASK_CAPTURE_MAX_EDGE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame } from "@/rendering/float-frame";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { convertedTargetEdge } from "@/catalog/input-profiles";
 import { useCatalogStore } from "./catalog-store";
 import { showsEdit, standsForPhoto } from "./fallback-rules";
+import { photoMaskInputKey } from "./mask-input-key";
 
 // Source cap mirrors edited-thumbnail.ts: small enough to stay cheap, with
 // headroom above the measured frame so a tight crop still resolves.
@@ -31,6 +32,24 @@ const THUMB_SOURCE_MAX_EDGE = 1280;
 // and keeps the per-photo convergence loop fast.
 const MEASURE_MAX_EDGE = 640;
 const MEASURE_JPEG_QUALITY = 0.9;
+
+/** How big a measured frame is drawn, and its source held. A mask frame
+ *  (point "mask") is drawn up to MASK_CAPTURE_MAX_EDGE from a source held that
+ *  large, apart from the measurements' smaller one, and doesn't wait for the
+ *  mask raster, which may be waiting for it. */
+interface MeasureSize {
+  render: number;
+  source: number;
+  mask: boolean;
+}
+
+const MEASURE: MeasureSize = { render: MEASURE_MAX_EDGE, source: THUMB_SOURCE_MAX_EDGE, mask: false };
+
+/** Which source a measured frame was drawn from: the photo's own (a decode, or
+ *  the camera preview of a RAW nothing decodes), or a stand-in drawn once. */
+interface Seen {
+  final: boolean;
+}
 
 let reqSeq = 0;
 
@@ -85,9 +104,26 @@ export async function renderPhotoFloatFrame(
   // would read null, each after decoding the photo for nothing.
   if (!bridge.pipelineFloat) return null;
   const float = { point: opts.point, space: opts.space };
-  return measure(photoId, params, opts.paramBag, false, (b, request) =>
-    b.renderThumbnailFloat({ ...request, float }),
+  const mask = opts.point === "mask";
+  const size: MeasureSize = mask
+    ? {
+        render: Math.min(opts.maxEdge === undefined ? MEASURE_MAX_EDGE : captureMaxEdge(opts.maxEdge), MASK_CAPTURE_MAX_EDGE),
+        source: MASK_CAPTURE_MAX_EDGE,
+        mask: true,
+      }
+    : MEASURE;
+  const seen: Seen = { final: true };
+  const frame = await measure(
+    photoId,
+    params,
+    opts.paramBag,
+    false,
+    (b, request) => b.renderThumbnailFloat({ ...request, float }),
+    size,
+    seen,
   );
+  if (!frame || !mask) return frame;
+  return { ...frame, inputKey: photoMaskInputKey(photoId, params, opts.paramBag) ?? "", finalSource: seen.final };
 }
 
 /** measureFrom with the frame's whole stage bag, once the stage texture variants
@@ -99,10 +135,13 @@ async function measure<T>(
   paramBag: Record<string, unknown> | undefined,
   cameraPreview: boolean,
   render: (bridge: RenderBridge, request: ThumbRequest) => Promise<T | null>,
+  size: MeasureSize = MEASURE,
+  seen?: Seen,
 ): Promise<T | null> {
   // Without a bag of its own the photo draws its params alone: a renderer's
   // own bag is another photo's.
-  const bag = frameStageBag(params, paramBag ?? {}, photoId);
+  const whole = frameStageBag(params, paramBag ?? {}, photoId);
+  const bag = size.mask ? withoutMaskRasters(whole) : whole;
   const needed = needStageVariants(bag, { worker: true });
   const lease = needed && (await needed);
   try {
@@ -110,7 +149,7 @@ async function measure<T>(
       console.warn(`[render] ${lease.failure}`);
       return null;
     }
-    return await measureFrom(photoId, params, bag, cameraPreview, render);
+    return await measureFrom(photoId, params, bag, cameraPreview, render, size, seen);
   } finally {
     lease?.release();
   }
@@ -129,6 +168,8 @@ async function measureFrom<T>(
   contributedParams: Record<string, unknown>,
   cameraPreview: boolean,
   render: (bridge: RenderBridge, request: ThumbRequest) => Promise<T | null>,
+  size: MeasureSize = MEASURE,
+  seen?: Seen,
 ): Promise<T | null> {
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return null;
@@ -136,14 +177,15 @@ async function measureFrom<T>(
   const bridge = getRenderBridge();
   await bridge.ready;
 
-  const key = photoSourceKey(photo);
+  const own = photoSourceKey(photo);
+  const key = size.source === THUMB_SOURCE_MAX_EDGE ? own : `${own}@${size.source}`;
   const request = (source: { key: string } | { image: SourceImage }): ThumbRequest => ({
     requestId: "key" in source ? `measure-${source.key}-${++reqSeq}` : `measure-once-${++reqSeq}`,
     params,
     // Read at each render: a first decode stores the as-shot white balance it
     // learns on the photo, and a RAW whose import left it pending has none before.
     asShotTemperature: photo.exif.colorTemperature ?? 6500,
-    maxEdge: MEASURE_MAX_EDGE,
+    maxEdge: size.render,
     contributedParams,
     ...source,
   });
@@ -161,7 +203,7 @@ async function measureFrom<T>(
   if (!frame) {
     const decoded = await loadPhotoImage(photo, {
       background: true,
-      ...convertedTargetEdge(photo, THUMB_SOURCE_MAX_EDGE),
+      ...convertedTargetEdge(photo, size.source),
     });
     if (decoded?.kind === "bitmap" && showsEdit(decoded)) {
       decoded.bitmap.close();
@@ -177,12 +219,13 @@ async function measureFrom<T>(
           "thumb",
           key,
           image,
-          THUMB_SOURCE_MAX_EDGE,
+          size.source,
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
         );
         frame = await render(bridge, request({ key }));
       } else {
         frame = await render(bridge, request({ image }));
+        if (seen) seen.final = false;
       }
     }
   }

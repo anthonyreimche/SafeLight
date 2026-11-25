@@ -4,7 +4,7 @@
 //
 // Import its types with `import type`. It declares a few of the host's
 // functions for their types only; reach those through `api`.
-// Safelight 3.2.7. GPL-3.0-only.
+// Safelight 3.2.8. GPL-3.0-only.
 
 import type { ButtonHTMLAttributes, CSSProperties, ComponentType, DragEvent, InputHTMLAttributes, JSX, MemoExoticComponent, MouseEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -456,8 +456,9 @@ export interface PanelContribution {
     replaces?: readonly string[];
     /** Stretch to the remaining rail height instead of rendering at natural
      *  height; the panel body must size to 100% and manage its own scrolling.
-     *  One fill panel per side rail stretches (the rail stops scrolling while it
-     *  is expanded); bottom-rail panels always fill. */
+     *  Every expanded fill panel in a side rail stretches, sharing the height
+     *  with the others (the rail stops scrolling while one is expanded);
+     *  bottom-rail panels always fill. */
     fill?: boolean;
     /** Opt in to bottom rails — the full-width horizontal strip under the main
      *  view. Panels are vertical columns unless they say otherwise, so the dock
@@ -1041,7 +1042,8 @@ export interface TextureRequirement {
     perPhoto?: boolean;
     width?: number;
     height?: number;
-    format?: "rgba8" | "rgba16f" | "r8";
+    /** "r16f" (one float per texel) needs Safelight 3.2.8. */
+    format?: "rgba8" | "rgba16f" | "r16f" | "r8";
 }
 
 /** Runtime pixel data for a processing stage's declared texture (e.g. a baked
@@ -1445,6 +1447,14 @@ export interface ProcessingStageContribution {
      *  so it is excluded from presets by default and only surfaced under the Save
      *  dialogue's "Show all". Omit for ordinary global adjustments. */
     presetScope?: "global" | "per-image";
+    /** Bag keys of this stage that aren't uniforms but belong to its edit (a
+     *  table the stage's variants are made from): relative to the stage, or
+     *  qualified `{stageId}.{key}` as a uniform's is. A preset carries them with
+     *  the stage's params, and the stage's row in Save Preset and the
+     *  extension-side Copy Settings lists counts one present in the bag as a
+     *  change. Paste and the whole-bag paths already keep unknown keys. Needs
+     *  Safelight 3.2.8. */
+    dataKeys?: string[];
     /** Opt into full-information values. Omitted, a stage before the display
      *  transform gets `lin` as linear Rec.709 (signed, unclamped; from the
      *  scene-linear phase on, the core shoulder has compressed its highlights
@@ -1830,8 +1840,14 @@ export interface SafelightAPI {
      *  asked for again when needed. `signal` aborts once nothing needs the
      *  variant any more (one a drag passed by): skip work not started yet. Pass
      *  null to stop. Dropped with the
-     *  extension. Needs Safelight 3.2.4. */
-    setStageTextureProvider(stageId: string, key: string, provide: ((variant: string, signal: AbortSignal) => Promise<StageTextureData | null>) | null): void;
+     *  extension. Needs Safelight 3.2.4.
+     *
+     *  `bag` is the full param bag of the frame that first asked for the variant
+     *  (read-only), so a variant can be made from values that live in the bag. A
+     *  variant is still made once per name: name it by content when you read the
+     *  bag. A provider taking only (variant, signal) works as before. The bag
+     *  argument needs Safelight 3.2.8. */
+    setStageTextureProvider(stageId: string, key: string, provide: ((variant: string, signal: AbortSignal, bag: Readonly<Record<string, unknown>>) => Promise<StageTextureData | null>) | null): void;
     /** Let go of a variant made by setStageTextureProvider (every variant of the
      *  key when `variant` is left out), so it is asked for again when next
      *  needed: what it was made from changed or is gone. Needs Safelight 3.2.4. */
@@ -2035,6 +2051,14 @@ export interface SafelightAPI {
          *  is under way. `update` changes it in place, `close` takes it down, and
          *  core takes it down when your extension stops. Needs Safelight 3.2.7. */
         notify(notice: string | NoticeOptions): NoticeHandle;
+        /** A colour control: a swatch as wide as the row that opens a picker under
+         *  it (a hue-by-saturation area, or a hue bar for a field without
+         *  saturation; a lightness bar for a field with lightness; a hex field),
+         *  and an eyedropper that takes the colour of the photo where it is
+         *  clicked. `toRgb` and `fromRgb` carry your own colour model (default HSL);
+         *  `pick: { paramBag }` samples a capture with that bag, to leave your own
+         *  effect out of the sample. Needs Safelight 3.2.8. */
+        ColourField(props: ColourFieldProps): import("react").JSX.Element;
     };
     /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
      *  that must escape its panel's clipping. Extension bundles can't import
@@ -2302,7 +2326,13 @@ export interface SafelightAPI {
          *  frame holds.
          *  While Develop still shows the camera preview, before the RAW decodes,
          *  the frame is drawn from that preview, as captureFrame's is. Needs
-         *  Safelight 3.1.0; on older builds it is undefined. */
+         *  Safelight 3.1.0; on older builds it is undefined.
+         *  `point: "mask"` reads the colour the mask components compare over the
+         *  whole uncropped source, in source UV (row 0 at source v 0, as a brush
+         *  dab's y), without the crop or geometry, at most 2048 px on its long
+         *  edge; the frame carries `inputKey` (maskInputKey) and `finalSource`,
+         *  false while it was drawn from the camera preview. Needs Safelight
+         *  3.2.8. */
         captureFloatFrame(params: DevelopParams, options?: LiveFloatCaptureOptions): Promise<FloatFrame | null>;
         /** A patch of the live frame at the frame's own pixels: the view's whole
          *  frame at fit (at most the Develop render resolution, the pixels Develop's
@@ -2357,7 +2387,10 @@ export interface SafelightAPI {
          *  values stay within [0, 1]. Null if the photo can't render from a source
          *  of its own: the grid's camera preview never stands in, as for a lossless
          *  frame, since that is another source. Null without float render targets
-         *  too. Needs Safelight 3.1.0; on older builds it is undefined. */
+         *  too. Needs Safelight 3.1.0; on older builds it is undefined.
+         *  At `point: "mask"` it is captureFloatFrame's mask frame for the photo,
+         *  read at `options.maxEdge` up to 2048 px (default 640), with `inputKey`
+         *  and `finalSource`. Needs Safelight 3.2.8. */
         renderPhotoFloatFrame(photoId: string, params: DevelopParams, options?: FloatCaptureOptions): Promise<FloatFrame | null>;
         /** The centre of the open photo's decoded source at native resolution.
          *  Safelight keeps it from the live RAW decode before capping the GPU
@@ -2390,8 +2423,11 @@ export interface SafelightAPI {
          *  loaded Develop photo. The key is namespaced per extension. Stored as a
          *  sidecar outside catalog.json so large payloads (e.g. a warp displacement
          *  field) don't bloat the whole-file JSON rewrite. Core treats the bytes as
-         *  opaque — the extension owns the format and load/save timing. */
-        putPhotoData(key: string, data: Uint8Array | null): void;
+         *  opaque — the extension owns the format and load/save timing. With
+         *  `photoId` (a photo the catalogue holds), it writes that photo's blob
+         *  instead, and a getPhotoData of it sees the new data at once, before the
+         *  write lands. Naming a photo needs Safelight 3.2.8. */
+        putPhotoData(key: string, data: Uint8Array | null, photoId?: string): void;
         /** Hold the canvas's pick-drag tool (an eyedropper or on-image target
          *  tool), or with null let go of it. While it's held, a press on the image
          *  calls `tool.onPress` with the point in the canvas's pixels at once;
@@ -2432,6 +2468,14 @@ export interface SafelightAPI {
          *  pick-drag tool gives them), sRGB 0-1, read from the live frame; null
          *  with no canvas or no frame yet. */
         probe(point: CanvasPoint): Promise<readonly [number, number, number] | null>;
+        /** What ColourField's eyedropper reads: the average of the 5×5 pixels
+         *  around `point` (in the canvas's pixels, as the pick-drag tool gives
+         *  them) of a capture of the view, sRGB 0-1, with `paramBag` merged over
+         *  the photo's and over each mask's copy of a stage it names, to leave
+         *  your own effect out of the sample. Null off the frame, without a
+         *  renderer, or when another photo opened before the capture landed.
+         *  Needs Safelight 3.2.8. */
+        sampleView(point: CanvasPoint, paramBag?: Record<string, unknown>): Promise<readonly [number, number, number] | null>;
         /** The colour a mask's colour range compares at (u, v), 0 to 1 across the
          *  live frame buffer (useDevelopOverlay `rect`): scene-linear, before the
          *  display transform. Null with no frame. Needs Safelight 3.2.0. */
@@ -2475,6 +2519,48 @@ export interface SafelightAPI {
         /** React hook: brushTips(), re-rendering as tips come and go. Needs
          *  Safelight 3.2.5. */
         useBrushTips(): readonly BrushTipContribution[];
+        /** Offer a kind of mask component: a coverage raster your extension
+         *  computes over the whole photo (a fuzzy select, say), which Masking lists
+         *  beside its own kinds and combines like any other component. The kind is
+         *  held as `{your id}.{name}` (`name`: lower-case letters, digits and
+         *  dashes); `create` makes a new component's values (plain JSON, under
+         *  16 KB), `onPoint` turns a click on the photo into new values, `markers`
+         *  draws where those clicks were, `Controls` is its panel, and
+         *  `coverage` resolves a one-byte-per-pixel bitmap of the whole uncropped
+         *  source (or null for none yet). At most 4 such components in a photo
+         *  render; see maskRasterChannels. Registering a name you hold replaces it.
+         *  A callback that throws answers a safe value and is logged. Dropped when
+         *  the extension stops. Needs Safelight 3.2.8. */
+        registerMaskComponentKind(kind: MaskComponentKindContribution): void;
+        /** Take back a kind you registered, by its `name`. Components that use it
+         *  stay in their masks, covering nothing, until it is back. Needs
+         *  Safelight 3.2.8. */
+        unregisterMaskComponentKind(name: string): void;
+        /** Every registered mask component kind, whichever extension registered
+         *  it, in the order they came. The same array until the set changes. Needs
+         *  Safelight 3.2.8. */
+        maskComponentKinds(): readonly RegisteredMaskComponentKind[];
+        /** React hook: maskComponentKinds(), re-rendering as kinds come and go.
+         *  Needs Safelight 3.2.8. */
+        useMaskComponentKinds(): readonly RegisteredMaskComponentKind[];
+        /** Say the coverage of your kind `name` has changed for the values its
+         *  components already hold (a model finished loading, say): coverage is
+         *  asked for again. Only your own kinds. Needs Safelight 3.2.8. */
+        refreshMaskCoverage(name: string): void;
+        /** The raster channel (0 to 3) each extension component of `masks` is
+         *  packed into, by component id: its place among extension components
+         *  across the masks in order. The fifth and later get -1 and cover
+         *  nothing. Needs Safelight 3.2.8. */
+        maskRasterChannels(masks: readonly Mask[]): Record<string, number>;
+        /** The key of the colour the open photo's mask components compare: what a
+         *  "mask" float frame (captureFloatFrame or renderPhotoFloatFrame) carries
+         *  as its `inputKey`. It changes when an edit, a stage ahead of the masks
+         *  or the source changes that colour (exposure, white balance, a denoiser),
+         *  and holds through masks, the crop, geometry and every tool after the
+         *  masks, so a region filled from such a frame needs filling again only
+         *  when it changes. The same edit gives the same key in every session.
+         *  Null with no photo open. Needs Safelight 3.2.8. */
+        maskInputKey(): Promise<string | null>;
         /** The official brush every painting tool shares: Masking's. A tool holds
          *  its own settings and starts them from `defaults` (size is a radius as a
          *  share of the photo's height, as a BrushDab's; feather, opacity and flow
@@ -2628,6 +2714,17 @@ export interface SafelightAPI {
         }): Promise<void>;
         getEditState(photoId: string): Promise<EditState | null>;
         putEditState(editState: EditState): Promise<void>;
+        /** Commit `patch`, bag keys by qualified key ("{stageId}.{key}"), over a
+         *  photo's param bag as one history step labelled `label`, for a photo that
+         *  needn't be open (a Library batch). Computed values in the patch are
+         *  kept. The step is stamped as made by your extension (its local history),
+         *  stored with every extension's onEditCommit hook run, and the photo's grid
+         *  preview drawn from the new look; the photo open in Develop reloads
+         *  from it. Resolves true when it changed the photo, false (writing nothing)
+         *  when the photo already held every value; rejects for a photo the
+         *  catalogue doesn't hold or a patch that isn't an object. Needs
+         *  Safelight 3.2.8. */
+        applyBagPatch(photoId: string, patch: Record<string, unknown>, label: string): Promise<boolean>;
         /** Rename one photo's file on disk, in place (same folder), preserving its
          *  extension. This is core's own rename path: an atomic native rename (no
          *  full-file copy), carrying the `<file>.safelight.json` sidecar and any
@@ -2909,6 +3006,10 @@ export interface SafelightAPI {
      *  when given one (a category key such as "preset"). */
     extensions: {
         openStore(category?: string): void;
+        /** React hook: whether the installed extensions have finished starting at
+         *  launch. Until then, data another extension owns may still be waiting
+         *  for it, so hold back on calling it missing. Needs Safelight 3.2.8. */
+        useSettled(): boolean;
     };
     /** Accessibility overlays (high contrast, colour-vision filters, larger text
      *  and controls, reduced motion and transparency, OS sync, keyboard canvas
@@ -3602,6 +3703,8 @@ export interface AppSettings {
     dropdownWheelSelect: boolean;
     /** Collapsing a dock panel writes into the picked saved layout. */
     autoSaveCollapsedPanels: boolean;
+    /** Expanding a dock panel collapses the others in its column. */
+    soloPanels: boolean;
     highContrast: boolean;
     strongFocus: boolean;
     colorVisionFilter: ColorVisionFilter;
@@ -4972,9 +5075,16 @@ export interface ColorRangeGeo {
     smoothness: number;
 }
 
-export type MaskComponentKind = MaskType | "lumRange" | "colorRange";
+export type MaskComponentKind = MaskType | "lumRange" | "colorRange" | "extension";
 
 export type MaskComponentMode = "add" | "subtract" | "intersect";
+
+/** What an extension's own component kind keeps: its qualified type
+ *  ("{extensionId}.{name}") and the plain-JSON values it chose. */
+export interface MaskComponentExtension {
+    type: string;
+    values: Record<string, unknown>;
+}
 
 export interface MaskComponent {
     id: string;
@@ -4986,6 +5096,7 @@ export interface MaskComponent {
     brush?: BrushMaskGeo;
     lumRange?: LumRangeGeo;
     colorRange?: ColorRangeGeo;
+    extension?: MaskComponentExtension;
 }
 
 export interface Mask {
@@ -5705,6 +5816,44 @@ export interface NoticeHandle {
     close(): void;
 }
 
+// src/ui/components/ColourField.ts
+
+/** The channels a field has: always hue, saturation and lightness when given. */
+export interface ColourValue {
+    hue: number;
+    saturation?: number;
+    lightness?: number;
+}
+
+export interface ColourFieldProps {
+    label: string;
+    /** Degrees, 0 to 360. */
+    hue: number;
+    /** Percent, 0 to 100. Leave it out for a hue-only field. */
+    saturation?: number;
+    /** Percent, 0 to 100. Give it for a field that also sets lightness. */
+    lightness?: number;
+    /** Live while a drag lasts, and once for a key, hex or pick; carries the
+     *  field's channels only. */
+    onChange(value: ColourValue): void;
+    /** A drag ended, or a key, hex or pick changed the colour. */
+    onCommit?(): void;
+    /** The colour to show for hue, saturation and lightness (a missing channel
+     *  comes as 100 and 50), display sRGB 0 to 1. Default: HSL. */
+    toRgb?(hue: number, saturation: number, lightness: number): Rgb;
+    /** A typed or picked colour (display sRGB 0 to 1) in the field's channels.
+     *  Default: HSL. */
+    fromRgb?(rgb: Rgb): Hsl;
+    /** The eyedropper. `true` (the default) takes the colour the view shows;
+     *  `{ paramBag }` samples a capture with that bag merged over the photo's,
+     *  to leave the extension's own effect out; `false` hides it. */
+    pick?: boolean | {
+        paramBag: Record<string, unknown>;
+    };
+    /** The swatch's tooltip. */
+    title?: string;
+}
+
 // src/state/presets-store.ts
 
 export interface Preset {
@@ -6058,8 +6207,12 @@ export interface CanvasTool {
  *  sRGB, in [0, 1]. "scene": the scene-linear colour the display transform
  *  receives, signed, before any display tool. "decode": the linear colour
  *  the decode and noise-reduction stages leave, ahead of the built-in noise
- *  reduction, white balance and every later tool (Safelight 3.2.6). */
-export type CapturePoint = "pre-output" | "output" | "scene" | "decode";
+ *  reduction, white balance and every later tool (Safelight 3.2.6). "mask":
+ *  the scene-linear colour the mask components compare (after white balance
+ *  and the tone tools, before any mask applies), over the whole uncropped
+ *  source in source UV, without the crop or the geometry stages: row 0 is
+ *  source v 0, the orientation of a brush dab's y. Needs Safelight 3.2.8. */
+export type CapturePoint = "pre-output" | "output" | "scene" | "decode" | "mask";
 
 export interface FloatCaptureOptions {
     /** Default linear Rec.709. */
@@ -6068,6 +6221,10 @@ export interface FloatCaptureOptions {
     point?: CapturePoint;
     /** Merged over the photo's extension-stage params for this capture only. */
     paramBag?: Record<string, unknown>;
+    /** For renderPhotoFloatFrame at "mask": the frame's long edge in pixels, up
+     *  to 2048 (default 640). Other photo frames are read small and ignore it.
+     *  Needs Safelight 3.2.8. */
+    maxEdge?: number;
 }
 
 /** What a live capture (captureFloatFrame) takes: the options of any float
@@ -6084,6 +6241,14 @@ export interface FloatFrame {
     height: number;
     space: StageSpace;
     point: CapturePoint;
+    /** For a "mask" frame: what the colour the mask components compare is made
+     *  from, as api.develop.maskInputKey keys it: compare it with the key a
+     *  saved result was made from. Needs Safelight 3.2.8. */
+    inputKey?: string;
+    /** For a "mask" frame: false while it was drawn from a stand-in for the
+     *  photo (the camera preview before a RAW decodes), true from the photo's
+     *  own decode. Needs Safelight 3.2.8. */
+    finalSource?: boolean;
 }
 
 /** The developed frame of the whole image, untransformed and uncropped, as
@@ -6248,6 +6413,59 @@ export interface SourcePixels {
     data: Uint8ClampedArray;
     width: number;
     height: number;
+}
+
+// src/rendering/mask-component-kinds.ts
+
+/** Coverage over the whole uncropped source: one byte per pixel, row 0 at
+ *  source v 0 (the orientation of a brush dab's y). */
+export interface MaskCoverageBitmap {
+    width: number;
+    height: number;
+    data: Uint8Array;
+}
+
+/** A click or drag point on the photo, in source UV, with the modifiers held. */
+export interface MaskComponentPoint {
+    u: number;
+    v: number;
+    alt: boolean;
+    shift: boolean;
+}
+
+export interface MaskComponentControlsProps {
+    values: Record<string, unknown>;
+    setValues(patch: Record<string, unknown>): void;
+    commit(label: string): void;
+}
+
+export interface MaskCoverageRequest {
+    photoId: string;
+    componentId: string;
+    values: Record<string, unknown>;
+    signal: AbortSignal;
+}
+
+export interface MaskComponentKindContribution {
+    name: string;
+    label: string;
+    icon?: string;
+    commitLabel?: string;
+    create(): Record<string, unknown>;
+    onPoint?(values: Record<string, unknown>, p: MaskComponentPoint): Record<string, unknown> | null;
+    markers?(values: Record<string, unknown>): {
+        u: number;
+        v: number;
+        subtract?: boolean;
+    }[];
+    Controls?: ComponentType<MaskComponentControlsProps>;
+    coverage(req: MaskCoverageRequest): Promise<MaskCoverageBitmap | null>;
+}
+
+export interface RegisteredMaskComponentKind extends MaskComponentKindContribution {
+    type: string;
+    owner: string;
+    generation: number;
 }
 
 // src/modules/develop/brush.ts
@@ -6693,6 +6911,7 @@ export interface ExtensionDescriptors {
     uniforms: {
         key: string;
         glslType: string;
+        length?: number;
         default: unknown;
         range?: {
             min: number;
@@ -6711,6 +6930,20 @@ export interface ExtensionDescriptors {
      *  (UniformDeclaration.computed), inline and in passes. Absent from files an
      *  older Safelight wrote. */
     computed?: string[];
+}
+
+// src/ui/colour-field-math.ts
+
+/** Display-encoded sRGB, 0 to 1. */
+export type Rgb = readonly [number, number, number];
+
+export interface Hsl {
+    /** Degrees, 0 to 360. */
+    hue: number;
+    /** Percent, 0 to 100. */
+    saturation: number;
+    /** Percent, 0 to 100. */
+    lightness: number;
 }
 
 // src/project/folder-node.ts

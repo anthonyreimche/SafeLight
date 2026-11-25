@@ -89,7 +89,7 @@ describe("stage texture variants made on demand", () => {
     const failures = await Promise.all([frame(bagFor("v1")), frame(bagFor("v1")), frame(bagFor("v1"))]);
     expect(failures).toEqual([null, null, null]);
     expect(provide).toHaveBeenCalledTimes(1);
-    expect(provide).toHaveBeenCalledWith("v1", expect.anything());
+    expect(provide).toHaveBeenCalledWith("v1", expect.anything(), expect.anything());
     expect(held()).toEqual([`${KEY}#v1`]);
     await frame(bagFor("v1"));
     expect(provide).toHaveBeenCalledTimes(1);
@@ -275,7 +275,7 @@ describe("stage texture variants made on demand", () => {
     const provide = vi.fn(async () => tex());
     makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
     await tick();
-    expect(provide).toHaveBeenCalledWith("v1", expect.anything());
+    expect(provide).toHaveBeenCalledWith("v1", expect.anything(), expect.anything());
     expect(held()).toEqual([`${KEY}#v1`]);
   });
 
@@ -287,7 +287,7 @@ describe("stage texture variants made on demand", () => {
     const again = vi.fn(async () => tex());
     api.setStageTextureProvider("acme.calib", "table", again);
     await tick();
-    expect(again).toHaveBeenCalledWith("v1", expect.anything());
+    expect(again).toHaveBeenCalledWith("v1", expect.anything(), expect.anything());
     expect(held()).toEqual([`${KEY}#v1`]);
   });
 
@@ -366,7 +366,7 @@ describe("stage texture variants made on demand", () => {
     await frame(bagFor("old"));
     noteLiveStageBag(bagFor("old"), bagFor("new"));
     await tick();
-    expect(provide).toHaveBeenLastCalledWith("new", expect.anything());
+    expect(provide).toHaveBeenLastCalledWith("new", expect.anything(), expect.anything());
     expect(held()).toEqual([`${KEY}#new`, `${KEY}#old`]);
     expect(await frame(bagFor("other"))).toMatch(/can't hold/);
   });
@@ -395,5 +395,33 @@ describe("stage texture variants made on demand", () => {
     expect(await frame(bagFor("v2"))).toMatch(/can't hold/);
     noteLiveStageBag({});
     expect(await frame(bagFor("v2"))).toBeNull();
+  });
+
+  it("hands the provider the full bag of the frame that asked for the variant", async () => {
+    const provide = vi.fn(async (_variant: string, _signal: AbortSignal, _bag: Readonly<Record<string, unknown>>) => tex());
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    const bag = { ...bagFor("v1"), "acme.calib.sourceHist": "AQID", "acme.calib.on": true };
+    await frame(bag);
+    expect(provide).toHaveBeenCalledTimes(1);
+    expect(provide.mock.calls[0][2]).toEqual(bag);
+  });
+
+  it("hands the live view's bag to a provider asked by it, and the open photo's saved bag for its own variant", async () => {
+    const provide = vi.fn(async (_variant: string, _signal: AbortSignal, _bag: Readonly<Record<string, unknown>>) => tex());
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    const live = { ...bagFor("old"), mark: "live" };
+    const own = { ...bagFor("new"), mark: "own" };
+    noteLiveStageBag(live, own);
+    await tick();
+    const bagOf = (variant: string) => provide.mock.calls.find((c) => c[0] === variant)?.[2];
+    expect(bagOf("old")).toEqual(live);
+    expect(bagOf("new")).toEqual(own);
+  });
+
+  it("still calls a provider that takes only the variant and the signal", async () => {
+    const provide = vi.fn(async (_variant: string, _signal: AbortSignal) => tex());
+    makeScopedAPI("acme").setStageTextureProvider("acme.calib", "table", provide);
+    expect(await frame(bagFor("v1"))).toBeNull();
+    expect(held()).toEqual([`${KEY}#v1`]);
   });
 });

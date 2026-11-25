@@ -15,7 +15,13 @@ const VIZ_STRENGTH = 0.5;
 import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
 import { useStageViewValues } from "@/modules/develop/stage-view-values";
 import { currentDisplaySpace } from "@/rendering/display-space";
-import { getRenderBridge, noteLiveStageBag } from "@/rendering/render-bridge";
+import {
+  getRenderBridge,
+  liveMaskRasterBag,
+  maskRastersRevision,
+  noteLiveStageBag,
+  subscribeMaskRasters,
+} from "@/rendering/render-bridge";
 import { setLiveViewSource, useLiveStatus } from "@/rendering/render-bridge/live-status";
 import { shaderVariantFor } from "@/rendering/webgl/shaders";
 import type { RendererAvailability } from "@/rendering/render-bridge";
@@ -73,7 +79,7 @@ function stageBag(
   photoId: string | null,
 ): Record<string, unknown> {
   const shown = Object.keys(viewValues).length > 0 ? { ...paramBag, ...viewValues } : paramBag;
-  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed), photoId ?? undefined);
+  return liveMaskRasterBag(frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(shown, bypassed), photoId ?? undefined));
 }
 
 // The edit the view draws: a hover preview (e.g. from the Presets panel) stands in
@@ -106,6 +112,8 @@ interface Pushed {
   viewValues: Readonly<Record<string, unknown>>;
   pipelineId: string;
   asShotTemperature: number;
+  /** maskRastersRevision: the mask raster the view names may have changed. */
+  maskRasters: number;
 }
 
 /** Whether `b` draws what `a` did. The params a push was made from count only through
@@ -120,7 +128,8 @@ function drawsSame(a: Pushed, b: Pushed): boolean {
     a.bypassed === b.bypassed &&
     a.viewValues === b.viewValues &&
     a.pipelineId === b.pipelineId &&
-    a.asShotTemperature === b.asShotTemperature
+    a.asShotTemperature === b.asShotTemperature &&
+    a.maskRasters === b.maskRasters
   );
 }
 
@@ -393,6 +402,7 @@ export function useDevelopRenderer(
     setLiveViewSource({
       photoId: () => useDevelopStore.getState().photoId,
       processVersion: () => shaderVariantFor(drawnParams(useDevelopStore.getState()).processVersion).version,
+      finalSource: () => finalGenRef.current !== null && bridge.sourceGen >= finalGenRef.current,
     });
 
     const offFilled = watchCacheFills(bridge, openPhotoIdRef);
@@ -514,10 +524,14 @@ export function useDevelopRenderer(
       }
     });
 
+    // A mask raster the view waited for landed, or a mask component kind changed.
+    const stopWatchingRasters = subscribeMaskRasters(() => pushRef.current());
+
     setSupported(true);
     return () => {
       offFilled();
       stopWatchingStages();
+      stopWatchingRasters();
       stopWatchingEdit();
       renderQueuedRef.current = false;
       // A view set up again (StrictMode) pushes the edit again, and renders it.
@@ -608,6 +622,7 @@ export function useDevelopRenderer(
       viewValues: useStageViewValues.getState().merged,
       pipelineId: usePipelineStore.getState().activeId,
       asShotTemperature: st.asShotTemperature,
+      maskRasters: maskRastersRevision(),
     };
     const last = pushedRef.current;
     pushedRef.current = next;

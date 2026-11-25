@@ -18,6 +18,10 @@ export interface StartFailure {
 /** The extensions that failed to start, by extension id. */
 export const useStartFailures = create<Record<string, StartFailure>>(() => ({}));
 
+/** What the extension's row, and an issue report, say of a start that failed. */
+export const startFailureText = (failure: StartFailure): string =>
+  failure.reason === "timed out" ? "Didn't start: it took too long to start." : `Didn't start: ${failure.message}`;
+
 export function recordStartFailure(extensionId: string, error: unknown): void {
   useStartFailures.setState({
     [extensionId]: {

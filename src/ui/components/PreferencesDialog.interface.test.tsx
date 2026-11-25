@@ -79,6 +79,17 @@ describe("Preferences ▸ Interface", () => {
     expect(useSettings.getState().autoSaveCollapsedPanels).toBe(true);
   });
 
+  it("turns expanding one panel at a time on and off", async () => {
+    const user = userEvent.setup();
+    updateSettings({ soloPanels: false });
+    showInterface();
+    const toggle = screen.getByRole("switch", { name: /Expand one panel at a time/ });
+    await user.click(toggle);
+    expect(useSettings.getState().soloPanels).toBe(true);
+    await user.click(toggle);
+    expect(useSettings.getState().soloPanels).toBe(false);
+  });
+
   it("opens a saved layout's Extensions list under its row", async () => {
     const user = userEvent.setup();
     useUserLayouts.setState({

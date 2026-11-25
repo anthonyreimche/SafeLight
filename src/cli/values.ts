@@ -153,6 +153,7 @@ export function createValueService(
     const reason = `${tool.name} doesn't support ${COMMAND} yet. Set it in Safelight.`;
     for (const u of e.descriptor?.uniforms ?? []) {
       if (u.glslType !== "float" && u.glslType !== "int" && u.glslType !== "bool") continue;
+      if (u.length !== undefined) continue;
       const stage = e.descriptor?.stages.find((s) => u.key.startsWith(`${s.id}.`));
       const local = stage ? u.key.slice(stage.id.length + 1) : u.key;
       const info: ValueInfo = {

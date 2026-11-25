@@ -12,6 +12,9 @@ import type { DevelopParams, Mask, MaskAdjustments } from "@/catalog/types";
 import { isUniformValue } from "@/extensions/pipeline-validation";
 import type { StageDomain } from "../stage-space";
 import type { ContributedBinding, SplitCut, StageSplit } from "./stage-injection";
+import type { ProcessingStageContribution, StageAnchor } from "@/extensions/types";
+import { anchorOf } from "./stage-anchors";
+import { simpleHash } from "./hash";
 
 export interface SplitUpstreamInputs {
   params: DevelopParams;
@@ -259,4 +262,47 @@ export class SplitTokens {
   clear(): void {
     this.memo.clear();
   }
+}
+
+/** What reaches the mask components, for maskInputKey. */
+export interface MaskInputs {
+  params: DevelopParams;
+  /** The frame's stage bag (frameStageBag). */
+  bag: Record<string, unknown>;
+  /** The registered stages, in any order. */
+  stages: readonly (ProcessingStageContribution & { extensionId?: string })[];
+  asShotTemperature: number;
+  /** The source's identity: the photo's source key. */
+  source: string;
+}
+
+// A mask cut reads what a scene cut reads, bar the masks themselves.
+const MASK_DROPPED: ReadonlySet<string> = new Set([...DROPPED.scene, "masks"]);
+
+const AHEAD_OF_MASKS: ReadonlySet<StageAnchor> = new Set(["retouch", "white-balance", "tone"]);
+
+/** Whether `s` runs ahead of the masks anchor without moving the image: a
+ *  decode or noise-reduction stage, or an official stage anchored ahead. */
+function feedsMasks(s: ProcessingStageContribution & { extensionId?: string }): boolean {
+  if (s.phase === "decode" || s.phase === "noise-reduction") return true;
+  const anchor = anchorOf(s);
+  return s.phase === "scene-linear" && anchor !== undefined && AHEAD_OF_MASKS.has(anchor);
+}
+
+/** A stable key of the colour the mask components compare: the params a scene
+ *  cut reads bar the masks, the bag entries of the stages ahead of the masks
+ *  anchor (not the geometry stages, nor Masking), the as-shot white balance and
+ *  the source. A mask, the crop, the geometry and anything after the masks
+ *  leave it as it is. The same inputs give the same key in every session. */
+export function maskInputKey(i: MaskInputs): string {
+  const upstream = i.stages.filter(feedsMasks).map((s) => s.id);
+  const text = JSON.stringify([
+    Object.entries(i.params)
+      .filter(([k]) => !MASK_DROPPED.has(k))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    upstreamEntries(i.bag, upstream),
+    i.asShotTemperature,
+    i.source,
+  ]);
+  return `${simpleHash(text)}-${simpleHash(text.slice(text.length >> 1))}-${text.length.toString(36)}`;
 }

@@ -12,6 +12,7 @@ import type { DevelopParams } from "@/catalog/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { withPipeline } from "@/extensions/pipelines";
 import type { FloatFrame } from "../float-frame";
+import { blankBitmap } from "../render-bridge/requests";
 import type { RegionPixels } from "../region-capture";
 import type { SourceSample } from "../source-sample";
 import type { WebGLRenderer } from "../webgl/renderer";
@@ -72,8 +73,8 @@ type CaptureCmd = "capture" | "captureFloat" | "readSourceSample" | "probe" | "c
 export function captureHandlers(ctx: WorkerContext): HandlersFor<CaptureCmd> {
   const { state, respond } = ctx;
   const blankCapture = (reqId: number): void => {
-    const blank = new OffscreenCanvas(1, 1);
-    respond({ type: "captured", reqId, bitmap: blank.transferToImageBitmap() });
+    const blank = blankBitmap();
+    respond({ type: "captured", reqId, bitmap: blank }, [blank]);
   };
   return {
     capture(msg) {

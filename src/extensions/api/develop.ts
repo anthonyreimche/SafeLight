@@ -81,8 +81,12 @@ export interface CanvasTool {
  *  sRGB, in [0, 1]. "scene": the scene-linear colour the display transform
  *  receives, signed, before any display tool. "decode": the linear colour
  *  the decode and noise-reduction stages leave, ahead of the built-in noise
- *  reduction, white balance and every later tool (Safelight 3.2.6). */
-export type CapturePoint = "pre-output" | "output" | "scene" | "decode";
+ *  reduction, white balance and every later tool (Safelight 3.2.6). "mask":
+ *  the scene-linear colour the mask components compare (after white balance
+ *  and the tone tools, before any mask applies), over the whole uncropped
+ *  source in source UV, without the crop or the geometry stages: row 0 is
+ *  source v 0, the orientation of a brush dab's y. Needs Safelight 3.2.8. */
+export type CapturePoint = "pre-output" | "output" | "scene" | "decode" | "mask";
 
 export interface FloatCaptureOptions {
   /** Default linear Rec.709. */
@@ -91,6 +95,10 @@ export interface FloatCaptureOptions {
   point?: CapturePoint;
   /** Merged over the photo's extension-stage params for this capture only. */
   paramBag?: Record<string, unknown>;
+  /** For renderPhotoFloatFrame at "mask": the frame's long edge in pixels, up
+   *  to 2048 (default 640). Other photo frames are read small and ignore it.
+   *  Needs Safelight 3.2.8. */
+  maxEdge?: number;
 }
 
 /** What a live capture (captureFloatFrame) takes: the options of any float
@@ -107,6 +115,14 @@ export interface FloatFrame {
   height: number;
   space: StageSpace;
   point: CapturePoint;
+  /** For a "mask" frame: what the colour the mask components compare is made
+   *  from, as api.develop.maskInputKey keys it: compare it with the key a
+   *  saved result was made from. Needs Safelight 3.2.8. */
+  inputKey?: string;
+  /** For a "mask" frame: false while it was drawn from a stand-in for the
+   *  photo (the camera preview before a RAW decodes), true from the photo's
+   *  own decode. Needs Safelight 3.2.8. */
+  finalSource?: boolean;
 }
 
 /** The developed frame of the whole image, untransformed and uncropped, as

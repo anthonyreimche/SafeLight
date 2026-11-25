@@ -314,6 +314,89 @@ describe("collapsing a bottom rail", () => {
   });
 });
 
+describe("expanding one panel at a time", () => {
+  /** x.a and x.b share the right column; x.c sits alone on the left. */
+  function bootColumns(collapsed: Record<string, boolean>) {
+    panel("x.a", { defaultDock: { module: "develop", direction: "right", order: 1 } });
+    panel("x.b", { defaultDock: { module: "develop", direction: "right", order: 2 } });
+    panel("x.c", { defaultDock: { module: "develop", direction: "left" } });
+    const session = boot();
+    act(() => useDockStore.setState({ collapsed }));
+    return session;
+  }
+  const collapsed = () => useDockStore.getState().collapsed;
+  const isCollapsed = (id: string) => !!collapsed()[id];
+
+  async function altClickHeader(view: { container: HTMLElement }, title: string) {
+    const user = userEvent.setup();
+    await user.keyboard("[AltLeft>]");
+    const header = [...view.container.querySelectorAll("[data-dock-panel] span")].find(
+      (el) => el.textContent === title,
+    )!;
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: header, coords: { clientX: 40, clientY: 400 } },
+      { keys: "[/MouseLeft]", target: header },
+    ]);
+    await user.keyboard("[/AltLeft]");
+  }
+
+  it("leaves the other panels open when the setting is off", async () => {
+    const { close, view } = bootColumns({ "x.a": true });
+    await clickHeader(view, "x.a");
+    expect(isCollapsed("x.a")).toBe(false);
+    expect(isCollapsed("x.b")).toBe(false);
+    close();
+  });
+
+  describe("when on", () => {
+    beforeEach(() => useSettings.setState({ soloPanels: true }));
+
+    it("collapses the other panels in the column when one is expanded", async () => {
+      const { close, view } = bootColumns({ "x.a": true });
+      await clickHeader(view, "x.a");
+      expect(isCollapsed("x.a")).toBe(false);
+      expect(isCollapsed("x.b")).toBe(true);
+      close();
+    });
+
+    it("leaves panels in other columns alone", async () => {
+      const { close, view } = bootColumns({ "x.a": true });
+      await clickHeader(view, "x.a");
+      expect(isCollapsed("x.c")).toBe(false);
+      close();
+    });
+
+    it("only collapses an expanded panel that is clicked", async () => {
+      const { close, view } = bootColumns({ "x.b": true });
+      await clickHeader(view, "x.a");
+      expect(isCollapsed("x.a")).toBe(true);
+      expect(isCollapsed("x.b")).toBe(true);
+      close();
+    });
+
+    it("lets Alt+click expand a panel without collapsing the others", async () => {
+      const { close, view } = bootColumns({ "x.a": true });
+      await altClickHeader(view, "x.a");
+      expect(isCollapsed("x.a")).toBe(false);
+      expect(isCollapsed("x.b")).toBe(false);
+      close();
+    });
+
+    it("does the same from the keyboard", async () => {
+      const user = userEvent.setup();
+      const { close, view } = bootColumns({ "x.a": true });
+      const title = [...view.container.querySelectorAll<HTMLElement>("[role=button]")].find(
+        (el) => el.textContent === "x.a",
+      )!;
+      title.focus();
+      await user.keyboard("{Enter}");
+      expect(isCollapsed("x.a")).toBe(false);
+      expect(isCollapsed("x.b")).toBe(true);
+      close();
+    });
+  });
+});
+
 describe("collapsed panels in layouts", () => {
   const savedCollapsed = (collapsed: Record<string, boolean>) =>
     localStorage.setItem(
@@ -1688,6 +1771,37 @@ describe("a panel its extension unregisters", () => {
 
     act(() => registerPanel("test-ext", { id: "x.f", title: "x.f", component: () => <p>filter body</p> }));
     expect(view.getByText("filter body")).toBeTruthy();
+    close();
+  });
+});
+
+// A side rail with more than one fill panel: each expanded one takes a share of
+// the leftover height and scrolls itself, so one never squeezes another to nothing.
+describe("fill panels sharing a side rail", () => {
+  const stretched = (view: { container: HTMLElement }, id: string) =>
+    view.container.querySelector(`[data-dock-panel="${id}"]`)!.classList.contains("flex-1");
+
+  it("stretches every expanded fill panel, and none that is collapsed or plain", async () => {
+    panel("x.list", { fill: true });
+    panel("x.plain");
+    panel("x.rows", { fill: true });
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({
+        rails: [{ id: "left-1", side: "left", width: 260, panels: ["x.list", "x.plain", "x.rows"] }],
+        floating: {},
+        zOrder: [],
+        collapsed: {},
+      }),
+    );
+    const { close, view } = boot();
+    expect(stretched(view, "x.list")).toBe(true);
+    expect(stretched(view, "x.rows")).toBe(true);
+    expect(stretched(view, "x.plain")).toBe(false);
+
+    await clickHeader(view, "x.list");
+    expect(stretched(view, "x.list")).toBe(false);
+    expect(stretched(view, "x.rows")).toBe(true);
     close();
   });
 });

@@ -20,6 +20,7 @@ vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() 
 import {
   appendStoredSnapshot,
   appendStoredSnapshots,
+  applyBagPatch,
   storedSnapshotTargets,
   type StoredLook,
   type StoredSnapshotTarget,
@@ -34,9 +35,11 @@ import {
   type EditState,
 } from "./types";
 import { broadcast } from "@/state/broadcast";
+import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
+import { registerComputedParams, unregisterStageParams } from "@/extensions/param-registry";
 import type { CatalogHooksContribution } from "@/extensions/types";
 
 type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
@@ -602,5 +605,82 @@ describe("storedSnapshotTargets", () => {
       { photoId: "b", asShot: 4300 },
       { photoId: "a", asShot: NEUTRAL_TEMPERATURE_K },
     ]);
+  });
+});
+
+describe("appendStoredSnapshots — stamp and thumbnails", () => {
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    vi.mocked(regenerateEditedThumbnail).mockClear();
+  });
+
+  it("stamps each new step with the source it is made for, and none by default", async () => {
+    const { written } = installMemoryStorage(original("a"), original("b"));
+    await appendStoredSnapshots(storedSnapshotTargets(["a"]), "Plain", brighter);
+    await appendStoredSnapshots(storedSnapshotTargets(["b"]), "Stamped", brighter, { source: "acme" });
+    const [a, b] = [written.find((e) => e.photoId === "a"), written.find((e) => e.photoId === "b")];
+    expect(a?.stack[1]).not.toHaveProperty("source");
+    expect(b?.stack[1].source).toBe("acme");
+  });
+
+  it("draws no thumbnail unless asked, and then one from each stored photo's new look", async () => {
+    installMemoryStorage(original("a"), original("b"));
+    await appendStoredSnapshots(storedSnapshotTargets(["a", "b"]), "Step", brighter);
+    expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+    await appendStoredSnapshots(storedSnapshotTargets(["a", "b"]), "Step", (base) => ({ ...base, paramBag: { "x.y": 1 } }), {
+      refreshThumbnails: true,
+    });
+    expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(2);
+    const call = vi.mocked(regenerateEditedThumbnail).mock.calls[0];
+    expect(call[0]).toBe("a");
+    expect(call[3]).toEqual({ "x.y": 1 });
+  });
+});
+
+describe("applyBagPatch", () => {
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: [photo("a")] });
+    vi.mocked(regenerateEditedThumbnail).mockClear();
+  });
+
+  it("commits the patch over the photo's bag as one step in the extension's name, and announces it", async () => {
+    const { written } = installMemoryStorage(edit([snapshot("Original", {}, { "m.s.on": true, "m.s.keep": 1 })], 0, "a"));
+    const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {});
+    registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
+    const done = await applyBagPatch("a", { "m.s.tMean": [0.1, 0.2], "m.s.on": false }, "Match colours", "m");
+    expect(done).toBe(true);
+    expect(written).toHaveLength(1);
+    const step = written[0].stack[1];
+    expect(step.label).toBe("Match colours");
+    expect(step.source).toBe("m");
+    expect(step.paramBag).toEqual({ "m.s.on": false, "m.s.keep": 1, "m.s.tMean": [0.1, 0.2] });
+    expect(written[0].currentIndex).toBe(1);
+    expect(onEditCommit).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({ type: "edit-update", payload: { photoId: "a" } });
+    expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps computed values the patch carries, which a paste would leave out", async () => {
+    registerComputedParams("m.s", "m", ["tMean"]);
+    try {
+      const { written } = installMemoryStorage(original("a"));
+      await applyBagPatch("a", { "m.s.tMean": [1] }, "Match", "m");
+      expect(written[0].stack[1].paramBag).toEqual({ "m.s.tMean": [1] });
+    } finally {
+      unregisterStageParams("m.s");
+    }
+  });
+
+  it("changes nothing when the patch is already the photo's own", async () => {
+    const { written } = installMemoryStorage(edit([snapshot("Original", {}, { "m.s.on": true })], 0, "a"));
+    expect(await applyBagPatch("a", { "m.s.on": true }, "Match", "m")).toBe(false);
+    expect(written).toHaveLength(0);
+    expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+  });
+
+  it("refuses a photo the catalogue doesn't hold, and a patch that isn't an object", async () => {
+    installMemoryStorage(original("a"));
+    await expect(applyBagPatch("gone", { "m.s.on": true }, "Match", "m")).rejects.toThrow(/not in the catalogue|no photo/i);
+    await expect(applyBagPatch("a", [] as unknown as Record<string, unknown>, "Match", "m")).rejects.toThrow(/patch/);
   });
 });

@@ -58,8 +58,9 @@ export interface PanelContribution {
   replaces?: readonly string[];
   /** Stretch to the remaining rail height instead of rendering at natural
    *  height; the panel body must size to 100% and manage its own scrolling.
-   *  One fill panel per side rail stretches (the rail stops scrolling while it
-   *  is expanded); bottom-rail panels always fill. */
+   *  Every expanded fill panel in a side rail stretches, sharing the height
+   *  with the others (the rail stops scrolling while one is expanded);
+   *  bottom-rail panels always fill. */
   fill?: boolean;
   /** Opt in to bottom rails — the full-width horizontal strip under the main
    *  view. Panels are vertical columns unless they say otherwise, so the dock
@@ -655,7 +656,8 @@ export interface TextureRequirement {
   perPhoto?: boolean;
   width?: number;
   height?: number;
-  format?: "rgba8" | "rgba16f" | "r8";
+  /** "r16f" (one float per texel) needs Safelight 3.2.8. */
+  format?: "rgba8" | "rgba16f" | "r16f" | "r8";
 }
 
 /** Runtime pixel data for a processing stage's declared texture (e.g. a baked
@@ -1099,6 +1101,15 @@ export interface ProcessingStageContribution {
    *  so it is excluded from presets by default and only surfaced under the Save
    *  dialogue's "Show all". Omit for ordinary global adjustments. */
   presetScope?: "global" | "per-image";
+
+  /** Bag keys of this stage that aren't uniforms but belong to its edit (a
+   *  table the stage's variants are made from): relative to the stage, or
+   *  qualified `{stageId}.{key}` as a uniform's is. A preset carries them with
+   *  the stage's params, and the stage's row in Save Preset and the
+   *  extension-side Copy Settings lists counts one present in the bag as a
+   *  change. Paste and the whole-bag paths already keep unknown keys. Needs
+   *  Safelight 3.2.8. */
+  dataKeys?: string[];
 
   /** Opt into full-information values. Omitted, a stage before the display
    *  transform gets `lin` as linear Rec.709 (signed, unclamped; from the

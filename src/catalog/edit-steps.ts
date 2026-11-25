@@ -30,13 +30,22 @@ export function currentLook(state: EditState | undefined, asShot: number): Store
 }
 
 /** stored-edit's appendedEdit, pure: cut at the cursor, seed "Original" for a never-edited photo, append, move the cursor. */
-export function appendStep(state: EditState | undefined, target: StepTarget, label: string, look: StoredLook, now: number): EditState {
+export function appendStep(
+  state: EditState | undefined,
+  target: StepTarget,
+  label: string,
+  look: StoredLook,
+  now: number,
+  source?: string,
+): EditState {
   const kept = openStack(state);
   const stack: EditSnapshot[] =
     kept.length > 0
       ? kept
       : [{ timestamp: now, label: "Original", params: freshParams(target.asShot), paramBag: {} }];
-  const newStack = [...stack, { timestamp: now, label, params: look.params, paramBag: look.paramBag }];
+  const step: EditSnapshot = { timestamp: now, label, params: look.params, paramBag: look.paramBag };
+  if (source !== undefined) step.source = source;
+  const newStack = [...stack, step];
   return { photoId: target.photoId, stack: newStack, currentIndex: newStack.length - 1 };
 }
 

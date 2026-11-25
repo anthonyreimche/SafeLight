@@ -43,6 +43,27 @@ describe("motion keyframes", () => {
     },
   );
 
+  // A dialogue backdrop fades its dim colour: an opacity effect on it would make it
+  // the backdrop root of the dialogue, and a glass theme's frost would turn opaque.
+  it("sl-enter-dim fades the background colour only, never opacity", () => {
+    const frames = keyframes("sl-enter-dim");
+    expect(frames).toMatch(/background-color:\s*transparent/);
+    expect(frames).not.toMatch(/\bopacity\s*:/);
+    expect(css).toMatch(/\.sl-enter-dim\s*\{/);
+  });
+
+  // Filled forwards, a finished opacity animation still counts as an opacity effect,
+  // so everything inside the element keeps it as their backdrop root. The end state
+  // is the element's own value anyway, so nothing needs to fill past the end.
+  it.each(["sl-enter-fade", "sl-enter-pop", "sl-enter-rise", "sl-enter-expand", "sl-enter-dim"])(
+    "the .%s animation leaves nothing behind once it ends",
+    (cls) => {
+      const rule = css.match(new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+      expect(rule).toMatch(/animation:[^;]*\bbackwards\b/);
+      expect(rule).not.toMatch(/animation:[^;]*\b(both|forwards)\b/);
+    },
+  );
+
   it("Reduce motion still stops every animation and transition", () => {
     expect(css).toMatch(/\.sl-reduce-motion \*,[\s\S]*?animation: none !important;[\s\S]*?transition: none !important;/);
   });

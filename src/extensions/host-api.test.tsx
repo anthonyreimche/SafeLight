@@ -18,6 +18,7 @@ import { makeScopedAPI } from "./host";
 import type { SafelightAPI } from "./types";
 import { registerPresetImporter, registerTheme, unregisterExtension } from "./registry";
 import { useExtStoreUI } from "./store-ui";
+import { useExternalPluginsSettled } from "./loader";
 import { useDockStore } from "./dock";
 import { uiKit } from "./ui-kit";
 import { DEFAULT_DEVELOP_PARAMS, freshParams, normalizeParams, type CatalogPhoto } from "@/catalog/types";
@@ -280,6 +281,18 @@ describe("api.extensions.openStore", () => {
     useExtStoreUI.getState().goHome();
     api().extensions.openStore("preset");
     expect(useExtStoreUI.getState().browse).toBe("preset");
+  });
+});
+
+describe("api.extensions.useSettled", () => {
+  afterEach(() => useExternalPluginsSettled.setState({ settled: false }));
+
+  it("is false while the installed extensions start, then true", () => {
+    useExternalPluginsSettled.setState({ settled: false });
+    const { result } = renderHook(() => api().extensions.useSettled());
+    expect(result.current).toBe(false);
+    act(() => useExternalPluginsSettled.setState({ settled: true }));
+    expect(result.current).toBe(true);
   });
 });
 

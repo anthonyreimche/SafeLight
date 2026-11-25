@@ -88,8 +88,11 @@ export const LINEAR_TO_SRGB_GLSL = `vec3 linearToSrgb(vec3 c) {
 /** Where a probe-only program stops and hands back its working colour instead
  *  of the frame: "decode" at the linear `lin` the decode and noise-reduction
  *  stages leave, "mask" at the scene-linear `lin` the mask components compare,
- *  "scene" at the `lin` the display transform receives. */
-export type ProgramExit = "decode" | "mask" | "scene";
+ *  "scene" at the `lin` the display transform receives. "mask-source" is a
+ *  mask measurement: the mask components' `lin` over the whole source, drawn
+ *  in source texels as a split draw is, without the crop or the geometry
+ *  stages, so row r of its target is source row r. */
+export type ProgramExit = "decode" | "mask" | "mask-source" | "scene";
 
 // Single-pass develop shader, assembled per process version. Most stages are
 // per-pixel point operations; clarity is a midtone-contrast approximation.
@@ -123,6 +126,9 @@ function fragmentShaderSource(v: ShaderVariant, splits = false, exit?: ProgramEx
   // A decode measurement stops, the same way, after the contributed decode and
   // noise-reduction stages, ahead of the built-in noise reduction.
   const decodeExit = exit === "decode" ? measureExit : "";
+  // A mask measurement stops where the mask components read `lin`, likewise.
+  const maskSource = exit === "mask-source";
+  const maskSourceExit = maskSource ? measureExit : "";
   // Version 3 maps the signed colour into the target; earlier versions clip it.
   const output = v.signedOutput ? "slOutput(c)" : "encodeOutput(clamp(c, 0.0, 1.0))";
   // Nothing produces a fallback preview (load-image.ts declares the flag and
@@ -787,7 +793,8 @@ void main() {
   vec2 srcUv = cropTransformUV(viewUv);${split(`
   // A split draw renders one stage's input in source texels (the patch
   // pass's convention), so the stage's passes line up with uImage.
-  if (uSplitAt >= 0) srcUv = vec2(vUv.x, 1.0 - vUv.y);`)}
+  if (uSplitAt >= 0) srcUv = vec2(vUv.x, 1.0 - vUv.y);`)}${maskSource ? `
+  srcUv = vec2(vUv.x, 1.0 - vUv.y);` : ""}
   // Captured before contributed geometry stages warp srcUv, so radial
   // corrections (e.g. an extension's vignette) measure from the sensor centre.
   vec2 sensorUv = srcUv;
@@ -795,7 +802,7 @@ void main() {
   // srcUv so the whole pipeline below resamples the warped position. Runs
   // before the bounds check, so content warped past the frame reads as the
   // outside colour rather than smearing an edge texel.
-  ${split("if (uSplitAt < 0) {\n  ")}//__CONTRIBUTED_GEOMETRY__${split("\n  }")}
+  ${maskSource ? "" : `${split("if (uSplitAt < 0) {\n  ")}//__CONTRIBUTED_GEOMETRY__${split("\n  }")}`}
   // Content rotated out of frame by straighten reads as neutral dark, so corners
   // stay clean instead of smearing the edge texel. A point outside the photo's
   // frame before the warp is outside too: a stage that zooms in (a lens
@@ -952,7 +959,7 @@ void main() {
   // (max), SUBTRACT carves away (×(1−c)), in list order. Then whole-mask invert
   // and opacity. Coverage is reused by stage 2 below.
   float mcovs[MAX_MASKS];
-  for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;${maskExit}
+  for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;${maskExit}${maskSourceExit}
   float mLuma = luma(lin);
   for (int ci = 0; ci < MAX_COMPONENTS; ci++) {
     if (ci >= uCompCount) break;
@@ -1115,7 +1122,9 @@ export function buildFragmentShader(
   const pipeline =
     pipelineGlsl || (variant.fullInfo ? V2_DEFAULT_PIPELINE_GLSL : DEFAULT_PIPELINE_GLSL);
   const spaceHelpers =
-    variant.fullInfo || stages?.needsSpaceHelpers || exit === "scene" || exit === "decode" ? `${STAGE_SPACE_GLSL}\n` : "";
+    variant.fullInfo || stages?.needsSpaceHelpers || exit === "scene" || exit === "decode" || exit === "mask-source"
+      ? `${STAGE_SPACE_GLSL}\n`
+      : "";
   // Replacer functions: a replacement string would read $&, $$, $' and $` in
   // contributed GLSL (comments included) as patterns.
   return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0, exit)

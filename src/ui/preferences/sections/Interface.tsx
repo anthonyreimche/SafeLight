@@ -35,6 +35,7 @@ export function InterfaceSection() {
   const dropdownWheelSelect = useSettings((s) => s.dropdownWheelSelect);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
   const autoSaveCollapsedPanels = useSettings((s) => s.autoSaveCollapsedPanels);
+  const soloPanels = useSettings((s) => s.soloPanels);
 
   return (
     <div className="flex flex-col gap-4">
@@ -55,6 +56,12 @@ export function InterfaceSection() {
         hint="Collapsing or expanding a panel updates the saved layout you're using, so panels stay that way when you switch between Library and Develop. Off: collapsing a panel switches to Custom until you save the layout with ↻."
         checked={autoSaveCollapsedPanels}
         onChange={(v) => updateSettings({ autoSaveCollapsedPanels: v })}
+      />
+      <ToggleField
+        label="Expand one panel at a time"
+        hint="Expanding a panel collapses the others in its column, so a long panel doesn't push the rest out of view. Alt+click a panel to expand or collapse it on its own. Off keeps the default: a click expands or collapses one panel, and Alt+click expands only that panel."
+        checked={soloPanels}
+        onChange={(v) => updateSettings({ soloPanels: v })}
       />
       <Field label="Interface scale">
         <ScaleStepper
@@ -195,6 +202,7 @@ export const interfaceSection: PrefSection = {
     "Theme",
     "Panel layout",
     "Save collapsed panels to the layout",
+    "Expand one panel at a time",
     "Interface scale",
     "Canvas surround",
     "Colour assessment border",
@@ -205,6 +213,6 @@ export const interfaceSection: PrefSection = {
     "Welcome setup",
     "Interface font",
   ),
-  keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "dropdown", "scroll", "wheel"],
+  keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "dropdown", "scroll", "wheel", "solo", "accordion", "collapse", "expand", "panel"],
   render: () => <InterfaceSection />,
 };

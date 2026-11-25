@@ -77,7 +77,7 @@ Open or close a panel with `api.dock.togglePanel(id)`. A panel with a `defaultDo
 Notes:
 
 - Panels dock left or right unless they set `allowBottomDock` (implied by `direction: "bottom"`). Bottom-rail panels sit side by side at full strip height.
-- A `fill` panel's body must size to 100% and scroll itself.
+- A `fill` panel's body must size to 100% and scroll itself. Expanded `fill` panels in one side rail share its leftover height (3.2.8); older builds stretch only the first, and the others take their natural height.
 - `onReset` should be one undoable action.
 - `replaces` is for a panel that moved, e.g. into another extension. Saved layouts naming an old id show this panel there once nothing else uses that id. Older builds ignore it, so no `minAppVersion` is needed.
 - A `headerAccessory` handles its own clicks. Clicks on a button in the header don't start a drag.

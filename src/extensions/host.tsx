@@ -110,6 +110,7 @@ import { LibraryListRow } from "@/modules/library/LibraryListRow";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import {
   captureDevelopFloatFrame,
+  developMaskInputKey,
   captureDevelopFrame,
   captureDevelopRegion,
   readDevelopSourceSample,
@@ -121,6 +122,14 @@ import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develo
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
 import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
 import { brushTips, registerBrushTip, unregisterBrushTip, useBrushTips } from "@/rendering/brush-tip-registry";
+import {
+  maskComponentKinds,
+  maskRasterChannels,
+  refreshMaskCoverage,
+  registerMaskComponentKind,
+  unregisterMaskComponentKind,
+  useMaskComponentKinds,
+} from "@/rendering/mask-component-kinds";
 import { BRUSH_ACTIONS, BRUSH_DEFAULTS, stepBrush } from "@/modules/develop/brush";
 import { BrushCursor } from "@/modules/develop/BrushCursor";
 import { frameLocalPoint } from "@/ui/frame-point";
@@ -136,6 +145,7 @@ import {
   renderPhotosToBlobs,
 } from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
+import { applyBagPatch } from "@/catalog/stored-edit";
 import { requestThumbnail } from "@/state/thumbnail-loader";
 import {
   createFolder,
@@ -194,6 +204,7 @@ import {
   CURSOR_LABELS,
 } from "@/state/cursor-store";
 import { uiKit } from "./ui-kit";
+import { colourFieldFor, sampleCapture } from "./colour-field-host";
 import { getAllDescriptors, getParamDescriptor } from "./param-registry";
 import {
   listAdjustments,
@@ -206,6 +217,7 @@ import {
   initEnablement,
   loadBuiltins,
   loadExternalPlugins,
+  useExternalPluginsSettled,
 } from "./loader";
 import { initPinSync } from "./pins";
 import { provideScopedAPI } from "./instance";
@@ -466,6 +478,7 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
     },
     ui: {
       ...uiKit,
+      ColourField: colourFieldFor(extensionId),
       confirmDialog,
       alertDialog,
       onEscape: (handler) =>
@@ -554,7 +567,7 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
             : contributionToSpec(cursor),
           opts,
         ),
-      putPhotoData: (key, data) => putPhotoData(`${extensionId}.${key}`, data),
+      putPhotoData: (key, data, photoId) => putPhotoData(`${extensionId}.${key}`, data, photoId),
       setPickDrag: (tool) => setPickDrag(extensionId, tool),
       usePickDragHeld: () => usePickDragStore((s) => s.held?.owner === extensionId),
       setCanvasTool: (tool) => setCanvasTool(extensionId, tool),
@@ -563,12 +576,20 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
       onSourcePixels: trackSubscription(extensionId, onSourcePixels),
       useCanvasToolHeld: () => useCanvasToolStore((s) => s.held?.owner === extensionId),
       probe: probeCanvas,
+      sampleView: (point, paramBag = {}) => sampleCapture(point, paramBag),
       probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
       showMaskCoverage,
       registerBrushTip: (tip) => registerBrushTip(extensionId, tip),
       unregisterBrushTip: (id) => unregisterBrushTip(extensionId, id),
       brushTips,
       useBrushTips,
+      registerMaskComponentKind: (kind) => registerMaskComponentKind(extensionId, kind),
+      unregisterMaskComponentKind: (name) => unregisterMaskComponentKind(extensionId, name),
+      maskComponentKinds,
+      useMaskComponentKinds,
+      refreshMaskCoverage: (name) => refreshMaskCoverage(extensionId, name),
+      maskRasterChannels,
+      maskInputKey: developMaskInputKey,
       brush: { defaults: BRUSH_DEFAULTS, actions: BRUSH_ACTIONS, step: stepBrush },
       BrushCursor,
       framePoint: (el, clientX, clientY) => frameLocalPoint(el.getBoundingClientRect(), clientX, clientY),
@@ -639,6 +660,7 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
           develop.loadEdit(editState.photoId, develop.asShotTemperature);
         await Promise.all([stored, reloaded]);
       },
+      applyBagPatch: (photoId, patch, label) => applyBagPatch(photoId, patch, label, extensionId),
       renamePhoto: (photoId, newBaseName) => renamePhoto(photoId, newBaseName),
       useVisiblePhotos,
       usePhotoActions,
@@ -719,6 +741,7 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
         if (category) useExtStoreUI.getState().openCategory(category);
         openExtensions();
       },
+      useSettled: () => useExternalPluginsSettled((s) => s.settled),
     },
     accessibility: { activate: activateAccessibility, deactivate: deactivateAccessibility, useKeyboardCanvasEditing },
     titleBar: { useOverlay: useTitleBarOverlay },
