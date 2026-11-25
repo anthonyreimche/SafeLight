@@ -86,7 +86,7 @@ See [Installation](docs/user/installation.md) for platform notes and full build 
 Full docs live in [`docs/`](docs/README.md), split into two tracks:
 
 **📖 [User Guide](docs/user/README.md)**: using Safelight
-- [Getting Started](docs/user/getting-started.md) · [Installation](docs/user/installation.md) · [User Guide](docs/user/user-guide.md) · [Using Extensions](docs/user/using-extensions.md) · [Extension safety & terms](EXTENSIONS.md) · [FAQ](docs/user/faq.md) · [Changelog](docs/user/changelog.md)
+- [Getting Started](docs/user/getting-started.md) · [Installation](docs/user/installation.md) · [User Guide](docs/user/user-guide.md) · [Using Extensions](docs/user/using-extensions.md) · [Extension safety & terms](EXTENSIONS.md) · [AI use](AI.md) · [FAQ](docs/user/faq.md) · [Changelog](docs/user/changelog.md)
 
 **🛠 [Developer Docs](docs/dev/README.md)**: building for Safelight
 - [Architecture](docs/dev/architecture.md) · [Building Extensions](docs/dev/extensions/README.md) · [API Reference](docs/dev/api/README.md) · [Contributing](docs/dev/contributing.md)

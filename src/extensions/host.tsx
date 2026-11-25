@@ -121,11 +121,16 @@ import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develo
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
 import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
 import { brushTips, registerBrushTip, unregisterBrushTip, useBrushTips } from "@/rendering/brush-tip-registry";
+import { BRUSH_ACTIONS, BRUSH_DEFAULTS, stepBrush } from "@/modules/develop/brush";
+import { BrushCursor } from "@/modules/develop/BrushCursor";
+import { frameLocalPoint } from "@/ui/frame-point";
+import { pluginFileUrl } from "./plugin-url";
 import { inputProfileOwner, invalidateInputProfiles, registerInputProfiles } from "@/catalog/input-profiles";
 import { setInputProfiles, watchInputProfiles } from "@/state/input-profile-redraw";
 import { useMaskPanels } from "@/modules/develop/mask-panels";
 import {
   exportPhotos,
+  exportStatus,
   getDefaultExportSettings,
   proPhotoAt8Bit,
   renderPhotosToBlobs,
@@ -233,6 +238,14 @@ import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool
 import { onSourcePixels, sourcePixels } from "@/rendering/source-pixels";
 import { probeCanvas } from "@/modules/develop/canvas-probe";
 import { autoAdjust } from "@/hooks/use-auto-adjust";
+import { developStoreFor } from "./api/develop-store-for";
+import { scopeCommittingAs } from "./api/scope-committing-as";
+import {
+  chooseHistorySource,
+  useChosenHistorySource,
+  useHistorySources,
+  useLocalHistory,
+} from "@/state/history-choice";
 import { PickerIcon } from "@/ui/components/PickerIcon";
 import { AutoButton } from "@/ui/components/AutoButton";
 import { ThumbnailBadge } from "@/ui/components/ThumbnailBadge";
@@ -244,11 +257,13 @@ import { photoDisplayName } from "@/catalog/copy-name";
 import { stackOf } from "@/catalog/stacks";
 import { editedAt, useEditedAt } from "@/catalog/edit-times";
 import { openExtensions } from "@/ui/components/extensions-dialog-store";
-import { openingAnotherPhoto, useDevelopStore } from "@/state/develop-store";
+import { commitsAs, openingAnotherPhoto, useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 import { GRID_SIZE_MAX, GRID_SIZE_MIN, GRID_SIZE_STEP, useUIStore } from "@/state/ui-store";
-import { goToModule } from "@/state/detach";
+import { detachedModule, goToModule, shownModule, useShownModule } from "@/state/detach";
+import { targetPhotoIds, useTargetPhotos } from "@/state/target-photos";
+import { notify } from "@/state/notification-store";
 import { initSettings, updateSettingsFromExtension, useSettings } from "@/state/settings-store";
 import { initDisplayProfile } from "@/rendering/display-profile-store";
 import { initPresets, usePresetsStore } from "@/state/presets-store";
@@ -342,11 +357,12 @@ function providesStageTexture(extensionId: string, plain: string): boolean {
   return false;
 }
 
-export function makeScopedAPI(extensionId: string): SafelightAPI {
+export function makeScopedAPI(extensionId: string, extensionVersion?: string): SafelightAPI {
   return {
     version: 1,
     extensionId,
     react: React,
+    assetUrl: (path) => pluginFileUrl(location.origin, extensionId, path, extensionVersion),
     registerPanel: (c) => registerPanel(extensionId, c),
     unregisterPanel: (id) => {
       if (unregisterPanel(extensionId, id)) useDevelopStore.getState().setPanelBypass(id, false);
@@ -460,10 +476,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
             console.warn(`[extensions] ${extensionId}: its Escape handler threw:`, err);
           }
         }),
+      notify: (notice) => notify(extensionId, notice),
     },
     reactDom: { createPortal },
     stores: {
-      useDevelopStore,
+      useDevelopStore: developStoreFor(extensionId),
       useCatalogStore,
       useUIStore,
       useSettings,
@@ -512,13 +529,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       toggle: togglePreferences,
       fields: { Field, ToggleField, OptionRow, useFieldVisible },
     },
-    navigation: { goTo: goToModule },
+    navigation: { goTo: goToModule, current: shownModule, useCurrent: useShownModule, ownModule: detachedModule },
     keybindings: { getBinding, list: () => listBindings() },
     cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
     develop: {
       useDevelopOverlay,
-      useMaskScope,
-      useParamScope,
+      useMaskScope: () => scopeCommittingAs(extensionId, useMaskScope()),
+      useParamScope: () => scopeCommittingAs(extensionId, useParamScope()),
+      useLocalHistory,
+      useHistorySources,
+      useChosenHistorySource,
+      chooseHistorySource,
       captureFrame: captureDevelopFrame,
       captureFloatFrame: captureDevelopFloatFrame,
       captureRegion: captureDevelopRegion,
@@ -548,6 +569,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       unregisterBrushTip: (id) => unregisterBrushTip(extensionId, id),
       brushTips,
       useBrushTips,
+      brush: { defaults: BRUSH_DEFAULTS, actions: BRUSH_ACTIONS, step: stepBrush },
+      BrushCursor,
+      framePoint: (el, clientX, clientY) => frameLocalPoint(el.getBoundingClientRect(), clientX, clientY),
       registerInputProfiles: (resolver) => registerInputProfiles(extensionId, resolver),
       invalidateInputProfiles: () => invalidateInputProfiles(extensionId),
       setViewValues: (values) =>
@@ -558,7 +582,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       prewarmStages: () => prewarmExtension(extensionId),
       useMaskPanels,
       useOlderProcessing: () => useDevelopStore((s) => usesOlderProcessing(s.params)),
-      autoAdjust,
+      autoAdjust: {
+        whiteBalance: () => commitsAs(extensionId, autoAdjust.whiteBalance),
+        whiteBalanceAt: (point) => commitsAs(extensionId, () => autoAdjust.whiteBalanceAt(point)),
+        tone: () => commitsAs(extensionId, autoAdjust.tone),
+      },
       getPhotoData: (key, photoId) => getPhotoData(`${extensionId}.${key}`, photoId),
       adjustments: {
         list: () => listAdjustments(),
@@ -583,6 +611,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         ),
       exportPhotos,
       proPhotoAt8Bit,
+      describeResult: exportStatus,
     },
     catalog: {
       addPhotos: async (photos, opts) => {
@@ -623,6 +652,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         return renderPhotoHistogram(photo, params, paramBag);
       },
       useActivePhoto,
+      targetIds: () => targetPhotoIds(useCatalogStore.getState()),
+      useTargetPhotos,
       setStack: (ids, opts) => useCatalogStore.getState().setStack(ids, opts),
       clearStack: (ids) => useCatalogStore.getState().clearStack(ids),
       setInputProfile: async (ids, token) => {

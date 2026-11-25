@@ -140,22 +140,51 @@ async function listInstalledManifestsAsync(pluginsDir) {
   return found.filter(Boolean);
 }
 
-/** Dev-folder extensions. A folder with its own safelight.json is that one
- *  extension (the renderer loads just that one, valid or not); otherwise each
- *  immediate subfolder with a manifest is one, whatever the folder is called.
- *  Read without blocking: the folder may sit on a slow or network drive. */
-async function listDevManifests(folder) {
+/** Dev-folder extensions, each with the folder it is in. A folder with its own
+ *  safelight.json is that one extension (the renderer loads just that one,
+ *  valid or not); otherwise each immediate subfolder with a manifest is one,
+ *  whatever the folder is called. Read without blocking: the folder may sit on
+ *  a slow or network drive. */
+async function listDevExtensions(folder) {
   if (!folder) return [];
   const rootManifest = path.join(folder, "safelight.json");
   const hasRoot = await fs.promises.access(rootManifest).then(() => true, () => false);
   if (hasRoot) {
     const root = await readManifestAsync(folder);
-    return root ? [root] : [];
+    return root ? [{ dir: folder, manifest: root }] : [];
   }
   const found = await Promise.all(
-    (await subfoldersAsync(folder)).map((name) => readManifestAsync(path.join(folder, name)))
+    (await subfoldersAsync(folder)).map(async (name) => {
+      const dir = path.join(folder, name);
+      const manifest = await readManifestAsync(dir);
+      return manifest ? { dir, manifest } : null;
+    })
   );
   return found.filter(Boolean);
+}
+
+async function listDevManifests(folder) {
+  return (await listDevExtensions(folder)).map((e) => e.manifest);
+}
+
+/** The folder each dev-folder extension is in, by id, so app:// serves its
+ *  files under /__plugins__/<id>/ as it serves an installed one's. The folder
+ *  is read once each time it is set: every scan and reload in the Dev tab
+ *  records it again. */
+function devExtensionDirs() {
+  let folder = null;
+  let dirs = null;
+  return {
+    setFolder(next) {
+      folder = next;
+      dirs = null;
+    },
+    async dirFor(id) {
+      if (!folder) return null;
+      dirs ??= listDevExtensions(folder).then((found) => new Map(found.map((e) => [e.manifest.id, e.dir])));
+      return (await dirs).get(id) ?? null;
+    },
+  };
 }
 
 /** Every well-formed HTTPS or wss origin the manifests declare, once each, in
@@ -208,6 +237,7 @@ module.exports = {
   listInstalledManifests,
   listInstalledManifestsAsync,
   listDevManifests,
+  devExtensionDirs,
   declaredConnectHosts,
   pendingConnectHosts,
   readDevFolder,

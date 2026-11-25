@@ -14,6 +14,7 @@
 // Uninstalling (external only) deletes both.
 
 import { create } from "zustand";
+import { pluginFileUrl } from "./plugin-url";
 import type { ExtensionManifest, ExtensionModule, ModuleId, RemoteManifest } from "./types";
 import { fallbackModule, moduleEntry, useRegistry } from "./registry";
 import { useUIStore } from "@/state/ui-store";
@@ -510,11 +511,8 @@ async function loadPlugin(manifest: ExtensionManifest, ahead?: BundleAhead): Pro
   if (isInstanceLive(id)) noteExtensionRunning(id);
 }
 
-// Cache-bust by version: the renderer caches a dynamic import() by URL, so
-// without a per-version query an updated bundle keeps running the module that
-// was imported at launch. Bumping the manifest version now re-imports it.
 const bundleUrl = (manifest: ExtensionManifest): string =>
-  `${location.origin}/__plugins__/${manifest.id}/${manifest.main}?v=${encodeURIComponent(manifest.version)}`;
+  pluginFileUrl(location.origin, manifest.id, manifest.main, manifest.version);
 
 /** How many bundles are imported at once while the installed extensions start. */
 const IMPORT_CONCURRENCY = 6;

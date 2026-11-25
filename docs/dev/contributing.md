@@ -8,6 +8,8 @@ Safelight is free software under the [GNU GPL v3](../../LICENSING.md). Contribut
 
 By opening a pull request you confirm you have the right to contribute the work and to license it under the GPL v3 (i.e. it's your own work, or you have permission to submit it). Extensions you publish in **your own** repository are your work under your own license.
 
+AI-assisted contributions are welcome if you understand every line, test it, and say in the pull request that AI helped. See [AI use](../../AI.md).
+
 ## Development Setup
 
 1. Fork and clone the repository

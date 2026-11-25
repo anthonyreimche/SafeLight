@@ -151,3 +151,64 @@ describe("app:// responses", () => {
     expect((await get("/__plugins__/demo.ext/%E0%A4%A.js")).status).toBe(400);
   });
 });
+
+// A Developer Tools dev-folder extension builds the same /__plugins__/<id>/
+// URLs for its own files (a worker, a wasm runtime) as its installed release.
+describe("app:// for a dev-folder extension", () => {
+  let root: string;
+  let plugins: string;
+  let devDir: string;
+  let serve: (request: Request) => Promise<Response>;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "sl-app-protocol-dev-"));
+    const dist = join(root, "dist");
+    plugins = join(root, "plugins");
+    devDir = join(root, "My Extension");
+    mkdirSync(dist, { recursive: true });
+    mkdirSync(join(plugins, "demo.ext", "dist"), { recursive: true });
+    mkdirSync(join(plugins, "installed.only"), { recursive: true });
+    mkdirSync(join(devDir, "dist", "ort"), { recursive: true });
+    writeFileSync(join(dist, "index.html"), "<!doctype html>index");
+    writeFileSync(join(root, "secret.txt"), "outside");
+    writeFileSync(join(plugins, "demo.ext", "dist", "index.js"), "installed");
+    writeFileSync(join(plugins, "installed.only", "index.js"), "installed only");
+    writeFileSync(join(devDir, "dist", "index.js"), "dev build");
+    writeFileSync(join(devDir, "dist", "ort", "runtime.mjs"), "export const ort = 1;");
+    serveAppProtocol({
+      protocol: { handle: (_scheme: string, handler: typeof serve) => (serve = handler) },
+      net: { fetch: async (url: string) => new Response(readFileSync(fileURLToPath(url))) },
+      dist,
+      pluginsDir: () => plugins,
+      devExtensionDir: async (id: string) => (id === "demo.ext" ? devDir : null),
+      csp: () => "default-src 'self'",
+    });
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const get = (path: string) => serve(new Request(`app://bundle${path}`));
+
+  it("serves the dev copy's files under its id, over an installed copy's", async () => {
+    const res = await get("/__plugins__/demo.ext/dist/ort/runtime.mjs?v=1.0.0");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/javascript");
+    for (const [name, value] of Object.entries(ISOLATION_HEADERS)) expect(res.headers.get(name)).toBe(value);
+    expect(await res.text()).toBe("export const ort = 1;");
+    expect(await (await get("/__plugins__/demo.ext/dist/index.js")).text()).toBe("dev build");
+  });
+
+  it("keeps serving installed extensions the dev folder doesn't hold", async () => {
+    expect(await (await get("/__plugins__/installed.only/index.js")).text()).toBe("installed only");
+  });
+
+  it("never serves a path out of the dev copy's folder, nor the folder itself", async () => {
+    for (const path of ["/__plugins__/demo.ext/%2e%2e/secret.txt", "/__plugins__/demo.ext/..%2f..%2fsecret.txt"]) {
+      const res = await get(path);
+      expect(res.status).toBe(404);
+      expect(await res.text()).not.toBe("outside");
+    }
+    expect((await get("/__plugins__/demo.ext/")).status).toBe(404);
+    expect((await get("/__plugins__/demo.ext/dist/missing.js")).status).toBe(404);
+  });
+});

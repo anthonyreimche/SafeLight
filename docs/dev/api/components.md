@@ -238,6 +238,29 @@ Takes the Escape key while something of yours is open that Escape should close: 
 React.useEffect(() => (editing ? api.ui.onEscape(() => setEditing(false)) : undefined), [editing]);
 ```
 
+### `notify`
+
+```ts
+api.ui.notify(notice: string | { message: string; tone?: "info" | "success" | "warning" | "error"; progress?: number | null }): {
+  update(next: Partial<typeof notice>): void;
+  close(): void;
+};
+```
+
+Tells the person something without stopping them: a bar in the app's bottom stack, like core's own notices, under your extension's name and with a × to dismiss. Needs Safelight 3.2.7.
+
+- `info` (the default) and `success` go by themselves after a few seconds. `warning` and `error` stay until dismissed.
+- A notice with `progress` (0..1) shows a bar and stays while the run is under way. `update` it as the run goes, then update it to `progress: null` with the result.
+- The message is selectable, so an error can be copied into a report.
+- Core takes your notices down when your extension stops.
+- Use it for the outcome of work the person started and may not be watching (a merge, a batch). Ask a question with `confirmDialog` instead.
+
+```js
+const run = api.ui.notify({ message: "Aligning 5 frames…", progress: 0 });
+run.update({ progress: 0.5 });
+run.update({ message: "Merged 5 frames.", tone: "success", progress: null });
+```
+
 ```js
 const ok = await api.ui.confirmDialog({
   title: "Clear the cache",

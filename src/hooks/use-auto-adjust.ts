@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { beforePhotoLeave, useDevelopStore } from "@/state/develop-store";
+import { beforePhotoLeave, commitSource, commitsAs, useDevelopStore } from "@/state/develop-store";
 import {
   autoToneStep,
   autoWhiteBalanceStep,
@@ -61,6 +61,8 @@ let running = false;
 async function run(apply: () => Step | Promise<Step>, label: string): Promise<void> {
   if (running) return;
   running = true;
+  // The extension that started the run makes its step, though it commits later.
+  const source = commitSource();
   const { photoId, params, paramBag } = useDevelopStore.getState();
   // A run cut short by a photo switch is no edit: its steps come off before
   // Develop commits what is left on the photo it leaves.
@@ -84,7 +86,8 @@ async function run(apply: () => Step | Promise<Step>, label: string): Promise<vo
       return;
     }
     try {
-      await useDevelopStore.getState().commitEdit(label);
+      const commit = () => useDevelopStore.getState().commitEdit(label);
+      await (source ? commitsAs(source, commit) : commit());
     } catch (e) {
       console.error(`[auto-adjust] couldn't commit ${label}`, e);
     }

@@ -37,7 +37,10 @@ import { Field, OptionRow, ToggleField, useFieldVisible } from "@/ui/components/
 import { useSettings } from "@/state/settings-store";
 import { broadcast } from "@/state/broadcast";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
-import { exportPhotos, proPhotoAt8Bit } from "@/modules/export/export-image";
+import { exportPhotos, exportStatus, proPhotoAt8Bit } from "@/modules/export/export-image";
+import { shownModule, useShownModule, detachedModule } from "@/state/detach";
+import { targetPhotoIds, useTargetPhotos } from "@/state/target-photos";
+import { useNotifications } from "@/state/notification-store";
 import {
   exportPreset,
   importPresetFile,
@@ -53,6 +56,8 @@ import { devtoolsRender } from "@/rendering/render-bridge/devtools-render";
 import { useRunningPlugins } from "./running-plugins";
 import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
 import { inputProfileOwner, inputProfileRevision } from "@/catalog/input-profiles";
+import { BRUSH_ACTIONS, BRUSH_DEFAULTS, stepBrush } from "@/modules/develop/brush";
+import { BrushCursor } from "@/modules/develop/BrushCursor";
 
 class SilentChannel {
   postMessage(): void {}
@@ -171,6 +176,67 @@ describe("api.develop.normalizeParams", () => {
   });
 });
 
+describe("api.assetUrl", () => {
+  it("is where core serves the extension's own files, cache-busted by its version", () => {
+    expect(makeScopedAPI("acme.lens", "1.0.1").assetUrl("dist/ort/ort.wasm.min.mjs")).toBe(
+      `${location.origin}/__plugins__/acme.lens/dist/ort/ort.wasm.min.mjs?v=1.0.1`,
+    );
+    expect(makeScopedAPI("acme.lens").assetUrl("/dist/a b.wasm")).toBe(`${location.origin}/__plugins__/acme.lens/dist/a%20b.wasm`);
+  });
+});
+
+// Every painting tool takes the one brush: its defaults, its shortcuts, its
+// ring, and the pointer in the overlay's layout px.
+describe("api.develop's official brush", () => {
+  it("is core's", () => {
+    const develop = api().develop;
+    expect(develop.brush.defaults).toBe(BRUSH_DEFAULTS);
+    expect(develop.brush.actions).toBe(BRUSH_ACTIONS);
+    expect(develop.brush.step).toBe(stepBrush);
+    expect(develop.BrushCursor).toBe(BrushCursor);
+  });
+
+  it("maps a pointer into an overlay's layout px under the Interface scale", () => {
+    useSettings.setState({ uiScale: 1.25 });
+    const el = document.createElement("div");
+    el.getBoundingClientRect = () => ({ left: 100, top: 50 }) as DOMRect;
+    expect(api().develop.framePoint(el, 225, 175)).toEqual({ x: 100, y: 100 });
+    useSettings.setState({ uiScale: 1 });
+  });
+});
+
+describe("api.navigation", () => {
+  it("says which module this window shows, and which one it was opened for", () => {
+    const { navigation } = api();
+    expect(navigation.current).toBe(shownModule);
+    expect(navigation.useCurrent).toBe(useShownModule);
+    expect(navigation.ownModule).toBe(detachedModule);
+  });
+});
+
+describe("api.catalog's target photos", () => {
+  it("is core's selection-else-active rule", () => {
+    const { catalog } = api();
+    useCatalogStore.setState({ selectedIds: new Set(), activePhotoId: "p1" });
+    expect(catalog.targetIds()).toEqual(targetPhotoIds(useCatalogStore.getState()));
+    expect(catalog.targetIds()).toEqual(["p1"]);
+    expect(catalog.useTargetPhotos).toBe(useTargetPhotos);
+  });
+});
+
+describe("api.ui.notify", () => {
+  beforeEach(() => useNotifications.setState({ notices: [] }));
+
+  it("shows a notice owned by the extension, swept when it stops", () => {
+    const handle = makeScopedAPI("ext.notices").ui.notify({ message: "Merged.", tone: "warning" });
+    expect(useNotifications.getState().notices).toEqual([expect.objectContaining({ owner: "ext.notices", message: "Merged." })]);
+    handle.update({ message: "Merged twice." });
+    expect(useNotifications.getState().notices[0].message).toBe("Merged twice.");
+    unregisterExtension("ext.notices");
+    expect(useNotifications.getState().notices).toEqual([]);
+  });
+});
+
 describe("api.presets", () => {
   afterEach(() => unregisterExtension("ext.importer"));
 
@@ -255,6 +321,7 @@ describe("api.catalog, api.events and api.export additions", () => {
     const a = api();
     expect(a.export.exportPhotos).toBe(exportPhotos);
     expect(a.export.proPhotoAt8Bit).toBe(proPhotoAt8Bit);
+    expect(a.export.describeResult).toBe(exportStatus);
   });
 
   it("renders the histogram of the photo's saved edit, fresh defaults for an unedited one", async () => {

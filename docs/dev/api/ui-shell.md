@@ -31,7 +31,7 @@ interface ModuleContribution {
 }
 ```
 
-Switch modules with `api.navigation.goTo(id)` from any window. Read the active one with `api.stores.useUIStore(s => s.activeModule)`; panels are not told which module they are in.
+Switch modules with `api.navigation.goTo(id)` from any window. Ask which module this window shows with `api.navigation.current()` (or the `useCurrent()` hook): a popped-out window's own module, else the main window's tab. A shortcut that acts in Develop checks `current() === "develop"`, which holds in a popped-out Develop too, rather than reading `activeModule` or the URL. `ownModule()` is the module a popped-out window was opened for, null in the main window. Panels are not told which module they are in. `current`, `useCurrent` and `ownModule` need Safelight 3.2.7.
 
 Notes:
 

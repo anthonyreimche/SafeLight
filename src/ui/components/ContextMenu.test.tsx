@@ -194,3 +194,20 @@ describe("ContextMenu escape", () => {
     expect(first).not.toHaveBeenCalled();
   });
 });
+
+describe("ContextMenu items", () => {
+  it("shows an item's icon before its label, hidden from screen readers", () => {
+    render(
+      <ContextMenu
+        x={0}
+        y={0}
+        items={[{ label: "Brush", icon: <svg data-testid="brush-icon" />, onClick: () => {} }]}
+        onClose={() => {}}
+      />,
+    );
+    const item = screen.getByRole("menuitem", { name: "Brush" });
+    const icon = screen.getByTestId("brush-icon");
+    expect(item.contains(icon)).toBe(true);
+    expect(icon.parentElement?.getAttribute("aria-hidden")).toBe("true");
+  });
+});

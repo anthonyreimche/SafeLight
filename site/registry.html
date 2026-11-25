@@ -6,7 +6,7 @@
 		<title>Registry requests · Safelight</title>
 		<meta
 			name="description"
-			content="Ask for an extension to be verified, replaced, discontinued or categorized, or report one for the ban list."
+			content="Ask for an extension to be verified, replaced, discontinued or categorized, or report a harmful one privately."
 		/>
 		<meta
 			property="og:title"
@@ -14,7 +14,7 @@
 		/>
 		<meta
 			property="og:description"
-			content="Ask for an extension to be verified, replaced, discontinued or categorized, or report one for the ban list."
+			content="Ask for an extension to be verified, replaced, discontinued or categorized, or report a harmful one privately."
 		/>
 		<meta property="og:type" content="website" />
 		<meta property="og:image" content="shots/og-cover.jpg" />
@@ -959,28 +959,11 @@
 				<div class="label">Everyone</div>
 				<h2>Report an extension</h2>
 				<p>Report an extension that harms people's photos, files or privacy. A banned extension can't be installed, and Safelight turns it off where it is installed. A maintainer checks every report before anything is banned.</p>
-				<p>The reason is shown to everyone who has the extension, so describe what it does, factually. Reports are public; for a security problem that shouldn't be public yet, <a href="https://github.com/anthonyreimche/safelight-registry/security/advisories/new" target="_blank" rel="noopener">report it privately</a>.</p>
-				<form data-form="report" novalidate>
-						<div class="field">
-							<label for="report-target">Repository or account</label>
-							<input type="text" id="report-target" name="target" required placeholder="owner/repo" autocomplete="off" spellcheck="false" aria-describedby="report-target-hint" />
-							<p class="hint" id="report-target-hint">owner/repo, or a GitHub account to ban every repository under it.</p>
-						</div>
-						<div class="field">
-							<label for="report-reason">Reason shown to users</label>
-							<input type="text" id="report-reason" name="reason" required placeholder="Uploads the catalogue to an undeclared server (1.2.0)" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="report-reason-hint" />
-							<p class="hint" id="report-reason-hint">One factual sentence, at most 200 characters, with the version if you know it.</p>
-						</div>
-						<div class="field">
-							<label for="report-details">Evidence</label>
-							<textarea id="report-details" name="details" required aria-describedby="report-details-hint"></textarea>
-							<p class="hint" id="report-details-hint">What you saw and how to see it: files and lines, network requests, steps.</p>
-						</div>
-						<div class="send">
-							<button class="pill pill-red" type="submit">Continue on GitHub</button>
-							<p>GitHub opens with this filled in. Check it and submit there. You need a GitHub account.</p>
-						</div>
-				</form>
+				<p>Reports are private, so nobody is accused in public before a report is checked. Include the repository, what the extension does, the version where you saw it, and how to see it: files and lines, network requests, steps.</p>
+				<div class="send">
+					<a class="pill pill-red" href="https://github.com/anthonyreimche/safelight-registry/security/advisories/new" target="_blank" rel="noopener">Report privately on GitHub</a>
+					<p>Or email <a href="mailto:anthonyreimche@gmail.com">anthonyreimche@gmail.com</a>. Please don't open a public issue.</p>
+				</div>
 			</section>
 		</main>
 
@@ -1028,10 +1011,8 @@
 					replace: { template: "replace.yml", prefix: "Replace: ", subject: "repo" },
 					discontinue: { template: "discontinue.yml", prefix: "Discontinue: ", subject: "repo" },
 					category: { template: "category.yml", prefix: "Category: ", subject: "repo" },
-					report: { template: "report.yml", prefix: "Report: ", subject: "target" },
 				};
 				const REPO = /^[\w.-]+\/[\w.-]+$/;
-				const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 
 				// "owner/repo" from owner/repo or a github.com URL, else null. The
 				// registry reads it the same way (requests.mjs normalizeRepo).
@@ -1050,25 +1031,17 @@
 					const plain = REPO.test(repo) && repo.split("/").every((p) => p !== "." && p !== "..");
 					return plain ? repo : null;
 				};
-				const targetOf = (input) => {
-					const repo = repoOf(input);
-					if (repo) return repo;
-					const owner = input.trim().replace(/^@/, "").replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, "").replace(/\/+$/, "");
-					return OWNER.test(owner) ? owner : null;
-				};
 
 				const CHECKS = {
 					repo: (v) => (repoOf(v) ? null : "Enter owner/repo or the repository's GitHub URL."),
 					replacement: (v) => (repoOf(v) ? null : "Enter owner/repo or the repository's GitHub URL."),
-					target: (v) => (targetOf(v) ? null : "Enter owner/repo, a GitHub URL or an account name."),
-					reason: (v) => (v.trim().length <= 200 ? null : "Keep it to 200 characters."),
 					message: (v) => (v.trim().length <= 140 ? null : "Keep it to 140 characters."),
 					categories: (v) => {
 						const n = v.split(",").filter((s) => s.trim()).length;
 						return n >= 1 && n <= 3 ? null : "Name one to three categories.";
 					},
 				};
-				const NORMALIZE = { repo: repoOf, replacement: repoOf, target: targetOf };
+				const NORMALIZE = { repo: repoOf, replacement: repoOf };
 
 				const showError = (control, text) => {
 					const box = control.closest(".field");

@@ -16,7 +16,8 @@ import { reopenClosedDockPanel, toggleDockSide, toggleDockVisibility } from "@/e
 import { hasModule } from "@/extensions/registry";
 import { guardCallback } from "@/extensions/guard";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
-import { detachedModule } from "@/state/detach";
+import { shownModule } from "@/state/detach";
+import { targetPhotoIds } from "@/state/target-photos";
 import {
   getBinding,
   inNativeDialog,
@@ -36,19 +37,10 @@ import { toggleReportIssue } from "@/ui/components/report-issue-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
 import { usePickDragStore } from "@/modules/develop/pick-drag";
 import { canvasToolAction, escapeCanvasTool } from "@/modules/develop/canvas-tool";
+import { BRUSH_ACTIONS } from "@/modules/develop/brush";
 
 /** Actions only the held canvas tool acts on (canvas-tool.ts onAction). */
-const CANVAS_TOOL_ACTIONS: ReadonlySet<string> = new Set([
-  "brush.smaller",
-  "brush.larger",
-  "brush.featherDown",
-  "brush.featherUp",
-  "brush.opacityDown",
-  "brush.opacityUp",
-  "brush.flowDown",
-  "brush.flowUp",
-  "mask.delete",
-]);
+const CANVAS_TOOL_ACTIONS: ReadonlySet<string> = new Set([...BRUSH_ACTIONS, "mask.delete"]);
 
 // Single-letter bindings for these are gated by the singleKeyShortcuts pref.
 const GATED = new Set(["module.library", "module.develop", "view.fullscreen"]);
@@ -90,9 +82,7 @@ export function useKeyboardShortcuts() {
       // focused slider never blocks anything.
       if (typesIntoField(e)) return;
 
-      const inDevelop =
-        useUIStore.getState().activeModule === "develop" ||
-        detachedModule() === "develop";
+      const inDevelop = shownModule() === "develop";
 
       // [ / ] rotate the active photo in Develop too (Library mounts its own
       // handler; Develop only has this global one). Bare brackets bind solely to
@@ -123,12 +113,7 @@ export function useKeyboardShortcuts() {
         const rot = culling ? null : matchAction(e, ["Library"]);
         if (rot === "photo.rotateCCW" || rot === "photo.rotateCW") {
           const cat = useCatalogStore.getState();
-          const ids =
-            cat.selectedIds.size > 0
-              ? [...cat.selectedIds]
-              : cat.activePhotoId
-                ? [cat.activePhotoId]
-                : [];
+          const ids = targetPhotoIds(cat);
           if (ids.length > 0) {
             e.preventDefault();
             void cat.rotatePhotos(ids, rot === "photo.rotateCCW" ? -90 : 90);

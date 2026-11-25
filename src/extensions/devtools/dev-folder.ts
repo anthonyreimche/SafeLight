@@ -111,8 +111,13 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   const manifest = JSON.parse(
     new TextDecoder().decode(manifestBytes.data),
   ) as ExtensionManifest;
-  if (typeof manifest.id !== "string" || !manifest.id || !manifest.main)
+  // The main process refuses the same manifest for its network origins
+  // unless it is whole (electron/extension-origins.cjs validManifest).
+  if (typeof manifest.id !== "string" || !manifest.id || typeof manifest.main !== "string" || !manifest.main)
     throw new Error("safelight.json is missing `id` or `main`");
+  if (typeof manifest.name !== "string" || typeof manifest.version !== "string")
+    throw new Error("safelight.json is missing `name` or `version`");
+  if (manifest.main.includes("..")) throw new Error("safelight.json's `main` must stay inside its folder");
   const refusal = manifestIdRefusal(manifest);
   if (refusal) {
     console.warn(`[dev-folder] refused ${refusal}`);

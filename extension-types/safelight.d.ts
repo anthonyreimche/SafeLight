@@ -380,6 +380,16 @@ export interface EditSnapshot {
      *  keyed by qualified key "{stageId}.{key}". Optional so pre-existing stacks
      *  load unchanged; validated on load via normalizeParamBag. */
     paramBag?: Record<string, unknown>;
+    /** The extension that made the step, by id: the one whose
+     *  `api.stores.useDevelopStore` committed it. None on core's own steps
+     *  (Original, Reset, the processing update) and on steps saved before 3.2.8. */
+    source?: string;
+    /** Set on a local undo, redo or jump of `source`'s own history: the step
+     *  shows `source`'s values as they stood after its step at index `to` of
+     *  the history, or before its first step when `to` is null. */
+    local?: {
+        to: number | null;
+    };
 }
 
 /** dateEdited: when the photo's edit last changed (catalog/edit-times), the
@@ -1764,6 +1774,12 @@ export interface StylesheetContribution {
 export interface SafelightAPI {
     version: 1;
     extensionId: string;
+    /** The URL of one of your own files, `path` from your folder (the one
+     *  safelight.json is in, e.g. "dist/runtime.wasm"), cache-busted by your
+     *  version: for a worker, a WebAssembly binary or a model your bundle loads.
+     *  import.meta.url is undefined in an extension's module, and the same URL
+     *  serves a Developer Tools dev-folder copy. Needs Safelight 3.2.7. */
+    assetUrl(path: string): string;
     /** The app's React instance — plugins must use this, not their own copy. */
     react: typeof import("react");
     registerPanel(c: PanelContribution): void;
@@ -2012,6 +2028,13 @@ export interface SafelightAPI {
          *  gives the key back: call it as soon as there is nothing left to close,
          *  from a React effect's cleanup. Needs Safelight 3.2.4. */
         onEscape(handler: () => void): () => void;
+        /** Tell the person something without stopping them: a bar in the app's
+         *  bottom stack, under your extension's name, with a × to dismiss.
+         *  `info` and `success` go by themselves after a few seconds; `warning`
+         *  and `error` stay; a notice with `progress` (0..1) stays while the run
+         *  is under way. `update` changes it in place, `close` takes it down, and
+         *  core takes it down when your extension stops. Needs Safelight 3.2.7. */
+        notify(notice: string | NoticeOptions): NoticeHandle;
     };
     /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
      *  that must escape its panel's clipping. Extension bundles can't import
@@ -2148,6 +2171,16 @@ export interface SafelightAPI {
      *  where it is and has the main window go to any other. */
     navigation: {
         goTo(module: ModuleId): void;
+        /** The module this window shows: a popped-out window's own module, else
+         *  the main window's tab. Ask it before acting on a Develop shortcut,
+         *  `current() === "develop"`, rather than reading the URL. Needs
+         *  Safelight 3.2.7. */
+        current(): ModuleId;
+        /** `current` as a React hook. Needs Safelight 3.2.7. */
+        useCurrent(): ModuleId;
+        /** The module this window was popped out for, or null in the main
+         *  window. Needs Safelight 3.2.7. */
+        ownModule(): ModuleId | null;
     };
     /** Read the current binding for any action id (built-in or extension), or
      *  `list()` every built-in key action with its current combo (override
@@ -2194,6 +2227,22 @@ export interface SafelightAPI {
          *  `maskId` null. Lets one component serve as both a panel's `component` and
          *  its `mask.component`. */
         useParamScope(): ParamScope;
+        /** An extension's local history on the open photo: the steps it made
+         *  (every commit through its own `api.stores.useDevelopStore` is made in
+         *  its name) and the one its settings show now; null for a null `source`.
+         *  Move it with useDevelopStore's localUndo, localRedo and
+         *  goToLocalHistory. Safelight 3.2.8 and later. */
+        useLocalHistory(source: string | null): LocalHistoryView | null;
+        /** The extensions with steps on the open photo, the latest edited first. */
+        useHistorySources(): HistorySource[];
+        /** The extension whose local history the History and Edit panels show:
+         *  the one behind the photo's latest step, or the one chooseHistorySource
+         *  picked, until another extension makes a step or another photo opens.
+         *  Null before any extension has made a step. */
+        useChosenHistorySource(): string | null;
+        /** Pick the extension useChosenHistorySource gives on the open photo;
+         *  null follows the latest edited again. */
+        chooseHistorySource(source: string | null): void;
         /** The frame covers the region the view shows, whatever crop `params`
          *  carry: in crop mode the whole photo and its margin, as the canvas shows
          *  it. The frame is for measuring: sRGB, and without the clipping warning, the
@@ -2349,8 +2398,9 @@ export interface SafelightAPI {
          *  with `onDown`, it is also handed the colour the view shows there (sRGB,
          *  0-1) once the probe answers, then the drag to `onMove` and its end to
          *  `onUp`. A held Ctrl, Cmd or Space pans instead, and Escape lets go.
-         *  One extension holds it at a time: the last to set it. It is let go when
-         *  the extension stops. */
+         *  One extension holds it at a time: the last to set it. Setting it lets
+         *  a held canvas tool go (from Safelight 3.2.7). It is let go when the
+         *  extension stops. */
         setPickDrag(tool: PickDragTool | null): void;
         /** React hook: whether this extension holds the pick-drag tool. */
         usePickDragHeld(): boolean;
@@ -2359,7 +2409,8 @@ export interface SafelightAPI {
          *  image inside the view, core's own canvas gestures stand aside (zoom
          *  too, unless `zoomable`), and the live view draws `viewParams` of the
          *  edit if given. Escape calls `onEscape` and lets it go. One extension
-         *  holds it at a time: the last to set it. It is let go when the
+         *  holds it at a time: the last to set it. Setting it lets an armed
+         *  pick-drag tool go (from Safelight 3.2.7). It is let go when the
          *  extension stops. Needs Safelight 3.2.0. */
         setCanvasTool(tool: CanvasTool | null): void;
         /** React hook: whether this extension holds the canvas tool. */
@@ -2424,6 +2475,38 @@ export interface SafelightAPI {
         /** React hook: brushTips(), re-rendering as tips come and go. Needs
          *  Safelight 3.2.5. */
         useBrushTips(): readonly BrushTipContribution[];
+        /** The official brush every painting tool shares: Masking's. A tool holds
+         *  its own settings and starts them from `defaults` (size is a radius as a
+         *  share of the photo's height, as a BrushDab's; feather, opacity and flow
+         *  run 0 to 1). `actions` are the rebindable brush shortcuts' keybinding
+         *  ids ([ and ] size, Shift+[ and Shift+] feather, comma and period
+         *  opacity, Shift+comma and Shift+period flow), which core hands only to the
+         *  held canvas tool: answer CanvasTool.onAction and wants with `step`,
+         *  passing the settings the tool has. It returns the setting a shortcut
+         *  changes and its new value, held to its range, or null for one the tool
+         *  doesn't have, which core then leaves alone. Pass `range` for limits of
+         *  the tool's own (`{ size: { min: 0.002, max: 0.1 } }`); a step never
+         *  moves a setting the wrong way. Needs Safelight 3.2.7. */
+        brush: {
+            defaults: Readonly<BrushSettings>;
+            actions: readonly string[];
+            step: typeof stepBrush;
+        };
+        /** The official brush ring, for a canvas tool's overlay: the brush's edge
+         *  and its feathered core at `at` (overlay layout px, from framePoint; or
+         *  "centre", the reference a size slider shows while dragged), sized as a
+         *  dab paints in the photo through any crop, zoom or Perspective; red and
+         *  dashed for an erasing brush. It draws around the crosshair cursor, as
+         *  Masking's brush does. Needs Safelight 3.2.7. */
+        BrushCursor: typeof BrushCursor;
+        /** The pointer in `el`'s layout px: the space an overlay's `rect`, the
+         *  mapping helpers and CSS left/top use. Interface scale zooms the page,
+         *  so clientX minus the element's left is off by the zoom. Needs Safelight
+         *  3.2.7. */
+        framePoint(el: Element, clientX: number, clientY: number): {
+            x: number;
+            y: number;
+        };
         /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
          *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
          *  transform and hands it the original's bytes; core reads the file's
@@ -2525,6 +2608,11 @@ export interface SafelightAPI {
          *  smooth gradients band: the export asks for 16 bits only for a TIFF or
          *  PNG set to 16. */
         proPhotoAt8Bit(settings: BitDepthSettings): boolean;
+        /** The Export panel's line on a finished run: how many photos it exported
+         *  and any that fell short of what was asked (8-bit, reduced precision,
+         *  without an extension's effect, a ZIP delivered as files). Needs
+         *  Safelight 3.2.7. */
+        describeResult(result: ExportResult): string;
     };
     /** Lower-level catalogue persistence, for extensions that add records the core
      *  scan didn't produce (e.g. virtual copies). `addPhotos` durably writes new
@@ -2599,6 +2687,13 @@ export interface SafelightAPI {
         /** The photo open in Develop (the active photo), or undefined. React hook;
          *  a write to any other photo leaves it alone. */
         useActivePhoto(): CatalogPhoto | undefined;
+        /** The ids a command on "these photos" acts on: the selection, else the
+         *  active photo, else none. Core's rating, rotate and delete shortcuts use
+         *  the same rule. Needs Safelight 3.2.7. */
+        targetIds(): string[];
+        /** The target photos (as targetIds) in the catalogue's order. React hook.
+         *  Needs Safelight 3.2.7. */
+        useTargetPhotos(): CatalogPhoto[];
         /** Put the photos in one new stack (a burst, a bracket), `opts.cover` (one
          *  of them) as its cover; a photo in another stack leaves it. The grid shows
          *  a collapsed stack as its cover alone, and ←/→ culling, select all and
@@ -3250,6 +3345,18 @@ export interface DevelopState {
      *  outside `history` or not a whole number, or while `editError` is set.
      *  Safelight 3.2.5 and later. */
     goToHistory: (index: number) => void;
+    /** Move `source`'s own settings to how they stood after its local step
+     *  `position` (`api.develop.useLocalHistory(source).steps`), or before its
+     *  first at -1, as one undoable step in its name that keeps every other
+     *  tool's edits. Only what `source`'s steps changed moves: its settings,
+     *  extension values and masks (a mask as a whole). Does nothing for the
+     *  step it stands on, a position outside its steps, with no photo open or
+     *  while `editError` is set. Safelight 3.2.8 and later. */
+    goToLocalHistory: (source: string, position: number) => Promise<void>;
+    /** goToLocalHistory one of `source`'s steps back ("Undo Exposure"). */
+    localUndo: (source: string) => Promise<void>;
+    /** goToLocalHistory one of `source`'s steps forward ("Redo Exposure"). */
+    localRedo: (source: string) => Promise<void>;
     /** Put the open photo's edit back to `edit` exactly, as one undoable step
      *  named `label`: its settings, the process version it was made at and only
      *  the extension values it holds. Settings an older edit lacks take their
@@ -5581,6 +5688,23 @@ declare function confirmDialog(options: ConfirmDialogOptions): Promise<boolean>;
 
 declare function alertDialog(options: AlertDialogOptions): Promise<void>;
 
+// src/state/notification-store.ts
+
+export type NoticeTone = "info" | "success" | "warning" | "error";
+
+export interface NoticeOptions {
+    message: string;
+    /** info and success go by themselves; warning and error stay until dismissed. */
+    tone?: NoticeTone;
+    /** 0..1 while a run is under way, which keeps the notice up; null for none. */
+    progress?: number | null;
+}
+
+export interface NoticeHandle {
+    update(next: Partial<NoticeOptions>): void;
+    close(): void;
+}
+
 // src/state/presets-store.ts
 
 export interface Preset {
@@ -6019,6 +6143,37 @@ export interface InputProfileResolver {
     resolve(photo: InputProfilePhoto, file: Blob): Promise<InputTransform | null>;
 }
 
+// src/state/local-history-types.ts
+
+/** One step an extension made. */
+export interface LocalStep {
+    /** The step's place in the photo's history (`useDevelopStore().history`). */
+    index: number;
+    label: string;
+    timestamp: number;
+}
+
+export interface LocalHistory {
+    /** The extension's id. */
+    source: string;
+    /** The extension's steps on the open photo, oldest first; those past
+     *  `cursor` are its redo. */
+    steps: LocalStep[];
+    /** The step whose values the extension's settings show now, -1 before its first. */
+    cursor: number;
+}
+
+export interface LocalHistoryView extends LocalHistory {
+    /** The extension's name, or its id once it is gone. */
+    name: string;
+}
+
+/** An extension with steps on the open photo. */
+export interface HistorySource {
+    id: string;
+    name: string;
+}
+
 // src/rendering/region-capture.ts
 
 /** A patch asked for: its centre, 0 to 1 across the frame the view shows (x
@@ -6094,6 +6249,53 @@ export interface SourcePixels {
     width: number;
     height: number;
 }
+
+// src/modules/develop/brush.ts
+
+export interface BrushSettings {
+    size: number;
+    feather: number;
+    opacity: number;
+    flow: number;
+}
+
+export type BrushSetting = keyof BrushSettings;
+
+/** A tool's own limits for a setting, where they differ from the brush's
+ *  (red-eye rings run far smaller than a mask brush). */
+export type BrushRange = Partial<Record<BrushSetting, {
+    min?: number;
+    max?: number;
+}>>;
+
+/** The setting a brush shortcut changes and its value after the step, held to
+ *  its range (the tool's own `range` where given); null for an action that
+ *  isn't a brush shortcut, or one for a setting `brush` doesn't have, so a
+ *  tool without flow leaves the flow keys alone. A step never moves a setting
+ *  the wrong way. A canvas tool answers onAction and wants with it. */
+declare function stepBrush(action: string, brush: Partial<BrushSettings>, range?: BrushRange): {
+    key: BrushSetting;
+    value: number;
+} | null;
+
+// src/modules/develop/BrushCursor.ts
+
+export interface BrushCursorProps {
+    /** The pointer in the overlay's layout px (api.develop.framePoint), or
+     *  "centre" for the reference ring a size slider shows; null draws nothing. */
+    at: {
+        x: number;
+        y: number;
+    } | "centre" | null;
+    /** The brush's radius, a share of the photo's height. */
+    size: number;
+    /** 0 to 1: how much of the radius fades. */
+    feather: number;
+    /** An erasing (subtracting) brush, drawn red and dashed. */
+    erase?: boolean;
+}
+
+declare function BrushCursor({ at, size, feather, erase }: BrushCursorProps): import("react").JSX.Element | null;
 
 // src/catalog/normalize.ts
 

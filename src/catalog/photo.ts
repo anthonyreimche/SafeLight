@@ -191,6 +191,14 @@ export interface EditSnapshot {
    *  keyed by qualified key "{stageId}.{key}". Optional so pre-existing stacks
    *  load unchanged; validated on load via normalizeParamBag. */
   paramBag?: Record<string, unknown>;
+  /** The extension that made the step, by id: the one whose
+   *  `api.stores.useDevelopStore` committed it. None on core's own steps
+   *  (Original, Reset, the processing update) and on steps saved before 3.2.8. */
+  source?: string;
+  /** Set on a local undo, redo or jump of `source`'s own history: the step
+   *  shows `source`'s values as they stood after its step at index `to` of
+   *  the history, or before its first step when `to` is null. */
+  local?: { to: number | null };
 }
 
 /** dateEdited: when the photo's edit last changed (catalog/edit-times), the

@@ -21,6 +21,7 @@
 import { useEffect } from "react";
 import type { ColorLabel, FlagStatus } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
+import { targetPhotoIds } from "@/state/target-photos";
 import { canvasToolWants } from "@/modules/develop/canvas-tool";
 import { useUIStore } from "@/state/ui-store";
 import {
@@ -151,12 +152,7 @@ function handleCullingKey(e: KeyboardEvent): void {
   if (!action) return;
 
   const catalog = useCatalogStore.getState();
-  const targetIds =
-    catalog.selectedIds.size > 0
-      ? [...catalog.selectedIds]
-      : catalog.activePhotoId
-        ? [catalog.activePhotoId]
-        : [];
+  const targetIds = targetPhotoIds(catalog);
 
   if (action.startsWith("rate.")) {
     if (targetIds.length === 0) return;

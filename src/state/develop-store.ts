@@ -38,6 +38,7 @@ import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { noteDiscreteChange } from "@/ui/motion";
+import { localHistory, localLook, localMoveLabel } from "./local-history";
 
 export interface DevelopState extends ViewSlice, MaskSlice {
   photoId: string | null;
@@ -136,6 +137,14 @@ export interface DevelopState extends ViewSlice, MaskSlice {
    *  and redo show the step before or after. Does nothing for the step shown, an
    *  index outside the history or not a whole number, or while `editError` is set. */
   goToHistory: (index: number) => void;
+  /** Move `source`'s own values to how they stood after its local step
+   *  `position` (-1: before its first), as one step in its name that keeps
+   *  every other tool's edits (local-history.ts). Does nothing for the step
+   *  it stands on, a position outside its steps, or with no photo open. */
+  goToLocalHistory: (source: string, position: number) => Promise<void>;
+  /** goToLocalHistory one step back or forward. */
+  localUndo: (source: string) => Promise<void>;
+  localRedo: (source: string) => Promise<void>;
   /** Put the open photo's edit back to `edit` exactly, as one undoable step
    *  named `label`: its settings, the process version it was made at and only
    *  the extension values it holds. Settings an older edit lacks take their
@@ -497,6 +506,33 @@ async function within(ms: number, work: Promise<void>): Promise<void> {
   clearTimeout(timer);
 }
 
+// The extension a commit is made for while commitsAs runs: read as a commit
+// starts, so a step made in an extension's name carries its id (#281).
+let committingFor: string | undefined;
+
+/** Run `run` with the steps it commits made in `source`'s name. Only commits
+ *  that start before `run` returns are stamped: an action's commit starts in
+ *  the same turn as the action, so the async ones keep their source. */
+export function commitsAs<T>(source: string, run: () => T): T {
+  const outer = committingFor;
+  committingFor = source;
+  try {
+    return run();
+  } finally {
+    committingFor = outer;
+  }
+}
+
+/** The extension the commits started now are made for, if any: for work that
+ *  commits later, to carry it over with commitsAs. */
+export function commitSource(): string | undefined {
+  return committingFor;
+}
+
+/** Who a step was made for: `source` on every step an extension commits, with
+ *  `local` on its local undo, redo or jump. */
+type StepStamp = Pick<EditSnapshot, "source" | "local">;
+
 /** Commit the live params as a history step and store them in `target`, or in the
  *  catalogue open now, when that is still the one open as the write lands. */
 async function commitStoredEdit(
@@ -504,6 +540,7 @@ async function commitStoredEdit(
   set: (p: Partial<DevelopState>) => void,
   label: string,
   target?: CatalogStorage,
+  stamp: StepStamp = committingFor ? { source: committingFor } : {},
 ): Promise<void> {
   const { photoId, params, paramBag, history, historyIndex, asShotTemperature, editError } = get();
   if (!photoId || editError) return;
@@ -514,8 +551,9 @@ async function commitStoredEdit(
   // stood, though the catalogue store is emptied by the time the write lands.
   const leaving = target && photoById(useCatalogStore.getState().photos, photoId);
 
-  // An unchanged edit costs no step and keeps the redo tail.
-  if (!hasUncommittedEdit({ params, paramBag, history, historyIndex })) {
+  // An unchanged edit costs no step and keeps the redo tail. A local move is a
+  // step even then: it moves the extension's own history.
+  if (!stamp.local && !hasUncommittedEdit({ params, paramBag, history, historyIndex })) {
     if (hasNewComputedValues({ paramBag, history, historyIndex })) await storeComputedValues(get, set, storage, target);
     return;
   }
@@ -525,6 +563,7 @@ async function commitStoredEdit(
     label,
     params: { ...params },
     paramBag: { ...paramBag },
+    ...stamp,
   };
 
   // History shows the step at once; the write below builds on the catalogue.
@@ -837,6 +876,33 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
 
   goToHistory(index) {
     moveHistory(get, set, index);
+  },
+
+  async goToLocalHistory(source, position) {
+    const { photoId, editError, history, historyIndex, params, paramBag } = get();
+    if (!photoId || editError || !Number.isInteger(position)) return;
+    const local = localHistory(history, historyIndex, source);
+    if (position === local.cursor || position < -1 || position >= local.steps.length) return;
+    const look = localLook(history, local, position, { params, paramBag });
+    noteDiscreteChange();
+    set((s) => ({
+      ...lookOf(look, s),
+      previewParams: null,
+      previewParamBag: null,
+      discreteEdits: s.discreteEdits + 1,
+    }));
+    const to = position < 0 ? null : local.steps[position].index;
+    await commitStoredEdit(get, set, localMoveLabel(local, position), undefined, { source, local: { to } });
+  },
+
+  localUndo(source) {
+    const { history, historyIndex } = get();
+    return get().goToLocalHistory(source, localHistory(history, historyIndex, source).cursor - 1);
+  },
+
+  localRedo(source) {
+    const { history, historyIndex } = get();
+    return get().goToLocalHistory(source, localHistory(history, historyIndex, source).cursor + 1);
   },
 
   async restoreEdit(edit, label) {

@@ -114,6 +114,18 @@ export interface DevelopState {
    *  outside `history` or not a whole number, or while `editError` is set.
    *  Safelight 3.2.5 and later. */
   goToHistory: (index: number) => void;
+  /** Move `source`'s own settings to how they stood after its local step
+   *  `position` (`api.develop.useLocalHistory(source).steps`), or before its
+   *  first at -1, as one undoable step in its name that keeps every other
+   *  tool's edits. Only what `source`'s steps changed moves: its settings,
+   *  extension values and masks (a mask as a whole). Does nothing for the
+   *  step it stands on, a position outside its steps, with no photo open or
+   *  while `editError` is set. Safelight 3.2.8 and later. */
+  goToLocalHistory: (source: string, position: number) => Promise<void>;
+  /** goToLocalHistory one of `source`'s steps back ("Undo Exposure"). */
+  localUndo: (source: string) => Promise<void>;
+  /** goToLocalHistory one of `source`'s steps forward ("Redo Exposure"). */
+  localRedo: (source: string) => Promise<void>;
   /** Put the open photo's edit back to `edit` exactly, as one undoable step
    *  named `label`: its settings, the process version it was made at and only
    *  the extension values it holds. Settings an older edit lacks take their

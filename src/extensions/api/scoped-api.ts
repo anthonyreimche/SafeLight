@@ -110,6 +110,7 @@ import type {
   ProjectState,
   UIState,
 } from "./stores";
+import type { HistorySource, LocalHistoryView } from "@/state/local-history-types";
 import type { SharedVariablesAPI } from "./variables";
 import type { CommandsAPI } from "./commands";
 import type { NetworkAPI } from "./network";
@@ -122,6 +123,12 @@ import type { DevelopOverlayState } from "../develop-host";
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
+  /** The URL of one of your own files, `path` from your folder (the one
+   *  safelight.json is in, e.g. "dist/runtime.wasm"), cache-busted by your
+   *  version: for a worker, a WebAssembly binary or a model your bundle loads.
+   *  import.meta.url is undefined in an extension's module, and the same URL
+   *  serves a Developer Tools dev-folder copy. Needs Safelight 3.2.7. */
+  assetUrl(path: string): string;
   /** The app's React instance — plugins must use this, not their own copy. */
   react: typeof import("react");
   registerPanel(c: PanelContribution): void;
@@ -379,6 +386,15 @@ export interface SafelightAPI {
      *  gives the key back: call it as soon as there is nothing left to close,
      *  from a React effect's cleanup. Needs Safelight 3.2.4. */
     onEscape(handler: () => void): () => void;
+    /** Tell the person something without stopping them: a bar in the app's
+     *  bottom stack, under your extension's name, with a × to dismiss.
+     *  `info` and `success` go by themselves after a few seconds; `warning`
+     *  and `error` stay; a notice with `progress` (0..1) stays while the run
+     *  is under way. `update` changes it in place, `close` takes it down, and
+     *  core takes it down when your extension stops. Needs Safelight 3.2.7. */
+    notify(
+      notice: string | import("@/state/notification-store").NoticeOptions,
+    ): import("@/state/notification-store").NoticeHandle;
   };
   /** React DOM's `createPortal`, from the app's copy, for a tooltip or popover
    *  that must escape its panel's clipping. Extension bundles can't import
@@ -509,7 +525,19 @@ export interface SafelightAPI {
    *  main window switches to it, or focuses its window if it is popped out,
    *  and ignores an unknown id. A popped-out window leaves its own module
    *  where it is and has the main window go to any other. */
-  navigation: { goTo(module: ModuleId): void };
+  navigation: {
+    goTo(module: ModuleId): void;
+    /** The module this window shows: a popped-out window's own module, else
+     *  the main window's tab. Ask it before acting on a Develop shortcut,
+     *  `current() === "develop"`, rather than reading the URL. Needs
+     *  Safelight 3.2.7. */
+    current(): ModuleId;
+    /** `current` as a React hook. Needs Safelight 3.2.7. */
+    useCurrent(): ModuleId;
+    /** The module this window was popped out for, or null in the main
+     *  window. Needs Safelight 3.2.7. */
+    ownModule(): ModuleId | null;
+  };
   /** Read the current binding for any action id (built-in or extension), or
    *  `list()` every built-in key action with its current combo (override
    *  applied) + label + category — so a tool can check a remap against the LIVE
@@ -550,6 +578,22 @@ export interface SafelightAPI {
      *  `maskId` null. Lets one component serve as both a panel's `component` and
      *  its `mask.component`. */
     useParamScope(): ParamScope;
+    /** An extension's local history on the open photo: the steps it made
+     *  (every commit through its own `api.stores.useDevelopStore` is made in
+     *  its name) and the one its settings show now; null for a null `source`.
+     *  Move it with useDevelopStore's localUndo, localRedo and
+     *  goToLocalHistory. Safelight 3.2.8 and later. */
+    useLocalHistory(source: string | null): LocalHistoryView | null;
+    /** The extensions with steps on the open photo, the latest edited first. */
+    useHistorySources(): HistorySource[];
+    /** The extension whose local history the History and Edit panels show:
+     *  the one behind the photo's latest step, or the one chooseHistorySource
+     *  picked, until another extension makes a step or another photo opens.
+     *  Null before any extension has made a step. */
+    useChosenHistorySource(): string | null;
+    /** Pick the extension useChosenHistorySource gives on the open photo;
+     *  null follows the latest edited again. */
+    chooseHistorySource(source: string | null): void;
     /** The frame covers the region the view shows, whatever crop `params`
      *  carry: in crop mode the whole photo and its margin, as the canvas shows
      *  it. The frame is for measuring: sRGB, and without the clipping warning, the
@@ -718,8 +762,9 @@ export interface SafelightAPI {
      *  with `onDown`, it is also handed the colour the view shows there (sRGB,
      *  0-1) once the probe answers, then the drag to `onMove` and its end to
      *  `onUp`. A held Ctrl, Cmd or Space pans instead, and Escape lets go.
-     *  One extension holds it at a time: the last to set it. It is let go when
-     *  the extension stops. */
+     *  One extension holds it at a time: the last to set it. Setting it lets
+     *  a held canvas tool go (from Safelight 3.2.7). It is let go when the
+     *  extension stops. */
     setPickDrag(tool: import("@/modules/develop/pick-drag").PickDragTool | null): void;
     /** React hook: whether this extension holds the pick-drag tool. */
     usePickDragHeld(): boolean;
@@ -728,7 +773,8 @@ export interface SafelightAPI {
      *  image inside the view, core's own canvas gestures stand aside (zoom
      *  too, unless `zoomable`), and the live view draws `viewParams` of the
      *  edit if given. Escape calls `onEscape` and lets it go. One extension
-     *  holds it at a time: the last to set it. It is let go when the
+     *  holds it at a time: the last to set it. Setting it lets an armed
+     *  pick-drag tool go (from Safelight 3.2.7). It is let go when the
      *  extension stops. Needs Safelight 3.2.0. */
     setCanvasTool(tool: CanvasTool | null): void;
     /** React hook: whether this extension holds the canvas tool. */
@@ -793,6 +839,35 @@ export interface SafelightAPI {
     /** React hook: brushTips(), re-rendering as tips come and go. Needs
      *  Safelight 3.2.5. */
     useBrushTips(): readonly BrushTipContribution[];
+    /** The official brush every painting tool shares: Masking's. A tool holds
+     *  its own settings and starts them from `defaults` (size is a radius as a
+     *  share of the photo's height, as a BrushDab's; feather, opacity and flow
+     *  run 0 to 1). `actions` are the rebindable brush shortcuts' keybinding
+     *  ids ([ and ] size, Shift+[ and Shift+] feather, comma and period
+     *  opacity, Shift+comma and Shift+period flow), which core hands only to the
+     *  held canvas tool: answer CanvasTool.onAction and wants with `step`,
+     *  passing the settings the tool has. It returns the setting a shortcut
+     *  changes and its new value, held to its range, or null for one the tool
+     *  doesn't have, which core then leaves alone. Pass `range` for limits of
+     *  the tool's own (`{ size: { min: 0.002, max: 0.1 } }`); a step never
+     *  moves a setting the wrong way. Needs Safelight 3.2.7. */
+    brush: {
+      defaults: Readonly<import("@/modules/develop/brush").BrushSettings>;
+      actions: readonly string[];
+      step: typeof import("@/modules/develop/brush").stepBrush;
+    };
+    /** The official brush ring, for a canvas tool's overlay: the brush's edge
+     *  and its feathered core at `at` (overlay layout px, from framePoint; or
+     *  "centre", the reference a size slider shows while dragged), sized as a
+     *  dab paints in the photo through any crop, zoom or Perspective; red and
+     *  dashed for an erasing brush. It draws around the crosshair cursor, as
+     *  Masking's brush does. Needs Safelight 3.2.7. */
+    BrushCursor: typeof import("@/modules/develop/BrushCursor").BrushCursor;
+    /** The pointer in `el`'s layout px: the space an overlay's `rect`, the
+     *  mapping helpers and CSS left/top use. Interface scale zooms the page,
+     *  so clientX minus the element's left is off by the zoom. Needs Safelight
+     *  3.2.7. */
+    framePoint(el: Element, clientX: number, clientY: number): { x: number; y: number };
     /** Turn non-RAW photos (JPEG, PNG, WebP, AVIF, TIFF, NetPBM) into linear
      *  Rec.709 yourself. Each load of such a photo asks `resolver` for a
      *  transform and hands it the original's bytes; core reads the file's
@@ -910,6 +985,11 @@ export interface SafelightAPI {
      *  smooth gradients band: the export asks for 16 bits only for a TIFF or
      *  PNG set to 16. */
     proPhotoAt8Bit(settings: BitDepthSettings): boolean;
+    /** The Export panel's line on a finished run: how many photos it exported
+     *  and any that fell short of what was asked (8-bit, reduced precision,
+     *  without an extension's effect, a ZIP delivered as files). Needs
+     *  Safelight 3.2.7. */
+    describeResult(result: ExportResult): string;
   };
   /** Lower-level catalogue persistence, for extensions that add records the core
    *  scan didn't produce (e.g. virtual copies). `addPhotos` durably writes new
@@ -996,6 +1076,13 @@ export interface SafelightAPI {
     /** The photo open in Develop (the active photo), or undefined. React hook;
      *  a write to any other photo leaves it alone. */
     useActivePhoto(): import("@/catalog/types").CatalogPhoto | undefined;
+    /** The ids a command on "these photos" acts on: the selection, else the
+     *  active photo, else none. Core's rating, rotate and delete shortcuts use
+     *  the same rule. Needs Safelight 3.2.7. */
+    targetIds(): string[];
+    /** The target photos (as targetIds) in the catalogue's order. React hook.
+     *  Needs Safelight 3.2.7. */
+    useTargetPhotos(): import("@/catalog/types").CatalogPhoto[];
     /** Put the photos in one new stack (a burst, a bracket), `opts.cover` (one
      *  of them) as its cover; a photo in another stack leaves it. The grid shows
      *  a collapsed stack as its cover alone, and ←/→ culling, select all and

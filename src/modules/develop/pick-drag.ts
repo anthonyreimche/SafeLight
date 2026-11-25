@@ -4,13 +4,14 @@
 // be preserved in derived versions.
 
 import { create } from "zustand";
+import { useCanvasToolStore } from "./canvas-tool";
 
 // The canvas's pick-drag tool: an extension's on-image press or drag (White
 // Balance's eyedropper, HSL's target tool). While one is held, a press on the
 // image goes to the tool: at once to `onPress`, and, for a tool with `onDown`,
 // with the colour the view shows there once the probe answers, then the drag
-// (DevelopCanvas). One extension holds it at a time; ephemeral, never
-// persisted.
+// (DevelopCanvas). One extension holds it at a time, and arming it lets a held
+// canvas tool go, as holding one lets it go; ephemeral, never persisted.
 
 /** A point on the canvas, in its pixels, from its top-left corner. */
 export interface CanvasPoint {
@@ -37,9 +38,11 @@ interface Held {
 
 export const usePickDragStore = create<{ held: Held | null }>(() => ({ held: null }));
 
-/** Hand the canvas `owner`'s tool, or with null take `owner`'s tool back; a
- *  tool another extension holds stays. */
+/** Hand the canvas `owner`'s tool, letting a held canvas tool go, or with null
+ *  take `owner`'s tool back; a tool another extension holds stays. */
 export function setPickDrag(owner: string, tool: PickDragTool | null): void {
-  if (tool) usePickDragStore.setState({ held: { owner, tool } });
-  else if (usePickDragStore.getState().held?.owner === owner) usePickDragStore.setState({ held: null });
+  if (tool) {
+    useCanvasToolStore.setState({ held: null });
+    usePickDragStore.setState({ held: { owner, tool } });
+  } else if (usePickDragStore.getState().held?.owner === owner) usePickDragStore.setState({ held: null });
 }

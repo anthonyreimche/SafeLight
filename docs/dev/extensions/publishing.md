@@ -35,7 +35,7 @@ Safelight installs and updates an extension from its newest **GitHub Release** w
 
 **Pre-releases.** Mark a release as a pre-release, or tag it like `v1.4.0-beta.1`. Safelight installs one only when a user picks it from the version list. After that, they're offered newer pre-releases until a full release passes them.
 
-**What gets installed.** Safelight uses the first `.zip` asset with `safelight.json` at its root, or inside a single top-level folder. The zip must hold everything loaded at runtime: the `main` bundle and any file reached through `/__plugins__/<id>/` (icons, LUTs, WASM). With no such zip, Safelight installs the source tree at the tag, which works when you commit `dist/`.
+**What gets installed.** Safelight uses the first `.zip` asset with `safelight.json` at its root, or inside a single top-level folder. The zip must hold everything loaded at runtime: the `main` bundle and any file reached through `api.assetUrl` (icons, LUTs, WASM). With no such zip, Safelight installs the source tree at the tag, which works when you commit `dist/`.
 
 **Older versions.** Users can install any of your releases from the version list and stay on it. Keep old releases published: deleting one removes it from that list.
 
@@ -64,6 +64,7 @@ The [extension registry](https://github.com/anthonyreimche/safelight-registry) k
 - **Replace an extension**: a Discontinued bar with Install replacement on the old one. See [Replacing an extension](README.md#replacing-an-extension).
 - **Discontinue an extension**: a Discontinued bar with your message.
 - **Set an extension's category**: for an extension with no category topic.
-- **Report an extension**: for the ban list.
+
+To report a harmful extension, use the registry's [private report form](https://github.com/anthonyreimche/safelight-registry/security/advisories/new) instead: reports are never public.
 
 A submitted form is checked at once (the repo exists; for a verification, the release's `safelight.json` has the same version) and opens a pull request that a maintainer reviews. A problem gets a comment saying what to fix, and editing the issue checks it again.

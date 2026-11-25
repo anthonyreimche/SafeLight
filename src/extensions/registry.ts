@@ -68,6 +68,7 @@ import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forg
 import { forgetStartFailure } from "./start-failures";
 import { isPlainObject } from "@/project/fs";
 import { commandNameRefusal } from "./command-rules";
+import { dropNotifications } from "@/state/notification-store";
 import type { RegisteredCommand } from "./api/commands";
 
 export interface RegisteredPanel extends PanelContribution {
@@ -1219,6 +1220,7 @@ const OTHER_SWEEPS: readonly ((extensionId: string) => void)[] = [
   (id) => forgetCallbackFailures(id),
   (id) => dropSubscriptions(id),
   (id) => forgetStartFailure(id),
+  (id) => dropNotifications(id),
 ];
 
 /** Remove every contribution an extension made (uninstall/deactivate). */

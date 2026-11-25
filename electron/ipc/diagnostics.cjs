@@ -26,6 +26,7 @@ const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
  *   shell: Pick<Electron.Shell, "openExternal">,
  *   crashLog: { list(): unknown[] },
  *   devFolderFile: () => string,
+ *   devExtensions?: { setFolder(folder: string | null): void },
  *   extensionConnectHosts: () => string[],
  *   gpuBackendState: () => unknown,
  *   setSoftwareRendering: (on: boolean) => unknown,
@@ -42,6 +43,7 @@ function diagnosticsChannels({
   shell,
   crashLog,
   devFolderFile,
+  devExtensions,
   extensionConnectHosts,
   gpuBackendState,
   setSoftwareRendering,
@@ -104,6 +106,7 @@ function diagnosticsChannels({
         if (folder !== null && typeof folder !== "string") throw new Error("Bad folder");
         const f = folder && folder.trim() ? folder : null;
         await writeDevFolder(devFolderFile(), f);
+        devExtensions?.setFolder(f);
         return {
           pending: pendingConnectHosts(
             declaredConnectHosts(await listDevManifests(f)),

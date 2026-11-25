@@ -17,6 +17,18 @@ export function detachedModule(): AppModule | null {
   return m && MODULE_ID.test(m) ? m : null;
 }
 
+/** The module this window shows: a pop-out's own module, else the main
+ *  window's active tab. */
+export function shownModule(): AppModule {
+  return detachedModule() ?? useUIStore.getState().activeModule;
+}
+
+/** shownModule as a React hook, which follows the main window's tab. */
+export function useShownModule(): AppModule {
+  const active = useUIStore((s) => s.activeModule);
+  return detachedModule() ?? active;
+}
+
 const popOutFailed = (err: unknown) => console.warn("[safelight] pop-out window:", err);
 
 // The main process opens each module's window (one per module) and focuses it
