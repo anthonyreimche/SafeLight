@@ -43,6 +43,7 @@ import { closeOpenPhoto, flushPendingThumbnails, useDevelopStore } from "./devel
 import { broadcast } from "./broadcast";
 import { regenerateEditedThumbnail } from "./edited-thumbnail";
 import { useCatalogStore } from "./catalog-store";
+import { editFingerprint } from "@/catalog/edit-fingerprint";
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { writeInTurn, writePending } from "@/catalog/edit-writes";
 import { installMemoryStorage, photo, type MemoryEdits } from "@/catalog/stored-edit.fixtures";
@@ -976,6 +977,55 @@ describe("commitEdit", () => {
 
       expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
       expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][1].exposure).toBe(0);
+    });
+
+    // SafeLight #297: a photo pasted onto in the Library kept its old preview when
+    // opened in Develop and left again unchanged.
+    describe("a photo opened on an edit its stored preview doesn't show", () => {
+      const PASTED = "photo-2";
+      const pasted = (): EditState => ({
+        photoId: PASTED,
+        currentIndex: 1,
+        stack: [snapshot("Original", { temperature: 5000 }), snapshot("Paste Settings", { temperature: 5000, exposure: 7 })],
+      });
+
+      beforeEach(() => {
+        useCatalogStore.setState({ photos: [photo(PHOTO_ID), photo(PASTED)] });
+        installMemoryStorage(pasted());
+      });
+
+      it("draws its preview from that edit once the view goes quiet", async () => {
+        await s().loadEdit(PASTED, 5000);
+        expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(300);
+
+        expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+        const [id, rendered] = vi.mocked(regenerateEditedThumbnail).mock.calls[0];
+        expect(id).toBe(PASTED);
+        expect(rendered.exposure).toBe(7);
+      });
+
+      it("draws it at once when the photo is left unchanged", async () => {
+        await s().loadEdit(PASTED, 5000);
+        await s().loadEdit(PHOTO_ID, 5000);
+
+        expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(regenerateEditedThumbnail).mock.calls[0][0]).toBe(PASTED);
+      });
+
+      it("leaves a stored preview that shows the edit opened", async () => {
+        await s().loadEdit(PASTED, 5000);
+        const shown = editFingerprint(s().params, s().paramBag);
+        await s().loadEdit(PHOTO_ID, 5000);
+        useCatalogStore.setState({ photos: [photo(PHOTO_ID), { ...photo(PASTED), previewEdit: shown }] });
+        vi.mocked(regenerateEditedThumbnail).mockClear();
+
+        await s().loadEdit(PASTED, 5000);
+        await vi.advanceTimersByTimeAsync(3000);
+
+        expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+      });
     });
 
     it("renders an undone look at once as its photo is left", async () => {

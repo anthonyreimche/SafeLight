@@ -14,7 +14,7 @@ import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn(), refreshStoredThumbnails: vi.fn() }));
 
 import type { StoredPhoto } from "@/catalog/types";
 import type { EngineRequest } from "@/engine/protocol";

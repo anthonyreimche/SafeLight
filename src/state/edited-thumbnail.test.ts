@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecodedImage, Fallback, LoadImageOptions } from "@/catalog/load-image";
-import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import type { CatalogPhoto, DevelopParams, EditState } from "@/catalog/types";
 import { normalizeParams } from "@/catalog/types";
 import type { RebuiltChange } from "./catalog-store";
 import type { RendererAvailability } from "@/rendering/render-bridge";
@@ -72,9 +72,10 @@ vi.mock("./catalog-store", () => ({
   useCatalogStore: { getState: () => catalog },
 }));
 
-import { regenerateEditedThumbnail } from "./edited-thumbnail";
+import { refreshStoredThumbnails, regenerateEditedThumbnail } from "./edited-thumbnail";
 import { setCatalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
+import { loadSavedEdit } from "@/catalog/edit-params";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 
@@ -128,18 +129,20 @@ const params = (exposure: number): DevelopParams => normalizeParams({ exposure }
 
 let written: CatalogPhoto[];
 let putPhoto: (p: CatalogPhoto) => Promise<void>;
+const savedEdits = new Map<string, EditState>();
 
 const storage: CatalogStorage = {
   putPhoto: (p) => putPhoto(p),
   putPhotos: async () => {},
   deletePhotos: async () => {},
-  getEditState: async () => undefined,
+  getEditState: async (photoId) => savedEdits.get(photoId),
   putEditState: async () => {},
   putEditStates: async () => {},
 };
 
 beforeEach(() => {
   written = [];
+  savedEdits.clear();
   putPhoto = async (p) => void written.push(p);
   setCatalogStorage(storage);
   catalog.photos = [photo()];
@@ -785,5 +788,90 @@ describe("per-photo coalescing", () => {
     await settle();
     expect(written).toHaveLength(1);
     expect(written[0].thumbnailBlob).toBe(rendered);
+  });
+});
+
+// SafeLight #297: Paste Settings, Update processing and an extension's write change
+// a stored edit outside Develop, and the grid preview is drawn again from it.
+describe("refreshStoredThumbnails", () => {
+  const save = (photoId: string, exposure: number, paramBag: Record<string, unknown> = {}): void => {
+    savedEdits.set(photoId, {
+      photoId,
+      currentIndex: 1,
+      stack: [
+        { timestamp: 0, label: "Original", params: params(0), paramBag: {} },
+        { timestamp: 1, label: "Paste Settings", params: params(exposure), paramBag },
+      ],
+    });
+  };
+  const drawn = () => bridge.renderThumbnailFromSource.mock.calls.map(([o]) => o.params.exposure);
+
+  beforeEach(() => {
+    bridge.renderThumbnailFromSource.mockResolvedValue(rendered);
+  });
+
+  it("draws each photo's preview from its saved edit and stores it", async () => {
+    catalog.photos = [photo(), photo({ id: "photo-2" })];
+    save(PHOTO_ID, 1);
+    save("photo-2", 2, { "x.y": 1 });
+
+    refreshStoredThumbnails([PHOTO_ID, "photo-2"]);
+
+    await vi.waitFor(() => expect(catalog.mergeRebuiltPhoto).toHaveBeenCalledTimes(2));
+    expect(drawn().sort()).toEqual([1, 2]);
+    const second = bridge.renderThumbnailFromSource.mock.calls.find(([o]) => o.params.exposure === 2);
+    expect(second?.[0].contributedParams).toMatchObject({ "x.y": 1 });
+  });
+
+  it("draws two photos at a time", async () => {
+    const ids = [PHOTO_ID, "photo-2", "photo-3", "photo-4"];
+    catalog.photos = ids.map((id) => photo({ id }));
+    ids.forEach((id, i) => save(id, i + 1));
+    const g = gate();
+    bridge.renderThumbnailFromSource.mockImplementation(async () => {
+      await g.wait;
+      return rendered;
+    });
+
+    refreshStoredThumbnails(ids);
+    await settle();
+    expect(bridge.renderThumbnailFromSource).toHaveBeenCalledTimes(2);
+
+    g.open();
+    await vi.waitFor(() => expect(catalog.mergeRebuiltPhoto).toHaveBeenCalledTimes(4));
+  });
+
+  it("draws a photo queued again before its turn once, with the edit saved last", async () => {
+    const ids = [PHOTO_ID, "photo-2", "photo-3"];
+    catalog.photos = ids.map((id) => photo({ id }));
+    ids.forEach((id, i) => save(id, i + 1));
+    const g = gate();
+    bridge.renderThumbnailFromSource.mockImplementation(async () => {
+      await g.wait;
+      return rendered;
+    });
+
+    refreshStoredThumbnails(ids);
+    await settle();
+    save("photo-3", 9);
+    refreshStoredThumbnails(["photo-3"]);
+    g.open();
+
+    await vi.waitFor(() => expect(catalog.mergeRebuiltPhoto).toHaveBeenCalledTimes(3));
+    await settle();
+    expect(drawn().sort()).toEqual([1, 2, 9]);
+  });
+
+  it("leaves a preview that already shows the saved edit, and a photo the catalogue doesn't hold", async () => {
+    save(PHOTO_ID, 1);
+    save("gone", 2);
+    const saved = await loadSavedEdit(PHOTO_ID);
+    catalog.photos = [photo({ previewEdit: editFingerprint(saved.params, saved.paramBag) })];
+
+    refreshStoredThumbnails([PHOTO_ID, "gone"]);
+    await settle();
+
+    expect(bridge.renderThumbnailFromSource).not.toHaveBeenCalled();
+    expect(written).toEqual([]);
   });
 });

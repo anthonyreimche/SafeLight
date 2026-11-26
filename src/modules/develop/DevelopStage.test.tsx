@@ -14,9 +14,10 @@ import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage, photo } from "@/catalog/stored-edit.fixtures";
+import { registerSlot, unregisterExtension } from "@/extensions/registry";
 import { DevelopStage } from "./DevelopStage";
 
-vi.mock("./DevelopCanvas", () => ({ DevelopCanvas: () => null }));
+vi.mock("./DevelopCanvas", () => ({ DevelopCanvas: () => <div data-testid="canvas" /> }));
 vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
 
 const INITIAL = useDevelopStore.getState();
@@ -45,6 +46,42 @@ describe("DevelopStage", () => {
 
     act(() => useDevelopStore.setState({ colorAssessment: true }));
     expect(surround()?.style.background).toBe("rgb(102, 102, 102)");
+  });
+
+  describe("beside the canvas", () => {
+    afterEach(() => unregisterExtension("acme.beside"));
+
+    const besidePane = () =>
+      registerSlot("acme.beside", {
+        id: "acme.beside.pane",
+        slot: "develop-canvas-beside",
+        component: () => <div data-testid="pane" />,
+      });
+
+    it("draws a develop-canvas-beside contribution in the surround, before the canvas, which takes the rest", () => {
+      installMemoryStorage();
+      useCatalogStore.setState({ photos: [photo("A")], activePhotoId: "A" });
+      besidePane();
+      render(<DevelopStage zoom={null} onZoomChange={() => {}} />);
+
+      const pane = screen.getByTestId("pane");
+      const canvas = screen.getByTestId("canvas");
+      const split = document.querySelector<HTMLElement>("[data-canvas-split]");
+      expect(pane.parentElement).toBe(split);
+      expect(surround()?.contains(split)).toBe(true);
+      expect(pane.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // The canvas shrinks to what the pane leaves, so its frame measures the rest.
+      const area = canvas.closest<HTMLElement>("[data-canvas-area]");
+      expect(area?.parentElement).toBe(split);
+      expect(area?.className.split(" ")).toEqual(expect.arrayContaining(["relative", "flex-1", "min-w-0", "min-h-0"]));
+    });
+
+    it("draws nothing beside the canvas while no photo is open", () => {
+      besidePane();
+      render(<DevelopStage zoom={null} onZoomChange={() => {}} empty={<p>No photo selected</p>} />);
+      expect(screen.getByText("No photo selected")).toBeTruthy();
+      expect(screen.queryByTestId("pane")).toBeNull();
+    });
   });
 
   it("says so, and offers another try, when the open photo's edits can't be read", async () => {

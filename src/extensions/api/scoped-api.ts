@@ -1079,7 +1079,8 @@ export interface SafelightAPI {
    *  develop recipe (the undo stack) by id — so an extension can, for instance,
    *  clone one photo's edits onto another. Writing the photo open in Develop
    *  reloads it there from the catalogue, which also clears the active tool and the
-   *  mask and spot selection. */
+   *  mask and spot selection. After `putEditState` the photo's grid preview is drawn
+   *  again from the stored edit in the background (from Safelight 3.2.8). */
   catalog: {
     addPhotos(
       photos: import("@/catalog/types").CatalogPhoto[],
@@ -1102,6 +1103,29 @@ export interface SafelightAPI {
      *  catalogue doesn't hold or a patch that isn't an object. Needs
      *  Safelight 3.2.8. */
     applyBagPatch(photoId: string, patch: Record<string, unknown>, label: string): Promise<boolean>;
+    /** A catalogue photo's look under its stored cursor, `{ params, paramBag }`,
+     *  for a photo that needn't be open: the as-shot defaults for one never
+     *  edited. Changes the open photo hasn't committed yet aren't in it. Rejects
+     *  for a photo the catalogue doesn't hold. Needs Safelight 3.2.8. */
+    getLook(photoId: string): Promise<{
+      params: import("@/catalog/types").DevelopParams;
+      paramBag: Record<string, unknown>;
+    }>;
+    /** Commit each `{ photoId, params }` patch over that photo's stored settings
+     *  (top-level DevelopParams keys, such as exposure, temperature and tint) as
+     *  one history step labelled `label`, every photo in one catalogue write: a
+     *  Library batch that gives each photo its own values. Steps are stamped as
+     *  made by your extension, every onEditCommit hook runs, grid previews are
+     *  drawn from the new looks and the photo open in Develop reloads. Two
+     *  patches for one photo merge in order; a photo already holding every
+     *  value is left out. Every patch is checked first: an unknown setting,
+     *  `processVersion`, a value of the wrong kind or a photo the catalogue
+     *  doesn't hold rejects the call with nothing written. Resolves to how many
+     *  photos changed. Needs Safelight 3.2.8. */
+    applyParamPatches(
+      patches: { photoId: string; params: Partial<import("@/catalog/types").DevelopParams> }[],
+      label: string,
+    ): Promise<number>;
     /** Rename one photo's file on disk, in place (same folder), preserving its
      *  extension. This is core's own rename path: an atomic native rename (no
      *  full-file copy), carrying the `<file>.safelight.json` sidecar and any

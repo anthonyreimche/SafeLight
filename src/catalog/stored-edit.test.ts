@@ -15,7 +15,7 @@ vi.mock("@/state/broadcast", () => ({
   onBroadcast: () => () => {},
   WINDOW_ID: "test-window",
 }));
-vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn(), refreshStoredThumbnails: vi.fn() }));
 
 import {
   appendStoredSnapshot,
@@ -35,7 +35,7 @@ import {
   type EditState,
 } from "./types";
 import { broadcast } from "@/state/broadcast";
-import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
@@ -611,7 +611,7 @@ describe("storedSnapshotTargets", () => {
 describe("appendStoredSnapshots — stamp and thumbnails", () => {
   beforeEach(() => {
     useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
-    vi.mocked(regenerateEditedThumbnail).mockClear();
+    vi.mocked(refreshStoredThumbnails).mockClear();
   });
 
   it("stamps each new step with the source it is made for, and none by default", async () => {
@@ -623,24 +623,23 @@ describe("appendStoredSnapshots — stamp and thumbnails", () => {
     expect(b?.stack[1].source).toBe("acme");
   });
 
-  it("draws no thumbnail unless asked, and then one from each stored photo's new look", async () => {
+  // SafeLight #297: Paste Settings left the grid on the old preview.
+  it("queues a new grid preview for every photo it changes, and none for one it leaves alone", async () => {
     installMemoryStorage(original("a"), original("b"));
     await appendStoredSnapshots(storedSnapshotTargets(["a", "b"]), "Step", brighter);
-    expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
-    await appendStoredSnapshots(storedSnapshotTargets(["a", "b"]), "Step", (base) => ({ ...base, paramBag: { "x.y": 1 } }), {
-      refreshThumbnails: true,
-    });
-    expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(2);
-    const call = vi.mocked(regenerateEditedThumbnail).mock.calls[0];
-    expect(call[0]).toBe("a");
-    expect(call[3]).toEqual({ "x.y": 1 });
+    expect(refreshStoredThumbnails).toHaveBeenCalledTimes(1);
+    expect(refreshStoredThumbnails).toHaveBeenCalledWith(["a", "b"]);
+
+    vi.mocked(refreshStoredThumbnails).mockClear();
+    await appendStoredSnapshots(storedSnapshotTargets(["a", "b"]), "Step", () => null);
+    expect(refreshStoredThumbnails).not.toHaveBeenCalled();
   });
 });
 
 describe("applyBagPatch", () => {
   beforeEach(() => {
     useCatalogStore.setState({ photos: [photo("a")] });
-    vi.mocked(regenerateEditedThumbnail).mockClear();
+    vi.mocked(refreshStoredThumbnails).mockClear();
   });
 
   it("commits the patch over the photo's bag as one step in the extension's name, and announces it", async () => {
@@ -657,7 +656,7 @@ describe("applyBagPatch", () => {
     expect(written[0].currentIndex).toBe(1);
     expect(onEditCommit).toHaveBeenCalledTimes(1);
     expect(broadcast).toHaveBeenCalledWith({ type: "edit-update", payload: { photoId: "a" } });
-    expect(regenerateEditedThumbnail).toHaveBeenCalledTimes(1);
+    expect(refreshStoredThumbnails).toHaveBeenCalledWith(["a"]);
   });
 
   it("keeps computed values the patch carries, which a paste would leave out", async () => {
@@ -675,7 +674,7 @@ describe("applyBagPatch", () => {
     const { written } = installMemoryStorage(edit([snapshot("Original", {}, { "m.s.on": true })], 0, "a"));
     expect(await applyBagPatch("a", { "m.s.on": true }, "Match", "m")).toBe(false);
     expect(written).toHaveLength(0);
-    expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+    expect(refreshStoredThumbnails).not.toHaveBeenCalled();
   });
 
   it("refuses a photo the catalogue doesn't hold, and a patch that isn't an object", async () => {

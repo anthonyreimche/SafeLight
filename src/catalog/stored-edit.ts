@@ -8,10 +8,9 @@
 // selection at a time with one catalogue write.
 //
 // Mirrors what develop-store.commitEdit does for the open photo, but works on any
-// catalogue photo straight from its persisted EditState. Grid thumbnails are
-// deliberately NOT re-rendered here — that would reintroduce the folder-wide
-// decode pass we removed (see feedback-plain-grid-thumbnails); the new look
-// surfaces in Develop, and the broadcast refreshes the histogram.
+// catalogue photo straight from its persisted EditState. Each changed photo's grid
+// preview is queued to be drawn again in the background, two at a time
+// (refreshStoredThumbnails), and the broadcast refreshes the histogram.
 
 import type { EditState } from "./types";
 import { NEUTRAL_TEMPERATURE_K } from "./types";
@@ -23,13 +22,14 @@ import { useDevelopStore } from "@/state/develop-store";
 import { broadcast } from "@/state/broadcast";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
-import { regenerateEditedThumbnail } from "@/state/edited-thumbnail";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
 import type { StoredLook } from "./stored-edit-look";
 
 export type { StoredLook } from "./stored-edit-look";
 
-/** Turns a photo's current look into the look to append, or null to change nothing. */
-type NextLook = (base: StoredLook) => StoredLook | null;
+/** Turns a photo's current look into the look to append, or null to change nothing.
+ *  `target` is the photo it is for. */
+type NextLook = (base: StoredLook, target: StoredSnapshotTarget) => StoredLook | null;
 
 /** A photo to append to. `asShot` is its as-shot temperature: it seeds a photo that
  *  was never edited, and Develop reloads the photo with it. */
@@ -38,13 +38,10 @@ export interface StoredSnapshotTarget {
   asShot: number;
 }
 
-/** How an appended step is made and followed up. `source` is the extension the
- *  step is made for, which stamps it in local history. `refreshThumbnails` draws
- *  each stored photo's grid preview from its new look, but for the photo open in
- *  Develop, which draws its own. */
+/** How an appended step is made. `source` is the extension the step is made
+ *  for, which stamps it in local history. */
 export interface AppendOptions {
   source?: string;
-  refreshThumbnails?: boolean;
 }
 
 /** One photo's edit with its new step appended, waiting to be stored and announced. */
@@ -75,7 +72,7 @@ async function appendedEdit(
   source?: string,
 ): Promise<AppendedEdit | null> {
   const existing = await storage.getEditState(target.photoId);
-  const look = next(currentLook(existing, target.asShot));
+  const look = next(currentLook(existing, target.asShot), target);
   if (!look) return null;
   return { target, look, editState: appendStep(existing, target, label, look, Date.now(), source) };
 }
@@ -99,8 +96,9 @@ export async function appendStoredSnapshot(
  *  state is worked out before any is written, so a failure there changes none of
  *  them. They are then stored together, the photo open in Develop is reloaded at
  *  once, and each changed photo is announced in order. An announcement that throws
- *  is logged and does not stop the others. A photo `next` declines is left out, and
- *  one listed twice counts once. Returns how many photos changed. */
+ *  is logged and does not stop the others, and every changed photo's grid preview
+ *  is then queued to be drawn again. A photo `next` declines is left out, and one
+ *  listed twice counts once. Returns how many photos changed. */
 export async function appendStoredSnapshots(
   targets: StoredSnapshotTarget[],
   label: string,
@@ -134,7 +132,7 @@ export async function appendStoredSnapshots(
   const open = appended.find(({ target }) => target.photoId === develop.photoId);
   await Promise.all([stored, open && develop.loadEdit(open.target.photoId, open.target.asShot)]);
 
-  for (const { target, editState, look } of appended) {
+  for (const { target, editState } of appended) {
     try {
       // Let extensions persist the committed edit elsewhere (e.g. XMP sidecars).
       const photo = useCatalogStore.getState().photos.find((p) => p.id === target.photoId);
@@ -142,15 +140,12 @@ export async function appendStoredSnapshots(
 
       // Refresh this photo's histogram wherever it's shown.
       broadcast({ type: "edit-update", payload: { photoId: target.photoId } });
-
-      if (options.refreshThumbnails && target.photoId !== develop.photoId) {
-        void regenerateEditedThumbnail(target.photoId, look.params, target.asShot, look.paramBag);
-      }
     } catch (error) {
       // The edit is already stored; a failed announcement must not hold back the rest.
       console.warn(`[stored-edit] announcing ${target.photoId} failed:`, error);
     }
   }
+  refreshStoredThumbnails(appended.map(({ target }) => target.photoId));
   return appended.length;
 }
 
@@ -178,7 +173,7 @@ export async function applyBagPatch(
       Object.entries(values).every(([key, value]) => JSON.stringify(base.paramBag[key]) === JSON.stringify(value))
         ? null
         : { params: base.params, paramBag: { ...base.paramBag, ...values } },
-    { source, refreshThumbnails: true },
+    { source },
   );
   return changed === 1;
 }

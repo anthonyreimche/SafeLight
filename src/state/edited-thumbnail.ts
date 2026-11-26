@@ -3,13 +3,13 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Regenerate one photo's grid thumbnail after it's edited in Develop, so the
-// Library reflects the change.
+// Regenerate one photo's grid thumbnail after its edit changes (a Develop
+// commit, or a Library write such as Paste Settings), so the Library reflects it.
 //
 // Deliberately narrow in scope (see feedback-plain-grid-thumbnails): the old
 // `useEditedThumbnails` pump re-rendered *every* edited photo through the GPU on
 // folder open, decoding each on a cache miss. That was removed. This touches only
-// the single photo you actively edit.
+// the photos whose edit just changed.
 //
 // To make the thumbnail MATCH the Develop viewport (not the flatter camera JPEG),
 // it renders from the same scene-linear source the viewport uses (cached RAW
@@ -20,7 +20,9 @@
 // can't be obtained. The folder-wide pass is not reintroduced.
 
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import { NEUTRAL_TEMPERATURE_K } from "@/catalog/types";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
+import { loadSavedEdit } from "@/catalog/edit-params";
 import { getRenderBridge, needStageVariants } from "@/rendering/render-bridge";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
@@ -99,6 +101,45 @@ export function regenerateEditedThumbnail(
         ).then(() => next.waiters.forEach((resolve) => resolve()));
       }
     });
+}
+
+// Each refresh may decode its photo's original: two at a time keeps a paste onto
+// a large selection from stalling Develop behind it.
+const REFRESH_CONCURRENCY = 2;
+// Photos waiting for a refresh, in the order asked. A photo asked for again
+// before its turn keeps its place and is drawn once.
+const refreshQueue = new Set<string>();
+let refreshing = 0;
+
+/** Draw again, in the background, the grid previews of photos whose stored edit
+ *  changed outside Develop (Paste Settings, Update processing, an extension's
+ *  write). Each is drawn from its saved edit as read when its turn comes; a
+ *  preview that already shows that edit, and a photo the catalogue no longer
+ *  holds, are left. */
+export function refreshStoredThumbnails(ids: readonly string[]): void {
+  for (const id of ids) refreshQueue.add(id);
+  while (refreshing < REFRESH_CONCURRENCY && refreshQueue.size > 0) {
+    const [photoId] = refreshQueue;
+    refreshQueue.delete(photoId);
+    refreshing++;
+    void refreshStored(photoId).finally(() => {
+      refreshing--;
+      refreshStoredThumbnails([]);
+    });
+  }
+}
+
+async function refreshStored(photoId: string): Promise<void> {
+  const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  if (!photo) return;
+  const asShot = photo.exif.colorTemperature ?? NEUTRAL_TEMPERATURE_K;
+  try {
+    const { params, paramBag } = await loadSavedEdit(photoId, asShot);
+    if (photo.previewEdit === editFingerprint(params, paramBag)) return;
+    await regenerateEditedThumbnail(photoId, params, asShot, paramBag);
+  } catch (error) {
+    console.warn(`[edited-thumbnail] couldn't read the edit of ${photoId}:`, error);
+  }
 }
 
 /** renderAndStore, once the stage texture variants made on demand that the

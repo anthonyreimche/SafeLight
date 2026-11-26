@@ -36,6 +36,7 @@ import { emitEditCommit } from "@/extensions/registry";
 import { computedParamsOf, normalizeParamBag, withoutComputedParams } from "@/extensions/param-registry";
 import { photoById, useCatalogStore } from "./catalog-store";
 import { regenerateEditedThumbnail, type LeftPhoto } from "./edited-thumbnail";
+import { previewShowsEdit } from "@/hooks/preview-shows-edit";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { noteDiscreteChange } from "@/ui/motion";
 import { localHistory, localLook, localMoveLabel } from "./local-history";
@@ -746,6 +747,11 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       const { stack, index } = opened;
       const look = lookOf(stack[index]);
       renewWaitingThumbnail(photoId, look.params, asShot, look.paramBag);
+      // A grid preview left behind by an edit made outside Develop is drawn again
+      // from the edit opened, and at once if the photo is left unchanged.
+      const opening = photoById(useCatalogStore.getState().photos, photoId);
+      if (leaving && opening && !previewShowsEdit(opening, { ...look, historyIndex: index }))
+        refreshThumbnailWhenQuiet(photoId, look.params, asShot, look.paramBag);
       set({
         photoId,
         asShotTemperature: asShot,

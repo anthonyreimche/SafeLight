@@ -139,6 +139,7 @@ const FENCED_WRITERS = new Set([
   "putEditState",
   "putPhotoData",
   "applyBagPatch",
+  "applyParamPatches",
   "addPhotos",
   "renamePhoto",
   "apply",
