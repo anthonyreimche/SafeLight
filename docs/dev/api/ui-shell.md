@@ -173,6 +173,7 @@ interface SlotContribution {
 | `library-subbar` | A full-width bar below it, shown only when used |
 | `develop-toolbar` | The Develop status bar, left of the zoom controls |
 | `develop-canvas-overlay` | A click-through layer over the Develop canvas, under a held canvas tool's overlay (see [`api.develop`](stores.md#apidevelop)) |
+| `develop-canvas-beside` | Beside the Develop canvas while a photo is open; the canvas shrinks to the room left. A row with your component on the left; give its root `data-canvas-beside="above"` to stack it above the canvas instead. Size it with a flex basis, such as `flex: "0 0 50%"`. Needs Safelight 3.2.8 |
 | `develop-detail` | The Detail panel's Noise Reduction area. **Replaces** the built-in sliders |
 
 `api.unregisterSlot(id)` removes a slot contribution, e.g. a denoiser's `develop-detail` controls when it is off, so the built-in sliders return.

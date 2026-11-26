@@ -353,6 +353,12 @@ html.sl-opaque .bg-slider-fill\/40 {
   background: var(--color-surface-3);
 }
 
+/* A develop-canvas-beside contribution can ask to sit above the canvas
+   rather than beside it (a landscape reference photo over a landscape edit). */
+[data-canvas-split]:has(> [data-canvas-beside="above"]) {
+  flex-direction: column;
+}
+
 /* Global develop-canvas-overlay passthrough. While a pan/zoom gesture key
    (Ctrl/⌘/Space) is held, ViewportImage flips the shared canvas-gesture flag and
    DevelopCanvas swaps the extension-overlay slot wrapper to this class. The

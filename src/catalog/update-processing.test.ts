@@ -15,7 +15,7 @@ vi.mock("@/state/broadcast", () => ({
   onBroadcast: () => () => {},
   WINDOW_ID: "test-window",
 }));
-vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn(), refreshStoredThumbnails: vi.fn() }));
 
 import { updateProcessing } from "./update-processing";
 import { installMemoryStorage, legacySnapshot, photo, snapshot } from "./stored-edit.fixtures";
@@ -27,6 +27,7 @@ import {
   type EditState,
 } from "./types";
 import { broadcast } from "@/state/broadcast";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
@@ -191,6 +192,15 @@ describe("updateProcessing — one catalogue write for the selection", () => {
     expect(batches).toHaveLength(1);
     expect(batches[0].map((state) => state.photoId)).toEqual(["a", "b"]);
     expect(singles).toHaveLength(0);
+  });
+
+  it("queues a new grid preview for each changed photo", async () => {
+    seed();
+    vi.mocked(refreshStoredThumbnails).mockClear();
+
+    await updateProcessing(IDS);
+
+    expect(refreshStoredThumbnails).toHaveBeenCalledWith(["a", "b"]);
   });
 
   it("runs the edit hooks and the broadcast once per changed photo", async () => {

@@ -1332,12 +1332,19 @@ export interface GridMenuItemContribution {
  *  full-width bar directly below the Library toolbar (only rendered when an
  *  extension contributes to it). "develop-toolbar" sits in the Develop status
  *  bar (left of the zoom controls); "develop-canvas-overlay" is a click-through
- *  layer covering the Develop canvas, aligned via `api.develop`. */
+ *  layer covering the Develop canvas, aligned via `api.develop`.
+ *  "develop-canvas-beside" sits beside the Develop canvas while a photo is
+ *  open, such as a reference photo to edit against: the canvas shrinks to the
+ *  room the contribution leaves. They share a row, the contribution on the
+ *  left; a contribution whose root element has `data-canvas-beside="above"`
+ *  stacks them in a column instead, the contribution on top. Size the root
+ *  with a flex basis, such as `flex: "0 0 50%"`. Needs Safelight 3.2.8. */
 export type SlotName =
   | "library-toolbar"
   | "library-subbar"
   | "develop-toolbar"
   | "develop-canvas-overlay"
+  | "develop-canvas-beside"
   // Inside the Detail panel's Noise Reduction area. When an extension contributes
   // here (e.g. an alternative denoise method), the panel renders the slot in place
   // of the built-in NR sliders.

@@ -1635,8 +1635,14 @@ export interface GridMenuItemContribution {
  *  full-width bar directly below the Library toolbar (only rendered when an
  *  extension contributes to it). "develop-toolbar" sits in the Develop status
  *  bar (left of the zoom controls); "develop-canvas-overlay" is a click-through
- *  layer covering the Develop canvas, aligned via `api.develop`. */
-export type SlotName = "library-toolbar" | "library-subbar" | "develop-toolbar" | "develop-canvas-overlay" | "develop-detail";
+ *  layer covering the Develop canvas, aligned via `api.develop`.
+ *  "develop-canvas-beside" sits beside the Develop canvas while a photo is
+ *  open, such as a reference photo to edit against: the canvas shrinks to the
+ *  room the contribution leaves. They share a row, the contribution on the
+ *  left; a contribution whose root element has `data-canvas-beside="above"`
+ *  stacks them in a column instead, the contribution on top. Size the root
+ *  with a flex basis, such as `flex: "0 0 50%"`. Needs Safelight 3.2.8. */
+export type SlotName = "library-toolbar" | "library-subbar" | "develop-toolbar" | "develop-canvas-overlay" | "develop-canvas-beside" | "develop-detail";
 
 export interface SlotContribution {
     /** Globally unique, e.g. "my-ext.search-bar". */
@@ -2707,7 +2713,8 @@ export interface SafelightAPI {
      *  develop recipe (the undo stack) by id — so an extension can, for instance,
      *  clone one photo's edits onto another. Writing the photo open in Develop
      *  reloads it there from the catalogue, which also clears the active tool and the
-     *  mask and spot selection. */
+     *  mask and spot selection. After `putEditState` the photo's grid preview is drawn
+     *  again from the stored edit in the background (from Safelight 3.2.8). */
     catalog: {
         addPhotos(photos: CatalogPhoto[], opts?: {
             afterId?: string;
@@ -2725,6 +2732,29 @@ export interface SafelightAPI {
          *  catalogue doesn't hold or a patch that isn't an object. Needs
          *  Safelight 3.2.8. */
         applyBagPatch(photoId: string, patch: Record<string, unknown>, label: string): Promise<boolean>;
+        /** A catalogue photo's look under its stored cursor, `{ params, paramBag }`,
+         *  for a photo that needn't be open: the as-shot defaults for one never
+         *  edited. Changes the open photo hasn't committed yet aren't in it. Rejects
+         *  for a photo the catalogue doesn't hold. Needs Safelight 3.2.8. */
+        getLook(photoId: string): Promise<{
+            params: DevelopParams;
+            paramBag: Record<string, unknown>;
+        }>;
+        /** Commit each `{ photoId, params }` patch over that photo's stored settings
+         *  (top-level DevelopParams keys, such as exposure, temperature and tint) as
+         *  one history step labelled `label`, every photo in one catalogue write: a
+         *  Library batch that gives each photo its own values. Steps are stamped as
+         *  made by your extension, every onEditCommit hook runs, grid previews are
+         *  drawn from the new looks and the photo open in Develop reloads. Two
+         *  patches for one photo merge in order; a photo already holding every
+         *  value is left out. Every patch is checked first: an unknown setting,
+         *  `processVersion`, a value of the wrong kind or a photo the catalogue
+         *  doesn't hold rejects the call with nothing written. Resolves to how many
+         *  photos changed. Needs Safelight 3.2.8. */
+        applyParamPatches(patches: {
+            photoId: string;
+            params: Partial<DevelopParams>;
+        }[], label: string): Promise<number>;
         /** Rename one photo's file on disk, in place (same folder), preserving its
          *  extension. This is core's own rename path: an atomic native rename (no
          *  full-file copy), carrying the `<file>.safelight.json` sidecar and any

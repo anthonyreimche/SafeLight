@@ -90,6 +90,7 @@ describe("fenceAPI", () => {
       putEditState: vi.fn(),
       putPhotoData: vi.fn(),
       applyBagPatch: vi.fn(),
+      applyParamPatches: vi.fn(),
       addPhotos: vi.fn(),
       renamePhoto: vi.fn(),
     },
@@ -124,6 +125,7 @@ describe("fenceAPI", () => {
     expect(() => f.catalog.putEditState()).toThrow(refused);
     expect(() => f.catalog.putPhotoData()).toThrow(refused);
     expect(() => f.catalog.applyBagPatch()).toThrow(refused);
+    expect(() => f.catalog.applyParamPatches()).toThrow(refused);
     expect(() => f.catalog.addPhotos()).toThrow(refused);
     expect(() => f.catalog.renamePhoto()).toThrow(refused);
     expect(() => f.themes.apply()).toThrow(refused);

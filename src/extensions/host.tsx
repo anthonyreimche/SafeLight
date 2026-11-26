@@ -146,6 +146,8 @@ import {
 } from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
 import { applyBagPatch } from "@/catalog/stored-edit";
+import { applyParamPatches, storedLook } from "@/catalog/param-patches";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
 import { requestThumbnail } from "@/state/thumbnail-loader";
 import {
   createFolder,
@@ -659,8 +661,11 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
           !openingAnotherPhoto() &&
           develop.loadEdit(editState.photoId, develop.asShotTemperature);
         await Promise.all([stored, reloaded]);
+        refreshStoredThumbnails([editState.photoId]);
       },
       applyBagPatch: (photoId, patch, label) => applyBagPatch(photoId, patch, label, extensionId),
+      getLook: (photoId) => storedLook(photoId),
+      applyParamPatches: (patches, label) => applyParamPatches(patches, label, extensionId),
       renamePhoto: (photoId, newBaseName) => renamePhoto(photoId, newBaseName),
       useVisiblePhotos,
       usePhotoActions,

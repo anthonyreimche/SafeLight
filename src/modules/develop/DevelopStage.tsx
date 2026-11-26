@@ -6,6 +6,7 @@
 import { useEffect, type ReactNode } from "react";
 import { DevelopCanvas } from "./DevelopCanvas";
 import { MissingAdjustmentsNotice } from "./MissingAdjustmentsNotice";
+import { Slot } from "@/extensions/Slot";
 import { useCatalogStore } from "@/state/catalog-store";
 import { flushPendingThumbnails, holdsEdit, useDevelopStore } from "@/state/develop-store";
 import { useActivePhoto } from "@/state/use-active-photo";
@@ -72,12 +73,17 @@ export function DevelopStage({ zoom, onZoomChange, empty }: DevelopStageProps) {
     >
       {activePhoto ? (
         <>
-          <DevelopCanvas
-            key={`${activePhoto.id}:${displaySpace}`}
-            photo={activePhoto}
-            zoom={zoom}
-            onZoomChange={onZoomChange}
-          />
+          <div data-canvas-split className="flex h-full w-full min-h-0 min-w-0">
+            <Slot name="develop-canvas-beside" />
+            <div data-canvas-area className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center">
+              <DevelopCanvas
+                key={`${activePhoto.id}:${displaySpace}`}
+                photo={activePhoto}
+                zoom={zoom}
+                onZoomChange={onZoomChange}
+              />
+            </div>
+          </div>
           <MissingAdjustmentsNotice />
           {editError !== null && (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">

@@ -19,6 +19,7 @@ import {
   type EditState,
 } from "./types";
 import { broadcast } from "@/state/broadcast";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
@@ -40,6 +41,8 @@ vi.mock("@/modules/library/import-photos", () => ({
     }));
   },
 }));
+
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn(), refreshStoredThumbnails: vi.fn() }));
 
 vi.mock("@/state/broadcast", () => ({
   broadcast: vi.fn(),
@@ -218,6 +221,16 @@ describe("pasteSettings — one catalogue write for the selection", () => {
       expect(stack[currentIndex].label).toBe("Paste Settings");
       expect(stack[currentIndex].params.contrast).toBe(10);
     }
+  });
+
+  // SafeLight #297: the grid kept each photo's old preview after a paste.
+  it("queues a new grid preview for every pasted photo", async () => {
+    seed();
+    vi.mocked(refreshStoredThumbnails).mockClear();
+
+    await pasteSettings([...IDS, "gone"], clip({ contrast: 10 }));
+
+    expect(refreshStoredThumbnails).toHaveBeenCalledWith(IDS);
   });
 
   it("runs the edit hooks and the broadcast once per photo", async () => {

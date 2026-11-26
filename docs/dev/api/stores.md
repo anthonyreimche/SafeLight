@@ -353,6 +353,8 @@ addPhotos(photos, opts?: { afterId?: string }): Promise<void>; // saved + in gri
 getEditState(photoId): Promise<EditState | null>;  // recipe + undo stack
 putEditState(editState): Promise<void>;
 applyBagPatch(photoId, patch, label): Promise<boolean>; // 3.2.8: one history step, photo needn't be open
+getLook(photoId): Promise<{ params; paramBag }>;   // 3.2.8: stored look, photo needn't be open
+applyParamPatches(patches: { photoId; params }[], label): Promise<number>; // 3.2.8: one write
 renamePhoto(photoId, newBaseName): Promise<RenamePhotoResult>;
 useVisiblePhotos(opts?: { without?: string[] }): CatalogPhoto[]; // grid order
 usePhotoActions(): { onContextMenu; overlays };    // Library menu
@@ -373,6 +375,8 @@ useTargetPhotos(): CatalogPhoto[];                 // 3.2.7: targetIds' photos, 
 
 - Writing the photo open in Develop with `putEditState` reloads it there, which clears the active tool and the mask and spot selection.
 - `applyBagPatch` (3.2.8) commits `patch`, bag keys by qualified key, computed values included, over a photo's bag as one history step labelled `label`, made in your extension's name (its local history). Every extension's `onEditCommit` runs, the grid preview is drawn from the new look, and the photo open in Develop reloads from it. It resolves `false` and writes nothing when the photo already holds every value, and rejects for a photo the catalogue doesn't hold. Use it for a Library batch; `putEditState` does none of this.
+- `getLook` (3.2.8) reads a photo's settings and bag as its stored history stands, without opening it: the as-shot defaults for a photo never edited. A batch tool measures each photo from it with `api.develop.renderPhotoFloatFrame`. Changes the open photo hasn't committed yet aren't in it.
+- `applyParamPatches` (3.2.8) gives each photo its own settings: every `{ photoId, params }` patch, top-level `DevelopParams` keys such as `exposure`, `temperature` and `tint`, is committed over that photo's stored settings as one history step labelled `label` in your extension's name, all in one catalogue write, with the same hooks, previews and reload as `applyBagPatch`. Photos that already hold every value are left out; it resolves to how many changed. Every patch is checked before anything is written, so an unknown setting, `processVersion`, a value of the wrong kind or a photo the catalogue doesn't hold rejects the whole call.
 - `renamePhoto` takes the name without its extension and keeps the sidecar, virtual copies, ratings and edits. It returns `{ ok: false, reason }` rather than throwing. To shuffle a numbering range, rename through temporary names first.
 - `useVisiblePhotos`'s `without` names grid filters to ignore, for a surface that registers a filter of its own.
 - `targetIds` is the rule core's rating, rotate and remove shortcuts use for "these photos": the selection, else the active photo, else none. Use it for a command of your own rather than reading `selectedIds` yourself.

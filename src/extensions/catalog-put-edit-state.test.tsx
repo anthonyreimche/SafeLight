@@ -16,6 +16,9 @@ import type { EditSnapshot, EditState } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { photo } from "@/catalog/stored-edit.fixtures";
+import { refreshStoredThumbnails } from "@/state/edited-thumbnail";
+
+vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn(), refreshStoredThumbnails: vi.fn() }));
 
 class FakeChannel {
   postMessage(): void {}
@@ -153,6 +156,18 @@ describe("api.catalog.putEditState on the photo Develop holds", () => {
 
     expect(useDevelopStore.getState().photoId).toBe(OTHER);
     expect(labelsOf(useDevelopStore.getState().history)).toEqual(["Original", "Auto"]);
+  });
+});
+
+// SafeLight #297: the grid kept the old preview after an extension's write.
+describe("api.catalog.putEditState and the grid preview", () => {
+  it("queues the photo's preview to be drawn again from the edit it stores", async () => {
+    installMemoryStorage(edit([ORIGINAL], OTHER));
+    vi.mocked(refreshStoredThumbnails).mockClear();
+
+    await makeScopedAPI("ext.auto").catalog.putEditState(edit([ORIGINAL, AUTO], OTHER));
+
+    expect(refreshStoredThumbnails).toHaveBeenCalledWith([OTHER]);
   });
 });
 
