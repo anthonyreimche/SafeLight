@@ -111,6 +111,20 @@ describe("ContextMenu keyboard", () => {
     expect(document.activeElement).toBe(item("Open"));
   });
 
+  it("jumps to the enabled item starting with a typed letter, cycling on repeats", async () => {
+    const user = userEvent.setup();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    open();
+    await user.keyboard("r");
+    expect(document.activeElement).toBe(item("Rotate"));
+    await user.keyboard("r");
+    expect(document.activeElement).toBe(item("Remove"));
+    clock.mockReturnValue(2_000);
+    await user.keyboard("o");
+    expect(document.activeElement).toBe(item("Open"));
+    clock.mockRestore();
+  });
+
   it("runs the focused item on Enter and on Space", async () => {
     const user = userEvent.setup();
     const picked: string[] = [];

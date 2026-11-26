@@ -268,7 +268,7 @@ api.ui.notify(notice: string | { message: string; tone?: "info" | "success" | "w
 };
 ```
 
-Tells the person something without stopping them: a bar in the app's bottom stack, like core's own notices, under your extension's name and with a × to dismiss. Needs Safelight 3.2.7.
+Tells the person something without stopping them: a bar in the app's bottom stack, like core's own notices, under your extension's name and with a × to dismiss. Needs Safelight 3.2.8.
 
 - `info` (the default) and `success` go by themselves after a few seconds. `warning` and `error` stay until dismissed.
 - A notice with `progress` (0..1) shows a bar and stays while the run is under way. `update` it as the run goes, then update it to `progress: null` with the result.

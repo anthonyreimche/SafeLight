@@ -51,6 +51,12 @@ export interface PanelContribution {
   /** Sort position (lower = higher up). Default 100. */
   order?: number;
   defaultDock?: PanelDockDefault;
+  /** The modules this panel may be docked in, e.g. ["develop"] for a tool that
+   *  edits the open photo. The View menu offers it only while one of them is
+   *  showing, togglePanel opens it nowhere else, and a layout that names it in
+   *  another module leaves it out. Omit it to allow every module. Needs
+   *  Safelight 3.2.8; older builds ignore it. */
+  modules?: readonly ModuleId[];
   /** Old panel ids this panel takes the place of in saved layouts, e.g. a panel
    *  that moved here from another extension. Wherever a layout names one of
    *  them, and no registered panel uses that id any more, the dock shows this

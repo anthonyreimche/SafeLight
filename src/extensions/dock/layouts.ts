@@ -28,6 +28,7 @@ import {
   ALL_SHOWN,
   DEFAULT_BOTTOM,
   allowsBottom,
+  allowsModule,
   cancelPendingSave,
   flushPendingSave,
   layoutKey,
@@ -172,19 +173,35 @@ function collapsedFlags(ids: unknown): Record<string, boolean> {
   );
 }
 
-/** Drop panels that don't lay out horizontally from bottom rails, and any rail
- *  left empty. A saved layout can carry them from a build where bottom docking
+/** Drop the panels `module` doesn't allow (their `modules` list leaves it out),
+ *  and from bottom rails the panels that don't lay out horizontally, then any
+ *  rail left empty. A saved layout can carry them from a build where docking
  *  was open to everything; the panels aren't lost — reopening one from the View
- *  menu brings it back as a floating window. */
-function pruneBottomRails(rails: RailState[]): RailState[] {
+ *  menu brings it back as a floating window, in a module it allows. */
+function prunePlacement(module: AppModule, placement: DockPlacement): DockPlacement {
   const registered = useRegistry.getState().panels;
-  return rails
-    .map((r) =>
-      r.side === "bottom"
-        ? { ...r, panels: r.panels.filter((id) => allowsBottom(registered[id])) }
-        : r,
-    )
+  const allowed = (id: string) => allowsModule(registered[id], module);
+  const rails = placement.rails
+    .map((r) => {
+      const panels = r.panels.filter(
+        (id) => allowed(id) && (r.side !== "bottom" || allowsBottom(registered[id])),
+      );
+      return panels.length === r.panels.length ? r : { ...r, panels };
+    })
     .filter((r) => r.panels.length > 0);
+  const floatIds = Object.keys(placement.floating);
+  const keptFloats = floatIds.filter(allowed);
+  const unchanged =
+    keptFloats.length === floatIds.length &&
+    rails.length === placement.rails.length &&
+    rails.every((r, i) => r === placement.rails[i]);
+  if (unchanged) return placement;
+  return {
+    ...placement,
+    rails,
+    floating: Object.fromEntries(keptFloats.map((id) => [id, placement.floating[id]])),
+    zOrder: placement.zOrder.filter(allowed),
+  };
 }
 
 /** Resolve dock state for `module` under the active layout, without applying
@@ -232,8 +249,7 @@ function resolveModuleState(module: AppModule): DockPlacement & { rewritesSaved:
   const resolved: DockPlacement = { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
   const placement = replacePanelIds(resolved, panelReplacements(useRegistry.getState().panels));
   return {
-    ...placement,
-    rails: pruneBottomRails(placement.rails),
+    ...prunePlacement(module, placement),
     rewritesSaved: fromSaved && placement !== resolved,
   };
 }
@@ -267,22 +283,21 @@ export function initModule(module: AppModule) {
 }
 
 // Installed extensions register after the dock has loaded its layout, so a
-// replacing panel usually arrives late: swap its old ids in the live dock too.
-// No commit(): that would turn a preset into "Custom"; a preset resolves the
-// swap again whenever it is loaded.
+// replacing panel usually arrives late: swap its old ids in the live dock too,
+// and take out a late panel the module doesn't allow. No commit(): that would
+// turn a preset into "Custom"; a preset resolves both again whenever it loads.
 useRegistry.subscribe((s, prev) => {
   if (s.panels === prev.panels) return;
   const dock = useDockStore.getState();
   if (!dock.module) return;
-  const next = replacePanelIds(dock, panelReplacements(s.panels));
+  const next = prunePlacement(dock.module, replacePanelIds(dock, panelReplacements(s.panels)));
   if (next === dock) return;
-  const rails = pruneBottomRails(next.rails);
   useDockStore.setState({
-    rails,
+    rails: next.rails,
     floating: next.floating,
     zOrder: next.zOrder,
     collapsed: next.collapsed,
-    open: openList(rails, next.floating),
+    open: openList(next.rails, next.floating),
   });
   if (useLayoutStore.getState().activeId === CUSTOM_LAYOUT) scheduleSave();
 });
@@ -585,7 +600,7 @@ export function captureModuleLayout(module?: AppModule): ModuleLayoutDef | null 
 }
 
 /** `def` as the dock would show it in `module`: replaced panels swapped and
- *  bottom rails pruned, as loading it does. Null when it isn't a layout. */
+ *  the panels it can't hold pruned, as loading it does. Null when it isn't a layout. */
 function resolvedDef(module: AppModule, def: ModuleLayoutDef): ModuleLayoutDef | null {
   const rails = layoutRails(module, recordOr<unknown>(def).rails);
   if (!rails) return null;
@@ -594,7 +609,8 @@ function resolvedDef(module: AppModule, def: ModuleLayoutDef): ModuleLayoutDef |
     { rails, floating, zOrder: Object.keys(floating), collapsed: collapsedFlags(def.collapsed) },
     panelReplacements(useRegistry.getState().panels),
   );
-  return moduleDefFromState(pruneBottomRails(placement.rails), placement.floating, placement.collapsed);
+  const pruned = prunePlacement(module, placement);
+  return moduleDefFromState(pruned.rails, pruned.floating, pruned.collapsed);
 }
 
 const near = (a: number | undefined, b: number | undefined) =>

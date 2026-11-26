@@ -9,11 +9,12 @@ import { createPortal } from "react-dom";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
 import { MENU_SURFACE } from "@/ui/floating";
+import { handleMenuKeyDown } from "@/ui/menu-keys";
 
 export interface ContextMenuItem {
   label: string;
   /** A small glyph before the label (about 14 px); decorative, so the label
-   *  alone names the item. Needs Safelight 3.2.7. */
+   *  alone names the item. Needs Safelight 3.2.8. */
   icon?: ReactNode;
   onClick: () => void;
   /** Render in the red danger colour (e.g. Remove). */
@@ -42,7 +43,8 @@ interface Props {
 /** Generic right-click menu positioned at the cursor and clamped to the
  *  viewport. Closes on outside click, Escape, scroll, or selecting an item.
  *  Focus moves to the first item on open; the arrow keys, Home and End walk
- *  the enabled items, Enter or Space runs one, and closing hands focus back. */
+ *  the enabled items, typing jumps to one, Enter or Space runs one, and
+ *  closing hands focus back. */
 export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
@@ -84,25 +86,6 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
     };
   }, []);
 
-  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const list = enabledItems(ref.current);
-    if (list.length === 0) return;
-    const at = list.indexOf(document.activeElement as HTMLButtonElement);
-    const target =
-      e.key === "ArrowDown"
-        ? list[(at + 1) % list.length]
-        : e.key === "ArrowUp"
-          ? list[at <= 0 ? list.length - 1 : at - 1]
-          : e.key === "Home"
-            ? list[0]
-            : e.key === "End"
-              ? list[list.length - 1]
-              : null;
-    if (!target) return;
-    e.preventDefault();
-    target.focus();
-  };
-
   // Portalled so a transformed ancestor (a centred floating panel) can't become
   // the fixed backdrop's containing block. React still bubbles portal events
   // through the owner tree, so presses stop here: a host that acts on
@@ -125,7 +108,7 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
         role="menu"
         className={`sl-enter-fade absolute min-w-[180px] overflow-hidden py-1 text-[11px] ${MENU_SURFACE}`}
         style={{ left: pos.x, top: pos.y }}
-        onKeyDown={onMenuKeyDown}
+        onKeyDown={(e) => handleMenuKeyDown(ref.current, e, "vertical")}
       >
         {items.map((item, i) =>
           item === "separator" ? (
@@ -138,9 +121,6 @@ export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
             <button
               key={item.label}
               role="menuitem"
-              // The menu owns its bare keys: the culling shortcuts' ↑/↓ would
-              // otherwise also step the active photo behind it.
-              data-keyboard-capture=""
               disabled={item.disabled}
               title={item.title}
               className={`flex w-full items-center gap-2 px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${

@@ -20,7 +20,7 @@ interface SafelightAPI {
   version: 1;
   extensionId: string;              // your id; contributions are tagged with it
   react: typeof import("react");    // the app's React; never bundle your own
-  assetUrl(path: string): string;   // URL of one of your own files, e.g. "dist/x.wasm" (3.2.7)
+  assetUrl(path: string): string;   // URL of one of your own files, e.g. "dist/x.wasm" (3.2.8)
 
   register*(c): void;               // see Contribution Types for every call
   unregisterProcessingStage(id: string): void;
@@ -65,13 +65,15 @@ Notes:
 | `layouts` | `apply(id)`, `capture`, `shows`, `show`, `saved` ([UI Shell](ui-shell.md#managing-layouts-apilayouts)) |
 | `pipelines` | `apply(id)` sets the Preferences default. `effectiveId(displayTransform)` is the transform a photo renders with. `paramKeys(id)` lists a transform's bag keys. |
 | `preferences` | `open(sectionId?)`, `close()`, `toggle()`. `sectionId` is a core section or an extension id. |
-| `navigation` | `goTo(id)`: `"library"`, `"develop"` or a registered module id. `current()` / `useCurrent()`: the module this window shows; `ownModule()`: a pop-out's own module (3.2.7). |
+| `navigation` | `goTo(id)`: `"library"`, `"develop"` or a registered module id. `current()` / `useCurrent()`: the module this window shows; `ownModule()`: a pop-out's own module (3.2.8). |
 | `keybindings` | `getBinding(actionId)` returns the live combo, `""` when unbound. `list()` returns every built-in action. |
 | `cursors` | `labels`, `resolve(token)`. See [Cursors](contributions.md#cursorcontribution). |
 | `develop` | Develop canvas: overlays, mask scope, frame capture, cursors, per-photo data. See [`api.develop`](stores.md#apidevelop). |
-| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)` (render without writing), `exportPhotos(photos, settings, onProgress?, destDir?, options?)` (the Export panel's whole run, into a folder from `project.pickDirectory`), or `exportPhotos(photos, jobs, onProgress?, options?)` for several exports of one selection, each photo decoded once. `describeResult(result)` words the outcome as the Export panel does (3.2.7). See [`api.export`](stores.md#apiexport). |
-| `catalog` | Records, edit stacks, rename, photo surfaces, the photos a command targets (`targetIds`, 3.2.7). See [`api.catalog`](stores.md#apicatalog). |
+| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)` (render without writing), `exportPhotos(photos, settings, onProgress?, destDir?, options?)` (the Export panel's whole run, into a folder from `project.pickDirectory`), or `exportPhotos(photos, jobs, onProgress?, options?)` for several exports of one selection, each photo decoded once. `describeResult(result)` words the outcome as the Export panel does (3.2.8). See [`api.export`](stores.md#apiexport). |
+| `catalog` | Records, edit stacks, rename, photo surfaces, the photos a command targets (`targetIds`, 3.2.8). See [`api.catalog`](stores.md#apicatalog). |
 | `project` | `pickDirectory(id)` asks the user for a folder to write into (null if they cancel). `pickKeptDirectory(id, replacing?)` does the same and keeps the folder across launches behind a token; `openKeptDirectory(token)` opens it again, or says it is `"gone"`, `"unwritable"` or `"unknown"` (on Windows a folder whose permissions refuse writes is reported by the first file written there, not here); `forgetKeptDirectory(token)` lets it go, and uninstalling the extension forgets all of them. `pathOf(handle)` and `reveal(path)` show it in the file manager on the desktop. `createFolder`, `renameFolder`, `moveFolder`, `movePhotos`, `deleteFolder` change the project's folders on disk, with paths relative to the project root. |
+| `library` | `importFiles` brings files into the project; `readMetadata`, `isSupportedName`, `useMemoryCards()` and `onMemoryCards` read a memory card before it is copied (3.2.8); library sources and decoders. See [`api.library`](stores.md#apilibrary). |
+| `naming` | File names and folders from a file's metadata: `render`, `renderFolder`, `expand`, `unknownTokens` and the `tokens` palette (3.2.8). See [`api.naming`](stores.md#apinaming-328). |
 | `presets` | `importFile`, `exportFile`, `pickFile`, `fields`, `summarize`, `describeBag`, `useImporters()`: what the Presets panel and Copy Settings use. |
 | `appSettings` | `update(patch)` writes Preferences and runs their side effects. Read them with `stores.useSettings`. |
 | `registry` | `use(selector)`: a React hook over every registered contribution (panels, stages, modules and so on). |

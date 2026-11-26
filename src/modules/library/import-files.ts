@@ -31,9 +31,19 @@ export interface IngestOptions {
   folder?: string;
   /** Added to the keywords the file itself carries. */
   keywords?: string[];
+  /** Number a name already in use instead of refusing it: "a.jpg" becomes
+   *  "a-2.jpg", then "a-3.jpg". Files of one call that share a base name (a RAW
+   *  and its JPEG) get the same number, and a sidecar such as "a-2.xmp" left in
+   *  the folder holds its number too. Each result taken gives the name written
+   *  as `savedAs`. */
+  unique?: boolean;
 }
 
-export type IngestResult = { name: string; id: string } | { name: string; error: string };
+/** `name` is always the name the file was handed over with. With `unique`, a
+ *  file taken also says the name it was written as in `savedAs`. */
+export type IngestResult =
+  | { name: string; id: string; savedAs?: string }
+  | { name: string; error: string };
 
 const PROJECT_CLOSED = "The project was closed.";
 
@@ -171,6 +181,77 @@ async function ingestOne(
   }
 }
 
+function splitName(name: string): { base: string; ext: string } {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? { base: name.slice(0, dot), ext: name.slice(dot) } : { base: name, ext: "" };
+}
+
+function numbered(name: string, n: number): string {
+  if (n === 1) return name;
+  const { base, ext } = splitName(name);
+  return `${base}-${n}${ext}`;
+}
+
+/** The most numbers tried for one group before its files are refused as taken. */
+const MAX_NUMBER = 9999;
+
+/** The name each file is written as when names are made unique: its own while
+ *  it is free in the folder, else the lowest number (from 2) under which every
+ *  file of its group is free. A group is the files of the call that share a
+ *  base name, without two of one name. A file the import refuses anyway keeps
+ *  its name, so its error names what it was given. */
+async function uniqueNames(
+  root: FileSystemDirectoryHandle,
+  segments: string[],
+  files: readonly unknown[],
+): Promise<(string | null)[]> {
+  const folder = segments.join("/");
+  const groups: { base: string; members: number[] }[] = [];
+  const names = files.map((file) =>
+    isIngestFile(file) && isEntryName(file.name) && isSupportedName(file.name) ? file.name : null,
+  );
+  names.forEach((name, i) => {
+    if (name === null) return;
+    const base = splitName(name).base.toLowerCase();
+    const group = groups.find(
+      (g) => g.base === base && !g.members.some((m) => names[m]!.toLowerCase() === name.toLowerCase()),
+    );
+    if (group) group.members.push(i);
+    else groups.push({ base, members: [i] });
+  });
+  if (groups.length === 0) return names;
+
+  const dir = await folderHandle(root, segments);
+  const catalogued = new Set(
+    useCatalogStore
+      .getState()
+      .photos.filter((p) => !p.copyOf)
+      .map((p) => p.relPath.toLowerCase()),
+  );
+  const claimed = new Set<string>();
+  const free = async (name: string) =>
+    !claimed.has(name.toLowerCase()) &&
+    !catalogued.has(joinRel(folder, name).toLowerCase()) &&
+    !(await fileExists(dir, name)) &&
+    !(await fileExists(dir, `${splitName(name).base}.xmp`));
+
+  const out = [...names];
+  for (const { members } of groups) {
+    for (let n = 1; n <= MAX_NUMBER; n++) {
+      const candidates = members.map((m) => numbered(names[m]!, n));
+      let allFree = true;
+      for (const candidate of candidates) if (!(await free(candidate))) allFree = false;
+      if (!allFree) continue;
+      members.forEach((m, k) => {
+        out[m] = candidates[k];
+        claimed.add(candidates[k].toLowerCase());
+      });
+      break;
+    }
+  }
+  return out;
+}
+
 let queue: Promise<unknown> = Promise.resolve();
 
 /** Write each file into the open project and import it as a photo. Results come
@@ -193,15 +274,25 @@ export function importFiles(
     if (!segments) return refuse("The folder must be a plain path inside the project.");
 
     const keywords = cleanKeywords(options?.keywords);
+    let renamed: (string | null)[] = [];
+    if (options?.unique === true) {
+      try {
+        renamed = await uniqueNames(root, segments, files);
+      } catch (error) {
+        return files.map((file) => ({ name: entryName(file), error: `Couldn't read the folder: ${fsErrorText(error)}.` }));
+      }
+    }
     const results: IngestResult[] = [];
-    for (const file of files) {
-      results.push(
-        signal.aborted
-          ? { name: entryName(file), error: PROJECT_CLOSED }
-          : isIngestFile(file)
-            ? await ingestOne(root, segments, file, keywords, signal)
-            : { name: entryName(file), error: "Each file needs a name and its data as a Blob." },
-      );
+    for (const [i, file] of files.entries()) {
+      const savedAs = renamed[i];
+      if (signal.aborted) results.push({ name: entryName(file), error: PROJECT_CLOSED });
+      else if (!isIngestFile(file))
+        results.push({ name: entryName(file), error: "Each file needs a name and its data as a Blob." });
+      else if (!savedAs) results.push(await ingestOne(root, segments, file, keywords, signal));
+      else {
+        const result = await ingestOne(root, segments, { name: savedAs, data: file.data }, keywords, signal);
+        results.push("id" in result ? { name: file.name, id: result.id, savedAs } : { name: file.name, error: result.error });
+      }
     }
     if (!signal.aborted && results.some((r) => "id" in r)) await useProjectStore.getState().refreshTree();
     return results;

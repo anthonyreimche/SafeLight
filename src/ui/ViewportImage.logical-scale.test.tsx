@@ -121,11 +121,13 @@ function Host({
   logicalScale,
   onViewport,
   onLayout,
+  maxZoom = 2,
 }: {
   start?: number | null;
   logicalScale?: number;
   onViewport?: (roi: ImageWindow | null, outW: number, outH: number) => void;
   onLayout?: Layout;
+  maxZoom?: number;
 }) {
   const [zoom, setZoom] = useState<number | null>(start);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -145,6 +147,7 @@ function Host({
       onViewport={onViewport}
       onLayout={onLayout}
       logicalScale={logicalScale}
+      maxZoom={maxZoom}
     />
   );
 }
@@ -247,7 +250,7 @@ describe("a logical scale of 2", () => {
     expect([outW, outH]).toEqual([1500, 1000]);
   });
 
-  it("goes no further in than 200% of the image's pixels", () => {
+  it("goes no further in than the maximum zoom of the image's pixels", () => {
     const view = render(<Host logicalScale={2} />);
     const frame = view.container.firstElementChild as HTMLElement;
     act(() => viewportZoomCommands()!.zoom100());
@@ -333,7 +336,7 @@ describe("a change of logical scale", () => {
     expect(transformOf(canvas).s).toBeCloseTo(before.s, 12);
   });
 
-  it("holds a zoom that would pass 200% at 200%, the centre's image point kept", () => {
+  it("holds a zoom that would pass the maximum at the maximum, the centre's image point kept", () => {
     const onLayout = vi.fn();
     const view = render(<Host logicalScale={2} onLayout={onLayout} />);
     act(() => viewportZoomCommands()!.zoom100());

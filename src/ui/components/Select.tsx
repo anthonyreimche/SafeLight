@@ -11,8 +11,8 @@
 // never clipped by a scroll container and sits above dialogues. It's at least as
 // wide as the trigger and grows to fit its longest label up to twice that; a
 // label that still doesn't fit shows in full on hover. Keyboard: open with
-// Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
-// Esc to close. Shift+wheel over the closed trigger picks the next or previous
+// Enter/Space/↑/↓ or by typing, navigate with ↑/↓/Home/End, type to jump
+// (repeat a letter to cycle), Enter to choose, Esc to close. Shift+wheel over the closed trigger picks the next or previous
 // option, and so does the plain wheel when the dropdownWheelSelect preference
 // is on.
 
@@ -31,6 +31,7 @@ import { useSettings } from "@/state/settings-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
 import { MENU_SURFACE } from "@/ui/floating";
+import { createTypeahead, isTypeaheadKey } from "@/ui/typeahead";
 
 export interface SelectOption {
   value: string;
@@ -126,7 +127,7 @@ export function Select({
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const typeahead = useRef<{ str: string; t: number }>({ str: "", t: 0 });
+  const typeahead = useRef(createTypeahead());
   const baseId = useId();
   const listboxId = `${baseId}-listbox`;
 
@@ -221,11 +222,19 @@ export function Select({
     (el as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
   }, [active, open]);
 
-  const openMenu = () => {
+  const openMenu = (at = selectedIndex) => {
     if (disabled) return;
-    setActive(selectedIndex >= 0 ? selectedIndex : firstEnabled(flat));
+    setActive(at >= 0 ? at : firstEnabled(flat));
     setOpen(true);
   };
+  const jump = (key: string, from: number) =>
+    typeahead.current.match(
+      flat.map((o) => o.label),
+      key,
+      from,
+      Date.now(),
+      (i) => !flat[i].disabled,
+    );
   const choose = (o: SelectOption | undefined) => {
     if (!o || o.disabled) return;
     onChange(o.value);
@@ -239,7 +248,20 @@ export function Select({
       if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
         e.preventDefault();
         openMenu();
+      } else if (isTypeaheadKey(e)) {
+        // Typing on the closed trigger opens it at the match (the ARIA
+        // select-only combobox pattern) rather than changing the value unseen.
+        e.preventDefault();
+        const i = jump(e.key, selectedIndex);
+        openMenu(i >= 0 ? i : selectedIndex);
       }
+      return;
+    }
+    // A space mid-prefix ("Dark r…") is part of what is being typed.
+    if (isTypeaheadKey(e) && (e.key !== " " || typeahead.current.active())) {
+      e.preventDefault();
+      const i = jump(e.key, active);
+      if (i >= 0) setActive(i);
       return;
     }
     switch (e.key) {
@@ -274,18 +296,6 @@ export function Select({
       case "Tab":
         setOpen(false);
         break;
-      default:
-        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          const now = Date.now();
-          typeahead.current.str =
-            now - typeahead.current.t > 600 ? e.key : typeahead.current.str + e.key;
-          typeahead.current.t = now;
-          const q = typeahead.current.str.toLowerCase();
-          const idx = flat.findIndex(
-            (o) => !o.disabled && o.label.toLowerCase().startsWith(q),
-          );
-          if (idx >= 0) setActive(idx);
-        }
     }
   };
 

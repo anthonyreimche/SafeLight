@@ -6,8 +6,16 @@
 import { useState } from "react";
 import { readWebGLInfo } from "@/diagnostics/environment";
 import { integratedGpuLead, integratedGpuName } from "@/diagnostics/integrated-gpu";
-import { updateSettings, useSettings, type AppSettings } from "@/state/settings-store";
-import { btnCls, Field, OptionRow, ToggleField } from "@/ui/preferences/fields";
+import {
+  DEVELOP_MAX_ZOOMS,
+  DEVELOP_ZOOM_STOPS,
+  formatZoom,
+  updateSettings,
+  useSettings,
+  type AppSettings,
+  type DevelopMaxZoom,
+} from "@/state/settings-store";
+import { btnCls, Field, MultiOptionRow, OptionRow, ToggleField } from "@/ui/preferences/fields";
 import { settings, type PrefSection } from "@/ui/preferences/section-model";
 
 type DevelopMaxEdge = AppSettings["developMaxEdge"];
@@ -95,6 +103,31 @@ export function PerformanceSection() {
         />
       </Field>
       <Field
+        label="Maximum zoom"
+        hint="How far in Develop zooms with the wheel, the keyboard and the zoom buttons."
+      >
+        <OptionRow<DevelopMaxZoom>
+          value={s.developMaxZoom}
+          options={DEVELOP_MAX_ZOOMS.map((z) => ({ value: z, label: formatZoom(z) }))}
+          onChange={(v) => updateSettings({ developMaxZoom: v })}
+        />
+      </Field>
+      <Field
+        label="Zoom buttons"
+        hint="The zooms in Develop's status bar, beside Fit."
+      >
+        <MultiOptionRow<number>
+          values={s.developZoomStops}
+          options={DEVELOP_ZOOM_STOPS.map((z) => ({
+            value: z,
+            label: formatZoom(z),
+            disabled: z > s.developMaxZoom,
+            title: z > s.developMaxZoom ? "Past the maximum zoom" : undefined,
+          }))}
+          onChange={(v) => updateSettings({ developZoomStops: v })}
+        />
+      </Field>
+      <Field
         label="GPU source cache"
         hint="GPU memory budget for resident decoded RAW sources. Larger keeps more photos ready for instant re-open and crisp zoom; least-recently-used sources are evicted past the budget."
       >
@@ -139,6 +172,8 @@ export const performanceSection: PrefSection = {
     "Integrated graphics",
     "Develop render resolution",
     "Open photos at",
+    "Maximum zoom",
+    "Zoom buttons",
     "GPU source cache",
     "Prefetch neighbours",
     "High bit-depth previews",

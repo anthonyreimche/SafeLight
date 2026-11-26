@@ -332,12 +332,61 @@ describe("Select type-ahead", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     await openFruit(user);
 
-    await user.keyboard("a");
-    expect(activeLabel()).toBe("Apple");
-
-    clock.mockReturnValue(2_000);
     await user.keyboard("b");
     expect(activeLabel()).toBe("Banana");
+
+    clock.mockReturnValue(2_000);
+    await user.keyboard("a");
+    expect(activeLabel()).toBe("Apple");
+  });
+
+  it("cycles the options sharing a letter as it is pressed again", async () => {
+    const user = userEvent.setup();
+    await openFruit(user);
+    await user.keyboard("a");
+    expect(activeLabel()).toBe("Apricot");
+    await user.keyboard("a");
+    expect(activeLabel()).toBe("Apple");
+  });
+
+  it("reads a space inside a typed prefix as part of it rather than choosing", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <Harness
+        options={[
+          { value: "dm", label: "Dark mode" },
+          { value: "dr", label: "Dark room" },
+        ]}
+        initialValue="dm"
+        onChange={onChange}
+      />,
+    );
+    trigger().focus();
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("dark r");
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(activeLabel()).toBe("Dark room");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("opens on a typed letter with the matching option active, leaving the value alone", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness options={FRUIT} initialValue="apple" onChange={onChange} />);
+    trigger().focus();
+    await user.keyboard("b");
+    expect(trigger().getAttribute("aria-expanded")).toBe("true");
+    expect(activeLabel()).toBe("Banana");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("stays shut on a typed letter while disabled", async () => {
+    const user = userEvent.setup();
+    render(<Harness options={FRUIT} initialValue="apple" disabled />);
+    trigger().focus();
+    await user.keyboard("b");
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 });
 

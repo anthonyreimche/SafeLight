@@ -767,6 +767,10 @@ describe("isEditableTarget", () => {
   class StubElement {
     dataset: Record<string, string> = {};
     isContentEditable = false;
+    insideMenu = false;
+    closest(selector: string): object | null {
+      return this.insideMenu && selector === '[role="menu"]' ? {} : null;
+    }
   }
   class StubInput extends StubElement {
     type = "text";
@@ -818,5 +822,11 @@ describe("isEditableTarget", () => {
     const curve = new StubElement();
     curve.dataset.keyboardCapture = "";
     expect(isEditableTarget(target(curve))).toBe(true);
+  });
+
+  it("is true inside an open menu, whose items type to jump", () => {
+    const item = new StubElement();
+    item.insideMenu = true;
+    expect(isEditableTarget(target(item))).toBe(true);
   });
 });

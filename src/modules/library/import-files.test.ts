@@ -292,3 +292,90 @@ describe("importFiles", () => {
     expect(order).toEqual(["start p.jpg", "end p.jpg", "start q.jpg", "end q.jpg"]);
   });
 });
+
+describe("importFiles with unique names", () => {
+  const names = (results: Awaited<ReturnType<typeof importFiles>>) =>
+    results.map((r) => ("id" in r ? r.savedAs : r.error));
+
+  it("numbers a name the folder already holds and leaves the old file alone", async () => {
+    fs.putBytes("/proj/in/a.jpg", new Uint8Array([1, 2, 3]));
+    const results = await importFiles([{ name: "a.jpg", data: jpeg() }], { folder: "in", unique: true });
+    expect(results).toEqual([{ name: "a.jpg", id: expect.any(String), savedAs: "a-2.jpg" }]);
+    expect(fs.bytes("/proj/in/a.jpg")).toEqual(new Uint8Array([1, 2, 3]));
+    expect(fs.bytes("/proj/in/a-2.jpg")).toEqual(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+    expect(useCatalogStore.getState().photos[0]).toMatchObject({ relPath: "in/a-2.jpg", filename: "a-2.jpg" });
+  });
+
+  it("numbers past a catalogued name, whatever its case, and past numbers already taken", async () => {
+    useCatalogStore.setState({ photos: [{ id: "old", relPath: "A.JPG", folder: "" } as CatalogPhoto] });
+    fs.putBytes("/proj/a-2.jpg", new Uint8Array([1]));
+    expect(names(await importFiles([{ name: "a.jpg", data: jpeg() }], { unique: true }))).toEqual(["a-3.jpg"]);
+  });
+
+  it("keeps a free name as it is", async () => {
+    expect(names(await importFiles([{ name: "free.jpg", data: jpeg() }], { unique: true }))).toEqual(["free.jpg"]);
+  });
+
+  it("gives files of one call that share a base name the same number", async () => {
+    fs.putBytes("/proj/DSC_1.NEF", new Uint8Array([1]));
+    const results = await importFiles(
+      [
+        { name: "DSC_1.NEF", data: jpeg() },
+        { name: "DSC_1.JPG", data: jpeg() },
+      ],
+      { unique: true },
+    );
+    expect(names(results)).toEqual(["DSC_1-2.NEF", "DSC_1-2.JPG"]);
+  });
+
+  it("numbers a pair past a number either of its names holds", async () => {
+    fs.putBytes("/proj/p.jpg", new Uint8Array([1]));
+    fs.putBytes("/proj/p-2.nef", new Uint8Array([1]));
+    const results = await importFiles(
+      [
+        { name: "p.nef", data: jpeg() },
+        { name: "p.jpg", data: jpeg() },
+      ],
+      { unique: true },
+    );
+    expect(names(results)).toEqual(["p-3.nef", "p-3.jpg"]);
+  });
+
+  it("counts a sidecar left in the folder as holding its number", async () => {
+    fs.putBytes("/proj/s.nef", new Uint8Array([1]));
+    fs.putBytes("/proj/s-2.xmp", new Uint8Array([1]));
+    expect(names(await importFiles([{ name: "s.nef", data: jpeg() }], { unique: true }))).toEqual(["s-3.nef"]);
+  });
+
+  it("gives two files of one name in a call names of their own", async () => {
+    const results = await importFiles(
+      [
+        { name: "d.jpg", data: jpeg() },
+        { name: "d.jpg", data: jpeg() },
+      ],
+      { unique: true },
+    );
+    expect(names(results)).toEqual(["d.jpg", "d-2.jpg"]);
+    expect(fs.tree()).toEqual(["/proj/d-2.jpg", "/proj/d.jpg"]);
+  });
+
+  it("still refuses what it can't take, by the name it was given", async () => {
+    const results = await importFiles(
+      [
+        { name: "../x.jpg", data: jpeg() },
+        { name: "notes.txt", data: new Blob(["x"]) },
+      ],
+      { unique: true },
+    );
+    expect(results).toEqual([
+      { name: "../x.jpg", error: expect.any(String) },
+      { name: "notes.txt", error: expect.any(String) },
+    ]);
+  });
+
+  it("numbers natively too", async () => {
+    openProject("native");
+    fs.putBytes("/proj/n.jpg", new Uint8Array([1]));
+    expect(names(await importFiles([{ name: "n.jpg", data: jpeg() }], { unique: true }))).toEqual(["n-2.jpg"]);
+  });
+});

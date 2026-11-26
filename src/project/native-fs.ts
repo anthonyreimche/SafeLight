@@ -92,21 +92,23 @@ function mimeFromName(name: string): string {
   return dot === -1 ? "" : (MIME_BY_EXTENSION[name.slice(dot).toLowerCase()] ?? "");
 }
 
+async function readNativeFile(fs: Bridge, p: string): Promise<File> {
+  const { data, mtimeMs } = await fs.read(p);
+  // fs.read returns a non-shared Uint8Array; cast past TS's generic
+  // ArrayBufferLike (which can't prove it isn't a SharedArrayBuffer).
+  return new File([data as BlobPart], basename(p), {
+    type: mimeFromName(basename(p)),
+    lastModified: mtimeMs,
+  });
+}
+
 function makeFileHandle(fs: Bridge, p: string, size?: number): FileSystemFileHandle {
   const handle = {
     [PATH]: p,
     [SIZE]: size,
     kind: "file" as const,
     name: basename(p),
-    async getFile(): Promise<File> {
-      const { data, mtimeMs } = await fs.read(p);
-      // fs.read returns a non-shared Uint8Array; cast past TS's generic
-      // ArrayBufferLike (which can't prove it isn't a SharedArrayBuffer).
-      return new File([data as BlobPart], basename(p), {
-        type: mimeFromName(basename(p)),
-        lastModified: mtimeMs,
-      });
-    },
+    getFile: () => readNativeFile(fs, p),
     async createWritable() {
       // Accumulate parts (Blob | string | ArrayBuffer | typed array all work as
       // Blob parts), flush once on close. Our writers do a single write+close.
@@ -171,6 +173,64 @@ function makeDirHandle(fs: Bridge, p: string, root = p): FileSystemDirectoryHand
   return handle as unknown as FileSystemDirectoryHandle;
 }
 
+// A memory card's handles (nativeCardHandle) are branded apart from PATH: they
+// reach extensions without a picker, so nativePathOf (api.project.pathOf) and
+// core's path-based folder code never see their path, and they only read.
+const CARD_PATH = Symbol("safelight.cardPath");
+
+function cardPathOf(handle: unknown): string | null {
+  return (handle as { [CARD_PATH]?: string } | null)?.[CARD_PATH] ?? null;
+}
+
+function readOnly(name: string): never {
+  throw new TypeError(`A memory card is read-only: can't create ${JSON.stringify(name)}`);
+}
+
+function makeCardFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
+  const handle = {
+    [CARD_PATH]: p,
+    kind: "file" as const,
+    name: basename(p),
+    getFile: () => readNativeFile(fs, p),
+  };
+  return handle as unknown as FileSystemFileHandle;
+}
+
+function makeCardDirHandle(fs: Bridge, p: string, root: string): FileSystemDirectoryHandle {
+  const handle = {
+    [CARD_PATH]: p,
+    kind: "directory" as const,
+    name: basename(p),
+    async getFileHandle(name: string, opts?: { create?: boolean }) {
+      if (opts?.create && !(await fs.exists(join(p, entryName(name))))) readOnly(name);
+      return makeCardFileHandle(fs, join(p, entryName(name)));
+    },
+    async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
+      if (opts?.create && !(await fs.exists(join(p, entryName(name))))) readOnly(name);
+      return makeCardDirHandle(fs, join(p, entryName(name)), root);
+    },
+    async *values() {
+      for (const e of await fs.list(p, root, true)) {
+        yield e.kind === "directory"
+          ? makeCardDirHandle(fs, join(p, e.name), root)
+          : makeCardFileHandle(fs, join(p, e.name));
+      }
+    },
+    async *keys() {
+      for (const e of await fs.list(p)) yield e.name;
+    },
+  };
+  return handle as unknown as FileSystemDirectoryHandle;
+}
+
+/** A read-only handle for the memory card mounted at `path`: it lists and reads
+ *  the card, and has no way to write, make or remove anything on it. */
+export function nativeCardHandle(path: string): FileSystemDirectoryHandle {
+  const fs = nativeFs();
+  if (!fs) throw new Error("native fs bridge unavailable");
+  return makeCardDirHandle(fs, path, path);
+}
+
 /** Part of a file, with what getFile() would say of the whole file. */
 export interface FileSlice {
   data: Uint8Array<ArrayBuffer>;
@@ -190,7 +250,7 @@ export async function readFileSlice(
   // A library source's file is read whole only when it is opened; a slice of one
   // whose original isn't kept yet holds no bytes (library-sources.ts).
   if (isSourceFile(handle)) return readSourceFileSlice(handle, start, end);
-  const path = nativePathOf(handle);
+  const path = nativePathOf(handle) ?? cardPathOf(handle);
   const fs = nativeFs();
   if (path !== null && fs) {
     const { data, size, mtimeMs } = await fs.read(path, { start, end });

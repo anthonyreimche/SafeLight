@@ -22,6 +22,7 @@ import {
 } from "@/state/keybindings-store";
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
+import { DEFAULT_SETTINGS } from "@/state/settings-store";
 import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { frameLocalPoint } from "@/ui/frame-point";
 import { holdTextSelection } from "@/ui/hold-text-selection";
@@ -120,6 +121,8 @@ interface ViewportImageProps {
   // Width of the colour-assessment mat as a fraction of the smaller viewport
   // dimension (resolution-independent). Defaults to 0.045 (4.5%).
   assessBorder?: number;
+  // How far in the view zooms, as a scale. A zoom past it comes back to it.
+  maxZoom?: number;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -130,7 +133,6 @@ const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
 // passthrough, which keeps wheel zoom reachable under extension overlays.
 const WHEEL_ZOOM_ACTION = "viewport.wheelZoom";
 const ZOOM_STEP = 1.25; // per keyboard step and per classic wheel notch (100 px)
-const MAX_ZOOM = 2; // the status bar's 200% top stop
 const FIT_SNAP = 1.0001; // a zoom-out landing within this of fit snaps to fit
 const ZOOM_MS = 150; // a zoom eases from the view on screen to its target
 // Wheel input under this per frame (a trackpad pinch, precision scrolling) streams
@@ -176,6 +178,7 @@ function ViewportImageView({
   onLayout,
   colorAssessment,
   assessBorder = 0.045,
+  maxZoom = DEFAULT_SETTINGS.developMaxZoom,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -296,7 +299,7 @@ function ViewportImageView({
     }
     const seen = viewSeenRef.current;
     if (zoom != null && zoomProp != null && seen && hasImage) {
-      const next = zoom === openedZoomRef.current ? zoom : Math.min(MAX_ZOOM, zoom / ratio);
+      const next = zoom === openedZoomRef.current ? zoom : Math.min(maxZoom, zoom / ratio);
       const image = { w: logicalW, h: logicalH };
       const v = clampView(recentreView(seen.view, frame, seen.image, image, next), frame, image);
       setOffset({ x: v.x, y: v.y });
@@ -312,6 +315,10 @@ function ViewportImageView({
     const r = rescaleRef.current;
     if (r && zoomProp === r.from) onZoomChange(r.to);
   });
+  // A zoom past the maximum (the maximum lowered in Preferences) comes back to it.
+  useLayoutEffect(() => {
+    if (zoomProp != null && zoomProp > maxZoom) onZoomChange(maxZoom);
+  }, [zoomProp, maxZoom, onZoomChange]);
 
   // Color-assessment mat: a brilliant-white band hugging the image. In fit mode
   // we shrink the image to leave room for the band inside the frame, so "Assess"
@@ -492,7 +499,7 @@ function ViewportImageView({
   const zoomTo = (target: number, cx: number | null, cy: number | null, ease = true) => {
     if (!hasImage) return;
     const cur = zoom ?? fitScale;
-    const next = Math.min(target, MAX_ZOOM);
+    const next = Math.min(target, maxZoom);
     if (next <= cur && next <= fitScale * FIT_SNAP) {
       if (zoom != null) {
         snapRef.current = !ease;

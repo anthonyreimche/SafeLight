@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createFsBridge, notRoot } = require("../fs-bridge.cjs");
 const { createKeptFolders } = require("../kept-folders.cjs");
+const { createCardScanner } = require("../memory-cards.cjs");
 
 /**
  * @param {{
@@ -42,6 +43,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow, onUnin
   });
   if (onUninstalled) onUninstalled((id) => kept.forgetExtension(id));
   const bridge = createFsBridge({ userData, writer: fileWriter });
+  const cards = createCardScanner();
   // A channel for each bridge method: the event comes first and is dropped.
   const forward = (channel, method) => ({
     channel,
@@ -76,6 +78,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow, onUnin
     forward("fs:lockProject", "lockProject"),
     forward("fs:refreshProjectLock", "refreshProjectLock"),
     forward("fs:releaseProjectLock", "releaseProjectLock"),
+    // Memory cards in the computer now, for an ingest (api.library.useMemoryCards).
+    { channel: "fs:listCards", privileged: true, handler: () => cards.list() },
     {
       channel: "fs:pickDirectory",
       privileged: true,

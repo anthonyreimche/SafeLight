@@ -449,6 +449,12 @@ export interface PanelContribution {
     /** Sort position (lower = higher up). Default 100. */
     order?: number;
     defaultDock?: PanelDockDefault;
+    /** The modules this panel may be docked in, e.g. ["develop"] for a tool that
+     *  edits the open photo. The View menu offers it only while one of them is
+     *  showing, togglePanel opens it nowhere else, and a layout that names it in
+     *  another module leaves it out. Omit it to allow every module. Needs
+     *  Safelight 3.2.8; older builds ignore it. */
+    modules?: readonly ModuleId[];
     /** Old panel ids this panel takes the place of in saved layouts, e.g. a panel
      *  that moved here from another extension. Wherever a layout names one of
      *  them, and no registered panel uses that id any more, the dock shows this
@@ -1794,7 +1800,7 @@ export interface SafelightAPI {
      *  safelight.json is in, e.g. "dist/runtime.wasm"), cache-busted by your
      *  version: for a worker, a WebAssembly binary or a model your bundle loads.
      *  import.meta.url is undefined in an extension's module, and the same URL
-     *  serves a Developer Tools dev-folder copy. Needs Safelight 3.2.7. */
+     *  serves a Developer Tools dev-folder copy. Needs Safelight 3.2.8. */
     assetUrl(path: string): string;
     /** The app's React instance — plugins must use this, not their own copy. */
     react: typeof import("react");
@@ -2055,7 +2061,7 @@ export interface SafelightAPI {
          *  `info` and `success` go by themselves after a few seconds; `warning`
          *  and `error` stay; a notice with `progress` (0..1) stays while the run
          *  is under way. `update` changes it in place, `close` takes it down, and
-         *  core takes it down when your extension stops. Needs Safelight 3.2.7. */
+         *  core takes it down when your extension stops. Needs Safelight 3.2.8. */
         notify(notice: string | NoticeOptions): NoticeHandle;
         /** A colour control: a swatch as wide as the row that opens a picker under
          *  it (a hue-by-saturation area, or a hue bar for a field without
@@ -2204,12 +2210,12 @@ export interface SafelightAPI {
         /** The module this window shows: a popped-out window's own module, else
          *  the main window's tab. Ask it before acting on a Develop shortcut,
          *  `current() === "develop"`, rather than reading the URL. Needs
-         *  Safelight 3.2.7. */
+         *  Safelight 3.2.8. */
         current(): ModuleId;
-        /** `current` as a React hook. Needs Safelight 3.2.7. */
+        /** `current` as a React hook. Needs Safelight 3.2.8. */
         useCurrent(): ModuleId;
         /** The module this window was popped out for, or null in the main
-         *  window. Needs Safelight 3.2.7. */
+         *  window. Needs Safelight 3.2.8. */
         ownModule(): ModuleId | null;
     };
     /** Read the current binding for any action id (built-in or extension), or
@@ -2441,7 +2447,7 @@ export interface SafelightAPI {
          *  0-1) once the probe answers, then the drag to `onMove` and its end to
          *  `onUp`. A held Ctrl, Cmd or Space pans instead, and Escape lets go.
          *  One extension holds it at a time: the last to set it. Setting it lets
-         *  a held canvas tool go (from Safelight 3.2.7). It is let go when the
+         *  a held canvas tool go (from Safelight 3.2.8). It is let go when the
          *  extension stops. */
         setPickDrag(tool: PickDragTool | null): void;
         /** React hook: whether this extension holds the pick-drag tool. */
@@ -2452,7 +2458,7 @@ export interface SafelightAPI {
          *  too, unless `zoomable`), and the live view draws `viewParams` of the
          *  edit if given. Escape calls `onEscape` and lets it go. One extension
          *  holds it at a time: the last to set it. Setting it lets an armed
-         *  pick-drag tool go (from Safelight 3.2.7). It is let go when the
+         *  pick-drag tool go (from Safelight 3.2.8). It is let go when the
          *  extension stops. Needs Safelight 3.2.0. */
         setCanvasTool(tool: CanvasTool | null): void;
         /** React hook: whether this extension holds the canvas tool. */
@@ -2578,7 +2584,7 @@ export interface SafelightAPI {
          *  changes and its new value, held to its range, or null for one the tool
          *  doesn't have, which core then leaves alone. Pass `range` for limits of
          *  the tool's own (`{ size: { min: 0.002, max: 0.1 } }`); a step never
-         *  moves a setting the wrong way. Needs Safelight 3.2.7. */
+         *  moves a setting the wrong way. Needs Safelight 3.2.8. */
         brush: {
             defaults: Readonly<BrushSettings>;
             actions: readonly string[];
@@ -2589,12 +2595,12 @@ export interface SafelightAPI {
          *  "centre", the reference a size slider shows while dragged), sized as a
          *  dab paints in the photo through any crop, zoom or Perspective; red and
          *  dashed for an erasing brush. It draws around the crosshair cursor, as
-         *  Masking's brush does. Needs Safelight 3.2.7. */
+         *  Masking's brush does. Needs Safelight 3.2.8. */
         BrushCursor: typeof BrushCursor;
         /** The pointer in `el`'s layout px: the space an overlay's `rect`, the
          *  mapping helpers and CSS left/top use. Interface scale zooms the page,
          *  so clientX minus the element's left is off by the zoom. Needs Safelight
-         *  3.2.7. */
+         *  3.2.8. */
         framePoint(el: Element, clientX: number, clientY: number): {
             x: number;
             y: number;
@@ -2703,7 +2709,7 @@ export interface SafelightAPI {
         /** The Export panel's line on a finished run: how many photos it exported
          *  and any that fell short of what was asked (8-bit, reduced precision,
          *  without an extension's effect, a ZIP delivered as files). Needs
-         *  Safelight 3.2.7. */
+         *  Safelight 3.2.8. */
         describeResult(result: ExportResult): string;
     };
     /** Lower-level catalogue persistence, for extensions that add records the core
@@ -2816,10 +2822,10 @@ export interface SafelightAPI {
         useActivePhoto(): CatalogPhoto | undefined;
         /** The ids a command on "these photos" acts on: the selection, else the
          *  active photo, else none. Core's rating, rotate and delete shortcuts use
-         *  the same rule. Needs Safelight 3.2.7. */
+         *  the same rule. Needs Safelight 3.2.8. */
         targetIds(): string[];
         /** The target photos (as targetIds) in the catalogue's order. React hook.
-         *  Needs Safelight 3.2.7. */
+         *  Needs Safelight 3.2.8. */
         useTargetPhotos(): CatalogPhoto[];
         /** Put the photos in one new stack (a burst, a bracket), `opts.cover` (one
          *  of them) as its cover; a photo in another stack leaves it. The grid shows
@@ -2932,7 +2938,10 @@ export interface SafelightAPI {
          *  entry name (separators, `..`, a drive letter), a folder that leaves the
          *  project, a name already in use, an unsupported type, a file over 512 MiB
          *  and a read-only folder are all refused with a message; nothing is
-         *  overwritten. Calls run one at a time. */
+         *  overwritten. With `unique`, a name in use is numbered instead
+         *  ("a-2.jpg"), the files of the call that share a base name with one
+         *  number, and each file taken says the name written as `savedAs` (3.2.8).
+         *  Calls run one at a time. */
         importFiles: typeof importFiles;
         /** Offer photos kept somewhere other than a folder on disk (a photo server)
          *  as a project the person opens like a folder: the source's folders are
@@ -2993,6 +3002,52 @@ export interface SafelightAPI {
         /** React hook: every decoder, Safelight's then extensions', with the
          *  formats each reads. Needs Safelight 3.2.6. */
         useDecoders(): readonly ImageDecoderInfo[];
+        /** The EXIF and XMP Safelight reads when it imports a file, read before it
+         *  is imported (to name it, sort it or file it by date): `exif`, the
+         *  capture time as `dateCreated` (else the file's modification time), the
+         *  XMP `rating` and `keywords`, and the file's `size`. A desktop file handle reads only the file's
+         *  first MiB; a HEIF file is read whole. Null for a type Safelight doesn't
+         *  import, or a file that can't be read. Needs Safelight 3.2.8. */
+        readMetadata: typeof readMetadata;
+        /** Whether Safelight imports a file of this name (the project scan's
+         *  rule). Needs Safelight 3.2.8. */
+        isSupportedName(name: string): boolean;
+        /** React hook: the memory cards in the computer now, each a mounted volume
+         *  holding a DCIM folder: `{ id, name, path, folder }`. `id` is new for
+         *  each card put in, even in the same slot; `folder` is the card's root,
+         *  read-only (it lists and reads, and can't write, make or remove
+         *  anything). Checked every few seconds and when the window comes to the
+         *  front, while a component uses the hook; the list keeps its identity
+         *  while nothing changes. Empty in the browser build. Needs Safelight
+         *  3.2.8. */
+        useMemoryCards(): MemoryCard[];
+        /** `useMemoryCards` outside React: calls `listener` with the cards once
+         *  the first check answers (those already in, maybe none), then each time
+         *  they change (one put in or taken out), checking while subscribed.
+         *  Returns the unsubscribe; core drops it when your extension stops.
+         *  Needs Safelight 3.2.8. */
+        onMemoryCards: typeof onMemoryCards;
+    };
+    /** File names from metadata: a template of {tokens} and text, filled from a
+     *  file's name and EXIF, as Advanced EXIF Tools renames and Card Ingest
+     *  names. A subject is `{ filename, exif, dateCreated?, folderName? }`, so a
+     *  file not yet imported can be named (`api.library.readMetadata`), and a
+     *  catalogued photo is one given its folder's name. Options: `index` (the
+     *  subject's place in its batch: {seq}, {letter}), `seqStart`, `seqStep`,
+     *  `seqPad` (1, 1, 3) and `caseMode`. Needs Safelight 3.2.8. */
+    naming: {
+        /** Every token, grouped, with a label and a sample, for a palette. */
+        tokens: typeof NAME_TOKENS;
+        /** A filename-safe base name (no extension); unknown tokens drop out. */
+        render: typeof renderName;
+        /** A folder path, "/" between folders, each rendered as `render` does and
+         *  the empty ones left out. */
+        renderFolder: typeof renderFolder;
+        /** Free text (a caption) with its tokens filled: values as they are, and a
+         *  {word} that is no token kept. */
+        expand: typeof expandName;
+        /** The {tokens} of a template that aren't tokens, as written. */
+        unknownTokens: typeof unknownTokens;
     };
     /** Reach a server whose address the person typed in (the manifest declares
      *  `permissions.userOrigins`; Safelight 3.2.4), reach the origins the
@@ -3785,6 +3840,11 @@ export interface AppSettings {
     highBitDepth: boolean;
     liveHistogram: boolean;
     developOpenZoom: "fit" | "100";
+    /** How far in Develop's view zooms, as a scale (8 = 800%). Since 3.2.8. */
+    developMaxZoom: 2 | 4 | 8 | 16;
+    /** The zoom buttons Develop's status bar shows after Fit, as scales, in
+     *  order; ones past developMaxZoom are hidden. Since 3.2.8. */
+    developZoomStops: number[];
     /** The monitor's ICC profile the Develop view converts to (Linux); "" = none. */
     displayProfilePath: string;
     exportFormat: ExportFormatPref;
@@ -4002,6 +4062,14 @@ export interface NativeFsBridge {
     /** Reveal a path in the OS file manager — open a directory, or select a file
      *  inside its parent folder. Resolves true on success. */
     reveal(path: string): Promise<boolean>;
+    /** The mounted volumes holding a DCIM folder (electron/memory-cards.cjs):
+     *  `id` is new for each card put in, `path` the volume's root. Absent on older
+     *  Electron builds — feature-detect. */
+    listCards?(): Promise<{
+        id: string;
+        name: string;
+        path: string;
+    }[]>;
     /** Take the writer lock on a project's working directory, so the app and `slu`
      *  never write one catalogue at once. Resolves with a token, or with who holds
      *  it. A lock whose holder stopped refreshing it is taken over. Absent on older
@@ -6673,11 +6741,20 @@ export interface IngestOptions {
     folder?: string;
     /** Added to the keywords the file itself carries. */
     keywords?: string[];
+    /** Number a name already in use instead of refusing it: "a.jpg" becomes
+     *  "a-2.jpg", then "a-3.jpg". Files of one call that share a base name (a RAW
+     *  and its JPEG) get the same number, and a sidecar such as "a-2.xmp" left in
+     *  the folder holds its number too. Each result taken gives the name written
+     *  as `savedAs`. */
+    unique?: boolean;
 }
 
+/** `name` is always the name the file was handed over with. With `unique`, a
+ *  file taken also says the name it was written as in `savedAs`. */
 export type IngestResult = {
     name: string;
     id: string;
+    savedAs?: string;
 } | {
     name: string;
     error: string;
@@ -6689,6 +6766,105 @@ export type IngestResult = {
  *  lands outside the project folder. Calls run one after another, since imports
  *  share the decode pool. */
 declare function importFiles(files: readonly IngestFile[], options?: IngestOptions): Promise<IngestResult[]>;
+
+// src/modules/library/read-metadata.ts
+
+export interface FileMetadata {
+    exif: ExifData;
+    /** The capture time in ms, else the file's modification time. */
+    dateCreated: number | undefined;
+    /** The XMP star rating the camera wrote, if any. */
+    rating?: number;
+    keywords: string[];
+    /** The whole file's size in bytes. */
+    size: number;
+}
+
+/** The EXIF and XMP Safelight reads when it imports `file`, read now, before
+ *  it is imported: a desktop file handle reads only as much of the file's first
+ *  MiB as its capture time needs (a HEIF file is read whole). Null for a file of a type Safelight doesn't import
+ *  (by its name; a Blob without one is read), or one that can't be read. */
+declare function readMetadata(file: FileSystemFileHandle | Blob): Promise<FileMetadata | null>;
+
+// src/project/memory-cards.ts
+
+export interface MemoryCard {
+    /** New for each card put in, even in the same slot. */
+    id: string;
+    /** The volume's name, or its drive ("E:") on Windows. */
+    name: string;
+    /** Where it is mounted, to show the person. */
+    path: string;
+    /** The card's root folder. It lists and reads, and can't change the card. */
+    folder: FileSystemDirectoryHandle;
+}
+
+/** Call `listener` with the memory cards in the computer: once when the first
+ *  check answers (the cards already in, maybe none), then whenever they change
+ *  (a card put in or taken out), until the function it returns is called. */
+declare function onMemoryCards(listener: (cards: MemoryCard[]) => void): () => void;
+
+// src/catalog/naming.ts
+
+/** What a name is made from. A CatalogPhoto is one, given its folder's name. */
+export interface NameSubject {
+    /** The file's name with its extension: {name} and {ext}. */
+    filename: string;
+    /** Date tokens read dateTimeOriginal, {subsec} subSecTimeOriginal. */
+    exif: ExifData;
+    /** The capture time in ms when the EXIF has none. */
+    dateCreated?: number;
+    /** {folder}: the name of the folder the file is in. */
+    folderName?: string;
+}
+
+export type NameCase = "asis" | "lower" | "upper";
+
+export interface NameOptions {
+    /** The subject's place in its batch, from 0: {seq} and {letter}. */
+    index?: number;
+    /** {seq} of the first subject. Default 1. */
+    seqStart?: number;
+    /** Added to {seq} per subject. Default 1. */
+    seqStep?: number;
+    /** Zero-padded width of {seq} without its own width. Default 3. */
+    seqPad?: number;
+    /** Case of the whole name. Default "asis". */
+    caseMode?: NameCase;
+}
+
+export interface NameToken {
+    /** The text to insert into a template. */
+    insert: string;
+    label: string;
+    /** What it renders as for a typical photo. */
+    sample: string;
+}
+
+/** Every token, grouped for a palette that inserts them into a template. */
+declare const NAME_TOKENS: readonly {
+    group: string;
+    tokens: readonly NameToken[];
+}[];
+
+/** A file's base name (no extension) from `template`: tokens filled, unknown
+ *  ones dropped, every character no file system takes replaced by "_", doubled
+ *  separators an empty token leaves collapsed, and no separator or dot at
+ *  either end. Empty when nothing is left. */
+declare function renderName(template: string, subject: NameSubject, options?: NameOptions): string;
+
+/** A folder path from `template`, "/" or "\" between its folders: each folder
+ *  rendered as renderName renders a name, the empty ones left out, joined by
+ *  "/". "" when nothing is left. No folder can be "." or "..". */
+declare function renderFolder(template: string, subject: NameSubject, options?: NameOptions): string;
+
+/** `text` with its tokens filled, for a caption or a headline: values are kept
+ *  as they are (a shutter of 1/250 stays 1/250) and a {word} that is no token
+ *  stays as written. */
+declare function expandName(text: string, subject: NameSubject, options?: NameOptions): string;
+
+/** The {tokens} of `template` that aren't tokens, as written, each once. */
+declare function unknownTokens(template: string): string[];
 
 // src/extensions/api/devtools.ts
 

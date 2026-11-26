@@ -125,7 +125,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos`, `thumbnailFileType`, `thumbnailEdited` |
 | Catalogue | `catalogLocation` (`"in-folder"` or `"external"`), `externalCatalogDir` |
 | Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge`, `decoderOrder` (3.2.6: each format's decoder ids in the order they're tried) |
-| Develop | `developMaxEdge`, `developDynamicDetail`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
+| Develop | `developMaxEdge`, `developDynamicDetail`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom`, `developMaxZoom`, `developZoomStops` |
 | Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportIfExists` (`"number"` or `"replace"`), `exportPresets` |
 | Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `preferencesMaximized` (3.2.6), `checkForUpdates`, `updateChannel` |
 
@@ -217,7 +217,7 @@ chooseHistorySource(source: string | null): void;  // 3.2.8
 - `setPickDrag` holds the canvas's pick-drag tool, an on-image drag that starts from a colour (HSL's target tool). While you hold it, a press on the image calls `onPress(point)` at once, with the point in the canvas's pixels. If your tool has `onDown`, it then gets `onDown(rgb, point)` with the colour the view shows there (sRGB, 0 to 1) once that is read, then `onMove(point)` and `onUp()`; a press released before the colour is read starts no drag. Every handler is optional. Holding Ctrl, Cmd or Space pans instead, and Escape lets go of the tool. The last extension to set a tool holds it; `setPickDrag(null)` lets go of yours only, and stopping your extension lets go too. `usePickDragHeld` re-renders when yours is taken or dropped, for a pressed button.
 - `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). It stacks above every `develop-canvas-overlay` component, so no other extension's overlay covers the tool or takes its pointer. The overlay re-renders when the view moves or what it subscribes to changes, not on every edit, so select what it draws with `useDevelopStore((s) => …)` rather than reading `getState()` while rendering. Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held and returns whether it took one; core acts on those it didn't. `wants(action)` answers the same question without acting, so a key another handler also binds (Delete, `"mask.delete"`) goes to the tool when it would take it.
 
-A tool that paints uses the official brush, Masking's, rather than its own (Safelight 3.2.7). `api.develop.brush.defaults` is where its size, feather, opacity and flow start (size is a radius as a share of the photo's height). `api.develop.brush.actions` are the eight rebindable brush shortcuts, which core hands only to the held tool: `[` and `]` size, `Shift+[` and `Shift+]` feather, `,` and `.` opacity, `Shift+,` and `Shift+.` flow. Answer `onAction` and `wants` with `api.develop.brush.step(action, settings)`, passing the settings your tool has by those names; it returns the setting and its new value, held to its range, or null for one your tool doesn't have. A tool whose limits differ passes them as a third argument, `step(action, settings, { size: { min: 0.002, max: 0.1 } })`; a step never moves a setting the wrong way. Draw `api.develop.BrushCursor` in the overlay (`at` the pointer, or `"centre"` while a size slider is dragged) and read the pointer with `api.develop.framePoint(el, clientX, clientY)`, which allows for the Interface scale. Don't listen for Ctrl, Cmd or Space yourself: while one is held, core hands the pointer to pan and zoom under a `zoomable` tool and every `develop-canvas-overlay` component. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped. The canvas tool and the pick-drag tool both take a press on the photo, so only one of them is on at a time: arming a picker lets a held canvas tool go, and holding a canvas tool lets an armed picker go (Safelight 3.2.7). Neither is told Escape; follow `useCanvasToolHeld` or `usePickDragHeld` to switch your tool's button off.
+A tool that paints uses the official brush, Masking's, rather than its own (Safelight 3.2.8). `api.develop.brush.defaults` is where its size, feather, opacity and flow start (size is a radius as a share of the photo's height). `api.develop.brush.actions` are the eight rebindable brush shortcuts, which core hands only to the held tool: `[` and `]` size, `Shift+[` and `Shift+]` feather, `,` and `.` opacity, `Shift+,` and `Shift+.` flow. Answer `onAction` and `wants` with `api.develop.brush.step(action, settings)`, passing the settings your tool has by those names; it returns the setting and its new value, held to its range, or null for one your tool doesn't have. A tool whose limits differ passes them as a third argument, `step(action, settings, { size: { min: 0.002, max: 0.1 } })`; a step never moves a setting the wrong way. Draw `api.develop.BrushCursor` in the overlay (`at` the pointer, or `"centre"` while a size slider is dragged) and read the pointer with `api.develop.framePoint(el, clientX, clientY)`, which allows for the Interface scale. Don't listen for Ctrl, Cmd or Space yourself: while one is held, core hands the pointer to pan and zoom under a `zoomable` tool and every `develop-canvas-overlay` component. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped. The canvas tool and the pick-drag tool both take a press on the photo, so only one of them is on at a time: arming a picker lets a held canvas tool go, and holding a canvas tool lets an armed picker go (Safelight 3.2.8). Neither is told Escape; follow `useCanvasToolHeld` or `usePickDragHeld` to switch your tool's button off.
 - `readDevelopedPixels` reads the open photo's developed frame of the whole image, before the crop and transform, as RGBA8 rows from the top with its long edge at `edge` px (Upright detects lines in it).
 - `sourcePixels` is a small 8-bit sRGB copy of the open photo's source (RGBA8 rows from the top, about 1024 px on its long edge), for searches of the image itself (Heal's source pick). It is `null` before the first frame. `onSourcePixels` calls you with each new one: another photo, or a new decode.
 - `probeMaskColour` reads the colour a mask's colour range compares at a point of the live frame buffer (0 to 1 across `useDevelopOverlay` `rect`): scene-linear, before the display transform.
@@ -336,7 +336,7 @@ exportPhotos(                          // several exports of one selection (3.2.
 - Export processors (a watermark, say) run on every `renderPhotos` render, as they do on an export. Pass `processors: false` to run none, for a frame you use as source pixels rather than as a delivered file (Safelight 3.2.0).
 - Export processors don't run for a render started from inside them, or for a photo another batch is rendering at the same time.
 - Pass `signal` to stop a batch. It is checked before each photo, so the photo in flight finishes. `renderPhotos` then returns only the photos it reached. `exportPhotos` returns `cancelled: true` and the count it exported; a ZIP in progress is delivered with what it holds.
-- `exportPhotos` also stops on its own, with `stopped` set to the reason (`"the disk is full"`), when a write fails in a way every later write would too: a full disk or a read-only folder. A refusal that one locked file also gives (`EPERM`, `EACCES`, a withdrawn folder grant) stops it only when the same refusal comes twice in a row; a successful write in between starts the count again. Photos after that are not rendered. A failure that belongs to one file is listed in `failures` and the batch goes on. `api.export.describeResult(result)` words either ending for the user, as the Export panel does (3.2.7).
+- `exportPhotos` also stops on its own, with `stopped` set to the reason (`"the disk is full"`), when a write fails in a way every later write would too: a full disk or a read-only folder. A refusal that one locked file also gives (`EPERM`, `EACCES`, a withdrawn folder grant) stops it only when the same refusal comes twice in a row; a successful write in between starts the count again. Photos after that are not rendered. A failure that belongs to one file is listed in `failures` and the batch goes on. `api.export.describeResult(result)` words either ending for the user, as the Export panel does (3.2.8).
 - `delivery: "folder"` never writes over a file without being asked. With `ifExists: "number"` (the default), a name already in the folder, in any case or Unicode form, gets the next free `"name (2).ext"`. Each name is checked again right before its write, so a file another batch or app wrote since is safe too. `ifExists: "replace"` writes over a file of the same name, but never the original of a photo in the catalogue: that one still gets a number. Leave `ifExists` out and the user's Preference decides (3.2.0).
 - `exportPhotos` names files by the registered template `filenameTemplateId` names, else by the template string in `filenameTemplate` (the same variables), else by the photo's base name. `filenameTemplate` lets an extension name its own exports without adding an entry to the Export panel's Filename list (3.2.4).
 - If the graphics driver resets mid-batch, the photo being drawn fails with nothing written, and the batch ends there: `exportPhotos` sets `stopped` to `"the graphics driver reset"`, and `renderPhotos` returns a null blob for that photo and every one after it, without rendering them.
@@ -367,8 +367,8 @@ stackOf(id): { stackId; ids; cover } | null;       // 3.2.1
 setInputProfile(ids, token: string | null): Promise<void>; // 3.2.3: the resolver's owner only
 editedAt(id): number | undefined;                  // 3.2.6: when its edit last changed
 useEditedAt(id): number | undefined;               // 3.2.6: editedAt as a hook
-targetIds(): string[];                             // 3.2.7: selection, else active photo
-useTargetPhotos(): CatalogPhoto[];                 // 3.2.7: targetIds' photos, catalogue order
+targetIds(): string[];                             // 3.2.8: selection, else active photo
+useTargetPhotos(): CatalogPhoto[];                 // 3.2.8: targetIds' photos, catalogue order
 ```
 
 **Notes**
@@ -406,8 +406,8 @@ useTargetPhotos(): CatalogPhoto[];                 // 3.2.7: targetIds' photos, 
 ```ts
 importFiles(                                       // 3.2.1
   files: { name: string; data: Blob }[],
-  opts?: { folder?: string; keywords?: string[] },
-): Promise<({ name; id } | { name; error })[]>;
+  opts?: { folder?: string; keywords?: string[]; unique?: boolean },   // unique: 3.2.8
+): Promise<({ name; id; savedAs? } | { name; error })[]>;
 ```
 
 `importFiles` writes files an extension receives (from a tethered camera, a network share, a download) into the open project and imports them as photos, with the given keywords added to their own. Use it for a tether, a camera on Wi-Fi, or an online library you mirror.
@@ -422,6 +422,26 @@ importFiles(                                       // 3.2.1
 - A file is written whole or not at all, and removed again if its import fails.
 - Calls run one after another, because imports share the decoders.
 - A folder that is read-only refuses with the reason.
+- With `unique: true` (3.2.8), a name already in the folder is numbered instead of refused: `a.jpg` becomes `a-2.jpg`, then `a-3.jpg`. The files of one call that share a base name, such as a RAW and its JPEG, get the same number, and a sidecar left in the folder (`a-2.xmp`) holds its number too. Each file taken says the name it was written as in `savedAs`; `name` is always the name you handed over.
+
+### Ingesting from a memory card (3.2.8)
+
+```ts
+readMetadata(file: FileSystemFileHandle | Blob): Promise<{
+  exif: ExifData; dateCreated: number | undefined; rating?: number; keywords: string[]; size: number;
+} | null>;
+isSupportedName(name: string): boolean;
+useMemoryCards(): { id; name; path; folder: FileSystemDirectoryHandle }[];   // React hook
+onMemoryCards(listener: (cards) => void): () => void;
+```
+
+These are what Card Ingest is built on: read a card, plan names and folders, then hand each shot to `importFiles` with `unique`.
+
+- `readMetadata` reads the EXIF and XMP Safelight reads when it imports a file, before it is imported, so a file can be named, sorted or filed by its capture date first. A desktop file handle reads the file's first 256 KB, and on to its first MiB only when no capture time turned up; a HEIF file is read whole. `dateCreated` is the capture time, else the file's modification time. It is null for a type Safelight doesn't import, by its name, or a file that can't be read. Canon CR3 files are read too (their EXIF sits in Canon's own boxes), and import now dates them from the start as well.
+- `isSupportedName` is the project scan's rule for which files are photos.
+- `useMemoryCards` lists the mounted volumes that hold a `DCIM` folder: the drive letters on Windows (not the system drive), `/Volumes` on macOS, and the user's media folders on Linux. They are checked every 3 seconds and when the window comes to the front, only while a component uses the hook or a listener is subscribed. A drive that takes over a second to answer is left alone for a minute. `id` is new for each card put in, even in the same slot, so a swapped card reads as a new one. The list keeps its identity while nothing changes, and is empty in the browser build.
+- Each card's `folder` is its root, and it only reads: it lists and reads files, and has no way to write, make or remove anything, at any depth. `api.project.pathOf` gives null for it.
+- `onMemoryCards` is the same outside React. The listener hears what the first check found (maybe nothing), then each change. Core drops the subscription when your extension stops.
 
 ### Library sources (3.2.4)
 
@@ -513,6 +533,28 @@ A decoder reads a format Safelight already imports, in place of Safelight's own 
 - **Ownership.** The array becomes core's: answer a whole array (a view into a larger buffer or into wasm memory is copied once) and don't touch it after.
 - **Kept decodes.** While a decoder of yours comes before Safelight's in a format's list, decodes core keeps across launches (the RAW cache, the GPU source cache) are filed under your decoder's id and `version` (only the files it accepts, when it has `accepts`), so bump `version` whenever your output changes. With Safelight's decoder first, nothing changes for existing caches.
 - Registering an id you hold replaces it. Your decoders go when your extension stops, and Develop waits a few seconds at launch for a decoder the person put first; the person's order keeps their place for when they're back, unless they reset that format's order.
+
+## `api.naming` (3.2.8)
+
+```ts
+tokens: { group: string; tokens: { insert; label; sample }[] }[];
+render(template: string, subject: NameSubject, options?: NameOptions): string;
+renderFolder(template: string, subject: NameSubject, options?: NameOptions): string;
+expand(text: string, subject: NameSubject, options?: NameOptions): string;
+unknownTokens(template: string): string[];
+
+interface NameSubject { filename: string; exif: ExifData; dateCreated?: number; folderName?: string }
+interface NameOptions { index?: number; seqStart?: number; seqStep?: number; seqPad?: number; caseMode?: "asis" | "lower" | "upper" }
+```
+
+File names from metadata, one set of tokens for every extension that names files: Advanced EXIF Tools renames with it and Card Ingest names what it copies. A template is text with `{tokens}`: `{name}` `{ext}` `{folder}` `{seq}` (`{seq:4}` for a width) `{letter}` `{LETTER}`, the capture date and time `{yyyy}` `{yy}` `{mon}` `{day}` `{hour}` `{min}` `{sec}` `{subsec}` `{date}` `{time}`, and `{make}` `{model}` `{lens}` `{iso}` `{fnum}` `{shutter}` `{focal}`.
+
+- The subject is a file's name and EXIF, so a file not yet imported can be named from `api.library.readMetadata`. A catalogue photo is one, given its folder's name as `folderName`.
+- `index` is the subject's place in its batch, from 0: `{seq}` is `seqStart + index × seqStep`, zero-padded to `seqPad` (1, 1 and 3 by default).
+- `render` gives a base name without an extension, safe on every file system: unknown tokens drop out, characters no file system takes become `_`, the doubled separators an empty token leaves collapse, and no separator or dot is left at either end. It can be empty.
+- `renderFolder` renders each folder of a path the same way and leaves out the empty ones, `/` between them. No folder can be `.` or `..`.
+- `expand` fills tokens in free text, such as a caption, with values as they are (`1/250` stays `1/250`) and a `{word}` that isn't a token kept.
+- Core's export filename templates still use their own variables.
 
 ## `api.network` (3.2.4)
 

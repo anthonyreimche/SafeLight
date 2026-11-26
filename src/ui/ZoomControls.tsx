@@ -4,16 +4,10 @@
 // be preserved in derived versions.
 
 // Zoom controls for the image viewports, rendered in the status bar (off the
-// image). `null` is fit-to-frame; numbers are scale factors of the buffer.
+// image). `null` is fit-to-frame; numbers are scale factors of the buffer. The
+// stops are the ones picked in Preferences, as far in as the maximum zoom.
+import { formatZoom, useSettings } from "@/state/settings-store";
 import { STATUS_HIT } from "./status-button";
-
-const STOPS: { label: string; value: number }[] = [
-  { label: "25%", value: 0.25 },
-  { label: "50%", value: 0.5 },
-  { label: "100%", value: 1 },
-  { label: "150%", value: 1.5 },
-  { label: "200%", value: 2 },
-];
 
 export function ZoomControls({
   zoom,
@@ -22,6 +16,8 @@ export function ZoomControls({
   zoom: number | null;
   onChange: (zoom: number | null) => void;
 }) {
+  const stops = useSettings((s) => s.developZoomStops);
+  const maxZoom = useSettings((s) => s.developMaxZoom);
   const btn = (active: boolean) =>
     `${STATUS_HIT} text-[10px] ${active ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`;
 
@@ -35,17 +31,22 @@ export function ZoomControls({
       >
         Fit
       </button>
-      {STOPS.map((s) => (
-        <button
-          key={s.label}
-          onClick={() => onChange(s.value)}
-          title={`Zoom to ${s.label}`}
-          aria-pressed={zoom === s.value}
-          className={btn(zoom === s.value)}
-        >
-          {s.label}
-        </button>
-      ))}
+      {stops
+        .filter((stop) => stop <= maxZoom)
+        .map((stop) => {
+          const label = formatZoom(stop);
+          return (
+            <button
+              key={stop}
+              onClick={() => onChange(stop)}
+              title={`Zoom to ${label}`}
+              aria-pressed={zoom === stop}
+              className={btn(zoom === stop)}
+            >
+              {label}
+            </button>
+          );
+        })}
     </div>
   );
 }

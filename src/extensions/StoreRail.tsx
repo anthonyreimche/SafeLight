@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The Extensions store's left rail: Updates, Browse, Installed and Dev, with
+// The Extensions store's left rail: Updates, Browse and Dev, with
 // the registry's categories listed under Browse on request. The list starts
 // hidden; the chevron only shows or hides it, while the Browse label opens the
 // home page and shows it, so a category is always one click away.
@@ -13,7 +13,7 @@ import { useExtStoreUI } from "./store-ui";
 import { OTHER } from "./store-categories";
 import { StoreExpanded } from "./StoreCards";
 
-export type StoreSection = "Updates" | "Browse" | "Installed" | "Dev";
+export type StoreSection = "Updates" | "Browse" | "Dev";
 
 const CATEGORY_LIST_ID = "store-rail-categories";
 

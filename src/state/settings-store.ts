@@ -62,6 +62,16 @@ export type ColorVisionFilter =
   | "deuteranopia"
   | "tritanopia";
 
+/** The maximum zooms Preferences offers for Develop's view, as scales. */
+export const DEVELOP_MAX_ZOOMS = [2, 4, 8, 16] as const;
+export type DevelopMaxZoom = (typeof DEVELOP_MAX_ZOOMS)[number];
+
+/** The zoom buttons Develop's status bar can show, as scales. */
+export const DEVELOP_ZOOM_STOPS: readonly number[] = [0.25, 0.5, 1, 1.5, 2, 3, 4, 8, 16];
+
+/** A zoom scale as the status bar and Preferences write it: 1.5 → "150%". */
+export const formatZoom = (scale: number): string => `${Math.round(scale * 100)}%`;
+
 export interface ExportPreset {
   name: string;
   format: ExportFormatPref;
@@ -241,6 +251,12 @@ export interface AppSettings {
   liveHistogram: boolean;
   /** Zoom a photo opens at in Develop: fit-to-window or 100% (1:1). */
   developOpenZoom: "fit" | "100";
+  /** How far in Develop's view zooms, as a scale (8 = 800%). One of
+   *  DEVELOP_MAX_ZOOMS. */
+  developMaxZoom: DevelopMaxZoom;
+  /** The zoom buttons Develop's status bar shows after Fit, as scales, in
+   *  order. Picked from DEVELOP_ZOOM_STOPS; ones past developMaxZoom are hidden. */
+  developZoomStops: number[];
   /** The monitor's ICC profile the Develop view converts to; "" = none.
    *  Linux only: Windows and macOS convert the window themselves. */
   displayProfilePath: string;
@@ -389,6 +405,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highBitDepth: true,
   liveHistogram: true,
   developOpenZoom: "fit",
+  developMaxZoom: 8,
+  developZoomStops: [0.25, 0.5, 1, 1.5, 2],
   displayProfilePath: "",
   exportFormat: "image/jpeg",
   exportQuality: 90,
@@ -422,7 +440,8 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 
 /** The value if it fits setting `key`, else undefined (no setting is undefined).
  *  The scale is clamped rather than refused, except when it isn't a positive
- *  number: a zero or negative CSS zoom blanks the window. */
+ *  number: a zero or negative CSS zoom blanks the window. The zoom stops keep
+ *  the offered ones they name, in the offered order. */
 function validSetting(key: keyof AppSettings, value: unknown): unknown {
   const fallback: unknown = DEFAULT_SETTINGS[key];
   if (key === "exportLongEdge") {
@@ -433,6 +452,12 @@ function validSetting(key: keyof AppSettings, value: unknown): unknown {
   if (key === "uiScale") {
     return typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, value))
+      : undefined;
+  }
+  if (key === "developMaxZoom") return DEVELOP_MAX_ZOOMS.find((z) => z === value);
+  if (key === "developZoomStops") {
+    return Array.isArray(value)
+      ? DEVELOP_ZOOM_STOPS.filter((stop) => value.includes(stop))
       : undefined;
   }
   if (typeof fallback === "number") {

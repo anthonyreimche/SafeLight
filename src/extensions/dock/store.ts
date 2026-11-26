@@ -175,3 +175,9 @@ export function allowsBottom(panel: RegisteredPanel | undefined): boolean {
     panel.allowBottomDock === true || panel.defaultDock?.direction === "bottom"
   );
 }
+
+/** Whether `panel` may be docked in `module`: every module unless it lists
+ *  some. An unregistered id gets the benefit of the doubt, as in allowsBottom. */
+export function allowsModule(panel: RegisteredPanel | undefined, module: AppModule): boolean {
+  return !panel?.modules || panel.modules.includes(module);
+}

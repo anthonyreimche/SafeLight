@@ -109,6 +109,22 @@ describe("ExtensionManagerPanel Update all", () => {
     await screen.findByText("Updated 1 of 2. Couldn't update Gadget: download failed.");
   });
 
+  it("passes over a version that already failed to start, leaving its own Update", async () => {
+    const failedAt = { version: "2.1.0", error: "t.navigation.ownModule is not a function" };
+    useExtStoreUI.setState({
+      updates: {
+        "acme.gadget": { latestTag: "2.1.0", hasUpdate: true, requiresApp: null, failed: failedAt, checkedAt: Date.now() },
+      },
+    });
+    const user = await mountStore("Widget", "Gadget");
+    await screen.findByText("Version 2.1.0 didn't start on this build; 1.0.0 was restored.");
+    expect(screen.getAllByRole("button", { name: "Update" })).toHaveLength(2);
+    await user.click(await screen.findByRole("button", { name: "Update all (1)" }));
+    await screen.findByText("Updated 1 extension.");
+    expect(installBridge).toHaveBeenCalledWith("acme/widget", "2.1.0");
+    expect(installBridge).not.toHaveBeenCalledWith("acme/gadget", expect.anything());
+  });
+
   it("offers no Update all when every update is kept back", async () => {
     usePins.setState({ pins: { "acme.widget": "1.0.0" } });
     await mountStore("Widget");

@@ -332,6 +332,9 @@ export function isEditableTarget(t: EventTarget | null): boolean {
   // focused — their own onKeyDown owns arrows/Enter/Delete/etc. Modifier combos
   // (Ctrl+Z, …) still pass through, since callers only consult this for bare keys.
   if (t.dataset.keyboardCapture != null) return true;
+  // An open menu owns its bare keys too: letters jump to its items, and the
+  // culling shortcuts' ↑/↓ would otherwise also step the photo behind it.
+  if (t.closest('[role="menu"]')) return true;
   if (t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement)
     return true;
   if (t instanceof HTMLInputElement) {

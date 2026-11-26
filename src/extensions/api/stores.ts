@@ -461,6 +461,11 @@ export interface AppSettings {
   highBitDepth: boolean;
   liveHistogram: boolean;
   developOpenZoom: "fit" | "100";
+  /** How far in Develop's view zooms, as a scale (8 = 800%). Since 3.2.8. */
+  developMaxZoom: 2 | 4 | 8 | 16;
+  /** The zoom buttons Develop's status bar shows after Fit, as scales, in
+   *  order; ones past developMaxZoom are hidden. Since 3.2.8. */
+  developZoomStops: number[];
   /** The monitor's ICC profile the Develop view converts to (Linux); "" = none. */
   displayProfilePath: string;
 

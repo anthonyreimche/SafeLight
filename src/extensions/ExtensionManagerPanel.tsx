@@ -13,11 +13,13 @@
 //                 safelight-extension topic), shown as shelves on its home
 //                 page and as category pages picked from the rail, plus a
 //                 custom-repo importer.
-//   • Installed — installed extensions first (with update badges), then the
-//                 pre-installed built-ins.
+//                 Its filter shows every extension, only the installed ones
+//                 (the built-ins too) or only the rest; an installed card
+//                 updates, switches on and off, and opens its settings,
+//                 versions and Uninstall from its ⚙ menu.
 // Clicking a card or row opens a detail page (README + metadata). Install /
 // uninstall / search / update need the Electron bridge; the plain browser build
-// manages built-ins only.
+// lists and manages the built-ins only.
 
 import { useContext, useEffect, useRef, useState } from "react";
 import type {
@@ -56,6 +58,7 @@ import {
   loadStoreVocabulary,
   updateNote,
   useExtStoreUI,
+  type StoreOwned,
   type StoreSort,
 } from "./store-ui";
 import { categoryInfo, inCategory, OTHER } from "./store-categories";
@@ -76,35 +79,55 @@ import { keepAfterInstall } from "./release-picks";
 import { UpdateNotes } from "./ReleaseNotes";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
-import { DiscontinuedBar } from "./DiscontinuedBar";
 import { discontinuedFor, discontinuedLast, isDiscontinued } from "./discontinued";
 import {
   EXPANDED_GRID,
   ExtensionCard,
+  FailureNotes,
   NOTHING_PENDING,
   SectionLabel,
   SHELF_LIMIT,
   Shelf,
   StoreExpanded,
+  type CardManage,
 } from "./StoreCards";
+import { SegmentedControl } from "./ui-kit";
+import type { ContextMenuEntry } from "@/ui/components/ContextMenu";
 import { ShelfSkeleton } from "./StoreSkeletons";
 import { loadStoreKits, shelfKits } from "./store-kits";
 import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
-import { stageFailureNote, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
-import { callbackFailureText, useCallbackFailures } from "./guard";
-import { startFailureText, useStartFailures } from "./start-failures";
 import { getParamDescriptor } from "./param-registry";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
 import { mapLimit } from "@/project/fs";
+
+/** An installed extension, or a built-in, as Browse lists it. */
+interface OwnedEntry {
+  result: ExtensionSearchResult;
+  id: string;
+  version: string;
+  repo: string | null;
+  locked: boolean;
+  /** Absent for a built-in. */
+  manifest?: ExtensionManifest;
+}
+
+const OWNED: { value: StoreOwned; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "installed", label: "Installed" },
+  { value: "available", label: "Not installed" },
+];
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
   { id: "updated", label: "Recent" },
   { id: "name", label: "Name" },
 ];
+
+/** Fixed so the search row never reflows when the sort shows, hides or changes. */
+const SORT_WIDTH = "w-[5.5rem] shrink-0";
 
 /** How many photos in the open catalogue set one of `extensionId`'s stage params,
  *  on the whole photo or inside a mask. A running extension's params count when
@@ -170,12 +193,13 @@ export function ExtensionManagerPanel() {
   const kits = useExtStoreUI((s) => s.kits);
   const kitId = useExtStoreUI((s) => s.kit);
   const sort = useExtStoreUI((s) => s.sort);
+  const owned = useExtStoreUI((s) => s.owned);
   const updates = useExtStoreUI((s) => s.updates);
   const openDetail = useExtStoreUI((s) => s.openDetail);
   const back = useExtStoreUI((s) => s.back);
   const pins = usePins((s) => s.pins);
   const expanded = useContext(StoreExpanded);
-  // Installed and update rows: one column in the pop-up, as many as fit when
+  // Update rows: one column in the pop-up, as many as fit when
   // the window is maximized.
   const rows = expanded
     ? "grid grid-cols-[repeat(auto-fill,minmax(22rem,1fr))] gap-1.5"
@@ -196,7 +220,6 @@ export function ExtensionManagerPanel() {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [spec, setSpec] = useState("");
-  const [installedQuery, setInstalledQuery] = useState("");
   const [localBusy, setBusy] = useState<string | null>(null);
   // The spec whose review check is running. Apart from busy, which locks every control:
   // the check can wait on the network, and only its own Install button should say so.
@@ -226,7 +249,7 @@ export function ExtensionManagerPanel() {
     closeExtensions();
     openPreferences(id);
   };
-  const [section, setSection] = useState<StoreSection>(native ? "Browse" : "Installed");
+  const [section, setSection] = useState<StoreSection>("Browse");
   const searchSeq = useRef(0);
   const [reloadNonce, setReloadNonce] = useState(0);
   // Tracks which reloadNonce the last search ran for, so an explicit reload
@@ -270,8 +293,8 @@ export function ExtensionManagerPanel() {
   // If Developer Tools is disabled while the Dev tab is open, fall back.
   useEffect(() => {
     if (section === "Dev" && !devtoolsEnabled)
-      setSection(native ? "Browse" : "Installed");
-  }, [section, devtoolsEnabled, native]);
+      setSection("Browse");
+  }, [section, devtoolsEnabled]);
 
   const refresh = () => {
     native?.plugins
@@ -577,14 +600,17 @@ export function ExtensionManagerPanel() {
 
   // Installed extensions with a newer version — drives the Updates tab. Needs a
   // known repo to update from (built-ins / custom imports without a source can't
-  // be updated). One this build can't run, or one kept at an older version, is
-  // listed so the user knows, but not counted in the badge; auto-update skips
-  // both too (loader.ts).
+  // be updated). One this build can't run, one that already failed to start
+  // here, or one kept at an older version, is listed so the user knows, but not
+  // counted in the badge or Update all; auto-update skips them too (loader.ts).
   const pending = list.filter((m) => {
     const upd = updates[m.id];
     return !!upd?.hasUpdate && !!upd.latestTag && !!repoFor(m);
   });
-  const installable = pending.filter((m) => !updates[m.id]?.requiresApp && !pins[m.id]);
+  const installable = pending.filter((m) => {
+    const upd = updates[m.id]!;
+    return !upd.requiresApp && upd.failed?.version !== upd.latestTag && !pins[m.id];
+  });
 
   // Verified lookups for the grid subscribe to the trust store: on a first
   // launch the registry can land after the search results, and the filters
@@ -598,20 +624,104 @@ export function ExtensionManagerPanel() {
   const allowlisted = (r: ExtensionSearchResult) =>
     isVerifiedIn(trust, r.fullName);
 
-  // Browse offers what isn't installed, narrowed to the open category (a
-  // category the vocabulary no longer has falls back to the home page). A search
-  // also finds installed extensions, whose cards say Installed. With "Only
-  // verified extensions" on it also hides what the install gate would refuse,
-  // so the store only ever offers what can actually be installed.
+  // Every installed extension as a store result, so Browse lists and manages it
+  // beside the rest: its catalogue entry under its own name when the registry
+  // lists it, else one made from its manifest (the built-ins, custom imports).
+  const listing = new Map([...catalogList, ...(results ?? [])].map((r) => [r.fullName.toLowerCase(), r]));
+  const localResult = (key: string, name: string, description?: string): ExtensionSearchResult => ({
+    fullName: key,
+    name,
+    description: description ?? null,
+    stars: 0,
+    updatedAt: "",
+  });
+  const ownedEntries: OwnedEntry[] = [
+    ...list.map((m) => {
+      const repo = repoFor(m);
+      const listed = repo ? listing.get(repo.toLowerCase()) : undefined;
+      const result = listed
+        ? { ...listed, name: m.name, description: listed.description ?? m.description ?? null }
+        : localResult(repo ?? m.id, m.name, m.description);
+      return { result, id: m.id, version: m.version, repo, locked: false, manifest: m };
+    }),
+    ...BUILTIN_EXTENSIONS.map((b) => ({
+      result: localResult(b.id, b.name, b.description),
+      id: b.id,
+      version: b.version,
+      repo: null,
+      locked: !!b.locked,
+    })),
+  ];
+  const ownedByKey = new Map(ownedEntries.map((e) => [e.result.fullName.toLowerCase(), e]));
+  const ownedOf = (r: ExtensionSearchResult) => ownedByKey.get(r.fullName.toLowerCase());
+  const canUpdate = (e: OwnedEntry) => {
+    const upd = updates[e.id];
+    return !!e.manifest && !!e.repo && !!upd?.hasUpdate && !!upd.latestTag && !upd.requiresApp;
+  };
+  const hasUpdate = (r: ExtensionSearchResult) => {
+    const e = ownedOf(r);
+    return !!e && canUpdate(e);
+  };
+
+  const manageFor = (r: ExtensionSearchResult): CardManage | undefined => {
+    const e = ownedOf(r);
+    if (!e) return undefined;
+    const on = e.locked || enabled(e.id);
+    const removable = !!e.manifest && !e.locked;
+    const menu: ContextMenuEntry[] = [];
+    if (extSettings[e.id] && on) menu.push({ label: "Settings", onClick: () => openSettings(e.id) });
+    if (e.repo) {
+      const repo = e.repo;
+      menu.push({ label: "Change version…", onClick: () => openDetail(repo) });
+    }
+    if (removable) {
+      if (menu.length > 0) menu.push("separator");
+      menu.push({ label: "Uninstall", danger: true, disabled: busy !== null, onClick: () => void remove(e.id) });
+    }
+    return {
+      id: e.id,
+      version: e.version,
+      enabled: on,
+      locked: e.locked,
+      local: !e.repo,
+      discontinued: discontinuedOf(e.repo),
+      onUpdate: canUpdate(e) ? () => void update(e.id, e.repo!) : undefined,
+      onToggle: () => toggle(e.id, !on),
+      menu,
+      onInstallReplacement: installReplacement,
+      onUninstall: removable ? () => void remove(e.id) : undefined,
+    };
+  };
+
+  // Browse lists what its filter asks for, narrowed to the open category (a
+  // category the vocabulary no longer has falls back to the home page) and to
+  // the search: installed extensions match it here, by name and description;
+  // the rest are the registry's matches. All's home page keeps its shelves for
+  // what isn't installed, after the waiting updates. With "Only verified
+  // extensions" on, Browse also hides what the install gate would refuse, so
+  // the store only ever offers what can actually be installed. The browser
+  // build has only its built-ins to list.
+  const ownedView: StoreOwned = native ? owned : "installed";
   const openInfo = browse === "home" ? null : categoryInfo(browse, vocabulary);
   const browseKey = openInfo ? openInfo.slug : "home";
   const searched = !!query.trim();
+  const shelfView = !searched && !openInfo && ownedView !== "installed";
+  const q = query.trim().toLowerCase();
+  const ownedMatching = ownedEntries
+    .map((e) => e.result)
+    .filter((r) => !q || [r.name, r.fullName, r.description].some((t) => t?.toLowerCase().includes(q)));
   // Discontinued extensions are found by a search only, and listed last.
   const notInstalled = results?.filter((r) => !isInstalled(r) && !isDiscontinued(r)) ?? null;
-  const offered = searched ? results : notInstalled;
+  const newMatching = searched ? (results?.filter((r) => !isInstalled(r)) ?? null) : notInstalled;
+  const offered =
+    ownedView === "installed"
+      ? ownedMatching
+      : ownedView === "available" || shelfView
+        ? newMatching
+        : newMatching && [...ownedMatching, ...newMatching];
   const inView = offered && openInfo ? inCategory(offered, browseKey, vocabulary) : offered;
   const filtered = onlyVerified
-    ? (inView?.filter((r) => isInstalled(r) || allowlisted(r)) ?? null)
+    ? (inView?.filter((r) => !!ownedOf(r) || allowlisted(r)) ?? null)
     : inView;
   const hiddenUnverified = inView && filtered ? inView.length - filtered.length : 0;
   const showOther = !!notInstalled && inCategory(notInstalled, OTHER.slug, vocabulary).length > 0;
@@ -619,30 +729,33 @@ export function ExtensionManagerPanel() {
     results && openInfo ? inCategory(results.filter((r) => !isDiscontinued(r)), browseKey, vocabulary) : [];
   const everyInstalled = categoryMembers.length > 0 && categoryMembers.every(isInstalled);
 
-  // Flat, sorted list — shown when a search query or an open category narrows
-  // the browse, where ranked shelves would be redundant.
+  // Flat, sorted list — shown when a search query, an open category or the
+  // Installed filter narrows the browse, where ranked shelves would be
+  // redundant. Waiting updates come first.
+  const shownName = (r: ExtensionSearchResult) => r.name ?? r.fullName.split("/")[1] ?? r.fullName;
   const browsable = (() => {
     if (!filtered) return null;
     const sorted = [...filtered];
     if (sort === "name")
-      sorted.sort((a, b) => a.fullName.localeCompare(b.fullName));
+      sorted.sort((a, b) => shownName(a).localeCompare(shownName(b)));
     else if (sort === "updated")
       sorted.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
     else sorted.sort((a, b) => b.stars - a.stars);
-    return discontinuedLast(sorted);
+    return discontinuedLast([...sorted.filter(hasUpdate), ...sorted.filter((r) => !hasUpdate(r))]);
   })();
 
   // Discrete "shelves" (App-Store style) for the unfiltered browse: a horizontal
-  // row each for Featured (verified), New, Popular and Recently updated. Only used
-  // on the home page with no search query — a narrowed browse falls back to
-  // the flat sorted grid above. ISO date strings sort lexically, so localeCompare
-  // gives a correct newest-first order. Empty rows (e.g. no verified extensions)
-  // are dropped so the user never sees a labelled blank shelf.
-  const shelfView = !searched && !openInfo;
+  // row each for Featured (verified), New, Popular and Recently updated, after
+  // the installed extensions with an update waiting. Only used on the home page
+  // with no search query — a narrowed browse falls back to the flat sorted grid
+  // above. ISO date strings sort lexically, so localeCompare gives a correct
+  // newest-first order. Empty rows (e.g. no verified extensions) are dropped so
+  // the user never sees a labelled blank shelf.
   const shelves = (() => {
-    if (!shelfView || !filtered || filtered.length === 0) return null;
+    if (!shelfView || !filtered) return null;
     const byStars = (a: ExtensionSearchResult, b: ExtensionSearchResult) =>
       b.stars - a.stars;
+    const waiting = ownedView === "all" ? ownedEntries.filter(canUpdate).map((e) => e.result) : [];
     // Under "Only verified extensions" every row is verified, so Featured would
     // only repeat Popular; leaving it empty drops it below.
     const featured = onlyVerified
@@ -655,12 +768,14 @@ export function ExtensionManagerPanel() {
     const recent = [...filtered]
       .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
       .slice(0, SHELF_LIMIT);
-    return [
+    const all = [
+      { id: "updates", title: "Updates", items: waiting },
       { id: "featured", title: "Featured", items: featured },
       { id: "new", title: "New", items: newest },
       { id: "popular", title: "Popular", items: popular },
       { id: "updated", title: "Recently updated", items: recent },
     ].filter((s) => s.items.length > 0);
+    return all.length > 0 ? all : null;
   })();
 
   // ── Detail target resolution ───────────────────────────────────────────────
@@ -768,7 +883,6 @@ export function ExtensionManagerPanel() {
         sections={[
           ...(native ? (["Updates"] as StoreSection[]) : []),
           "Browse",
-          "Installed",
           ...(devtoolsEnabled ? (["Dev"] as StoreSection[]) : []),
         ]}
         section={section}
@@ -859,31 +973,45 @@ export function ExtensionManagerPanel() {
               )}
 
             </div>
-          ) : section === "Browse" ? (
-            native && openKit ? (
-              <KitPage
-                kit={openKit}
-                installed={installedLower}
-                busy={busy}
-                onBusy={setBusy}
-                onOpen={openDetail}
-                onDone={refresh}
-              />
-            ) : native ? (
-              <div className="flex flex-col gap-3">
-                {/* Search + sort */}
-                <div className="flex items-center gap-1.5">
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search official extensions…"
-                    aria-label="Search official extensions"
-                    spellCheck={false}
-                    className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-                  />
-                  {/* Sort only applies to a flat grid: search results here, or the
-                      category page's header. */}
-                  {!shelfView && !openInfo && (
+          ) : native && openKit ? (
+            <KitPage
+              kit={openKit}
+              installed={installedLower}
+              busy={busy}
+              onBusy={setBusy}
+              onOpen={openDetail}
+              onDone={refresh}
+            />
+          ) : (
+            <div className="flex flex-col gap-3">
+              {/* Search, filter + sort */}
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={native ? "Search official extensions…" : "Search built-in extensions…"}
+                  aria-label="Search official extensions"
+                  spellCheck={false}
+                  autoFocus
+                  className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+                />
+                {native && (
+                  <div className="shrink-0 whitespace-nowrap">
+                    <SegmentedControl
+                      size="sm"
+                      value={owned}
+                      onChange={(v) => useExtStoreUI.getState().setOwned(v as StoreOwned)}
+                      options={OWNED}
+                    />
+                  </div>
+                )}
+                {/* Sort only applies to a flat grid: search results and the
+                    installed list here, or the category page's header. It keeps
+                    its slot either way so switching views never shifts the row. */}
+                {!openInfo &&
+                  (shelfView ? (
+                    <div className={SORT_WIDTH} aria-hidden="true" />
+                  ) : (
                     <Select
                       value={sort}
                       onChange={(v) =>
@@ -891,8 +1019,10 @@ export function ExtensionManagerPanel() {
                       }
                       options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
                       title="Sort"
+                      className={SORT_WIDTH}
                     />
-                  )}
+                  ))}
+                {native && (
                   <button
                     onClick={reload}
                     disabled={searching}
@@ -901,92 +1031,98 @@ export function ExtensionManagerPanel() {
                   >
                     ↻
                   </button>
-                </div>
-
-                {openInfo && (
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h2 className="text-[13px] font-semibold text-text-primary">{openInfo.label}</h2>
-                      {openInfo.description && (
-                        <p className="mt-0.5 text-text-secondary">{openInfo.description}</p>
-                      )}
-                    </div>
-                    <Select
-                      value={sort}
-                      onChange={(v) => useExtStoreUI.getState().setSort(v as StoreSort)}
-                      options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
-                      title="Sort"
-                    />
-                  </div>
                 )}
+              </div>
 
-                {/* Result cards: ranked shelves for the unfiltered browse, a flat
-                    sorted grid once a search query or category narrows it. */}
-                {searching && browsable === null ? (
-                  <ShelfSkeleton expanded={expanded} />
-                ) : browsable && browsable.length === 0 ? (
-                  <div className="text-text-muted">
-                    {searched || !openInfo
+              {openInfo && (
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h2 className="text-[13px] font-semibold text-text-primary">{openInfo.label}</h2>
+                    {openInfo.description && (
+                      <p className="mt-0.5 text-text-secondary">{openInfo.description}</p>
+                    )}
+                  </div>
+                  <Select
+                    value={sort}
+                    onChange={(v) => useExtStoreUI.getState().setSort(v as StoreSort)}
+                    options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+                    title="Sort"
+                  />
+                </div>
+              )}
+
+              {/* Result cards: ranked shelves for the unfiltered browse, a flat
+                  sorted grid once a search query, category or filter narrows it. */}
+              {searching && browsable === null ? (
+                <ShelfSkeleton expanded={expanded} />
+              ) : shelves ? (
+                <div className="flex flex-col gap-4">
+                  {[
+                    ...shelves.filter((sh) => sh.id === "updates" || sh.id === "featured"),
+                    "kits" as const,
+                    ...shelves.filter((sh) => sh.id !== "updates" && sh.id !== "featured"),
+                  ].map((sh) =>
+                    sh === "kits" ? (
+                      <KitShelf key="kits" kits={homeKits} onOpen={(id) => useExtStoreUI.getState().openKit(id)} />
+                    ) : (
+                      <Shelf
+                        key={sh.id}
+                        title={sh.title}
+                        items={sh.items}
+                        thumbs={thumbs}
+                        busy={busy}
+                        pending={pendingSpecs}
+                        onOpen={openDetail}
+                        onInstall={install}
+                        manageFor={manageFor}
+                      />
+                    ),
+                  )}
+                </div>
+              ) : browsable && browsable.length === 0 ? (
+                <div className="text-text-muted">
+                  {ownedView === "installed"
+                    ? searched
+                      ? `No installed extensions match “${query}”${openInfo ? ` in ${openInfo.label}` : ""}.`
+                      : `No ${openInfo ? `${openInfo.label} ` : ""}extensions installed.`
+                    : searched || !openInfo
                       ? `${searched ? `No extensions found for “${query}”` : "No new extensions found"}${
                           openInfo ? ` in ${openInfo.label}` : ""
                         } (topic: ${topic}).`
-                      : everyInstalled
+                      : everyInstalled && ownedView === "available"
                         ? `You have every ${openInfo.label} extension installed.`
-                        : categoryMembers.length === 0
-                          ? `No ${openInfo.label} extensions yet.`
-                          : null}
-                  </div>
-                ) : shelves ? (
-                  <div className="flex flex-col gap-4">
-                    {[
-                      ...shelves.filter((sh) => sh.id === "featured"),
-                      "kits" as const,
-                      ...shelves.filter((sh) => sh.id !== "featured"),
-                    ].map((sh) =>
-                      sh === "kits" ? (
-                        <KitShelf key="kits" kits={homeKits} onOpen={(id) => useExtStoreUI.getState().openKit(id)} />
-                      ) : (
-                        <Shelf
-                          key={sh.id}
-                          title={sh.title}
-                          items={sh.items}
-                          thumbs={thumbs}
-                          busy={busy}
-                          pending={pendingSpecs}
-                          onOpen={openDetail}
-                          onInstall={install}
-                        />
-                      ),
-                    )}
-                  </div>
-                ) : (
-                  <div className={expanded ? EXPANDED_GRID : "grid grid-cols-4 gap-2"}>
-                    {browsable?.map((r, i) => (
-                      <ExtensionCard
-                        key={r.fullName}
-                        index={i}
-                        result={r}
-                        thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
-                        installing={busy === r.fullName}
-                        checking={pendingSpecs.has(r.fullName)}
-                        installed={isInstalled(r)}
-                        disabled={busy !== null}
-                        onOpen={() => openDetail(r.fullName)}
-                        onInstall={() => void install(r.fullName, r)}
-                      />
-                    ))}
-                  </div>
-                )}
+                        : `No ${openInfo.label} extensions yet.`}
+                </div>
+              ) : (
+                <div className={expanded ? EXPANDED_GRID : "grid grid-cols-4 gap-2"}>
+                  {browsable?.map((r, i) => (
+                    <ExtensionCard
+                      key={r.fullName}
+                      index={i}
+                      result={r}
+                      thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
+                      installing={busy === r.fullName}
+                      checking={pendingSpecs.has(r.fullName)}
+                      installed={isInstalled(r)}
+                      manage={manageFor(r)}
+                      disabled={busy !== null}
+                      onOpen={() => openDetail(ownedOf(r)?.repo ?? r.fullName)}
+                      onInstall={() => void install(r.fullName, r)}
+                    />
+                  ))}
+                </div>
+              )}
 
-                {hiddenUnverified > 0 && (
-                  <div className="text-text-muted">
-                    {`${hiddenUnverified} unverified ${
-                      hiddenUnverified === 1 ? "extension" : "extensions"
-                    } hidden — “Only verified extensions” is on (Preferences ▸ Extensions).`}
-                  </div>
-                )}
+              {hiddenUnverified > 0 && (
+                <div className="text-text-muted">
+                  {`${hiddenUnverified} unverified ${
+                    hiddenUnverified === 1 ? "extension" : "extensions"
+                  } hidden — “Only verified extensions” is on (Preferences ▸ Extensions).`}
+                </div>
+              )}
 
-                {/* Import custom extension */}
+              {native ? (
+                /* Import custom extension */
                 <div className="border-t border-border-subtle pt-3">
                   <SectionLabel>Import custom extension</SectionLabel>
                   <div className="mt-1 flex gap-1.5">
@@ -1011,124 +1147,12 @@ export function ExtensionManagerPanel() {
                     </button>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="text-text-muted">
-                Installing extensions requires the desktop app. Built-in extensions
-                can still be managed under Installed.
-              </div>
-            )
-          ) : (
-            // ── Installed: external installs first, then the built-ins ──
-            (() => {
-              const iq = installedQuery.trim().toLowerCase();
-              const match = (name: string, desc?: string) =>
-                !iq ||
-                name.toLowerCase().includes(iq) ||
-                (desc ?? "").toLowerCase().includes(iq);
-              const byName = (a: { name: string }, b: { name: string }) =>
-                a.name.localeCompare(b.name);
-              const installed = list
-                .filter((m) => match(m.name, m.description))
-                .sort(byName);
-              const builtins = BUILTIN_EXTENSIONS.filter((b) =>
-                match(b.name, b.description),
-              ).sort(byName);
-              return (
-                <div className="flex flex-col gap-3">
-                  <input
-                    value={installedQuery}
-                    onChange={(e) => setInstalledQuery(e.target.value)}
-                    placeholder="Filter installed extensions…"
-                    aria-label="Filter installed extensions"
-                    spellCheck={false}
-                    className="rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-                  />
-
-                  {native && (
-                    <div>
-                      <SectionLabel>Installed</SectionLabel>
-                      {list.length === 0 ? (
-                        <div className="mt-1 text-text-muted">
-                          No extensions installed. Extensions register panels,
-                          themes and layouts that appear in the View menu and
-                          Preferences.
-                        </div>
-                      ) : installed.length === 0 ? (
-                        <div className="mt-1 text-text-muted">No matches.</div>
-                      ) : (
-                        <div className={`mt-1 ${rows}`}>
-                          {installed.map((m) => {
-                            const upd = updates[m.id];
-                            const repo = repoFor(m);
-                            const canUpdate =
-                              !!upd?.hasUpdate && !!upd.latestTag && !!repo && !upd.requiresApp;
-                            const discontinued = discontinuedOf(repo);
-                            return (
-                              <div key={m.id} className="flex flex-col gap-0.5">
-                                <ExtensionRow
-                                  id={m.id}
-                                  name={m.name}
-                                  version={m.version}
-                                  repo={repo}
-                                  description={m.description}
-                                  enabled={enabled(m.id)}
-                                  busy={busy !== null}
-                                  hasSettings={!!extSettings[m.id]}
-                                  onOpen={() => openDetail(repo ?? m.id)}
-                                  onUpdate={
-                                    canUpdate
-                                      ? () => void update(m.id, repo!)
-                                      : undefined
-                                  }
-                                  onSettings={() => openSettings(m.id)}
-                                  onToggle={() => toggle(m.id, !enabled(m.id))}
-                                  onUninstall={discontinued ? undefined : () => void remove(m.id)}
-                                />
-                                {discontinued && (
-                                  <DiscontinuedBar
-                                    discontinued={discontinued}
-                                    busy={busy !== null}
-                                    onInstallReplacement={installReplacement}
-                                    onUninstall={() => void remove(m.id)}
-                                  />
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div>
-                    <SectionLabel>Built-in</SectionLabel>
-                    {builtins.length === 0 ? (
-                      <div className="mt-1 text-text-muted">No matches.</div>
-                    ) : (
-                      <div className={`mt-1 ${rows}`}>
-                        {builtins.map((b) => (
-                          <ExtensionRow
-                            key={b.id}
-                            id={b.id}
-                            name={b.name}
-                            version={b.version}
-                            description={b.description}
-                            enabled={b.locked || enabled(b.id)}
-                            locked={b.locked}
-                            busy={busy !== null}
-                            hasSettings={!!extSettings[b.id]}
-                            onOpen={() => openDetail(b.id)}
-                            onSettings={() => openSettings(b.id)}
-                            onToggle={() => toggle(b.id, !enabled(b.id))}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
+              ) : (
+                <div className="text-text-muted">
+                  Installing extensions requires the desktop app.
                 </div>
-              );
-            })()
+              )}
+            </div>
           )}
         </div>
         {statusFooter}
@@ -1176,9 +1200,6 @@ function ExtensionRow({
   const vstatus = useVerificationStatus(repo, version);
   const reviewed = useReviewedFor(repo);
   const banned = useBannedReason(repo);
-  const stageFailures = useStageFailuresOf(id);
-  const callbackFailure = useCallbackFailures((s) => s[id]);
-  const startFailure = useStartFailures((s) => s[id]);
   return (
     <div
       className={`flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5 ${
@@ -1209,21 +1230,7 @@ function ExtensionRow({
         {description && (
           <div className="truncate text-text-muted">{description}</div>
         )}
-        {startFailure && (
-          <div className="whitespace-normal break-words text-danger" title={startFailure.message}>
-            {startFailureText(startFailure)}
-          </div>
-        )}
-        {stageFailures.map((f) => (
-          <div key={f.stageId} className="truncate text-danger" title={f.log}>
-            {stageFailureNote(f)}
-          </div>
-        ))}
-        {callbackFailure && (
-          <div className="truncate text-danger" title={callbackFailure.error}>
-            {callbackFailureText(callbackFailure)}
-          </div>
-        )}
+        <FailureNotes id={id} />
       </button>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
         {onUpdate && (
