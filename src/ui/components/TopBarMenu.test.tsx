@@ -169,6 +169,39 @@ describe("TopBarMenu", () => {
     expect(document.activeElement).toBe(item("Histogram"));
   });
 
+  it("jumps to the item starting with a typed letter, fresh once typing pauses", async () => {
+    const user = userEvent.setup();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    render(<Menu />);
+    await user.click(trigger());
+
+    await user.keyboard("s");
+    expect(document.activeElement).toBe(item("Snapshots"));
+    clock.mockReturnValue(2_000);
+    await user.keyboard("p");
+    expect(document.activeElement).toBe(item("Presets"));
+    clock.mockRestore();
+  });
+
+  it("narrows to a typed prefix", async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    await user.click(trigger());
+
+    await user.keyboard("pre");
+    expect(document.activeElement).toBe(item("Presets"));
+  });
+
+  it("matches the label, not its tick", async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    await user.click(trigger());
+    await user.keyboard("{End}");
+
+    await user.keyboard("h");
+    expect(document.activeElement).toBe(item("Histogram"));
+  });
+
   it("opens from the keyboard with ArrowDown on the trigger", async () => {
     const user = userEvent.setup();
     render(<Menu />);

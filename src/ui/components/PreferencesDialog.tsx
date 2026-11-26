@@ -234,6 +234,7 @@ export function PreferencesDialog() {
             placeholder="Search settings…"
             aria-label="Search settings"
             spellCheck={false}
+            autoFocus
             className="w-48 rounded bg-surface-1 py-0.5 pl-7 pr-6 text-[11px] text-text-primary outline-none transition-[width] placeholder:text-text-muted focus:w-64 focus:bg-surface-3"
           />
           {query && (

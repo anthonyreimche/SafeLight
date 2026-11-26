@@ -138,7 +138,7 @@ function quarantineFilmStage(bridge: RenderBridge): string[] {
   return errors;
 }
 
-async function installedRows() {
+async function installedCards() {
   const user = userEvent.setup();
   render(<ExtensionManagerPanel />);
   await user.click(screen.getByRole("button", { name: "Installed" }));
@@ -217,7 +217,7 @@ describe("smoke: broken extensions at launch", () => {
     const errors = quarantineFilmStage(bridge);
 
     expect(errors).toEqual([expect.stringContaining('Bad Film: stage "acme.film.grain" failed to compile')]);
-    const row = await installedRows();
+    const row = await installedCards();
     expect(within(row("Bad Film")).getByText(/failed to compile and is off: ERROR: 0:812/)).toBeTruthy();
     expect(bridge.availability).toBe("ready");
     act(() => bridge.dispose());
@@ -225,7 +225,7 @@ describe("smoke: broken extensions at launch", () => {
 
   it("says on their rows which extensions failed to start, and why", async () => {
     await boot();
-    const row = await installedRows();
+    const row = await installedCards();
 
     expect(within(row("Thrower")).getByText(/activate blew up/)).toBeTruthy();
     expect(within(row("Hanger")).getByText(/took too long to start/)).toBeTruthy();

@@ -14,7 +14,7 @@
 // that follows needs the app:// protocol and is out of jsdom's reach.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
@@ -55,6 +55,7 @@ let confirmSpy: MockInstance<Window["confirm"]>;
 
 beforeEach(() => {
   localStorage.clear();
+  useExtStoreUI.setState({ owned: "all", sort: "popular", browse: "home", kit: null, view: "list", selected: null });
   // Bridge present ⇒ the panel opens on Browse, where the custom-repo importer
   // lives. No trustList ⇒ nothing is verified, so the import takes the
   // unreviewed path under test.
@@ -89,6 +90,10 @@ const mountStore = () =>
       <ConfirmDialogHost />
     </>,
   );
+
+/** The store card or row an extension's name is shown on. */
+const cardOf = (name: string) =>
+  screen.getByText(name, { selector: "span" }).closest("div.border, div.rounded") as HTMLElement;
 
 const importRepo = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.type(
@@ -547,7 +552,7 @@ describe("ExtensionManagerPanel categories", () => {
     const user = userEvent.setup();
     mountStore();
     await screen.findAllByText("warp");
-    expect(screen.queryByRole("button", { name: "All" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Detail and repair" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Show categories" }));
     screen.getByRole("button", { name: "Detail and repair" });
     screen.getByRole("button", { name: "Other" });
@@ -581,12 +586,14 @@ describe("ExtensionManagerPanel categories", () => {
     await screen.findByText("No Tone extensions yet.");
   });
 
-  it("says when every extension in a category is installed", async () => {
+  it("lists a category's installed extensions too, and says when Not installed leaves none", async () => {
     localStorage.setItem("sl_ext_sources", JSON.stringify({ "acme.grade": "acme/grade" }));
     list = async () => [{ id: "acme.grade", name: "Grade", version: "1.0.0", main: "index.js" }];
     const user = userEvent.setup();
     mountStore();
     await openCategory(user, "Colour");
+    await screen.findByRole("button", { name: /Grade v1\.0\.0/ });
+    await user.click(screen.getByRole("button", { name: "Not installed" }));
     await screen.findByText("You have every Colour extension installed.");
   });
 
@@ -616,8 +623,8 @@ describe("ExtensionManagerPanel categories", () => {
   });
 });
 
-// A Browse search finds installed extensions too, marked Installed in place of
-// the Install button; the unsearched home page still offers only new ones.
+// A Browse search finds installed extensions too, with their controls in place
+// of the Install button; the unsearched home page still offers only new ones.
 describe("ExtensionManagerPanel search includes installed", () => {
   const r = (fullName: string, over: Partial<ExtensionSearchResult> = {}): ExtensionSearchResult => ({
     fullName,
@@ -662,20 +669,20 @@ describe("ExtensionManagerPanel search includes installed", () => {
 
   const cardOf = (name: string) => screen.getByText(name).closest("div.border") as HTMLElement;
 
-  it("shows installed matches beside new ones, marked Installed", async () => {
+  it("shows installed matches beside new ones, with their controls", async () => {
     const user = userEvent.setup();
     mountStore();
     await screen.findAllByText("warp");
     await user.type(screen.getByLabelText("Search official extensions"), "acme");
-    await waitFor(() => within(cardOf("grade")).getByText("Installed"));
-    expect(within(cardOf("grade")).queryByRole("button", { name: "Install" })).toBeNull();
+    await waitFor(() => within(cardOf("Grade")).getByRole("switch", { name: "Enable Grade" }));
+    expect(within(cardOf("Grade")).queryByRole("button", { name: "Install" })).toBeNull();
     within(cardOf("warp")).getByRole("button", { name: "Install" });
   });
 
   it("keeps installed extensions off the unsearched home page", async () => {
     mountStore();
     await screen.findAllByText("warp");
-    expect(screen.queryByText("grade")).toBeNull();
+    expect(screen.queryByText("Grade")).toBeNull();
   });
 
   it("finds an installed extension when it's the only match", async () => {
@@ -683,8 +690,8 @@ describe("ExtensionManagerPanel search includes installed", () => {
     mountStore();
     await screen.findAllByText("warp");
     await user.type(screen.getByLabelText("Search official extensions"), "grade");
-    await screen.findByText("grade");
-    within(cardOf("grade")).getByText("Installed");
+    await screen.findByText("Grade");
+    within(cardOf("Grade")).getByRole("switch", { name: "Enable Grade" });
   });
 
   it("shows an installed unverified match while Only verified is on", async () => {
@@ -693,8 +700,8 @@ describe("ExtensionManagerPanel search includes installed", () => {
       const user = userEvent.setup();
       mountStore();
       await user.type(screen.getByLabelText("Search official extensions"), "other");
-      await screen.findByText("unverified-installed");
-      within(cardOf("unverified-installed")).getByText("Installed");
+      await screen.findByText("UV");
+      within(cardOf("UV")).getByRole("switch", { name: "Enable UV" });
     } finally {
       useSettings.setState({ onlyVerifiedExtensions: false });
     }
@@ -805,8 +812,8 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     await screen.findAllByText("denoise");
     await user.type(screen.getByLabelText("Search official extensions"), "map");
     await waitFor(() => expect(screen.queryByText("denoise")).toBeNull());
-    await user.click(screen.getByRole("button", { name: "Installed" }));
-    await user.click(await screen.findByRole("button", { name: /Warp v1\.0\.0/ }));
+    act(() => useExtStoreUI.getState().openDetail("acme/warp"));
+    await screen.findByRole("button", { name: "← Back" });
     screen.getByText("Processing");
     screen.getByRole("button", { name: "Detail and repair" });
     screen.getByText("Works with");
@@ -817,8 +824,8 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     const user = userEvent.setup();
     mountStore();
     await screen.findAllByText("denoise");
-    await user.click(screen.getByRole("button", { name: "Installed" }));
-    await user.click(await screen.findByRole("button", { name: /Warp v1\.0\.0/ }));
+    act(() => useExtStoreUI.getState().openDetail("acme/warp"));
+    await screen.findByRole("button", { name: "← Back" });
     await user.click(screen.getByRole("button", { name: "Detail and repair" }));
     expect(screen.queryByRole("button", { name: "← Back" })).toBeNull();
     screen.getByRole("heading", { name: "Detail and repair" });
@@ -942,33 +949,167 @@ describe("ExtensionManagerPanel callback failures", () => {
   });
 });
 
-describe("ExtensionManagerPanel Installed order", () => {
-  const manifest = (id: string, name: string): ExtensionManifest => ({ id, name, version: "1.0.0", main: "index.js" });
+describe("ExtensionManagerPanel search focus", () => {
+  it("opens with the Browse search focused, so typing searches at once", () => {
+    mountStore();
+    expect(document.activeElement).toBe(screen.getByLabelText("Search official extensions"));
+  });
+});
+
+// #308: Browse is the one list. Its filter shows everything, only what's
+// installed, or only what isn't; installed cards update, switch on and off,
+// open their settings and versions, and uninstall in place.
+describe("ExtensionManagerPanel Browse filters", () => {
+  const manifest = (id: string, name: string, repository: string): ExtensionManifest => ({
+    id,
+    name,
+    version: "1.0.0",
+    main: "index.js",
+    repository,
+  });
+  const r = (fullName: string, categories: string[]): ExtensionSearchResult => ({
+    fullName,
+    description: null,
+    stars: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    source: "registry",
+    categories,
+  });
+  const catalog = [
+    r("acme/zones", ["tone"]),
+    r("acme/aperture", ["theme"]),
+    r("acme/grain", ["look"]),
+    r("acme/fresh", ["tone"]),
+  ];
 
   beforeEach(() => {
+    useExtStoreUI.setState({
+      updates: {},
+      browse: "home",
+      owned: "all",
+      sort: "name",
+      vocabulary: FALLBACK_VOCABULARY,
+      view: "list",
+      selected: null,
+      kit: null,
+      kits: null,
+    });
+    usePins.setState({ pins: {} });
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [
-          manifest("acme.zones", "Zones"),
-          manifest("acme.aperture", "aperture"),
-          manifest("acme.grain", "Grain"),
+          manifest("acme.zones", "Zones", "acme/zones"),
+          manifest("acme.aperture", "aperture", "acme/aperture"),
+          manifest("acme.grain", "Grain", "acme/grain"),
         ],
+        search: async (q: string) => (q ? catalog.filter((x) => x.fullName.includes(q)) : catalog),
+        vocabulary: async () => FALLBACK_VOCABULARY,
+        remoteManifest: async (repo: string) => ({ version: repo === "acme/zones" ? "2.0.0" : "1.0.0" }),
       },
     });
   });
 
-  it("lists installed extensions by name, ignoring case", async () => {
+  const cardNames = () =>
+    screen
+      .getAllByRole("button", { name: / v1\.0\.0/ })
+      .map((b) => b.querySelector(".font-medium")?.textContent);
+
+  it("has no Installed tab; Browse shows All by default", async () => {
+    mountStore();
+    const rail = screen.getByRole("navigation", { name: "Extensions" });
+    expect(within(rail).queryByRole("button", { name: "Installed" })).toBeNull();
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    screen.getByRole("button", { name: "Not installed" });
+    await screen.findAllByText("fresh");
+  });
+
+  it("lists what's installed, the built-ins too, with updates first", async () => {
     const user = userEvent.setup();
     mountStore();
     await user.click(screen.getByRole("button", { name: "Installed" }));
-    await screen.findByRole("button", { name: /Zones v1\.0\.0/ });
+    await waitFor(() => within(cardOf("Zones")).getByRole("button", { name: "Update" }));
+    expect(cardNames()).toEqual(["Zones", "aperture", "Grain", "Safelight Core"]);
+    expect(screen.queryByText("fresh")).toBeNull();
+  });
 
-    const rows = screen.getAllByRole("button", { name: /(Zones|aperture|Grain) v1\.0\.0/ });
-    expect(rows.map((b) => /Zones|aperture|Grain/.exec(b.textContent ?? "")?.[0])).toEqual([
-      "aperture",
-      "Grain",
-      "Zones",
-    ]);
+  it("narrows the installed list with the search box", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    await user.type(screen.getByLabelText("Search official extensions"), "gra");
+    await waitFor(() => expect(cardNames()).toEqual(["Grain"]));
+  });
+
+  it("shows only what isn't installed under Not installed, even for a search", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Not installed" }));
+    await user.type(screen.getByLabelText("Search official extensions"), "acme");
+    await screen.findByText("fresh");
+    expect(screen.queryByRole("button", { name: /Grain v1\.0\.0/ })).toBeNull();
+  });
+
+  it("puts installed and new extensions in one category page, updates first", async () => {
+    mountStore();
+    act(() => useExtStoreUI.getState().openCategory("tone"));
+    await waitFor(() => within(cardOf("Zones")).getByRole("button", { name: "Update" }));
+    await screen.findByText("fresh");
+    const cards = screen.getAllByRole("button", { name: /^(Zones|fresh)/ }).map((b) => b.textContent);
+    expect(cards[0]).toMatch(/^Zones/);
+  });
+
+  it("starts the home page with the updates that are waiting", async () => {
+    mountStore();
+    const label = await screen.findByText("Updates", { selector: "div.uppercase" });
+    within(label.parentElement!).getByRole("button", { name: /Zones v1\.0\.0/ });
+    const labels = screen.getAllByText(/^(Updates|Popular)$/, { selector: "div.uppercase" });
+    expect(labels.map((l) => l.textContent)).toEqual(["Updates", "Popular"]);
+  });
+
+  it("updates, switches off and uninstalls from the card", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    await user.click(await within(cardOf("Zones")).findByRole("button", { name: "Update" }));
+    await waitFor(() => expect(installBridge).toHaveBeenCalledWith("acme/zones", "2.0.0"));
+
+    within(cardOf("Grain")).getByRole("switch", { name: "Enable Grain" });
+    await user.click(within(cardOf("Grain")).getByRole("button", { name: "Grain options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Uninstall" }));
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  });
+
+  it("opens the extension's page to change its version", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    await user.click(await within(cardOf("Grain")).findByRole("button", { name: "Grain options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Change version…" }));
+    expect(useExtStoreUI.getState().selected).toBe("acme/grain");
+  });
+
+  it("opens the same menu on a right-click", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    await user.pointer({ keys: "[MouseRight]", target: await screen.findByRole("button", { name: /Grain v1\.0\.0/ }) });
+    screen.getByRole("menuitem", { name: "Uninstall" });
+  });
+});
+
+// The browser build has no store, but its built-ins are still managed under Browse.
+describe("ExtensionManagerPanel without the desktop app", () => {
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", undefined);
+    useExtStoreUI.setState({ browse: "home", owned: "all", view: "list", selected: null });
+  });
+
+  it("lists the built-ins under Browse", () => {
+    mountStore();
+    screen.getByText("Safelight Core");
+    expect(screen.queryByRole("button", { name: "Installed" })).toBeNull();
   });
 });
 
@@ -1061,6 +1202,10 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     await user.click(screen.getByRole("button", { name: "Installed" }));
     return screen.findByRole("switch", { name: "Enable Grain" });
   };
+  const uninstallFromMenu = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("button", { name: "Grain options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Uninstall" }));
+  };
 
   it("asks before disabling, with the count of photos that use it", async () => {
     useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
@@ -1117,7 +1262,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     installMemoryStorage(uses("a", 0.5));
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     within(ask).getByText("1 photo uses Grain. It'll render and export without it until it's installed again.");
@@ -1125,7 +1270,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     await user.click(within(ask).getByRole("button", { name: "Cancel" }));
     expect(uninstall).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Uninstall" }));
     await waitFor(() => expect(uninstall).toHaveBeenCalledWith(installed.id));
   });
@@ -1143,7 +1288,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     });
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog");
     within(ask).getByText("2 photos use Grain. They'll render and export without it until it's installed again.");
@@ -1170,7 +1315,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     failReads((id) => id === "b");
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     within(ask).getByText("1 photo uses Grain. It'll render and export without it until it's installed again.");
@@ -1186,7 +1331,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     installMemoryStorage(uses("c", 0));
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     within(ask).getByText("Its files are deleted from this computer. You can install it again from the open source extension library.");
@@ -1203,7 +1348,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     failReads(() => true);
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     await user.click(within(ask).getByRole("button", { name: "Uninstall" }));
@@ -1230,7 +1375,7 @@ describe("ExtensionManagerPanel photos that use an extension", () => {
     );
     const user = userEvent.setup();
     await openInstalled(user);
-    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await uninstallFromMenu(user);
 
     const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
     within(ask).getByText("20 photos use Grain. They'll render and export without it until it's installed again.");

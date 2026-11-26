@@ -12,6 +12,7 @@ import { getSettings } from "@/state/settings-store";
 import { useRegistry } from "../registry";
 import {
   allowsBottom,
+  allowsModule,
   DEFAULT_BOTTOM,
   MAX_BOTTOM,
   MAX_RAIL,
@@ -65,6 +66,7 @@ export function toggleDockPanel(id: string, at?: DockPanelPlacement): void {
     closeDockPanel(id);
     return;
   }
+  if (!openableHere(id)) return;
   // A closed panel with a default dock in the current module reopens there —
   // appended to the first rail on its side, or in a fresh rail — instead of
   // floating, so extension togglePanel calls land panels where they belong.
@@ -88,6 +90,12 @@ export function toggleDockPanel(id: string, at?: DockPanelPlacement): void {
     },
     zOrder: [...s.zOrder, id],
   });
+}
+
+/** Whether the module showing allows panel `id` (its `modules` list). */
+function openableHere(id: string): boolean {
+  const { module } = useDockStore.getState();
+  return !module || allowsModule(useRegistry.getState().panels[id], module);
 }
 
 /** An extension's placement, checked and its size clamped into the rail's
@@ -117,6 +125,7 @@ export function toggleDockPanelFloating(id: string): void {
     closeDockPanel(id);
     return;
   }
+  if (!openableHere(id)) return;
   const n = Object.values(s.floating).filter((f) => f.centered).length;
   commit({
     floating: {
@@ -170,7 +179,7 @@ export function reopenClosedDockPanel(): string | null {
     const c = rest[i];
     if (c.module !== module) continue;
     rest.splice(i, 1);
-    if (!panels[c.id] || open.includes(c.id)) continue;
+    if (!panels[c.id] || open.includes(c.id) || !allowsModule(panels[c.id], c.module)) continue;
     useDockStore.setState({ closed: rest });
     restore(c);
     return c.id;

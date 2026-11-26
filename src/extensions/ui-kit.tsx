@@ -210,6 +210,7 @@ export function SegmentedControl({ value, onChange, options, size = "md" }: Segm
           key={o.value}
           type="button"
           title={o.title}
+          aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
           className={`flex-1 ${pad} ${i > 0 ? "border-l border-border" : ""} ${
             value === o.value

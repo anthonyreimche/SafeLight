@@ -125,6 +125,13 @@ export function SliderField({
   );
 }
 
+const optionCls = (on: boolean) =>
+  `rounded px-2 py-1 text-[11px] ${
+    on
+      ? "bg-slider-fill text-on-accent"
+      : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+  }`;
+
 export function OptionRow<T extends string | number>({
   value,
   options,
@@ -141,15 +148,43 @@ export function OptionRow<T extends string | number>({
           key={String(o.value)}
           onClick={() => onChange(o.value)}
           aria-pressed={o.value === value}
-          className={`rounded px-2 py-1 text-[11px] ${
-            o.value === value
-              ? "bg-slider-fill text-on-accent"
-              : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-          }`}
+          className={optionCls(o.value === value)}
         >
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** OptionRow where any number of the options can be on: each click turns one
+ *  on or off. A disabled option shows its `title` as the reason. */
+export function MultiOptionRow<T extends string | number>({
+  values,
+  options,
+  onChange,
+}: {
+  values: readonly T[];
+  options: { value: T; label: string; disabled?: boolean; title?: string }[];
+  onChange: (v: T[]) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((o) => {
+        const on = values.includes(o.value);
+        return (
+          <button
+            key={String(o.value)}
+            onClick={() => onChange(on ? values.filter((v) => v !== o.value) : [...values, o.value])}
+            aria-pressed={on}
+            disabled={o.disabled}
+            title={o.title}
+            className={`${optionCls(on)} disabled:cursor-default disabled:opacity-45`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

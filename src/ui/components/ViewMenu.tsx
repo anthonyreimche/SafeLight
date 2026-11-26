@@ -3,12 +3,13 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// View menu: toggle any registered panel and switch themes. Panels open as
-// floating windows centred over the workspace (drag one into a rail to dock
-// it). Everything listed here comes from the extension registry.
+// View menu: toggle the registered panels the module showing allows, and
+// switch themes. Panels open as floating windows centred over the workspace
+// (drag one into a rail to dock it). Everything listed here comes from the
+// extension registry.
 
 import { panelTitle, useRegistry } from "@/extensions/registry";
-import { toggleDockPanelFloating, useDockStore } from "@/extensions/dock";
+import { allowsModule, toggleDockPanelFloating, useDockStore } from "@/extensions/dock";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import { MenuItem, MenuLabel, TopBarMenu } from "./TopBarMenu";
 
@@ -16,9 +17,11 @@ export function ViewMenu() {
   const panels = useRegistry((s) => s.panels);
   const themes = useRegistry((s) => s.themes);
   const openPanels = useDockStore((s) => s.open);
+  const module = useDockStore((s) => s.module);
   const activeTheme = useThemeStore((s) => s.activeId);
 
   const panelList = Object.values(panels)
+    .filter((p) => !module || allowsModule(p, module))
     .map((p) => ({ id: p.id, title: panelTitle(panels, p.id) }))
     .sort((a, b) => a.title.localeCompare(b.title));
   const themeList = Object.values(themes).sort((a, b) =>

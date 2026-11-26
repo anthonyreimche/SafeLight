@@ -308,6 +308,27 @@ function knownOwnsBag(extensionId: string, c: PanelContribution): PanelContribut
   return keys;
 }
 
+/** `modules` with the entries that aren't strings left out, with a warning. A
+ *  list that isn't one, or names no module, is ignored: the panel is allowed
+ *  everywhere rather than shut out of every module. */
+function knownModules(extensionId: string, c: PanelContribution): PanelContribution["modules"] {
+  const modules: unknown = c.modules;
+  if (modules === undefined) return undefined;
+  if (!Array.isArray(modules)) {
+    console.warn(`[extensions] ${extensionId}: panel "${c.id}" modules isn't a list of module ids; ignored`);
+    return undefined;
+  }
+  const ids = modules.filter((m): m is string => typeof m === "string");
+  if (ids.length < modules.length) {
+    console.warn(`[extensions] ${extensionId}: panel "${c.id}" modules holds entries that aren't module ids; ignored`);
+  }
+  if (ids.length === 0) {
+    console.warn(`[extensions] ${extensionId}: panel "${c.id}" modules names no module; the panel is allowed in every module`);
+    return undefined;
+  }
+  return ids;
+}
+
 /** What is wrong with a top-bar button, or null. Its icon is drawn as a mask
  *  from a data URL, so only inline svg markup is taken: never a URL to fetch. */
 function topBarButtonProblem(c: TopBarButtonContribution): string | null {
@@ -363,7 +384,14 @@ const KINDS: { [K in IdKind]: KindSpec<K> } = {
   panels: {
     call: "registerPanel",
     vet: (extensionId, c, claim) =>
-      claim() ? { ...c, owns: knownOwns(extensionId, c), ownsBag: knownOwnsBag(extensionId, c) } : null,
+      claim()
+        ? {
+            ...c,
+            owns: knownOwns(extensionId, c),
+            ownsBag: knownOwnsBag(extensionId, c),
+            modules: knownModules(extensionId, c),
+          }
+        : null,
   },
   themes: {
     call: "registerTheme",

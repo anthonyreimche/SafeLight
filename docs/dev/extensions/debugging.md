@@ -7,10 +7,10 @@
 ## Install it
 
 1. Open the Extensions window (the puzzle button in the top bar, or **Ctrl+Shift+X**).
-2. In **Browse**, find **Developer Tools** and install it. Under **Installed**, check it's switched on.
+2. In **Browse**, find **Developer Tools** and install it. Check its card is switched on.
 3. Open its panel from **View ▸ Developer Tools** or with **Ctrl+Alt+I**. It docks like any panel and can be popped out into its own window (the ⧉ button).
 
-Until Safelight 3.2.0 it was built in. If you're on an older version, switch it on under **Installed** instead.
+Until Safelight 3.2.0 it was built in. If you're on an older version, switch it on in **Browse**, with its filter on **Installed**, instead.
 
 ![The Pipeline tab: the Faded Film stage listed in display-adjust, between the masks' display values and the Effects stages](../images/pipeline-tab.png)
 
@@ -48,7 +48,7 @@ Network access works as for an installed extension: `permissions.network` origin
 
 ## When your stage doesn't show
 
-- **A GLSL error.** The stage is left out of the image and the rest of the photo still renders. The **Console** and **Issues** tabs show `[render-worker] <name>: stage "…" failed to compile and is off until it changes`, with the compiler's message. For an installed extension, its row under **Extensions ▸ Installed** says so too. Fix the code and reload.
+- **A GLSL error.** The stage is left out of the image and the rest of the photo still renders. The **Console** and **Issues** tabs show `[render-worker] <name>: stage "…" failed to compile and is off until it changes`, with the compiler's message. For an installed extension, its card under **Extensions ▸ Browse** says so too. Fix the code and reload.
 
   ![The Console tab with the error: [render-worker] Faded Film: stage "com.example.faded-film.stage" failed to compile and is off until it changes (ERROR: 0:2139: 'filmHashTypo' : no matching overloaded function found)](../images/stage-error.png)
 - **The graphics driver gives up on it.** Some shaders compile on one graphics backend and take the driver down on another: Direct3D 11 on Windows can lose the graphics context over large local arrays indexed in loops, with no compiler message at all. Safelight then turns the stage off and names it: the extension's row says it took the graphics driver down, and the next start draws without it instead of crashing again. Test on Windows if you can. Keep per-pixel code small: work out anything that depends only on your settings (a spline's tangents, a lookup table) in your panel or your stage's values, not in every pixel. Turn the extension off and on to try a fix; a new version of the stage is tried by itself.

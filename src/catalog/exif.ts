@@ -105,8 +105,11 @@ const readHead = async (blob: Blob): Promise<ArrayBuffer> =>
   (blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob).arrayBuffer();
 
 /** The file's EXIF TIFF structure and where in `view` it starts. */
-async function locateTiff(blob: Blob): Promise<{ view: DataView; base: number } | null> {
-  const head = await readHead(blob);
+async function locateTiff(
+  blob: Blob,
+  head?: ArrayBuffer,
+): Promise<{ view: DataView; base: number } | null> {
+  head ??= await readHead(blob);
   if (isHeifHead(new Uint8Array(head))) {
     const tiff = await readHeifExif(blob);
     return tiff ? { view: new DataView(tiff.buffer), base: 0 } : null;
@@ -118,7 +121,10 @@ async function locateTiff(blob: Blob): Promise<{ view: DataView; base: number } 
 
 export async function parseExif(blob: Blob): Promise<ExifData> {
   try {
-    const tiff = await locateTiff(blob);
+    const head = await readHead(blob);
+    const view = new DataView(head);
+    if (isCr3Head(view)) return parseCr3(view) ?? {};
+    const tiff = await locateTiff(blob, head);
     return tiff ? parseTiff(tiff.view, tiff.base) : {};
   } catch {
     return {};
@@ -477,90 +483,10 @@ function parseTiff(view: DataView, base: number): ExifData {
   if (orientation !== undefined) exif.orientation = orientation;
 
   const exifPtr = numTag(r, ifd0.get(TAG.ExifIFD));
-  if (exifPtr !== undefined) {
-    const e = readIFD(r, exifPtr);
-
-    const fnumber = ratTag(r, e.get(TAG.FNumber));
-    if (fnumber !== undefined) exif.aperture = round(fnumber, 1);
-
-    const focal = ratTag(r, e.get(TAG.FocalLength));
-    if (focal !== undefined) exif.focalLength = Math.round(focal);
-
-    const focal35 = numTag(r, e.get(TAG.FocalLength35mm));
-    if (focal35 !== undefined && focal35 > 0) exif.focalLength35mm = focal35;
-
-    const iso = numTag(r, e.get(TAG.ISO));
-    if (iso !== undefined) exif.iso = iso;
-
-    const exposure = ratTag(r, e.get(TAG.ExposureTime));
-    if (exposure !== undefined) exif.shutterSpeed = formatShutter(exposure);
-
-    const bias = ratTag(r, e.get(TAG.ExposureBias));
-    if (bias !== undefined) exif.exposureCompensation = round(bias, 2);
-
-    const program = numTag(r, e.get(TAG.ExposureProgram));
-    if (program !== undefined) exif.exposureProgram = formatExposureProgram(program);
-
-    const metering = numTag(r, e.get(TAG.MeteringMode));
-    if (metering !== undefined) exif.meteringMode = formatMeteringMode(metering);
-
-    const wb = resolveWhiteBalance(
-      numTag(r, e.get(TAG.LightSource)),
-      numTag(r, e.get(TAG.WhiteBalance)),
-    );
-    if (wb) exif.whiteBalance = wb;
-
-    const flash = numTag(r, e.get(TAG.Flash));
-    if (flash !== undefined) exif.flash = formatFlash(flash);
-
-    const date = asciiTag(r, e.get(TAG.DateTimeOriginal));
-    if (date) exif.dateTimeOriginal = date;
-
-    const subSec = asciiTag(r, e.get(TAG.SubSecTimeOriginal))?.replace(/\D/g, "");
-    if (subSec) exif.subSecTimeOriginal = subSec;
-
-    const maxAp = ratTag(r, e.get(TAG.MaxAperture));
-    if (maxAp !== undefined) exif.maxAperture = round(Math.pow(Math.SQRT2, maxAp), 1);
-
-    const subDist = ratTag(r, e.get(TAG.SubjectDistance));
-    if (subDist !== undefined && subDist > 0 && subDist < 65535) exif.subjectDistance = round(subDist, 2);
-
-    const colorSpace = numTag(r, e.get(TAG.ColorSpace));
-    if (colorSpace !== undefined) exif.colorSpace = formatColorSpace(colorSpace);
-
-    const expMode = numTag(r, e.get(TAG.ExposureMode));
-    if (expMode !== undefined) exif.exposureMode = formatExposureMode(expMode);
-
-    const scene = numTag(r, e.get(TAG.SceneCaptureType));
-    if (scene !== undefined) exif.sceneCaptureType = formatSceneCaptureType(scene);
-
-    const bodySerial = asciiTag(r, e.get(TAG.BodySerial));
-    if (bodySerial) exif.bodySerial = bodySerial;
-    const lensMake = asciiTag(r, e.get(TAG.LensMake));
-    if (lensMake) exif.lensMake = lensMake;
-    const lens = asciiTag(r, e.get(TAG.LensModel));
-    if (lens) exif.lens = lens;
-    const lensSerial = asciiTag(r, e.get(TAG.LensSerial));
-    if (lensSerial) exif.lensSerial = lensSerial;
-  }
+  if (exifPtr !== undefined) readExifIfd(r, readIFD(r, exifPtr), exif);
 
   const gpsPtr = numTag(r, ifd0.get(TAG.GPSIFD));
-  if (gpsPtr !== undefined) {
-    const g = readIFD(r, gpsPtr);
-    const lat = parseGpsCoord(r, g.get(GPS_TAG.Latitude), g.get(GPS_TAG.LatitudeRef), 90);
-    const lon = parseGpsCoord(r, g.get(GPS_TAG.Longitude), g.get(GPS_TAG.LongitudeRef), 180);
-    if (lat !== undefined) exif.gpsLatitude = lat;
-    if (lon !== undefined) exif.gpsLongitude = lon;
-    const altEntry = g.get(GPS_TAG.Altitude);
-    if (altEntry) {
-      let alt = ratTag(r, altEntry);
-      if (alt !== undefined) {
-        const altRef = numTagByte(r, g.get(GPS_TAG.AltitudeRef));
-        if (altRef === 1) alt = -alt;
-        exif.gpsAltitude = round(alt, 1);
-      }
-    }
-  }
+  if (gpsPtr !== undefined) readGpsIfd(r, readIFD(r, gpsPtr), exif);
 
   // DNG AsShotNeutral — sits in IFD0, gives per-channel neutral values.
   const asnEntry = ifd0.get(TAG.AsShotNeutral);
@@ -579,6 +505,166 @@ function parseTiff(view: DataView, base: number): ExifData {
     }
   }
 
+  return exif;
+}
+
+/** The Exif IFD's tags, into `exif`. */
+function readExifIfd(r: Reader, e: Map<number, Entry>, exif: ExifData): void {
+  const fnumber = ratTag(r, e.get(TAG.FNumber));
+  if (fnumber !== undefined) exif.aperture = round(fnumber, 1);
+
+  const focal = ratTag(r, e.get(TAG.FocalLength));
+  if (focal !== undefined) exif.focalLength = Math.round(focal);
+
+  const focal35 = numTag(r, e.get(TAG.FocalLength35mm));
+  if (focal35 !== undefined && focal35 > 0) exif.focalLength35mm = focal35;
+
+  const iso = numTag(r, e.get(TAG.ISO));
+  if (iso !== undefined) exif.iso = iso;
+
+  const exposure = ratTag(r, e.get(TAG.ExposureTime));
+  if (exposure !== undefined) exif.shutterSpeed = formatShutter(exposure);
+
+  const bias = ratTag(r, e.get(TAG.ExposureBias));
+  if (bias !== undefined) exif.exposureCompensation = round(bias, 2);
+
+  const program = numTag(r, e.get(TAG.ExposureProgram));
+  if (program !== undefined) exif.exposureProgram = formatExposureProgram(program);
+
+  const metering = numTag(r, e.get(TAG.MeteringMode));
+  if (metering !== undefined) exif.meteringMode = formatMeteringMode(metering);
+
+  const wb = resolveWhiteBalance(
+    numTag(r, e.get(TAG.LightSource)),
+    numTag(r, e.get(TAG.WhiteBalance)),
+  );
+  if (wb) exif.whiteBalance = wb;
+
+  const flash = numTag(r, e.get(TAG.Flash));
+  if (flash !== undefined) exif.flash = formatFlash(flash);
+
+  const date = asciiTag(r, e.get(TAG.DateTimeOriginal));
+  if (date) exif.dateTimeOriginal = date;
+
+  const subSec = asciiTag(r, e.get(TAG.SubSecTimeOriginal))?.replace(/\D/g, "");
+  if (subSec) exif.subSecTimeOriginal = subSec;
+
+  const maxAp = ratTag(r, e.get(TAG.MaxAperture));
+  if (maxAp !== undefined) exif.maxAperture = round(Math.pow(Math.SQRT2, maxAp), 1);
+
+  const subDist = ratTag(r, e.get(TAG.SubjectDistance));
+  if (subDist !== undefined && subDist > 0 && subDist < 65535) exif.subjectDistance = round(subDist, 2);
+
+  const colorSpace = numTag(r, e.get(TAG.ColorSpace));
+  if (colorSpace !== undefined) exif.colorSpace = formatColorSpace(colorSpace);
+
+  const expMode = numTag(r, e.get(TAG.ExposureMode));
+  if (expMode !== undefined) exif.exposureMode = formatExposureMode(expMode);
+
+  const scene = numTag(r, e.get(TAG.SceneCaptureType));
+  if (scene !== undefined) exif.sceneCaptureType = formatSceneCaptureType(scene);
+
+  const bodySerial = asciiTag(r, e.get(TAG.BodySerial));
+  if (bodySerial) exif.bodySerial = bodySerial;
+  const lensMake = asciiTag(r, e.get(TAG.LensMake));
+  if (lensMake) exif.lensMake = lensMake;
+  const lens = asciiTag(r, e.get(TAG.LensModel));
+  if (lens) exif.lens = lens;
+  const lensSerial = asciiTag(r, e.get(TAG.LensSerial));
+  if (lensSerial) exif.lensSerial = lensSerial;
+}
+
+/** The GPS IFD's position, into `exif`. */
+function readGpsIfd(r: Reader, g: Map<number, Entry>, exif: ExifData): void {
+  const lat = parseGpsCoord(r, g.get(GPS_TAG.Latitude), g.get(GPS_TAG.LatitudeRef), 90);
+  const lon = parseGpsCoord(r, g.get(GPS_TAG.Longitude), g.get(GPS_TAG.LongitudeRef), 180);
+  if (lat !== undefined) exif.gpsLatitude = lat;
+  if (lon !== undefined) exif.gpsLongitude = lon;
+  const altEntry = g.get(GPS_TAG.Altitude);
+  if (altEntry) {
+    let alt = ratTag(r, altEntry);
+    if (alt !== undefined) {
+      const altRef = numTagByte(r, g.get(GPS_TAG.AltitudeRef));
+      if (altRef === 1) alt = -alt;
+      exif.gpsAltitude = round(alt, 1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Canon CR3
+//
+// An ISO media file whose moov box holds a Canon uuid box, in which CMT1, CMT2
+// and CMT4 are each a whole TIFF block: CMT1 IFD0, CMT2 the Exif IFD and CMT4
+// the GPS IFD, each as its block's first IFD. They sit ahead of the picture
+// data, within the head parseExif reads.
+// ---------------------------------------------------------------------------
+
+const CR3_UUID = [0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48];
+
+function isCr3Head(view: DataView): boolean {
+  return view.byteLength >= 12 && matchAscii(view, 4, "ftyp") && matchAscii(view, 8, "crx ");
+}
+
+interface Box {
+  type: string;
+  start: number;
+  end: number;
+}
+
+/** The boxes between `start` and `end`, each whole within the view; a box cut
+ *  off by the end of what was read ends the list. */
+function boxes(view: DataView, start: number, end: number): Box[] {
+  const out: Box[] = [];
+  let at = start;
+  while (at + 8 <= end) {
+    let size = view.getUint32(at, false);
+    let header = 8;
+    if (size === 1) {
+      if (at + 16 > end) break;
+      size = Number(view.getBigUint64(at + 8, false));
+      header = 16;
+    } else if (size === 0) size = end - at;
+    if (size < header || at + size > end) break;
+    let type = "";
+    for (let i = 0; i < 4; i++) type += String.fromCharCode(view.getUint8(at + 4 + i));
+    out.push({ type, start: at + header, end: at + size });
+    at += size;
+  }
+  return out;
+}
+
+function isCanonUuid(view: DataView, box: Box): boolean {
+  return box.end - box.start >= 16 && CR3_UUID.every((b, i) => view.getUint8(box.start + i) === b);
+}
+
+/** A TIFF block's reader and its first IFD, or null when it isn't one. */
+function tiffBlock(view: DataView, box: Box): { r: Reader; ifd: Map<number, Entry> } | null {
+  if (box.end - box.start < 8) return null;
+  const block = new DataView(view.buffer, view.byteOffset + box.start, box.end - box.start);
+  const order = block.getUint16(0, false);
+  if (order !== 0x4949 && order !== 0x4d4d) return null;
+  const le = order === 0x4949;
+  if (block.getUint16(2, le) !== 42) return null;
+  const r: Reader = { view: block, base: 0, le };
+  return { r, ifd: readIFD(r, block.getUint32(4, le)) };
+}
+
+function parseCr3(view: DataView): ExifData | null {
+  const moov = boxes(view, 0, view.byteLength).find((b) => b.type === "moov");
+  const canon = moov && boxes(view, moov.start, moov.end).find((b) => b.type === "uuid" && isCanonUuid(view, b));
+  if (!canon) return null;
+  const parts = boxes(view, canon.start + 16, canon.end);
+  const part = (type: string) => parts.find((b) => b.type === type);
+  const cmt1 = part("CMT1");
+  if (!cmt1) return null;
+  const exif = parseTiff(new DataView(view.buffer, view.byteOffset + cmt1.start, cmt1.end - cmt1.start), 0);
+  const cmt2 = part("CMT2");
+  const exifBlock = cmt2 && tiffBlock(view, cmt2);
+  if (exifBlock) readExifIfd(exifBlock.r, exifBlock.ifd, exif);
+  const cmt4 = part("CMT4");
+  const gpsBlock = cmt4 && tiffBlock(view, cmt4);
+  if (gpsBlock) readGpsIfd(gpsBlock.r, gpsBlock.ifd, exif);
   return exif;
 }
 

@@ -18,7 +18,7 @@
 // mutations), dnd (hit-testing, drag, resize) and DockHost (rendering). This
 // file is the public surface.
 
-export { useDockStore } from "./dock/store";
+export { allowsModule, useDockStore } from "./dock/store";
 export type { RailState, FloatState } from "./dock/store";
 export { panelReplacements, replacePanelIds } from "./dock/replacements";
 export type { DockPlacement } from "./dock/replacements";

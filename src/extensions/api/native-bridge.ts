@@ -124,6 +124,10 @@ export interface NativeFsBridge {
   /** Reveal a path in the OS file manager — open a directory, or select a file
    *  inside its parent folder. Resolves true on success. */
   reveal(path: string): Promise<boolean>;
+  /** The mounted volumes holding a DCIM folder (electron/memory-cards.cjs):
+   *  `id` is new for each card put in, `path` the volume's root. Absent on older
+   *  Electron builds — feature-detect. */
+  listCards?(): Promise<{ id: string; name: string; path: string }[]>;
   /** Take the writer lock on a project's working directory, so the app and `slu`
    *  never write one catalogue at once. Resolves with a token, or with who holds
    *  it. A lock whose holder stopped refreshing it is taken over. Absent on older

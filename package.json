@@ -97,6 +97,7 @@
       "electron/ipc/window.cjs",
       "electron/issue-link.cjs",
       "electron/kept-folders.cjs",
+      "electron/memory-cards.cjs",
       "electron/net-access.cjs",
       "electron/oauth-loopback.cjs",
       "electron/official-extensions.json",

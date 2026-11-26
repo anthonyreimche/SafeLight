@@ -84,10 +84,12 @@ function Host({
   start = null,
   locked = false,
   resetKey,
+  maxZoom,
 }: {
   start?: number | null;
   locked?: boolean;
   resetKey?: string;
+  maxZoom?: number;
 }) {
   const [zoom, setZoom] = useState<number | null>(start);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -106,6 +108,7 @@ function Host({
       resetKey={resetKey}
       initialZoom={start}
       overlay={locked ? () => <div /> : undefined}
+      maxZoom={maxZoom}
     />
   );
 }
@@ -133,7 +136,7 @@ function transformOf(canvas: HTMLCanvasElement) {
   return { x: Number(m[1]), y: Number(m[2]), s: Number(m[3]) };
 }
 
-function mount(props: { start?: number | null; locked?: boolean } = {}) {
+function mount(props: { start?: number | null; locked?: boolean; maxZoom?: number } = {}) {
   const utils = render(<Host {...props} />);
   zoomSpy.mockClear();
   const frame = utils.container.firstElementChild as HTMLElement;
@@ -229,8 +232,17 @@ describe("wheel zoom", () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
-  it("clamps at 200%", () => {
-    const { frame } = mount({ start: 1.8 });
+  it("clamps at 800% by default", () => {
+    const { frame } = mount({ start: 7 });
+    roll(frame, -100);
+    expect(zoomSpy).toHaveBeenLastCalledWith(8);
+    zoomSpy.mockClear();
+    roll(frame, -100);
+    expect(zoomSpy).not.toHaveBeenCalled();
+  });
+
+  it("clamps at the maximum it is given", () => {
+    const { frame } = mount({ start: 1.8, maxZoom: 2 });
     roll(frame, -100);
     expect(zoomSpy).toHaveBeenLastCalledWith(2);
     zoomSpy.mockClear();
@@ -238,6 +250,11 @@ describe("wheel zoom", () => {
     expect(zoomSpy).not.toHaveBeenCalled();
   });
 
+  it("comes back to a lowered maximum from past it", () => {
+    const view = mount({ start: 8 });
+    view.rerender(<Host start={8} maxZoom={4} />);
+    expect(zoomSpy).toHaveBeenLastCalledWith(4);
+  });
   it("goes inert on bare wheel once rebound to Alt+Wheel", () => {
     setBinding("viewport.wheelZoom", "Alt+Wheel");
     const { frame } = mount();

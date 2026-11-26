@@ -157,6 +157,7 @@ export function DevelopCanvas({
   }, [pictureCanvas]);
 
   const openZoom = useSettings((s) => s.developOpenZoom);
+  const maxZoom = useSettings((s) => s.developMaxZoom);
   // Dynamic mode measures the zoom in the photo's own pixels (the decoded frame's size
   // over the source's) only where native detail can reach them; elsewhere 100% would
   // be an upscale of the source.
@@ -381,6 +382,7 @@ export function DevelopCanvas({
       status={shownStatus}
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}
+      maxZoom={maxZoom}
       overlayKey={canvasToolKey}
       overlayZoomable={!!canvasTool?.zoomable}
       onPickDrag={onPickDrag}

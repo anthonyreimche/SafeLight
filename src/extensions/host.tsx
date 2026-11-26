@@ -164,6 +164,10 @@ import { isEditState } from "@/project/edit-files";
 import { isPlainObject } from "@/project/fs";
 import { settleSelectedPhoto } from "@/modules/library/import-photos";
 import { importFiles } from "@/modules/library/import-files";
+import { readMetadata } from "@/modules/library/read-metadata";
+import { isSupportedName } from "@/catalog/photo-names";
+import { onMemoryCards, useMemoryCards } from "@/project/memory-cards";
+import { NAME_TOKENS, expandName, renderFolder, renderName, unknownTokens } from "@/catalog/naming";
 import { librarySourcesAPI } from "./library-sources-api";
 import { registerImageDecoder, unregisterImageDecoder, useDecoders } from "@/catalog/image-decoders";
 import { keptDirectoriesAPI } from "./kept-directories";
@@ -721,6 +725,17 @@ export function makeScopedAPI(extensionId: string, extensionVersion?: string): S
       registerDecoder: (decoder) => registerImageDecoder(extensionId, decoder),
       unregisterDecoder: (id) => unregisterImageDecoder(extensionId, id),
       useDecoders,
+      readMetadata,
+      isSupportedName,
+      useMemoryCards,
+      onMemoryCards: trackSubscription(extensionId, onMemoryCards),
+    },
+    naming: {
+      tokens: NAME_TOKENS,
+      render: renderName,
+      renderFolder,
+      expand: expandName,
+      unknownTokens,
     },
     network: networkAPI(extensionId),
     secrets: secretsAPI(extensionId),

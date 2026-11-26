@@ -7,7 +7,7 @@
 // scrolling row), the preview card itself, and the small section label. Shared
 // by the Browse pages and the detail page's related shelves.
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type MouseEvent } from "react";
 import type { ExtensionSearchResult, ExtensionThumbnail, StoreVocabulary } from "./types";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { LoadingDots } from "@/ui/components/LoadingDots";
@@ -16,6 +16,13 @@ import { FlaggedBadge, VerifiedBadge } from "./TrustBadges";
 import { useExtStoreUI } from "./store-ui";
 import { categoriesOf, typeOf } from "./store-categories";
 import { installBlock } from "./release-picks";
+import { Switch } from "@/ui/components/Switch";
+import { ContextMenu, type ContextMenuEntry } from "@/ui/components/ContextMenu";
+import { DiscontinuedBar } from "./DiscontinuedBar";
+import type { Discontinued } from "./discontinued";
+import { stageFailureNote, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
+import { callbackFailureText, useCallbackFailures } from "./guard";
+import { startFailureText, useStartFailures } from "./start-failures";
 
 /** True while the Extensions window is maximized: the store spreads out, with
  *  wrapping card grids in place of sideways-scrolling rows. */
@@ -51,6 +58,7 @@ export function Shelf({
   onOpen,
   onInstall,
   isInstalled,
+  manageFor,
 }: {
   title: string;
   items: ExtensionSearchResult[];
@@ -63,6 +71,8 @@ export function Shelf({
   onInstall: (repo: string, r: ExtensionSearchResult) => void;
   /** Cards of installed extensions show "Installed" in place of Install. */
   isInstalled?: (r: ExtensionSearchResult) => boolean;
+  /** An installed extension's controls, which its card shows instead. */
+  manageFor?: (r: ExtensionSearchResult) => CardManage | undefined;
 }) {
   const expanded = useContext(StoreExpanded);
   return (
@@ -78,6 +88,7 @@ export function Shelf({
               installing={busy === r.fullName}
               checking={pending.has(r.fullName)}
               installed={isInstalled?.(r) ?? false}
+              manage={manageFor?.(r)}
               disabled={busy !== null}
               onOpen={() => onOpen(r.fullName)}
               onInstall={() => void onInstall(r.fullName, r)}
@@ -89,8 +100,55 @@ export function Shelf({
   );
 }
 
+/** An installed extension's controls on its card. */
+export interface CardManage {
+  id: string;
+  version: string;
+  enabled: boolean;
+  /** Core: always on, never removed. */
+  locked: boolean;
+  /** No GitHub repo behind it, so no owner avatar to show. */
+  local: boolean;
+  discontinued: Discontinued | null;
+  /** Present when a newer release can be installed. */
+  onUpdate?: () => void;
+  onToggle: () => void;
+  /** The ⚙ menu, also shown on a right-click: settings, versions, uninstall. */
+  menu: ContextMenuEntry[];
+  onInstallReplacement: (repo: string) => void;
+  onUninstall?: () => void;
+}
+
+/** Why an extension isn't running as it should: it didn't start, a stage
+ *  wouldn't build, or a callback kept throwing. */
+export function FailureNotes({ id }: { id: string }) {
+  const stageFailures = useStageFailuresOf(id);
+  const callbackFailure = useCallbackFailures((s) => s[id]);
+  const startFailure = useStartFailures((s) => s[id]);
+  return (
+    <>
+      {startFailure && (
+        <div className="whitespace-normal break-words text-danger" title={startFailure.message}>
+          {startFailureText(startFailure)}
+        </div>
+      )}
+      {stageFailures.map((f) => (
+        <div key={f.stageId} className="truncate text-danger" title={f.log}>
+          {stageFailureNote(f)}
+        </div>
+      ))}
+      {callbackFailure && (
+        <div className="truncate text-danger" title={callbackFailure.error}>
+          {callbackFailureText(callbackFailure)}
+        </div>
+      )}
+    </>
+  );
+}
+
 // A browse-result preview card: repo thumbnail, name, description, stars, and its
-// category · type tag. Clicking the body opens the detail page; Install stays inline.
+// category · type tag. Clicking the body opens the detail page; Install stays
+// inline. An installed extension's card has its controls in Install's place.
 export function ExtensionCard({
   index,
   result,
@@ -98,6 +156,7 @@ export function ExtensionCard({
   installing,
   checking = false,
   installed = false,
+  manage,
   disabled,
   onOpen,
   onInstall,
@@ -112,6 +171,7 @@ export function ExtensionCard({
   checking?: boolean;
   /** Already installed: shows "Installed" in place of the Install button. */
   installed?: boolean;
+  manage?: CardManage;
   disabled: boolean;
   onOpen: () => void;
   onInstall: () => void;
@@ -132,6 +192,13 @@ export function ExtensionCard({
   // is false only for the avatar fallback, so it sits contained/centred while a
   // deliberate icon/preview (sized for the card) fills the frame.
   const resolved: ExtensionThumbnail = thumb ?? { url: avatar, custom: false };
+  const local = manage?.local ?? false;
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const openMenu = (e: MouseEvent) => {
+    if (!manage || manage.menu.length === 0) return;
+    e.preventDefault();
+    setMenuAt({ x: e.clientX, y: e.clientY });
+  };
 
   // The card paints the owner avatar instantly as an always-present base layer,
   // then overlays the resolved custom icon/preview ONLY once it has actually
@@ -181,38 +248,53 @@ export function ExtensionCard({
   return (
     <div
       ref={cardRef}
+      onContextMenu={manage ? openMenu : undefined}
       className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2 text-[11px]"
     >
-      <button onClick={onOpen} className="block text-left">
+      <button
+        onClick={onOpen}
+        className={`block text-left ${manage && !manage.enabled ? "opacity-55" : ""}`}
+      >
         <div className="relative aspect-[2/1] w-full overflow-hidden bg-surface-3">
-          {/* Always-present base: the owner avatar, contained + padded. Paints
-              instantly so the card is never blank while a preview resolves. */}
-          <img
-            src={avatar}
-            alt=""
-            aria-hidden
-            referrerPolicy="no-referrer"
-            className="absolute inset-0 h-full w-full"
-            style={{ objectFit: "contain", padding: "0.75rem" }}
-            onError={(e) => (e.currentTarget.style.visibility = "hidden")}
-          />
-          {/* Upgrade overlay: a custom icon/social preview, faded in only once it
-              has actually loaded (so it never replaces the avatar with a blank
-              frame). On error we drop it and the avatar shows through. */}
-          {showCustom && (
-            <img
-              src={resolved.url}
-              alt=""
-              referrerPolicy="no-referrer"
-              className="absolute inset-0 h-full w-full"
-              style={{
-                objectFit: "cover",
-                opacity: customLoaded ? 1 : 0,
-                transition: "opacity 200ms ease-out",
-              }}
-              onLoad={() => setCustomLoaded(true)}
-              onError={() => setShowCustom(false)}
-            />
+          {local ? (
+            <div
+              aria-hidden
+              className="absolute inset-0 flex items-center justify-center text-[28px] font-semibold text-text-muted"
+            >
+              {name.charAt(0).toUpperCase()}
+            </div>
+          ) : (
+            <>
+              {/* Always-present base: the owner avatar, contained + padded. Paints
+                  instantly so the card is never blank while a preview resolves. */}
+              <img
+                src={avatar}
+                alt=""
+                aria-hidden
+                referrerPolicy="no-referrer"
+                className="absolute inset-0 h-full w-full"
+                style={{ objectFit: "contain", padding: "0.75rem" }}
+                onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+              />
+              {/* Upgrade overlay: a custom icon/social preview, faded in only once it
+                  has actually loaded (so it never replaces the avatar with a blank
+                  frame). On error we drop it and the avatar shows through. */}
+              {showCustom && (
+                <img
+                  src={resolved.url}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="absolute inset-0 h-full w-full"
+                  style={{
+                    objectFit: "cover",
+                    opacity: customLoaded ? 1 : 0,
+                    transition: "opacity 200ms ease-out",
+                  }}
+                  onLoad={() => setCustomLoaded(true)}
+                  onError={() => setShowCustom(false)}
+                />
+              )}
+            </>
           )}
         </div>
         <div className="p-2">
@@ -220,6 +302,17 @@ export function ExtensionCard({
             <span className="min-w-0 truncate font-medium text-text-primary">
               {name}
             </span>
+            {manage && (
+              <>
+                {" "}
+                <span className="shrink-0 text-text-muted">v{manage.version}</span>
+              </>
+            )}
+            {manage?.locked && (
+              <span className="shrink-0 rounded bg-surface-3 px-1 py-px text-[9px] uppercase tracking-wider text-text-muted">
+                Core
+              </span>
+            )}
             {verified && <VerifiedBadge iconOnly />}
             <div className="flex-1" />
             {result.stars > 0 && (
@@ -231,8 +324,19 @@ export function ExtensionCard({
               {result.description}
             </div>
           )}
+          {manage && <FailureNotes id={manage.id} />}
         </div>
       </button>
+      {manage?.discontinued && (
+        <div className="px-2 pb-2">
+          <DiscontinuedBar
+            discontinued={manage.discontinued}
+            busy={disabled}
+            onInstallReplacement={manage.onInstallReplacement}
+            onUninstall={manage.onUninstall}
+          />
+        </div>
+      )}
       <div className="mt-auto flex items-center justify-between gap-2 px-2 pb-2">
         {tag ? (
           <span
@@ -244,7 +348,45 @@ export function ExtensionCard({
         ) : (
           <span />
         )}
-        {banned ? (
+        {manage ? (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {banned && <FlaggedBadge reason={banned} />}
+            {manage.onUpdate && (
+              <button
+                disabled={disabled}
+                onClick={manage.onUpdate}
+                title="A newer version is available — update now"
+                className="rounded px-1.5 py-0.5 text-[10px] font-medium text-black hover:opacity-90 disabled:opacity-40"
+                style={{ background: "var(--color-rating)" }}
+              >
+                Update
+              </button>
+            )}
+            {!manage.locked && (
+              <Switch
+                checked={manage.enabled}
+                ariaLabel={`Enable ${name}`}
+                disabled={disabled}
+                onChange={manage.onToggle}
+                title={manage.enabled ? "Disable (keeps files and settings)" : "Enable"}
+              />
+            )}
+            {manage.menu.length > 0 && (
+              <button
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMenuAt({ x: r.left, y: r.bottom });
+                }}
+                aria-label={`${name} options`}
+                aria-haspopup="menu"
+                title="Settings, versions and uninstall"
+                className="rounded px-1 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary"
+              >
+                ⚙
+              </button>
+            )}
+          </div>
+        ) : banned ? (
           <FlaggedBadge reason={banned} />
         ) : installed ? (
           <span className="shrink-0 text-text-muted">Installed</span>
@@ -259,6 +401,9 @@ export function ExtensionCard({
           </button>
         )}
       </div>
+      {menuAt && manage && (
+        <ContextMenu x={menuAt.x} y={menuAt.y} items={manage.menu} onClose={() => setMenuAt(null)} />
+      )}
     </div>
   );
 }

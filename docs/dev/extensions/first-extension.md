@@ -28,7 +28,7 @@ Because the values live in the edit, undo, history, presets, copy and paste and 
 Safelight can load extensions straight from a folder on your disk, so you can edit, reload and see the result without publishing anything.
 
 1. Open the Extensions window (the puzzle button in the top bar, or **Ctrl+Shift+X**).
-2. In **Browse**, find **Developer Tools** and install it. Make sure it's switched on under **Installed**.
+2. In **Browse**, find **Developer Tools** and install it. Make sure its card is switched on.
 3. A **Dev** section now appears in the Extensions window. Click **Choose folder…** and pick a folder for your extensions, for example `Documents/safelight-dev`.
 
 ![The Dev section with one extension loaded: the folder path, Change, Rescan and Clear, and the extension's row with its status and Reload button](../images/dev-folder.png)

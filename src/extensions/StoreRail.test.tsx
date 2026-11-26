@@ -19,7 +19,7 @@ const mount = (over: Partial<Parameters<typeof StoreRail>[0]> = {}) => {
   const onSection = vi.fn<(s: StoreSection) => void>();
   render(
     <StoreRail
-      sections={["Updates", "Browse", "Installed"]}
+      sections={["Updates", "Browse", "Dev"]}
       section="Browse"
       onSection={onSection}
       categories
@@ -62,7 +62,7 @@ describe("StoreRail", () => {
   it("opens the home page and shows the list from the Browse label", async () => {
     useExtStoreUI.setState({ browse: "tone" });
     const user = userEvent.setup();
-    const { onSection } = mount({ section: "Installed" });
+    const { onSection } = mount({ section: "Dev" });
     await user.click(screen.getByRole("button", { name: "Browse" }));
     expect(onSection).toHaveBeenCalledWith("Browse");
     expect(useExtStoreUI.getState()).toMatchObject({ browse: "home", railExpanded: true });

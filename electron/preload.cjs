@@ -70,6 +70,7 @@ const privileged = {
     pickFile: (filters) =>
       ipcRenderer.invoke("fs:pickFile", Array.isArray(filters) ? filters : []),
     reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
+    listCards: () => ipcRenderer.invoke("fs:listCards"),
     // The writer lock a project's catalogue is held under, so the app and the
     // command-line tool don't write one at once.
     lockProject: (workingDir, owner) =>

@@ -8,7 +8,8 @@
 
 import type { CatalogPhoto, ExifData, LoadedPreview } from "@/catalog/types";
 import { formatOf } from "@/catalog/image-decoders";
-import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
+import { parseExifDate, type XmpData } from "@/catalog/exif";
+import { readTags } from "./read-metadata";
 import { bakeFor, orientationToRotation } from "@/catalog/orient";
 import {
   distrustsEmbeddedPreview,
@@ -137,20 +138,6 @@ export function decodeFailureReason(file: File, failure: DecodeFailure | null): 
   if (isTiffName(file.name)) return "This kind of TIFF file isn't supported.";
   if (formatOf(file.name)?.id === "heif") return "This HEIC file can't be decoded.";
   return "No decoder could read this file.";
-}
-
-/** A file's EXIF and XMP, both read from its first MiB. EXIF is independent of
- *  the pixel decode, so even a file that can't be decoded yet gets its date and
- *  orientation. XMP carries the camera/editor-written star rating, colour label,
- *  keywords and title (Nikon stores the in-camera rating here, not in an EXIF tag
- *  — it's what Windows Explorer surfaces). These seed the catalogue's editable
- *  fields; a SafeLight sidecar, if present, overrides them on import (see
- *  project-storage). */
-async function readTags(file: Blob): Promise<{ exif: ExifData; xmp: XmpData }> {
-  const exif = await parseExif(file);
-  const xmp = await parseXmp(file);
-  if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
-  return { exif, xmp };
 }
 
 /** The fields a new record starts with, whatever built its preview. A supported

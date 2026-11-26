@@ -17,6 +17,8 @@ import type { StarterKit } from "@/modules/welcome/setup/kits";
 import type { InstallRow } from "@/modules/welcome/setup/install-queue";
 
 export type StoreSort = "popular" | "updated" | "name";
+/** Browse's filter: every extension, only installed ones, or only new ones. */
+export type StoreOwned = "all" | "installed" | "available";
 
 /** A fetch that's in flight, resolved, or failed. */
 export type Async<T> =
@@ -102,6 +104,9 @@ interface ExtStoreUI {
    *  list (openExtensionsOn); null for the list. */
   pendingDetail: string | null;
   sort: StoreSort;
+  /** Which extensions Browse lists: all, only installed ones, or only ones
+   *  that aren't installed. */
+  owned: StoreOwned;
   /** What Browse shows: "home" (shelves), "other" (no category) or a
    *  category slug. */
   browse: string;
@@ -129,6 +134,7 @@ interface ExtStoreUI {
   openDetail: (selected: string) => void;
   back: () => void;
   setSort: (s: StoreSort) => void;
+  setOwned: (o: StoreOwned) => void;
   openCategory: (key: string) => void;
   goHome: () => void;
   toggleRail: () => void;
@@ -144,6 +150,7 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   selected: null,
   pendingDetail: null,
   sort: "popular",
+  owned: "all",
   browse: "home",
   railExpanded: false,
   vocabulary: FALLBACK_VOCABULARY,
@@ -159,6 +166,7 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   openDetail: (selected) => set({ selected, view: "detail" }),
   back: () => set({ view: "list", selected: null }),
   setSort: (sort) => set({ sort }),
+  setOwned: (owned) => set({ owned, kit: null, view: "list", selected: null }),
   openCategory: (browse) => set({ browse, kit: null, railExpanded: true, view: "list", selected: null }),
   goHome: () => set({ browse: "home", kit: null, railExpanded: true, view: "list", selected: null }),
   openKit: (kit) => set({ kit, view: "list", selected: null }),

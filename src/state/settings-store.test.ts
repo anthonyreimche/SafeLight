@@ -152,6 +152,39 @@ describe("hydration", () => {
   });
 });
 
+describe("Develop zoom", () => {
+  it("defaults to 800% at most, with the status bar's 25% to 200% buttons", async () => {
+    const { getSettings } = await boot();
+    expect(getSettings().developMaxZoom).toBe(8);
+    expect(getSettings().developZoomStops).toEqual([0.25, 0.5, 1, 1.5, 2]);
+  });
+
+  it("keeps a maximum it offers and drops any other", async () => {
+    for (const max of [2, 4, 8, 16]) {
+      const { getSettings } = await boot(JSON.stringify({ developMaxZoom: max }));
+      expect(getSettings().developMaxZoom).toBe(max);
+    }
+    for (const junk of [0, -4, 3, 1000, "8", null]) {
+      const { getSettings } = await boot(JSON.stringify({ developMaxZoom: junk }));
+      expect(getSettings().developMaxZoom).toBe(8);
+    }
+  });
+
+  it("keeps the offered stops, in order, once each", async () => {
+    const { updateSettings, getSettings } = await boot();
+    updateSettings({ developZoomStops: [4, 1, 0.25, 4, 0, -1, 7, Number.NaN, 16] });
+    expect(getSettings().developZoomStops).toEqual([0.25, 1, 4, 16]);
+    const { getSettings: reread } = await boot(localStorage.getItem(KEY) ?? "");
+    expect(reread().developZoomStops).toEqual([0.25, 1, 4, 16]);
+  });
+
+  it("allows no stops at all, leaving the status bar's Fit", async () => {
+    const { updateSettings, getSettings } = await boot();
+    updateSettings({ developZoomStops: [] });
+    expect(getSettings().developZoomStops).toEqual([]);
+  });
+});
+
 describe("updateSettings", () => {
   it("patches only the named keys and writes the whole object back", async () => {
     const { updateSettings, getSettings, DEFAULT_SETTINGS } = await boot();
